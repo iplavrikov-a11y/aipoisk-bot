@@ -1,0 +1,48 @@
+{
+  "date": "2026-06-01",
+  "server": {
+    "target_ip": "202.71.13.57",
+    "target_location": "NL",
+    "dns_previous_ip": "81.177.141.15",
+    "dns_previous_host": "parking.jino.ru",
+    "dns_current_ip": "202.71.13.57",
+    "dns_authoritative": "correct",
+    "dns_recursive_cache": "current_major_resolvers_correct",
+    "wildcard_ip": "202.71.13.57",
+    "apex_ip": "81.177.141.15"
+  },
+  "services": {
+    "aipoisk-api.service": "active",
+    "aipoisk-bot.service": "active",
+    "nginx": "active"
+  },
+  "checks": {
+    "backend_compile": "passed",
+    "frontend_build": "passed",
+    "local_health": "passed",
+    "public_https": "passed",
+    "public_health": "passed",
+    "nginx_config": "passed",
+    "admin_auth_unauthenticated_dashboard": 401,
+    "admin_auth_login": 200,
+    "admin_auth_dashboard_with_session": 200,
+    "admin_auth_bad_login": 401,
+    "admin_cookie_flags": ["HttpOnly", "Secure", "SameSite=strict"],
+    "browser_login": "passed",
+    "browser_console_errors": 0,
+    "telegram_menu_smoke": "passed"
+  },
+  "deployed_assets": {
+    "js": "index-Cq7h_rMM.js",
+    "css": "index-Beis1rwg.css"
+  },
+  "telegram_buttons": [
+    "🔎 Поиск поставщиков",
+    "📄 Word-отчёт",
+    "📊 Последние задачи",
+    "🔐 Мой доступ",
+    "❓ Помощь",
+    "🆔 Мой Telegram ID"
+  ],
+  "blockers": []
+}

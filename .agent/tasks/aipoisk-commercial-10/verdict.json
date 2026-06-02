@@ -1,0 +1,43 @@
+{
+  "task_id": "aipoisk-commercial-10",
+  "date": "2026-06-02",
+  "status": "passed_with_known_risks",
+  "verified": {
+    "unit_tests": {
+      "command": "cd backend && ./.venv/bin/python -m unittest discover -s tests -v",
+      "result": "13 tests OK"
+    },
+    "compile": {
+      "command": "cd backend && ./.venv/bin/python -m compileall app",
+      "result": "exit 0"
+    },
+    "live_job": {
+      "job_id": "c01e10dd5ac64de4a9e1c0b827a668a8",
+      "status": "completed",
+      "verified_count": 15,
+      "target_suppliers": 15,
+      "early_stop": true,
+      "reviewed_count": 27,
+      "candidate_count": 75,
+      "stopped_after_candidates": 30
+    },
+    "supplier_audit_fields": {
+      "db_columns_present": true,
+      "stored_match_level": "exact",
+      "stored_source": "yandex",
+      "stored_search_query_non_empty": true,
+      "api_serializer_keys_present": true
+    },
+    "services": {
+      "aipoisk-api.service": "active",
+      "aipoisk-bot.service": "active",
+      "nginx": "active",
+      "public_health": "HTTP 200"
+    }
+  },
+  "known_risks": [
+    "In-process queue remains less robust than Redis/RQ/ARQ/Celery under high concurrent load.",
+    "JS-heavy supplier websites can still require browser-based contact extraction.",
+    "Only one real procurement job was used for live validation; broader domain evals are still needed."
+  ]
+}

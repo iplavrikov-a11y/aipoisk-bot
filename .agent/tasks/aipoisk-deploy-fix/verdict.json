@@ -1,0 +1,14 @@
+{
+  "date": "2026-06-01",
+  "status": "complete_for_current_incident",
+  "implemented": true,
+  "runtime_verified_on_target_server": true,
+  "public_domain_verified": true,
+  "admin_auth_verified": true,
+  "telegram_button_menu_verified": true,
+  "reason": "The public site loads on https://aipoisk.lexelence.ru, the API health endpoint is OK, services are active, the admin panel now uses login/password with an HttpOnly Secure SameSite=strict session cookie, unauthenticated admin API access is rejected, browser login succeeds without console errors, and the Telegram bot exposes the primary customer actions through reply keyboard buttons.",
+  "remaining_product_work": [
+    "Customer-facing Telegram copy and result quality should still be tested with real customer documents before paid client rollout.",
+    "Admin password can be changed later in .env without code changes."
+  ]
+}

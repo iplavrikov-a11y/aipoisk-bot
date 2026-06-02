@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex
+
+
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    public_base_url: Mapped[str] = mapped_column(String(255), default="https://aipoisk.lexelence.ru")
+
+    storage_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    completed_job_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    failed_job_retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    max_upload_mb: Mapped[int] = mapped_column(Integer, default=50)
+    max_files_per_batch: Mapped[int] = mapped_column(Integer, default=20)
+    default_supplier_target: Mapped[int] = mapped_column(Integer, default=15)
+    allow_partial_supplier_reports: Mapped[bool] = mapped_column(Boolean, default=True)
+    logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    primary_provider: Mapped[str] = mapped_column(String(80), default="")
+    primary_model: Mapped[str] = mapped_column(String(160), default="")
+    light_provider: Mapped[str] = mapped_column(String(80), default="")
+    light_model: Mapped[str] = mapped_column(String(160), default="")
+    custom_ai_providers_json: Mapped[str] = mapped_column(Text, default="[]")
+    saved_models_json: Mapped[str] = mapped_column(Text, default="[]")
+    ai_function_models_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    supplier_search_adapter_base_url: Mapped[str] = mapped_column(Text, default="")
+    supplier_search_adapter_api_key: Mapped[str] = mapped_column(Text, default="")
+    supplier_search_adapter_model: Mapped[str] = mapped_column(String(160), default="")
+    supplier_search_provider_order: Mapped[str] = mapped_column(String(255), default="yandex,google,tavily,ddgs")
+    yandex_search_folder_id: Mapped[str] = mapped_column(String(255), default="")
+    yandex_search_api_key: Mapped[str] = mapped_column(Text, default="")
+    google_search_api_key: Mapped[str] = mapped_column(Text, default="")
+    google_search_cse_id: Mapped[str] = mapped_column(String(255), default="")
+
+    prompt_settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    report_settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    document_settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    bot_messages_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    def to_dict(self, include_secrets: bool = False) -> dict:
+        data = {
+            "public_base_url": self.public_base_url,
+            "storage_retention_days": self.storage_retention_days,
+            "completed_job_retention_days": self.completed_job_retention_days,
+            "failed_job_retention_days": self.failed_job_retention_days,
+            "max_upload_mb": self.max_upload_mb,
+            "max_files_per_batch": self.max_files_per_batch,
+            "default_supplier_target": self.default_supplier_target,
+            "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
+            "logistics_enabled": self.logistics_enabled,
+            "primary_provider": self.primary_provider,
+            "primary_model": self.primary_model,
+            "light_provider": self.light_provider,
+            "light_model": self.light_model,
+            "custom_ai_providers_json": self.custom_ai_providers_json,
+            "saved_models_json": self.saved_models_json,
+            "ai_function_models_json": self.ai_function_models_json,
+            "supplier_search_adapter_base_url": self.supplier_search_adapter_base_url,
+            "supplier_search_adapter_api_key_set": bool(self.supplier_search_adapter_api_key),
+            "supplier_search_adapter_model": self.supplier_search_adapter_model,
+            "supplier_search_provider_order": self.supplier_search_provider_order,
+            "yandex_search_folder_id": self.yandex_search_folder_id,
+            "yandex_search_api_key_set": bool(self.yandex_search_api_key),
+            "google_search_api_key_set": bool(self.google_search_api_key),
+            "google_search_cse_id": self.google_search_cse_id,
+            "prompt_settings_json": self.prompt_settings_json,
+            "report_settings_json": self.report_settings_json,
+            "document_settings_json": self.document_settings_json,
+            "bot_messages_json": self.bot_messages_json,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if include_secrets:
+            data["supplier_search_adapter_api_key"] = self.supplier_search_adapter_api_key
+            data["yandex_search_api_key"] = self.yandex_search_api_key
+            data["google_search_api_key"] = self.google_search_api_key
+        return data
+
+    @property
+    def has_active_ai_provider(self) -> bool:
+        for item in parse_json_list(self.custom_ai_providers_json):
+            if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip():
+                return True
+        return False
+
+
+class Client(Base):
+    __tablename__ = "clients"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    username: Mapped[str] = mapped_column(String(255), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    access_until: Mapped[str] = mapped_column(String(32), default="")
+    allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    monthly_job_limit: Mapped[int] = mapped_column(Integer, default=100)
+    monthly_file_limit: Mapped[int] = mapped_column(Integer, default=300)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    jobs: Mapped[list["Job"]] = relationship(back_populates="client")
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(Text, default="")
+    target_suppliers: Mapped[int] = mapped_column(Integer, default=15)
+    verified_count: Mapped[int] = mapped_column(Integer, default=0)
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    result_path: Mapped[str] = mapped_column(Text, default="")
+    evidence_path: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    client: Mapped[Client | None] = relationship(back_populates="jobs")
+    files: Mapped[list["JobFile"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    suppliers: Mapped[list["SupplierResult"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+
+class JobFile(Base):
+    __tablename__ = "job_files"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    original_filename: Mapped[str] = mapped_column(Text)
+    stored_path: Mapped[str] = mapped_column(Text)
+    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    job: Mapped[Job] = relationship(back_populates="files")
+
+
+class SupplierResult(Base):
+    __tablename__ = "supplier_results"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    company_name: Mapped[str] = mapped_column(Text, default="")
+    region: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(80), default="")
+    product: Mapped[str] = mapped_column(Text, default="")
+    contact_person: Mapped[str] = mapped_column(Text, default="")
+    phone: Mapped[str] = mapped_column(Text, default="")
+    email: Mapped[str] = mapped_column(Text, default="")
+    site: Mapped[str] = mapped_column(Text, default="")
+    evidence_url: Mapped[str] = mapped_column(Text, default="")
+    contact_url: Mapped[str] = mapped_column(Text, default="")
+    comments: Mapped[str] = mapped_column(Text, default="")
+    evidence_status: Mapped[str] = mapped_column(String(40), default="weak")
+    match_level: Mapped[str] = mapped_column(String(40), default="")
+    source: Mapped[str] = mapped_column(String(40), default="")
+    search_query: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    job: Mapped[Job] = relationship(back_populates="suppliers")
+
+
+def parse_json_list(value: str) -> list[dict]:
+    try:
+        parsed = json.loads(value or "[]")
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def parse_json_dict(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
