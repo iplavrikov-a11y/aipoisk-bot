@@ -27,7 +27,15 @@ DEFAULT_DOCUMENT_OPTIONS = {
 
 def sanitize_filename(value: str) -> str:
     value = re.sub(r"[^\wА-Яа-яЁё ._-]+", "_", str(value or ""), flags=re.UNICODE).strip(" ._")
-    return value[:160] or "upload"
+    return _truncate_utf8(value, 180, fallback="upload")
+
+
+def _truncate_utf8(value: str, max_bytes: int, *, fallback: str) -> str:
+    value = str(value or "").strip()
+    if len(value.encode("utf-8")) <= max_bytes:
+        return value or fallback
+    truncated = value.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore").rstrip(" ._-")
+    return truncated or fallback
 
 
 def extract_text(path: str | Path, options: dict | None = None, _depth: int | None = None) -> tuple[str, str]:
@@ -145,9 +153,12 @@ def _extract_pdf(path: Path) -> str:
 def _extract_doc(path: Path) -> str:
     antiword = shutil.which("antiword")
     if antiword:
-        result = subprocess.run([antiword, str(path)], check=False, capture_output=True, text=True, timeout=60)
-        if result.stdout.strip():
-            return result.stdout
+        try:
+            result = subprocess.run([antiword, str(path)], check=False, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
     return _extract_via_libreoffice(
         path,
         ".txt",

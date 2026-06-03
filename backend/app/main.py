@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import time
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -12,8 +13,19 @@ from sqlalchemy.orm import Session
 from .ai import call_llm
 from .config import config
 from .db import db_session, init_db
-from .jobs import cleanup_expired_jobs, create_job, enqueue_job, package_job_outputs, recover_interrupted_jobs
-from .models import Client, Job, JobFile, SupplierResult
+from .jobs import (
+    MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_PROCUREMENT_REPORT,
+    MODE_SUPPLIER_SEARCH,
+    VALID_JOB_MODES,
+    cleanup_expired_jobs,
+    create_job,
+    enqueue_job,
+    package_job_outputs,
+    recover_interrupted_jobs,
+)
+from .models import Client, Job, JobFile, JobSource, SupplierResult
+from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_or_create_settings, seed_owner_client
 from .schemas import AiTestRequest, ClientCreate, ClientPatch, LoginRequest, ManualJobCreate, SettingsPatch
 from .security import (
@@ -26,7 +38,6 @@ from .security import (
 )
 
 app = FastAPI(title="AI Poisk Bot", version="0.1.0")
-VALID_JOB_MODES = {"supplier_search", "procurement_report"}
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 app.add_middleware(
     CORSMiddleware,
@@ -117,6 +128,18 @@ def dashboard(db: Session = Depends(db_session)) -> dict:
     }
 
 
+@app.get("/api/ops/supplier-quality", dependencies=[Depends(require_admin)])
+def supplier_quality_ops(db: Session = Depends(db_session)) -> dict:
+    jobs = (
+        db.query(Job)
+        .filter(Job.mode == "supplier_search")
+        .order_by(Job.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return build_supplier_quality_snapshot(jobs)
+
+
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
 def get_settings_api(db: Session = Depends(db_session)) -> dict:
     return get_or_create_settings(db).to_dict(include_secrets=False)
@@ -204,6 +227,14 @@ def download_job(job_id: str, db: Session = Depends(db_session)):
     return FileResponse(output, filename=output.name)
 
 
+@app.get("/api/jobs/{job_id}/evidence", dependencies=[Depends(require_admin)])
+def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return read_job_evidence_payload(job)
+
+
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
 def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
@@ -218,6 +249,132 @@ def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     return {"success": True, "job": job_to_dict(job)}
 
 
+def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
+    evidence_path = str(getattr(job, "evidence_path", "") or "")
+    if not evidence_path:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    root = (storage_root or config.storage_path).resolve()
+    path = Path(evidence_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Evidence not found") from exc
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Evidence is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Evidence JSON root must be an object")
+    return payload
+
+
+def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | None = None) -> dict:
+    status_counts: dict[str, int] = {}
+    provider_status_counts: dict[str, dict[str, int]] = {}
+    total_verified = 0
+    supplier_jobs = 0
+    underfilled = 0
+    ai_required_failures = 0
+    durations: list[float] = []
+    recent_failures: list[dict] = []
+
+    for job in jobs:
+        if str(getattr(job, "mode", "") or "") not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+            continue
+        supplier_jobs += 1
+        status = str(getattr(job, "status", "") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        verified = int(getattr(job, "verified_count", 0) or 0)
+        target = int(getattr(job, "target_suppliers", 0) or 0)
+        total_verified += verified
+        if status in {"completed", "partial", "needs_review"} and target and verified < target:
+            underfilled += 1
+        created_at = getattr(job, "created_at", None)
+        completed_at = getattr(job, "completed_at", None)
+        if created_at and completed_at:
+            durations.append(max(0.0, (completed_at - created_at).total_seconds()))
+        evidence = _safe_read_job_evidence(job, storage_root=storage_root)
+        if evidence.get("ai_required") and status == "failed":
+            ai_required_failures += 1
+        search_reports = evidence.get("search", {}).get("reports", [])
+        if isinstance(search_reports, list):
+            for report in search_reports:
+                if not isinstance(report, dict):
+                    continue
+                provider = str(report.get("provider") or "unknown")
+                provider_status = str(report.get("status") or "unknown")
+                provider_status_counts.setdefault(provider, {})
+                provider_status_counts[provider][provider_status] = provider_status_counts[provider].get(provider_status, 0) + 1
+        if status == "failed" and len(recent_failures) < 10:
+            recent_failures.append(
+                {
+                    "id": str(getattr(job, "id", "") or ""),
+                    "title": str(getattr(job, "title", "") or ""),
+                    "error": str(getattr(job, "error", "") or "")[:500],
+                    "ai_required": bool(evidence.get("ai_required")),
+                    "stage": str(evidence.get("stage") or ""),
+                    "created_at": created_at.isoformat() if created_at else None,
+                }
+            )
+
+    return {
+        "window_size": supplier_jobs,
+        "status_counts": dict(sorted(status_counts.items())),
+        "average_verified_count": round(total_verified / supplier_jobs, 2) if supplier_jobs else 0,
+        "average_duration_seconds": round(sum(durations) / len(durations), 2) if durations else 0,
+        "underfilled_terminal_jobs": underfilled,
+        "ai_required_failures": ai_required_failures,
+        "provider_status_counts": {
+            provider: dict(sorted(counts.items()))
+            for provider, counts in sorted(provider_status_counts.items())
+        },
+        "recent_failures": recent_failures,
+        "alerts": build_supplier_quality_alerts(
+            supplier_jobs=supplier_jobs,
+            status_counts=status_counts,
+            provider_status_counts=provider_status_counts,
+            ai_required_failures=ai_required_failures,
+            underfilled_terminal_jobs=underfilled,
+            average_duration_seconds=round(sum(durations) / len(durations), 2) if durations else 0,
+        ),
+    }
+
+
+def build_supplier_quality_alerts(
+    *,
+    supplier_jobs: int,
+    status_counts: dict[str, int],
+    provider_status_counts: dict[str, dict[str, int]],
+    ai_required_failures: int,
+    underfilled_terminal_jobs: int,
+    average_duration_seconds: float,
+) -> list[dict]:
+    alerts: list[dict] = []
+    failed = status_counts.get("failed", 0)
+    if supplier_jobs and failed / supplier_jobs >= 0.2:
+        alerts.append({"severity": "critical", "code": "supplier_failure_rate", "message": f"Supplier failure rate is {failed}/{supplier_jobs}."})
+    if ai_required_failures:
+        alerts.append({"severity": "critical", "code": "ai_required_failures", "message": f"AI-required supplier failures: {ai_required_failures}."})
+    if underfilled_terminal_jobs:
+        alerts.append({"severity": "warning", "code": "underfilled_reports", "message": f"Underfilled terminal supplier reports: {underfilled_terminal_jobs}."})
+    if average_duration_seconds >= 1800:
+        alerts.append({"severity": "warning", "code": "slow_supplier_jobs", "message": f"Average supplier job duration is {average_duration_seconds}s."})
+    for provider, counts in sorted(provider_status_counts.items()):
+        total = sum(counts.values())
+        if total and counts.get("ok", 0) == 0:
+            alerts.append({"severity": "warning", "code": "search_provider_no_ok", "message": f"{provider} has no ok searches in the current window."})
+    return alerts
+
+
+def _safe_read_job_evidence(job: Job, *, storage_root: Path | None = None) -> dict:
+    try:
+        return read_job_evidence_payload(job, storage_root=storage_root)
+    except HTTPException:
+        return {}
+
+
 @app.post("/api/jobs/manual", dependencies=[Depends(require_admin)])
 def create_manual_job(data: ManualJobCreate, db: Session = Depends(db_session)) -> dict:
     if data.mode not in VALID_JOB_MODES:
@@ -230,12 +387,19 @@ async def upload_job(
     telegram_id: str,
     mode: str = "supplier_search",
     files: list[UploadFile] = File(default=[]),
+    source_urls: str = Form(default=""),
     db: Session = Depends(db_session),
 ) -> dict:
     if mode not in VALID_JOB_MODES:
         raise HTTPException(status_code=400, detail="Unknown job mode")
-    if not files:
-        raise HTTPException(status_code=400, detail="Upload at least one document")
+    sources = source_payloads_from_text(source_urls)
+    if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+        raise HTTPException(
+            status_code=400,
+            detail="Supplier search requires a technical assignment file; procurement links are accepted for documentation analysis.",
+        )
+    if not files and not sources:
+        raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement source URL")
     client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -251,7 +415,23 @@ async def upload_job(
         if len(content) > settings.max_upload_mb * 1024 * 1024:
             raise HTTPException(status_code=413, detail=f"{file.filename} is too large")
         payload.append((file.filename or "upload", content))
-    title = Path(files[0].filename).stem if files else "manual job"
+    if mode == MODE_SUPPLIER_SEARCH and len(payload) > 1:
+        jobs = []
+        for filename, content in payload:
+            job = create_job(
+                db,
+                client_id=client.id,
+                mode=mode,
+                title=Path(filename).stem,
+                target_suppliers=settings.default_supplier_target,
+                files=[(filename, content)],
+                sources=[],
+            )
+            enqueue_job(job.id)
+            jobs.append(job_to_dict(job))
+        return {"batch": True, "count": len(jobs), "jobs": jobs}
+
+    title = Path(files[0].filename).stem if files else source_label(sources[0]["value"])
     job = create_job(
         db,
         client_id=client.id,
@@ -259,6 +439,7 @@ async def upload_job(
         title=title,
         target_suppliers=settings.default_supplier_target,
         files=payload,
+        sources=sources,
     )
     enqueue_job(job.id)
     return job_to_dict(job)
@@ -319,6 +500,7 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
     }
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
+        data["sources"] = [source_to_dict(item) for item in job.sources]
         data["suppliers"] = [supplier_to_dict(item) for item in job.suppliers]
     return data
 
@@ -330,6 +512,18 @@ def file_to_dict(file: JobFile) -> dict:
         "parse_status": file.parse_status,
         "extracted_chars": file.extracted_chars,
         "error": file.error,
+    }
+
+
+def source_to_dict(source: JobSource) -> dict:
+    return {
+        "id": source.id,
+        "kind": source.kind,
+        "label": source.label,
+        "value": source.value,
+        "parse_status": source.parse_status,
+        "extracted_chars": source.extracted_chars,
+        "error": source.error,
     }
 
 
@@ -349,4 +543,15 @@ def supplier_to_dict(item: SupplierResult) -> dict:
         "match_level": getattr(item, "match_level", ""),
         "source": getattr(item, "source", ""),
         "search_query": getattr(item, "search_query", ""),
+        "quality_score": getattr(item, "quality_score", 0),
+        "quality_tier": getattr(item, "quality_tier", ""),
+        "procurement_item_id": getattr(item, "procurement_item_id", ""),
+        "procurement_item": getattr(item, "procurement_item", ""),
+        "ai_confidence": getattr(item, "ai_confidence", 0),
+        "site_type": getattr(item, "site_type", ""),
+        "product_fit": getattr(item, "product_fit", ""),
+        "evidence_snippet": getattr(item, "evidence_snippet", ""),
+        "contact_evidence_snippet": getattr(item, "contact_evidence_snippet", ""),
+        "ai_rank_confidence": getattr(item, "ai_rank_confidence", 0),
+        "ai_rank_reason": getattr(item, "ai_rank_reason", ""),
     }

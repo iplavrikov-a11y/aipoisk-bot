@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 from .config import config
 from .models import Client, Job, SystemSettings, now_utc
 
+MODE_SUPPLIER_SEARCH = "supplier_search"
+MODE_PROCUREMENT_REPORT = "procurement_report"
+MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
+
 
 def get_or_create_settings(db: Session) -> SystemSettings:
     settings = db.get(SystemSettings, 1)
@@ -105,11 +109,16 @@ def client_access_error(
     access_until = parse_access_until(client.access_until)
     if access_until and access_until < now_utc():
         return "Срок доступа истёк. Свяжитесь с администратором."
-    if mode == "procurement_report" and not client.allowed_procurement_report:
-        return "Функция Word-отчёта пока не включена для вашего доступа."
-    if mode == "supplier_search" and not client.allowed_supplier_search:
+    if mode == MODE_PROCUREMENT_REPORT and not client.allowed_procurement_report:
+        return "Функция анализа документации пока не включена для вашего доступа."
+    if mode == MODE_SUPPLIER_SEARCH and not client.allowed_supplier_search:
         return "Функция поиска поставщиков не включена для вашего доступа."
-    if mode not in {"supplier_search", "procurement_report"}:
+    if mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        if not client.allowed_procurement_report:
+            return "Функция анализа документации пока не включена для вашего доступа."
+        if not client.allowed_supplier_search:
+            return "Функция поиска поставщиков не включена для вашего доступа."
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         return "Неизвестный режим обработки."
 
     job_count, file_count = current_month_usage(db, client)

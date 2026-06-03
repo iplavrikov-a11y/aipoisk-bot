@@ -1,59 +1,441 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import FSInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import FSInputFile, KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from .config import config
 from .db import SessionLocal, init_db
 from .document_parser import sanitize_filename
-from .jobs import cleanup_expired_jobs, create_job, package_job_outputs, process_job
+from .jobs import (
+    MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_PROCUREMENT_REPORT,
+    MODE_SUPPLIER_SEARCH,
+    TERMINAL_JOB_STATUSES,
+    cleanup_expired_jobs,
+    create_job,
+    package_job_output_files,
+)
 from .models import Client, Job
+from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_or_create_settings, seed_owner_client
 
 router = Router()
 PENDING_MODES: dict[int, str] = {}
-BUTTON_SUPPLIERS = "🔎 Поиск поставщиков"
-BUTTON_REPORT = "📄 Word-отчёт"
+SCENARIO_SUPPLIERS_SINGLE = "suppliers_single"
+SCENARIO_SUPPLIERS_MULTI = "suppliers_multi"
+SCENARIO_REPORT = "report"
+SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
+BUTTON_SUPPLIERS_SINGLE = "🔎 Поставщики по одному ТЗ"
+BUTTON_SUPPLIERS_MULTI = "🗂 Поставщики по нескольким ТЗ"
+BUTTON_REPORT = "📄 Анализ документации"
+BUTTON_ANALYSIS_AND_SUPPLIERS = "📄🔎 Анализ + поставщики"
 BUTTON_STATUS = "📊 Последние задачи"
 BUTTON_ACCESS = "🔐 Мой доступ"
 BUTTON_HELP = "❓ Помощь"
 BUTTON_ID = "🆔 Мой Telegram ID"
+BUTTON_RUN_BATCH = "▶️ Запустить обработку"
+BUTTON_CANCEL_BATCH = "✖️ Очистить документы"
+
+
+@dataclass
+class PendingBatch:
+    telegram_id: str
+    mode: str
+    files: list[tuple[str, bytes]]
+    sources: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class JobProgressSnapshot:
+    id: str
+    mode: str
+    status: str
+    progress: int
+    message: str
+    error: str
+    created_at: datetime | None
+
+
+PENDING_UPLOADS: dict[int, PendingBatch] = {}
+CHAT_UPLOAD_LOCKS: dict[int, asyncio.Lock] = {}
+BATCH_RUNNING_CHATS: set[int] = set()
+
+
+def _pending_input_count(pending: PendingBatch) -> int:
+    return len(pending.files) + len(pending.sources)
+
+
+def _scenario_accepts_source_links(scenario: str) -> bool:
+    return scenario in {SCENARIO_REPORT, SCENARIO_ANALYSIS_AND_SUPPLIERS}
+
+
+def _source_link_rejection_text() -> str:
+    return (
+        "Для поиска поставщиков нужен файл ТЗ или описание объекта закупки.\n\n"
+        "Ссылку на закупку можно добавить в режимах «Анализ документации» "
+        "и «Анализ + поставщики»."
+    )
+
+
+def _source_payloads_for_scenario(scenario: str, text: str) -> list[dict]:
+    if not _scenario_accepts_source_links(scenario):
+        return []
+    return source_payloads_from_text(text)
+
+
+def _add_pending_sources(pending: PendingBatch, sources: list[dict]) -> int:
+    existing = {str(item.get("value") or "") for item in pending.sources}
+    added = 0
+    for source in sources:
+        if source["value"] not in existing:
+            pending.sources.append(source)
+            existing.add(source["value"])
+            added += 1
+    return added
+
+
+def _supplier_multi_job_specs(pending: PendingBatch) -> list[tuple[str, list[tuple[str, bytes]]]]:
+    if pending.mode != MODE_SUPPLIER_SEARCH:
+        return []
+    return [
+        (Path(filename).stem[:120], [(filename, content)])
+        for filename, content in pending.files
+    ]
+
+
+def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
+    lock = CHAT_UPLOAD_LOCKS.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        CHAT_UPLOAD_LOCKS[chat_id] = lock
+    return lock
+
+
+def _supplier_multi_intro_text() -> str:
+    return (
+        "Массовый поиск поставщиков по нескольким ТЗ.\n\n"
+        "Каждый файл считается отдельным ТЗ. По каждому ТЗ я запущу отдельный поиск "
+        "и пришлю отдельный Excel-файл с поставщиками.\n\n"
+        "1. Отправьте все файлы ТЗ.\n"
+        "2. Дождитесь сообщений «ТЗ добавлено».\n"
+        "3. Нажмите «Запустить обработку»."
+    )
+
+
+def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
+    if pending.mode == MODE_SUPPLIER_SEARCH:
+        return (
+            f"ТЗ добавлено: {len(pending.files)}/{max_files}.\n"
+            "Можно отправить ещё ТЗ или нажать «Запустить обработку».\n"
+            "После запуска по каждому ТЗ будет отдельный Excel-файл."
+        )
+    source_text = f"\nСсылок добавлено: {added_sources}. Всего ссылок: {len(pending.sources)}." if added_sources else ""
+    return f"Документ добавлен: {len(pending.files)}/{max_files}.{source_text}\nРежим: {_mode_label(pending.mode)}."
+
+
+def _batch_running_text() -> str:
+    return (
+        "Обработка уже запущена.\n"
+        "Кнопки добавления документов временно скрыты. Я буду обновлять статус и пришлю файлы по мере готовности."
+    )
+
+
+async def _download_document_content(message: Message, bot: Bot) -> tuple[str, bytes]:
+    document = message.document
+    filename = sanitize_filename(document.file_name or "document")
+    temp_dir = config.storage_path / "telegram" / str(message.chat.id)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / filename
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            file = await bot.get_file(document.file_id, request_timeout=60)
+            await bot.download_file(file.file_path, destination=temp_path, timeout=120)
+            return filename, temp_path.read_bytes()
+        except (TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+    raise RuntimeError(f"Не удалось загрузить файл из Telegram: {filename}") from last_error
 
 
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_SUPPLIERS), KeyboardButton(text=BUTTON_REPORT)],
+            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE), KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
+            [KeyboardButton(text=BUTTON_REPORT), KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
             [KeyboardButton(text=BUTTON_STATUS), KeyboardButton(text=BUTTON_ACCESS)],
             [KeyboardButton(text=BUTTON_HELP), KeyboardButton(text=BUTTON_ID)],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Выберите действие или отправьте файл",
+        input_field_placeholder="Выберите действие",
+    )
+
+
+def batch_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BUTTON_RUN_BATCH), KeyboardButton(text=BUTTON_CANCEL_BATCH)],
+            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE), KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
+            [KeyboardButton(text=BUTTON_REPORT), KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
+            [KeyboardButton(text=BUTTON_STATUS), KeyboardButton(text=BUTTON_ACCESS)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Добавьте материалы или запустите обработку",
     )
 
 
 def _mode_label(mode: str) -> str:
-    return "Word-отчёт" if mode == "procurement_report" else "поиск поставщиков"
+    if mode == MODE_PROCUREMENT_REPORT:
+        return "анализ документации"
+    if mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        return "анализ и поиск поставщиков"
+    return "поиск поставщиков"
 
 
-def _mode_for_message(message: Message) -> str:
+def _job_mode_for_scenario(scenario: str) -> str:
+    if scenario == SCENARIO_REPORT:
+        return MODE_PROCUREMENT_REPORT
+    if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
+        return MODE_ANALYSIS_AND_SUPPLIERS
+    return MODE_SUPPLIER_SEARCH
+
+
+def _status_label(status: str) -> str:
+    labels = {
+        "pending": "в очереди",
+        "running": "в работе",
+        "completed": "готово",
+        "partial": "частично готово",
+        "needs_review": "нужна проверка",
+        "failed": "ошибка",
+    }
+    return labels.get(status, status)
+
+
+def _progress_bar(progress: int) -> str:
+    safe_progress = max(0, min(100, int(progress or 0)))
+    filled = safe_progress // 10
+    return "🟩" * filled + "⬜" * (10 - filled)
+
+
+def _progress_heading(snapshot: JobProgressSnapshot) -> str:
+    if snapshot.status == "failed":
+        return "⚠️ Не удалось подготовить файл"
+    if snapshot.status == "partial":
+        return "✅ Готово частично"
+    if snapshot.status in {"completed", "needs_review"}:
+        return "✅ Файл готов"
+    if snapshot.mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        return "📄🔎 Готовлю анализ и поставщиков"
+    if snapshot.mode == MODE_PROCUREMENT_REPORT:
+        return "📄 Анализирую документацию"
+    return "🔎 Ищу поставщиков"
+
+
+def _friendly_stage_text(message: str) -> str:
+    raw = str(message or "").strip()
+    lowered = raw.lower()
+    if not raw:
+        return "ожидаю обновления"
+    if "задача создана" in lowered or "взята в обработку" in lowered:
+        return "готовлю документы к обработке"
+    if "читаю документы" in lowered or "извлекаю" in lowered or "текст тз" in lowered:
+        return "читаю ТЗ"
+    if "анализирую тз" in lowered or "закупаемые позиции" in lowered:
+        return "разбираю, что нужно найти"
+    if "поисковые запросы" in lowered:
+        return "подбираю варианты поиска"
+    if "ищу сайты" in lowered:
+        return "ищу сайты компаний"
+    if "отбираю" in lowered or "ранжирует" in lowered:
+        return "отбираю подходящие компании"
+    if "проверяю сайты" in lowered or "проверено сайтов" in lowered:
+        return "проверяю сайты и контакты"
+    if "готовлю результат" in lowered or "сохраняю" in lowered or "формирую xlsx" in lowered:
+        return "собираю файл с поставщиками"
+    if "анализ документации" in lowered or "формирую отчёт" in lowered or "формирую отчет" in lowered:
+        return "готовлю анализ документации"
+    if "готово" in lowered:
+        return "готовлю файл к отправке"
+    if "ошибка" in lowered:
+        return "поиск остановлен"
+    return raw
+
+
+def _friendly_error_text(error: str) -> str:
+    lowered = str(error or "").lower()
+    if "supplier query generation" in lowered:
+        return "не удалось подготовить поисковые запросы для поставщиков"
+    if "procurement profile" in lowered:
+        return "не удалось надёжно разобрать предмет закупки в ТЗ"
+    if "candidate reranking" in lowered or "reranker" in lowered:
+        return "не удалось надёжно отобрать подходящие сайты поставщиков"
+    if "ai provider" in lowered or "timeout" in lowered or "timed out" in lowered:
+        return "временно недоступен сервис анализа"
+    if "текст документов" in lowered or "documents" in lowered:
+        return "не удалось прочитать текст документа"
+    return "возникла техническая ошибка при обработке"
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours} ч {minutes} мин"
+    if minutes:
+        return f"{minutes} мин {remaining_seconds} сек"
+    return f"{remaining_seconds} сек"
+
+
+def _job_elapsed_seconds(snapshot: JobProgressSnapshot, *, now: datetime | None = None) -> float:
+    if not snapshot.created_at:
+        return 0.0
+    current = now or datetime.now(timezone.utc)
+    created_at = snapshot.created_at
+    if created_at.tzinfo is None and current.tzinfo is not None:
+        created_at = created_at.replace(tzinfo=current.tzinfo)
+    return max(0.0, (current - created_at).total_seconds())
+
+
+def _job_eta_text(snapshot: JobProgressSnapshot, *, now: datetime | None = None) -> str:
+    if snapshot.status in TERMINAL_JOB_STATUSES:
+        return "завершено"
+    progress = max(0, min(99, int(snapshot.progress or 0)))
+    if progress < 10:
+        return "появится после первых этапов"
+    elapsed = _job_elapsed_seconds(snapshot, now=now)
+    remaining = elapsed * (100 - progress) / max(1, progress)
+    return f"около {_format_duration(remaining)}"
+
+
+def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None = None) -> str:
+    elapsed = _format_duration(_job_elapsed_seconds(snapshot, now=now))
+    if snapshot.status == "failed":
+        return "\n".join(
+            [
+                _progress_heading(snapshot),
+                "",
+                "Я остановил поиск, чтобы не отправлять непроверенный список поставщиков.",
+                f"Причина: {_friendly_error_text(snapshot.error)}.",
+                f"Прошло: {elapsed}",
+                "",
+                "Можно запустить поиск повторно позже или передать ТЗ владельцу сервиса для проверки.",
+            ]
+        )
+    if snapshot.status in {"completed", "partial", "needs_review"}:
+        return "\n".join(
+            [
+                _progress_heading(snapshot),
+                "",
+                _friendly_stage_text(snapshot.message),
+                f"Прошло: {elapsed}",
+            ]
+        )
+    lines = [
+        _progress_heading(snapshot),
+        "",
+        f"{_progress_bar(snapshot.progress)} {snapshot.progress}%",
+        f"Сейчас: {_friendly_stage_text(snapshot.message)}",
+        f"Прошло: {elapsed}",
+        f"Ориентир: {_job_eta_text(snapshot, now=now)}",
+    ]
+    return "\n".join(lines)
+
+
+def _job_snapshot(job: Job) -> JobProgressSnapshot:
+    return JobProgressSnapshot(
+        id=job.id,
+        mode=job.mode,
+        status=job.status,
+        progress=job.progress,
+        message=job.message,
+        error=job.error,
+        created_at=job.created_at,
+    )
+
+
+def _load_job_snapshot(job_id: str) -> JobProgressSnapshot | None:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        return _job_snapshot(job) if job else None
+    finally:
+        db.close()
+
+
+async def _edit_or_send_status(status_message: Message, text: str) -> Message:
+    try:
+        await status_message.edit_text(text)
+        return status_message
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return status_message
+        return await status_message.answer(text)
+
+
+async def watch_job_progress(message: Message, job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 5.0) -> JobProgressSnapshot | None:
+    started = asyncio.get_running_loop().time()
+    snapshot = _load_job_snapshot(job_id)
+    if snapshot is None:
+        await message.answer("Задача не найдена. Сообщите владельцу сервиса.", reply_markup=main_menu())
+        return None
+    status_message = await message.answer(_format_job_progress(snapshot))
+    last_key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
+    last_heartbeat = started
+
+    while snapshot.status not in TERMINAL_JOB_STATUSES:
+        if asyncio.get_running_loop().time() - started >= timeout_seconds:
+            await _edit_or_send_status(
+                status_message,
+                _format_job_progress(snapshot)
+                + "\n\nЗадача всё ещё выполняется. Я продолжу обработку на сервере, статус можно проверить кнопкой «Последние задачи».",
+            )
+            return snapshot
+        await asyncio.sleep(poll_interval)
+        current = _load_job_snapshot(job_id)
+        if current is None:
+            await _edit_or_send_status(status_message, "Задача не найдена. Сообщите владельцу сервиса.")
+            return None
+        snapshot = current
+        key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
+        now = asyncio.get_running_loop().time()
+        if key != last_key or now - last_heartbeat >= 60:
+            status_message = await _edit_or_send_status(status_message, _format_job_progress(snapshot))
+            last_key = key
+            last_heartbeat = now
+
+    await _edit_or_send_status(status_message, _format_job_progress(snapshot))
+    return snapshot
+
+
+def _scenario_for_message(message: Message) -> str:
     caption = str(message.caption or "").lower()
-    if any(marker in caption for marker in ("word", "docx", "отчёт", "отчет", "анализ")):
-        return "procurement_report"
-    if any(marker in caption for marker in ("поставщик", "supplier", "xlsx")):
-        return "supplier_search"
-    return PENDING_MODES.get(message.chat.id, "supplier_search")
+    wants_analysis = any(marker in caption for marker in ("word", "docx", "отчёт", "отчет", "анализ"))
+    wants_suppliers = any(marker in caption for marker in ("поставщик", "supplier", "xlsx"))
+    if wants_analysis and wants_suppliers:
+        return SCENARIO_ANALYSIS_AND_SUPPLIERS
+    if wants_analysis:
+        return SCENARIO_REPORT
+    if wants_suppliers:
+        return SCENARIO_SUPPLIERS_SINGLE
+    return PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
 
 
 @router.message(Command("start"))
 async def start(message: Message) -> None:
     await message.answer(
         "AI Poisk готов к работе.\n\n"
-        "Выберите действие кнопкой ниже, затем отправьте файл закупки или ТЗ. "
+        "Выберите действие кнопкой ниже, затем отправьте ТЗ, комплект документации "
+        "или ссылку для анализа документации. "
         "Команды знать не нужно.",
         reply_markup=main_menu(),
     )
@@ -90,11 +472,15 @@ async def show_status(message: Message) -> None:
             .all()
         )
         if not jobs:
-            await message.answer("Задач пока нет. Выберите режим и отправьте файл закупки.", reply_markup=main_menu())
+            await message.answer("Задач пока нет. Выберите режим и отправьте материалы закупки.", reply_markup=main_menu())
             return
-        lines = ["Последние задачи:"]
-        for job in jobs:
-            lines.append(f"{job.id[:8]} — {_mode_label(job.mode)} — {job.status}, {job.progress}% — {job.message}")
+        lines = ["Последние обращения:"]
+        for index, job in enumerate(jobs, start=1):
+            snapshot = _job_snapshot(job)
+            lines.append(
+                f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
+                f"   {_friendly_stage_text(snapshot.message)}"
+            )
         await message.answer("\n".join(lines), reply_markup=main_menu())
     finally:
         db.close()
@@ -102,32 +488,51 @@ async def show_status(message: Message) -> None:
 
 @router.message(Command("suppliers"))
 async def supplier_mode(message: Message) -> None:
-    PENDING_MODES[message.chat.id] = "supplier_search"
+    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_SINGLE
     await message.answer(
-        "Режим: поиск поставщиков.\n\n"
-        "Теперь отправьте файл закупки или ТЗ. Я подготовлю XLSX/отчёт по поставщикам.",
+        "Поиск поставщиков по одному ТЗ.\n\n"
+        "Отправьте один файл ТЗ или описание объекта закупки. Я сразу запущу поиск и подготовлю Excel-файл с поставщиками.",
         reply_markup=main_menu(),
     )
 
 
 @router.message(Command("report"))
 async def report_mode(message: Message) -> None:
-    PENDING_MODES[message.chat.id] = "procurement_report"
+    PENDING_MODES[message.chat.id] = SCENARIO_REPORT
     await message.answer(
-        "Режим: Word-отчёт.\n\n"
-        "Теперь отправьте файл закупки. Я подготовлю стандартный Word-отчёт.",
-        reply_markup=main_menu(),
+        "Анализ документации.\n\n"
+        "Отправьте комплект закупочной документации отдельными файлами или одним архивом. "
+        "Можно также добавить ссылку на страницу закупки: ЕИС, ЭТП или сайт заказчика. "
+        "Когда все документы будут добавлены, нажмите «Запустить обработку».",
+        reply_markup=batch_menu(),
     )
 
 
-@router.message(F.text == BUTTON_SUPPLIERS)
-async def supplier_button(message: Message) -> None:
+@router.message(F.text == BUTTON_SUPPLIERS_SINGLE)
+async def supplier_single_button(message: Message) -> None:
     await supplier_mode(message)
+
+
+@router.message(F.text == BUTTON_SUPPLIERS_MULTI)
+async def supplier_multi_button(message: Message) -> None:
+    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_MULTI
+    await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
 
 
 @router.message(F.text == BUTTON_REPORT)
 async def report_button(message: Message) -> None:
     await report_mode(message)
+
+
+@router.message(F.text == BUTTON_ANALYSIS_AND_SUPPLIERS)
+async def analysis_and_suppliers_button(message: Message) -> None:
+    PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
+    await message.answer(
+        "Анализ документации + поиск поставщиков.\n\n"
+        "Отправьте комплект документации отдельными файлами, одним архивом или добавьте ссылку на закупку. "
+        "Я подготовлю анализ и отдельно Excel-файл с поставщиками по найденному ТЗ.",
+        reply_markup=batch_menu(),
+    )
 
 
 @router.message(F.text == BUTTON_STATUS)
@@ -138,6 +543,134 @@ async def status_button(message: Message) -> None:
 @router.message(F.text == BUTTON_ID)
 async def id_button(message: Message) -> None:
     await show_id(message)
+
+
+@router.message(F.text == BUTTON_CANCEL_BATCH)
+async def cancel_batch_button(message: Message) -> None:
+    PENDING_UPLOADS.pop(message.chat.id, None)
+    await message.answer("Документы очищены.", reply_markup=main_menu())
+
+
+@router.message(F.text == BUTTON_RUN_BATCH)
+async def run_batch_button(message: Message) -> None:
+    if message.chat.id in BATCH_RUNNING_CHATS:
+        await message.answer(_batch_running_text(), reply_markup=ReplyKeyboardRemove())
+        return
+    pending = PENDING_UPLOADS.get(message.chat.id)
+    if not pending or _pending_input_count(pending) == 0:
+        scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+        if _scenario_accepts_source_links(scenario):
+            text = "Документы или ссылка пока не добавлены. Отправьте файлы закупки, архив или ссылку на закупку."
+        else:
+            text = "ТЗ пока не добавлены. Отправьте файлы ТЗ или описание объекта закупки."
+        await message.answer(text, reply_markup=main_menu())
+        return
+    BATCH_RUNNING_CHATS.add(message.chat.id)
+    job: Job | None = None
+    batch_jobs: list[tuple[str, str]] = []
+    launch_started = False
+    db = SessionLocal()
+    try:
+        client = db.query(Client).filter(Client.telegram_id == pending.telegram_id).first()
+        error = client_access_error(db, client, pending.mode, incoming_file_count=len(pending.files))
+        if error:
+            BATCH_RUNNING_CHATS.discard(message.chat.id)
+            await message.answer(error, reply_markup=batch_menu())
+            return
+        assert client is not None
+        settings = get_or_create_settings(db)
+        supplier_job_specs = _supplier_multi_job_specs(pending)
+        if supplier_job_specs:
+            for title, files in supplier_job_specs:
+                created = create_job(
+                    db,
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    title=title,
+                    target_suppliers=settings.default_supplier_target,
+                    files=files,
+                    sources=[],
+                )
+                batch_jobs.append((created.id, files[0][0]))
+        else:
+            title = Path(pending.files[0][0]).stem[:120] if pending.files else source_label(pending.sources[0]["value"])[:120]
+            job = create_job(
+                db,
+                client_id=client.id,
+                mode=pending.mode,
+                title=title,
+                target_suppliers=settings.default_supplier_target,
+                files=pending.files,
+                sources=pending.sources,
+            )
+        PENDING_UPLOADS.pop(message.chat.id, None)
+        PENDING_MODES.pop(message.chat.id, None)
+        launch_started = True
+        if batch_jobs:
+            await message.answer(
+                f"Обработка запущена: ТЗ {len(batch_jobs)}.\n"
+                "Кнопки добавления документов скрыты, чтобы случайно не запустить обработку повторно.\n"
+                "По каждому ТЗ пришлю отдельный Excel-файл.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+        else:
+            await message.answer(
+                f"Принял: файлов {len(pending.files)}, ссылок {len(pending.sources)}.\nСейчас начну обработку и буду обновлять статус здесь.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+    finally:
+        db.close()
+        if not launch_started:
+            BATCH_RUNNING_CHATS.discard(message.chat.id)
+
+    try:
+        if batch_jobs:
+            await _watch_supplier_multi_outputs(message, batch_jobs)
+            return
+        if job is not None:
+            snapshot = await watch_job_progress(message, job.id)
+            await _send_job_outputs(message, job.id, snapshot)
+            await message.answer("Обработка завершена. Можно выбрать следующее действие.", reply_markup=main_menu())
+    finally:
+        BATCH_RUNNING_CHATS.discard(message.chat.id)
+
+
+async def _watch_supplier_multi_outputs(message: Message, jobs: list[tuple[str, str]]) -> None:
+    total = len(jobs)
+    for index, (job_id, filename) in enumerate(jobs, start=1):
+        title = Path(filename).stem[:80]
+        await message.answer(f"Обрабатываю ТЗ {index}/{total}: {title}")
+        snapshot = await watch_job_progress(message, job_id)
+        await _send_job_outputs(message, job_id, snapshot)
+    await message.answer("Массовая обработка ТЗ завершена.", reply_markup=main_menu())
+
+
+async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgressSnapshot | None = None) -> None:
+    db = SessionLocal()
+    try:
+        done_job = db.get(Job, job_id)
+        if not done_job:
+            await message.answer("Задача потеряна. Сообщите владельцу сервиса.", reply_markup=main_menu())
+            return
+        outputs = package_job_output_files(done_job)
+        if outputs:
+            for output in outputs:
+                await message.answer_document(FSInputFile(output), caption=_output_caption(done_job.mode, output))
+        elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
+            await message.answer("Обработка продолжается. Статус можно проверить кнопкой «Последние задачи».", reply_markup=main_menu())
+    finally:
+        db.close()
+
+
+def _output_caption(mode: str, output: Path) -> str:
+    suffix = output.suffix.lower()
+    if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".docx":
+        return "Анализ документации во вложении."
+    if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".xlsx":
+        return "Поставщики по ТЗ во вложении."
+    if mode == MODE_PROCUREMENT_REPORT:
+        return "Анализ документации во вложении."
+    return "Поставщики по ТЗ во вложении."
 
 
 @router.message(F.text == BUTTON_ACCESS)
@@ -158,7 +691,7 @@ async def access_button(message: Message) -> None:
         if client.allowed_supplier_search:
             features.append("поиск поставщиков")
         if client.allowed_procurement_report:
-            features.append("Word-отчёт")
+            features.append("анализ документации")
         await message.answer(
             "Ваш доступ:\n"
             f"Статус: {'включён' if client.is_active else 'выключен'}\n"
@@ -176,9 +709,10 @@ async def access_button(message: Message) -> None:
 async def help_button(message: Message) -> None:
     await message.answer(
         "Как пользоваться:\n\n"
-        "1. Нажмите «Поиск поставщиков» или «Word-отчёт».\n"
-        "2. Отправьте файл закупки, ТЗ или документацию.\n"
-        "3. Дождитесь результата, бот пришлёт готовый файл отчёта.\n\n"
+        "• «Поставщики по одному ТЗ» — отправьте один файл ТЗ или описание объекта закупки, поиск начнётся сразу.\n"
+        "• «Поставщики по нескольким ТЗ» — добавьте несколько файлов ТЗ/ООЗ и нажмите «Запустить обработку».\n"
+        "• «Анализ документации» — отправьте комплект документации файлами, архивом или добавьте ссылку на закупку.\n"
+        "• «Анализ + поставщики» — отправьте документацию и при необходимости ссылку на закупку; бот подготовит анализ и Excel-файл с поставщиками по найденному ТЗ.\n\n"
         "Если доступа нет, нажмите «Мой Telegram ID» и отправьте ID владельцу сервиса.",
         reply_markup=main_menu(),
     )
@@ -186,7 +720,13 @@ async def help_button(message: Message) -> None:
 
 @router.message(F.document)
 async def handle_document(message: Message, bot: Bot) -> None:
-    mode = _mode_for_message(message)
+    async with _chat_upload_lock(message.chat.id):
+        await _handle_document_locked(message, bot)
+
+
+async def _handle_document_locked(message: Message, bot: Bot) -> None:
+    scenario = _scenario_for_message(message)
+    mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
     try:
         telegram_id = str(message.from_user.id if message.from_user else "")
@@ -202,49 +742,104 @@ async def handle_document(message: Message, bot: Bot) -> None:
         if document.file_size and document.file_size > max_mb * 1024 * 1024:
             await message.answer(f"Файл слишком большой. Лимит: {max_mb} МБ.", reply_markup=main_menu())
             return
-        file = await bot.get_file(document.file_id)
-        temp_dir = config.storage_path / "telegram" / str(message.chat.id)
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        filename = sanitize_filename(document.file_name or "document")
-        temp_path = temp_dir / filename
-        await bot.download_file(file.file_path, destination=temp_path)
-        content = temp_path.read_bytes()
-        title = Path(filename).stem[:120]
-        job = create_job(
-            db,
-            client_id=client.id,
-            mode=mode,
-            title=title,
-            target_suppliers=settings.default_supplier_target,
-            files=[(filename, content)],
-        )
-        PENDING_MODES.pop(message.chat.id, None)
+        try:
+            filename, content = await _download_document_content(message, bot)
+        except RuntimeError:
+            await message.answer(
+                "Не удалось загрузить файл из Telegram.\n"
+                "Отправьте этот файл ещё раз отдельно или загрузите документы одним архивом.",
+                reply_markup=batch_menu() if scenario != SCENARIO_SUPPLIERS_SINGLE else main_menu(),
+            )
+            return
+        caption_sources = _source_payloads_for_scenario(scenario, str(message.caption or ""))
+        if scenario == SCENARIO_SUPPLIERS_SINGLE:
+            title = Path(filename).stem[:120]
+            job = create_job(
+                db,
+                client_id=client.id,
+                mode=mode,
+                title=title,
+                target_suppliers=settings.default_supplier_target,
+                files=[(filename, content)],
+                sources=[],
+            )
+            PENDING_UPLOADS.pop(message.chat.id, None)
+            PENDING_MODES.pop(message.chat.id, None)
+            await message.answer(
+                "Принял ТЗ. Запускаю поиск поставщиков и буду обновлять статус здесь.",
+                reply_markup=main_menu(),
+            )
+        else:
+            job = None
+        pending = PENDING_UPLOADS.get(message.chat.id)
+        if job is None and pending and pending.mode != mode:
+            PENDING_UPLOADS.pop(message.chat.id, None)
+            pending = None
+        if job is None and not pending:
+            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            PENDING_UPLOADS[message.chat.id] = pending
+        if job is None:
+            if len(pending.files) >= settings.max_files_per_batch:
+                await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
+                return
+            pending.files.append((filename, content))
+            added_sources = _add_pending_sources(pending, caption_sources)
+            await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_menu())
+    finally:
+        db.close()
+    if job is not None:
+        snapshot = await watch_job_progress(message, job.id)
+        await _send_job_outputs(message, job.id, snapshot)
+
+
+async def _handle_source_text(message: Message) -> bool:
+    sources = source_payloads_from_text(str(message.text or ""))
+    if not sources:
+        return False
+
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+    if not _scenario_accepts_source_links(scenario):
+        await message.answer(_source_link_rejection_text(), reply_markup=main_menu())
+        return True
+    mode = _job_mode_for_scenario(scenario)
+    db = SessionLocal()
+    job_id: str | None = None
+    try:
+        telegram_id = str(message.from_user.id if message.from_user else "")
+        client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
+        error = client_access_error(db, client, mode, incoming_file_count=0)
+        if error:
+            await message.answer(error, reply_markup=main_menu())
+            return True
+        assert client is not None
+        settings = get_or_create_settings(db)
+        pending = PENDING_UPLOADS.get(message.chat.id)
+        if pending and pending.mode != mode:
+            PENDING_UPLOADS.pop(message.chat.id, None)
+            pending = None
+        if not pending:
+            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            PENDING_UPLOADS[message.chat.id] = pending
+        _add_pending_sources(pending, sources)
         await message.answer(
-            f"Задача создана: {job.id[:8]} ({_mode_label(mode)}). Начинаю обработку.",
-            reply_markup=main_menu(),
+            f"Ссылка добавлена: {len(pending.sources)}. Можно добавить документы или нажать «Запустить обработку».",
+            reply_markup=batch_menu(),
         )
     finally:
         db.close()
 
-    await process_job(job.id)
-    db = SessionLocal()
-    try:
-        done_job = db.get(Job, job.id)
-        if not done_job:
-            await message.answer("Задача потеряна. Сообщите владельцу сервиса.", reply_markup=main_menu())
-            return
-        output = package_job_outputs(done_job)
-        await message.answer(done_job.message, reply_markup=main_menu())
-        if output and output.exists():
-            await message.answer_document(FSInputFile(output))
-    finally:
-        db.close()
+    if job_id:
+        snapshot = await watch_job_progress(message, job_id)
+        await _send_job_outputs(message, job_id, snapshot)
+    return True
 
 
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
+    if await _handle_source_text(message):
+        return
     await message.answer(
-        "Выберите действие кнопкой ниже или отправьте файл закупки.",
+        "Выберите действие кнопкой ниже. Для поставщиков отправьте ТЗ/ООЗ, для анализа документации можно добавить файлы или ссылку на закупку.",
         reply_markup=main_menu(),
     )
 

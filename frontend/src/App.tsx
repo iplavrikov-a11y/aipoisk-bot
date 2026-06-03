@@ -19,7 +19,7 @@ import {
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'clients' | 'jobs' | 'settings' | 'ai'
+type View = 'dashboard' | 'clients' | 'jobs' | 'quality' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -88,6 +88,25 @@ type SettingsPayload = {
   bot_messages_json: string
 }
 
+type SupplierQualitySnapshot = {
+  window_size: number
+  status_counts: Record<string, number>
+  average_verified_count: number
+  average_duration_seconds: number
+  underfilled_terminal_jobs: number
+  ai_required_failures: number
+  provider_status_counts: Record<string, Record<string, number>>
+  alerts: Array<{ severity: string; code: string; message: string }>
+  recent_failures: Array<{
+    id: string
+    title: string
+    error: string
+    ai_required: boolean
+    stage: string
+    created_at: string | null
+  }>
+}
+
 type CustomProvider = {
   id: string
   name: string
@@ -141,6 +160,13 @@ function formatError(err: unknown) {
   return message || 'Ошибка загрузки'
 }
 
+function supplierCountLabel(job: Job) {
+  if (job.verified_count >= job.target_suppliers) {
+    return `${job.verified_count}`
+  }
+  return `${job.verified_count}/${job.target_suppliers}`
+}
+
 function parseJson<T>(value: string, fallback: T): T {
   try {
     return JSON.parse(value || '') as T
@@ -161,6 +187,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
+  const [quality, setQuality] = useState<SupplierQualitySnapshot | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -173,15 +200,17 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, settingsData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, qualityData, settingsData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs'),
+        api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<SettingsPayload>('/api/settings'),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
       setJobs(jobsData)
+      setQuality(qualityData)
       setSettings(settingsData)
     } catch (err) {
       setError(formatError(err))
@@ -216,6 +245,7 @@ export function App() {
     setDashboard(null)
     setClients([])
     setJobs([])
+    setQuality(null)
     setSettings(null)
     setUsername('')
     setPassword('')
@@ -235,6 +265,7 @@ export function App() {
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
+    { id: 'quality' as const, label: 'Качество', icon: CheckCircle2 },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'AI', icon: BrainCircuit },
   ]
@@ -297,6 +328,7 @@ export function App() {
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
+        {isReady && view === 'quality' && <QualityView quality={quality} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
       </main>
@@ -395,7 +427,7 @@ function DashboardView({ dashboard, settings }: { dashboard: Dashboard | null; s
         <h2>Текущая конфигурация</h2>
         <div className="settings-summary">
           <span>Домен: {settings?.public_base_url || 'не задан'}</span>
-          <span>Цель поставщиков: {settings?.default_supplier_target || 15}</span>
+          <span>Минимум поставщиков: {settings?.default_supplier_target || 15}</span>
           <span>Логистика: {settings?.logistics_enabled ? 'включена' : 'отключена'}</span>
           <span>Partial XLSX: {settings?.allow_partial_supplier_reports ? 'разрешён' : 'запрещён'}</span>
         </div>
@@ -447,7 +479,7 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
                 </td>
                 <td>
                   <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> поставщики</label>
-                  <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Word</label>
+                  <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> анализ</label>
                 </td>
                 <td>
                   <input
@@ -492,9 +524,15 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
 }
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
+  const [evidence, setEvidence] = useState<{ job: Job; payload: unknown } | null>(null)
+
   async function retry(job: Job) {
     await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
     await onChange()
+  }
+  async function showEvidence(job: Job) {
+    const payload = await api<unknown>(`/api/jobs/${job.id}/evidence`)
+    setEvidence({ job, payload })
   }
   async function download(job: Job) {
     const response = await fetch(`/api/jobs/${job.id}/download`, { credentials: 'same-origin' })
@@ -505,7 +543,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     const disposition = response.headers.get('content-disposition') || ''
     const encodedName = disposition.match(/filename\*=utf-8''([^;]+)/i)?.[1]
     const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
-    const fallbackExt = job.mode === 'procurement_report' ? 'docx' : 'xlsx'
+    const fallbackExt = job.mode === 'analysis_and_suppliers' ? 'zip' : job.mode === 'procurement_report' ? 'docx' : 'xlsx'
     link.href = url
     link.download = encodedName ? decodeURIComponent(encodedName) : plainName || `aipoisk-${job.id.slice(0, 8)}.${fallbackExt}`
     document.body.appendChild(link)
@@ -514,28 +552,118 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     URL.revokeObjectURL(url)
   }
   return (
-    <section className="table-panel">
-      <table>
-        <thead>
-          <tr><th>Задача</th><th>Клиент</th><th>Режим</th><th>Статус</th><th>Прогресс</th><th>Результат</th><th></th></tr>
-        </thead>
-        <tbody>
-          {jobs.map(job => (
-            <tr key={job.id}>
-              <td><strong>{job.title || job.id.slice(0, 8)}</strong><small>{job.id}</small></td>
-              <td>{job.client_name || job.telegram_id}</td>
-              <td>{job.mode === 'procurement_report' ? 'Word-отчёт' : 'Поставщики'}</td>
-              <td><StatusBadge status={job.status} /></td>
-              <td><Progress value={job.progress} note={job.message} /></td>
-              <td>{job.verified_count}/{job.target_suppliers}</td>
-              <td className="row-actions">
-                {job.has_result && <button className="icon-button small" onClick={() => void download(job)} title="Скачать"><Download size={15} /></button>}
-                <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <section className="stack">
+      <div className="table-panel">
+        <table>
+          <thead>
+            <tr><th>Задача</th><th>Клиент</th><th>Режим</th><th>Статус</th><th>Прогресс</th><th>Результат</th><th></th></tr>
+          </thead>
+          <tbody>
+            {jobs.map(job => (
+              <tr key={job.id}>
+                <td><strong>{job.title || job.id.slice(0, 8)}</strong><small>{job.id}</small></td>
+                <td>{job.client_name || job.telegram_id}</td>
+                <td>{job.mode === 'analysis_and_suppliers' ? 'Анализ + поставщики' : job.mode === 'procurement_report' ? 'Анализ' : 'Поставщики'}</td>
+                <td><StatusBadge status={job.status} /></td>
+                <td><Progress value={job.progress} note={job.message} /></td>
+                <td>{supplierCountLabel(job)}</td>
+                <td className="row-actions">
+                  {job.has_result && <button className="icon-button small" onClick={() => void download(job)} title="Скачать"><Download size={15} /></button>}
+                  <button className="icon-button small" onClick={() => void showEvidence(job)} title="Evidence"><FileText size={15} /></button>
+                  <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {evidence && (
+        <div className="wide-panel full-width-panel">
+          <div className="panel-heading">
+            <h2>Evidence: {evidence.job.title || evidence.job.id.slice(0, 8)}</h2>
+            <button className="ghost small-text" onClick={() => setEvidence(null)}>Закрыть</button>
+          </div>
+          <pre className="json-view">{stringify(evidence.payload)}</pre>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
+  if (!quality) return <div className="empty">Нет данных качества.</div>
+  const statusEntries = Object.entries(quality.status_counts)
+  const providerEntries = Object.entries(quality.provider_status_counts)
+  return (
+    <section className="stack">
+      <div className="content-grid">
+        <div className="metric">
+          <Search size={20} />
+          <div><span>Supplier jobs</span><strong>{quality.window_size}</strong><small>окно мониторинга</small></div>
+        </div>
+        <div className="metric">
+          <CheckCircle2 size={20} />
+          <div><span>Средний verified</span><strong>{quality.average_verified_count}</strong><small>на задачу</small></div>
+        </div>
+        <div className="metric">
+          <RefreshCw size={20} />
+          <div><span>Средняя длительность</span><strong>{Math.round(quality.average_duration_seconds)}с</strong><small>completed_at - created_at</small></div>
+        </div>
+        <div className="metric">
+          <XCircle size={20} />
+          <div><span>AI failures</span><strong>{quality.ai_required_failures}</strong><small>{quality.underfilled_terminal_jobs} недоборов</small></div>
+        </div>
+      </div>
+      <div className="ops-grid">
+        <div className="form-panel full-width-panel">
+          <h2>Alerts</h2>
+          {quality.alerts.length ? (
+            <div className="alert-list">
+              {quality.alerts.map(alert => (
+                <div className={`alert-row ${alert.severity}`} key={alert.code}>
+                  <strong>{alert.code}</strong>
+                  <span>{alert.message}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty inline-empty">Активных alert-сигналов нет.</div>
+          )}
+        </div>
+        <div className="form-panel">
+          <h2>Статусы задач</h2>
+          <div className="kv-list">
+            {statusEntries.map(([status, count]) => <div key={status}><StatusBadge status={status} /><strong>{count}</strong></div>)}
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Провайдеры поиска</h2>
+          <div className="kv-list">
+            {providerEntries.map(([provider, counts]) => (
+              <div key={provider}>
+                <span>{provider}</span>
+                <strong>{Object.entries(counts).map(([status, count]) => `${status}: ${count}`).join(', ')}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="table-panel">
+        <table>
+          <thead><tr><th>Failure</th><th>Stage</th><th>AI</th><th>Error</th><th>Created</th></tr></thead>
+          <tbody>
+            {quality.recent_failures.map(item => (
+              <tr key={item.id}>
+                <td><strong>{item.title || item.id.slice(0, 8)}</strong><small>{item.id}</small></td>
+                <td>{item.stage || '-'}</td>
+                <td>{item.ai_required ? 'required' : '-'}</td>
+                <td><small>{item.error}</small></td>
+                <td>{item.created_at || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   )
 }
@@ -567,11 +695,11 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
         <NumberField label="Хранить файлы, дней" value={draft.storage_retention_days} onChange={value => setDraft({ ...draft, storage_retention_days: value })} />
         <NumberField label="Хранить готовые задачи, дней" value={draft.completed_job_retention_days} onChange={value => setDraft({ ...draft, completed_job_retention_days: value })} />
         <NumberField label="Макс. размер файла, МБ" value={draft.max_upload_mb} onChange={value => setDraft({ ...draft, max_upload_mb: value })} />
-        <NumberField label="Макс. файлов в пачке" value={draft.max_files_per_batch} onChange={value => setDraft({ ...draft, max_files_per_batch: value })} />
+        <NumberField label="Макс. файлов в комплекте" value={draft.max_files_per_batch} onChange={value => setDraft({ ...draft, max_files_per_batch: value })} />
       </div>
       <div className="form-panel">
         <h2>Отчёты</h2>
-        <NumberField label="Цель поставщиков по ТЗ" value={draft.default_supplier_target} onChange={value => setDraft({ ...draft, default_supplier_target: value })} />
+        <NumberField label="Мин. поставщиков по ТЗ" value={draft.default_supplier_target} onChange={value => setDraft({ ...draft, default_supplier_target: value })} />
         <label className="switch-row"><input type="checkbox" checked={draft.allow_partial_supplier_reports} onChange={e => setDraft({ ...draft, allow_partial_supplier_reports: e.target.checked })} />Разрешить частичные отчёты</label>
         <label className="switch-row"><input type="checkbox" checked={false} disabled onChange={() => undefined} />Логистика/ATI отключена</label>
         <TextArea label="Настройки отчётов JSON" value={draft.report_settings_json} onChange={value => setDraft({ ...draft, report_settings_json: value })} />

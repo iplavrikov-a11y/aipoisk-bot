@@ -11,21 +11,13 @@ from openpyxl.utils import get_column_letter
 
 
 SUPPLIER_HEADERS = [
-    "Наименование компании",
-    "Регион",
-    "Статус",
-    "Уровень совпадения",
-    "Продукция",
-    "Контактное лицо",
-    "Телефон",
-    "Email",
+    "Компания",
     "Сайт",
-    "Источник поиска",
-    "Search Query",
-    "Комментарии",
-    "Contact URL",
-    "Evidence URL",
+    "Телефоны",
+    "Email",
+    "Комментарий",
 ]
+COMMENT_LIMIT = 260
 
 
 MATCH_LEVEL_LABELS = {
@@ -36,17 +28,17 @@ MATCH_LEVEL_LABELS = {
 }
 
 
-def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int) -> Path:
+def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "") -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
-    ws.title = "поиск поставщиков"
-    ws.append([f"Отчёт по ТЗ: {title or 'без названия'}"])
+    ws.title = "Поставщики"
+    ws.append([_supplier_report_heading(title, subject)])
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(SUPPLIER_HEADERS))
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(wrap_text=True)
-    ws.append([f"Найдено и проверено: {len(rows)}/{target}. В XLSX включены сайты с открытой страницей-доказательством и контактами."])
+    ws.append([_supplier_count_summary(len(rows), target)])
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(SUPPLIER_HEADERS))
     ws.append(SUPPLIER_HEADERS)
     header_fill = PatternFill("solid", fgColor="E5E7EB")
@@ -58,28 +50,22 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         ws.append(
             [
                 row.get("company_name", ""),
-                row.get("region", ""),
-                row.get("status", ""),
-                _match_level_label(row.get("match_level", "")),
-                row.get("product", ""),
-                row.get("contact_person", ""),
+                row.get("site", ""),
                 row.get("phone", ""),
                 row.get("email", ""),
-                row.get("site", ""),
-                row.get("source", ""),
-                row.get("search_query", ""),
-                row.get("comments", ""),
-                row.get("contact_url", ""),
-                row.get("evidence_url", ""),
+                _client_supplier_comment(row),
             ]
         )
-    for column in range(1, len(SUPPLIER_HEADERS) + 1):
-        width = 18
-        if column in {1, 5, 11, 12, 13, 14}:
-            width = 34
-        if column in {7, 8, 9, 10}:
-            width = 24
+    for row_index in range(4, ws.max_row + 1):
+        site_cell = ws.cell(row=row_index, column=2)
+        if site_cell.value:
+            site_cell.hyperlink = str(site_cell.value)
+            site_cell.style = "Hyperlink"
+    widths = [30, 42, 24, 30, 70]
+    for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
+    ws.freeze_panes = "A4"
+    ws.auto_filter.ref = f"A3:{get_column_letter(len(SUPPLIER_HEADERS))}{max(3, ws.max_row)}"
     for row in ws.iter_rows():
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -90,6 +76,99 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
 def _match_level_label(value: object) -> str:
     raw = str(value or "").strip()
     return MATCH_LEVEL_LABELS.get(raw, raw)
+
+
+def _supplier_count_summary(count: int, target: int) -> str:
+    return (
+        f"Найдено и проверено: {count}. "
+        "В отчёте оставлены только контакты и краткие комментарии для работы с поставщиками."
+    )
+
+
+def _client_supplier_comment(row: dict) -> str:
+    product_fit = str(row.get("product_fit") or "").strip().lower()
+    product = _clean_comment_text(row.get("product") or row.get("procurement_item") or "")
+    raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
+    detail = _short_product_or_comment(product, raw_comment)
+    if product_fit == "exact":
+        if detail:
+            return _truncate_comment(f"Точный товар: {detail}. Контакты найдены на сайте.", COMMENT_LIMIT)
+        return "Точный товар. Контакты найдены на сайте."
+    if product_fit == "analog":
+        if detail:
+            return _truncate_comment(f"Возможный аналог: {detail}. Уточните характеристики по ТЗ.", COMMENT_LIMIT)
+        return "Возможный аналог. Уточните характеристики по ТЗ."
+    if product_fit == "category":
+        if detail:
+            return _truncate_comment(f"Профильная категория: {detail}. Уточните конкретный товар по ТЗ.", COMMENT_LIMIT)
+        return "Профильная категория. Уточните конкретный товар по ТЗ."
+    if product_fit == "profile":
+        return "Профильный поставщик. Уточните наличие конкретного товара по ТЗ."
+    if detail:
+        return _truncate_comment(f"Поставщик релевантен: {detail}.", COMMENT_LIMIT)
+    return "Поставщик релевантен предмету закупки. Контакты найдены на сайте."
+
+
+def _supplier_report_heading(title: str, subject: str = "") -> str:
+    source = _clean_comment_text(title)
+    item = _clean_comment_text(subject)
+    if source and item:
+        return f"Отчёт по ТЗ: {source} - {item}"
+    if source:
+        return f"Отчёт по ТЗ: {source}"
+    if item:
+        return f"Отчёт по ТЗ: {item}"
+    return "Отчёт по ТЗ"
+
+
+def _clean_comment_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip(" .,:;")
+
+
+def _short_product_or_comment(product: str, comment: str) -> str:
+    if product:
+        return _truncate_comment(product, 130).rstrip(".")
+    if not comment:
+        return ""
+    softened = _soften_supplier_claims(comment)
+    first_sentence = re.split(r"(?<=[.!?])\s+", softened, maxsplit=1)[0]
+    return _truncate_comment(first_sentence, 130).rstrip(".")
+
+
+def _soften_supplier_claims(comment: str) -> str:
+    value = str(comment or "")
+    value = re.sub(r"что\s+полностью\s+соответствует", "что релевантно", value, flags=re.I)
+    value = re.sub(r"профиль\s+полностью\s+соответствует", "профиль релевантен", value, flags=re.I)
+    value = re.sub(r"полностью\s+соответствует\s+ТЗ", "может быть релевантно ТЗ", value, flags=re.I)
+    value = re.sub(r"полностью\s+соответствует", "релевантно", value, flags=re.I)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _truncate_comment(comment: str, limit: int = 500) -> str:
+    value = str(comment or "").strip()
+    if len(value) <= limit:
+        return value
+    value = value[:limit].rsplit(" ", 1)[0].rstrip(" .,:;")
+    return f"{value}."
+
+
+def _compact_comment_detail(comment: str, limit: int = 260) -> str:
+    value = re.sub(r"\s+", " ", str(comment or "")).strip()
+    if len(value) <= limit:
+        return value
+    selected = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", value):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        candidate = f"{selected} {sentence}".strip()
+        if len(candidate) > limit:
+            break
+        selected = candidate
+        if len(selected) >= 160:
+            break
+    return selected or _truncate_comment(value, limit=limit)
 
 
 def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Path:

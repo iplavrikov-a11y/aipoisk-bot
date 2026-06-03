@@ -145,6 +145,7 @@ class Job(Base):
 
     client: Mapped[Client | None] = relationship(back_populates="jobs")
     files: Mapped[list["JobFile"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    sources: Mapped[list["JobSource"]] = relationship(back_populates="job", cascade="all, delete-orphan")
     suppliers: Mapped[list["SupplierResult"]] = relationship(back_populates="job", cascade="all, delete-orphan")
 
 
@@ -161,6 +162,23 @@ class JobFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     job: Mapped[Job] = relationship(back_populates="files")
+
+
+class JobSource(Base):
+    __tablename__ = "job_sources"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), default="procurement_url")
+    label: Mapped[str] = mapped_column(Text, default="")
+    value: Mapped[str] = mapped_column(Text, default="")
+    parse_status: Mapped[str] = mapped_column(String(40), default="pending")
+    context_path: Mapped[str] = mapped_column(Text, default="")
+    extracted_chars: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    job: Mapped[Job] = relationship(back_populates="sources")
 
 
 class SupplierResult(Base):
@@ -183,6 +201,17 @@ class SupplierResult(Base):
     match_level: Mapped[str] = mapped_column(String(40), default="")
     source: Mapped[str] = mapped_column(String(40), default="")
     search_query: Mapped[str] = mapped_column(Text, default="")
+    quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    quality_tier: Mapped[str] = mapped_column(String(40), default="")
+    procurement_item_id: Mapped[str] = mapped_column(String(80), default="")
+    procurement_item: Mapped[str] = mapped_column(Text, default="")
+    ai_confidence: Mapped[int] = mapped_column(Integer, default=0)
+    site_type: Mapped[str] = mapped_column(String(80), default="")
+    product_fit: Mapped[str] = mapped_column(String(80), default="")
+    evidence_snippet: Mapped[str] = mapped_column(Text, default="")
+    contact_evidence_snippet: Mapped[str] = mapped_column(Text, default="")
+    ai_rank_confidence: Mapped[int] = mapped_column(Integer, default=0)
+    ai_rank_reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     job: Mapped[Job] = relationship(back_populates="suppliers")

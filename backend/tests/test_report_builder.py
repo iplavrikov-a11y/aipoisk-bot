@@ -10,7 +10,7 @@ from app.report_builder import write_supplier_xlsx
 
 
 class ReportBuilderTests(unittest.TestCase):
-    def test_supplier_xlsx_includes_quality_source_and_contact_url(self) -> None:
+    def test_supplier_xlsx_is_client_facing_without_technical_search_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"
             write_supplier_xlsx(
@@ -19,27 +19,174 @@ class ReportBuilderTests(unittest.TestCase):
                     {
                         "company_name": "Поставщик",
                         "match_level": "exact",
+                        "quality_score": 91,
+                        "quality_tier": "high",
+                        "procurement_item": "Сварочный полуавтомат",
+                        "ai_confidence": 92,
+                        "site_type": "manufacturer",
+                        "product_fit": "exact",
+                        "product": "Сварочный полуавтомат MIG/MAG",
+                        "contact_person": "Отдел продаж",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "evidence_snippet": "В каталоге указан сварочный полуавтомат.",
+                        "contact_evidence_snippet": "Контакты: +7 999 111 22 33",
                         "source": "yandex",
                         "contact_url": "https://supplier.ru/contacts",
                         "evidence_url": "https://supplier.ru/catalog",
                     }
                 ],
                 title="ТЗ",
+                subject="Сварочный полуавтомат",
                 target=1,
             )
 
-            wb = load_workbook(path, read_only=True)
+            wb = load_workbook(path)
             ws = wb.active
+            sheet_title = ws.title
+            report_title = ws["A1"].value
             headers = [cell.value for cell in ws[3]]
             values = [cell.value for cell in ws[4]]
+            site_hyperlink = ws["B4"].hyperlink.target if ws["B4"].hyperlink else ""
             wb.close()
 
-        self.assertIn("Уровень совпадения", headers)
-        self.assertIn("Источник поиска", headers)
-        self.assertIn("Contact URL", headers)
-        self.assertIn("точное совпадение", values)
-        self.assertIn("yandex", values)
-        self.assertIn("https://supplier.ru/contacts", values)
+        self.assertEqual(sheet_title, "Поставщики")
+        self.assertEqual(report_title, "Отчёт по ТЗ: ТЗ - Сварочный полуавтомат")
+        self.assertEqual(
+            headers,
+            [
+                "Компания",
+                "Сайт",
+                "Телефоны",
+                "Email",
+                "Комментарий",
+            ],
+        )
+        self.assertNotIn("Search Query", headers)
+        self.assertNotIn("Evidence snippet", headers)
+        self.assertNotIn("AI уверенность", headers)
+        self.assertNotIn("Contact URL", headers)
+        self.assertIn("Поставщик", values)
+        self.assertIn("https://supplier.ru", values)
+        self.assertIn("+7 999 111 22 33", values)
+        self.assertIn("sales@supplier.ru", values)
+        self.assertEqual(site_hyperlink, "https://supplier.ru")
+
+    def test_supplier_xlsx_marks_non_exact_matches_as_confirmation_needed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Профильный поставщик",
+                        "product_fit": "profile",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "comments": "Компания полностью соответствует ТЗ по профилю закупки.",
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            comment = ws["E4"].value
+            wb.close()
+
+        self.assertIn("Профильный поставщик.", comment)
+        self.assertIn("Уточните", comment)
+        self.assertNotIn("полностью соответствует", comment.lower())
+
+    def test_supplier_xlsx_uses_short_exact_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "exact",
+                        "product": "Сварочный полуавтомат MIG/MAG 500А с блоком охлаждения и комплектом поставки",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "comments": "Очень длинное описание, которое не должно попадать в клиентский отчет целиком.",
+                    }
+                ],
+                title="ТЗ",
+                subject="Сварочный полуавтомат",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            comment = ws["E4"].value
+            wb.close()
+
+        self.assertIn("Точный товар:", comment)
+        self.assertIn("Контакты найдены на сайте", comment)
+        self.assertLessEqual(len(comment), 260)
+
+    def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": f"Поставщик {index}",
+                        "product_fit": "category",
+                        "product": "Стальные канаты",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": f"https://supplier-{index}.ru",
+                    }
+                    for index in range(4)
+                ],
+                title="ТЗ",
+                target=2,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            summary = ws["A2"].value
+            wb.close()
+
+        self.assertIn("Найдено и проверено: 4", summary)
+        self.assertNotIn("Минимум по настройкам", summary)
+        self.assertNotIn("4/2", summary)
+
+    def test_supplier_xlsx_hides_internal_target_when_underfilled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "category",
+                        "product": "Промышленное оборудование",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                    }
+                ],
+                title="ТЗ",
+                target=15,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            summary = ws["A2"].value
+            wb.close()
+
+        self.assertIn("Найдено и проверено: 1", summary)
+        self.assertNotIn("1/15", summary)
+        self.assertNotIn("миним", summary.lower())
 
 
 if __name__ == "__main__":

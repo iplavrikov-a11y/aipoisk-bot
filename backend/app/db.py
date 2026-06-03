@@ -41,7 +41,10 @@ def init_db() -> None:
 
 def _ensure_schema() -> None:
     inspector = inspect(engine)
-    system_settings_existing = {column["name"] for column in inspector.get_columns("system_settings")}
+    if "job_sources" in Base.metadata.tables:
+        Base.metadata.tables["job_sources"].create(bind=engine, checkfirst=True)
+    inspector = inspect(engine)
+    system_settings_existing = _existing_columns(inspector, "system_settings")
     system_settings_additions = {
         "document_settings_json": "TEXT DEFAULT '{}'",
         "supplier_search_provider_order": "VARCHAR(255) DEFAULT 'yandex,google,tavily,ddgs'",
@@ -50,11 +53,22 @@ def _ensure_schema() -> None:
         "google_search_api_key": "TEXT DEFAULT ''",
         "google_search_cse_id": "VARCHAR(255) DEFAULT ''",
     }
-    supplier_results_existing = {column["name"] for column in inspector.get_columns("supplier_results")}
+    supplier_results_existing = _existing_columns(inspector, "supplier_results")
     supplier_results_additions = {
         "match_level": "VARCHAR(40) DEFAULT ''",
         "source": "VARCHAR(40) DEFAULT ''",
         "search_query": "TEXT DEFAULT ''",
+        "quality_score": "INTEGER DEFAULT 0",
+        "quality_tier": "VARCHAR(40) DEFAULT ''",
+        "procurement_item_id": "VARCHAR(80) DEFAULT ''",
+        "procurement_item": "TEXT DEFAULT ''",
+        "ai_confidence": "INTEGER DEFAULT 0",
+        "site_type": "VARCHAR(80) DEFAULT ''",
+        "product_fit": "VARCHAR(80) DEFAULT ''",
+        "evidence_snippet": "TEXT DEFAULT ''",
+        "contact_evidence_snippet": "TEXT DEFAULT ''",
+        "ai_rank_confidence": "INTEGER DEFAULT 0",
+        "ai_rank_reason": "TEXT DEFAULT ''",
     }
     with engine.begin() as connection:
         for column, definition in system_settings_additions.items():
@@ -63,6 +77,12 @@ def _ensure_schema() -> None:
         for column, definition in supplier_results_additions.items():
             if column not in supplier_results_existing:
                 connection.execute(text(f"ALTER TABLE supplier_results ADD COLUMN {column} {definition}"))
+
+
+def _existing_columns(inspector, table_name: str) -> set[str]:
+    if not inspector.has_table(table_name):
+        return set()
+    return {column["name"] for column in inspector.get_columns(table_name)}
 
 
 def db_session():

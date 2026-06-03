@@ -1,43 +1,385 @@
 {
   "task_id": "aipoisk-commercial-10",
   "date": "2026-06-02",
-  "status": "passed_with_known_risks",
+  "status": "passed_systemic_ai_required_architecture_and_customer_ux_with_known_risks",
   "verified": {
     "unit_tests": {
-      "command": "cd backend && ./.venv/bin/python -m unittest discover -s tests -v",
-      "result": "13 tests OK"
+      "command": "cd backend && .venv/bin/python -m unittest discover -s tests",
+      "result": "75 tests OK"
+    },
+    "pytest_backend_suite": {
+      "command": "PYTHONPATH=backend pytest backend/tests -q",
+      "result": "95 passed, 2 warnings, 26 subtests passed"
+    },
+    "pytest_source_link_targeted_suite": {
+      "command": "PYTHONPATH=backend pytest backend/tests/test_procurement_sources.py backend/tests/test_api_guards.py backend/tests/test_bot_progress.py backend/tests/test_procurement_report.py backend/tests/test_supplier_discovery_flow.py -q",
+      "result": "44 passed, 2 warnings, 26 subtests passed"
     },
     "compile": {
-      "command": "cd backend && ./.venv/bin/python -m compileall app",
+      "command": "cd backend && .venv/bin/python -m compileall app tests",
       "result": "exit 0"
     },
-    "live_job": {
-      "job_id": "c01e10dd5ac64de4a9e1c0b827a668a8",
-      "status": "completed",
-      "verified_count": 15,
-      "target_suppliers": 15,
-      "early_stop": true,
-      "reviewed_count": 27,
-      "candidate_count": 75,
-      "stopped_after_candidates": 30
+    "frontend_build": {
+      "command": "cd frontend && npm run build",
+      "result": "exit 0"
     },
-    "supplier_audit_fields": {
-      "db_columns_present": true,
-      "stored_match_level": "exact",
-      "stored_source": "yandex",
-      "stored_search_query_non_empty": true,
-      "api_serializer_keys_present": true
+    "diff_check": {
+      "command": "git diff --check",
+      "result": "exit 0"
+    },
+    "verdict_json": {
+      "command": "python3 -m json.tool .agent/tasks/aipoisk-commercial-10/verdict.json",
+      "result": "exit 0"
+    },
+    "live_schema_migration": {
+      "job_sources_table_present": true,
+      "supplier_audit_columns_present": true,
+      "columns": [
+        "quality_score",
+        "quality_tier",
+        "procurement_item_id",
+        "procurement_item",
+        "ai_confidence",
+        "site_type",
+        "product_fit",
+        "evidence_snippet",
+        "contact_evidence_snippet",
+        "ai_rank_confidence",
+        "ai_rank_reason"
+      ]
+    },
+    "durable_worker_smoke": {
+      "job_id": "2478e367b9e34b5f9cda7e7e4ec3850f",
+      "created_via_create_job_only": true,
+      "pending_running_before_create": 0,
+      "terminal_status": "completed",
+      "verified_count": 1,
+      "target_suppliers": 1,
+      "result_exists": true,
+      "evidence_exists": true,
+      "stored_supplier_ai_audit_fields": true
+    },
+    "ai_required_evidence_contract_smoke": {
+      "job_id": "fbde159fd4be40538e8c07978221bcf9",
+      "created_via_create_job_only": true,
+      "pending_running_before_create": 0,
+      "terminal_status": "completed",
+      "verified_count": 1,
+      "target_suppliers": 1,
+      "result_exists": true,
+      "evidence_exists": true,
+      "evidence_ai_required": true,
+      "evidence_ai_used": true,
+      "evidence_required_stages": [
+        "supplier_procurement_profile",
+        "supplier_query_generation",
+        "supplier_candidate_reranker",
+        "supplier_candidate_verifier"
+      ],
+      "first_supplier": {
+        "quality_score": 100,
+        "quality_tier": "high",
+        "ai_confidence": 100,
+        "site_type": "supplier",
+        "product_fit": "exact",
+        "ai_rank_confidence": 95
+      }
+    },
+    "ai_required_contract": {
+      "supplier_search_requires_ai_provider": true,
+      "query_generation_requires_ai_provider": true,
+      "procurement_profile_requires_ai_provider": true,
+      "candidate_rerank_uses_ai": true,
+      "final_verified_rows_require_ai_acceptance": true,
+      "deterministic_logic_cannot_override_ai_rejection": true,
+      "ai_confidence_accepts_fractional_scale": true,
+      "failed_supplier_jobs_write_evidence": true,
+      "failed_supplier_jobs_do_not_generate_xlsx": true
+    },
+    "browser_extraction": {
+      "playwright_dependency_added": true,
+      "chromium_runtime_installed": true,
+      "data_url_smoke_has_email": true,
+      "data_url_smoke_has_phone": true
+    },
+    "admin_http": {
+      "supplier_quality_route": "/api/ops/supplier-quality",
+      "supplier_quality_status": 200,
+      "supplier_quality_window_size": 47,
+      "supplier_quality_status_counts": {
+        "completed": 44,
+        "failed": 2,
+        "partial": 1
+      },
+      "supplier_quality_alerts_count": 3,
+      "job_evidence_route": "/api/jobs/fbde159fd4be40538e8c07978221bcf9/evidence",
+      "job_evidence_status": 200,
+      "job_evidence_ai_required": true,
+      "job_evidence_ai_used": true,
+      "job_evidence_accepted_count": 1
+    },
+    "customer_ux_smoke": {
+      "job_id": "d345a5ca994c4c4cb3c227bbf30e2f96",
+      "created_via_create_job_only": true,
+      "pending_running_before_create": 0,
+      "terminal_status": "completed",
+      "verified_count": 1,
+      "target_suppliers": 1,
+      "progress_values": [
+        0,
+        28,
+        42,
+        50,
+        66,
+        74,
+        100
+      ],
+      "has_ai_profile_stage": true,
+      "has_query_stage": true,
+      "has_site_review_stage": true,
+      "result_exists": true,
+      "xlsx_sheet_title": "Поставщики",
+      "xlsx_headers": [
+        "Компания",
+        "Сайт",
+        "Телефоны",
+        "Email",
+        "Комментарий"
+      ],
+      "xlsx_expected_headers": true,
+      "xlsx_has_english_noise_headers": false
+    },
+    "telegram_customer_copy": {
+      "live_smoke_job_id": "c7be76833eee427abc27f8520b9b54be",
+      "live_smoke_terminal_status": "completed",
+      "live_smoke_verified_count": 1,
+      "live_smoke_progress_values": [
+        0,
+        28,
+        42,
+        50,
+        60,
+        66,
+        74,
+        100
+      ],
+      "live_smoke_has_technical_ai_stage_text": false,
+      "running_status_hides_job_id": true,
+      "running_status_hides_internal_mode": true,
+      "running_status_uses_visual_progress_blocks": true,
+      "running_status_uses_short_stage_text": true,
+      "failed_status_hides_raw_exception": true,
+      "failed_status_explains_no_unverified_report": true,
+      "duplicate_not_modified_edits_do_not_send_fallback_message": true
+    },
+    "reranker_error_diagnostics": {
+      "failed_job_id": "ef651f2bc99a4fb4b35ffd465a57c93b",
+      "failed_stage": "supplier_search",
+      "old_error": "AI candidate reranking failed:",
+      "reranker_retries_once": true,
+      "empty_low_level_error_records_exception_type": true,
+      "customer_copy_maps_technical_error_to_friendly_reason": true
+    },
+    "customer_report_naming_and_scenarios": {
+      "source_title_plus_ai_subject_in_supplier_filename": true,
+      "source_title_plus_ai_subject_in_xlsx_heading": true,
+      "short_customer_comments_by_product_fit": true,
+      "single_tz_supplier_search_starts_after_one_file": true,
+      "multi_tz_supplier_search_collects_document_set": true,
+      "documentation_analysis_button_renamed_without_word": true,
+      "combined_analysis_and_suppliers_mode_present": true,
+      "combined_mode_outputs_analysis_and_supplier_files": true,
+      "current_job_id": "d90df15a4cbd4cdcb458146470a4b700",
+      "current_job_status": "completed",
+      "current_job_verified_count": 15,
+      "current_job_result_filename": "Техническое_задание_17163454-1 - Средство для очистки поверхностей кислотный концентрат_d90df15a.xlsx"
+    },
+    "ai_query_generation_robustness": {
+      "failed_job_id": "06532a2fc4f9442cbf6085e638720693",
+      "failed_file": "Техническое_задание_17127845-1.pdf",
+      "pdf_extraction_succeeded": true,
+      "procurement_profile_extraction_succeeded": true,
+      "failed_stage": "supplier_query_generation",
+      "root_cause": "transient AI call failure or timeout with empty low-level diagnostic",
+      "query_generation_retries_once": true,
+      "query_generation_records_exception_type": true,
+      "customer_copy_maps_technical_error_to_friendly_reason": true,
+      "ai_contact_placeholders_rejected": true,
+      "extracted_contacts_replace_ai_placeholders": true,
+      "rerun_status": "partial",
+      "rerun_verified_count": 13,
+      "rerun_target_suppliers": 15,
+      "rerun_ai_required": true,
+      "rerun_ai_used": true,
+      "rerun_db_result_path_points_to_fresh_xlsx": true,
+      "rerun_candidate_rerank_status": "ok",
+      "rerun_candidate_rerank_input_count": 75,
+      "rerun_candidate_rerank_kept_count": 15,
+      "rerun_reviewed_count": 15,
+      "rerun_xlsx_headers": [
+        "Компания",
+        "Сайт",
+        "Телефоны",
+        "Email",
+        "Комментарий"
+      ],
+      "rerun_xlsx_has_invalid_contact_placeholders": false,
+      "rerun_result_filename": "Техническое_задание_17127845-1 - Панель поликарбонатная сотовая и Профиль полимерный соединительный_06532a2f.xlsx"
+    },
+    "nomenclature_breadth_supplier_search": {
+      "job_id": "4698abb96da14235b6e4b578799340b2",
+      "old_status": "partial",
+      "old_verified_count": 8,
+      "old_target_suppliers": 15,
+      "root_cause": "AI query generation and rerank over-focused on exact item specs, leaving only 9 candidates for final verification.",
+      "procurement_profile_has_category_terms": true,
+      "procurement_profile_has_exact_terms": true,
+      "query_generation_revises_overly_exact_sets_with_ai": true,
+      "ai_rerank_expands_underfilled_review_pool_with_ai": true,
+      "phone_normalization_rejects_broken_numbers": true,
+      "rerun_status": "completed",
+      "rerun_verified_count": 15,
+      "rerun_target_suppliers": 15,
+      "rerun_queries_count": 20,
+      "rerun_search_total_after_ddgs": 150,
+      "rerun_rerank_input_count": 75,
+      "rerun_rerank_initial_kept_count": 36,
+      "rerun_rerank_expanded_kept_count": 19,
+      "rerun_rerank_kept_count": 55,
+      "rerun_reviewed_count": 26,
+      "rerun_review_early_stop": true,
+      "rerun_xlsx_rows": 15,
+      "rerun_xlsx_headers": [
+        "Компания",
+        "Сайт",
+        "Телефоны",
+        "Email",
+        "Комментарий"
+      ],
+      "rerun_xlsx_bad_contacts": false,
+      "rerun_result_filename": "Описание_объекта_закупки_Поставка_каната_стального - Канат стальной_4698abb9.xlsx"
+    },
+    "supplier_target_is_minimum_not_cap": {
+      "target_is_minimum": true,
+      "no_extra_paid_batches_after_minimum": true,
+      "already_reviewed_extra_ai_verified_rows_are_included": true,
+      "job_id": "4698abb96da14235b6e4b578799340b2",
+      "rerun_status": "completed",
+      "rerun_verified_count": 19,
+      "rerun_target_suppliers": 15,
+      "rerun_job_message": "Готово: найдено и проверено 19",
+      "rerun_xlsx_summary_hides_internal_minimum": true,
+      "rerun_xlsx_rows": 19,
+      "rerun_xlsx_bad_contacts": false,
+      "rerun_queries_count": 21,
+      "rerun_rerank_input_count": 75,
+      "rerun_rerank_kept_count": 43,
+      "rerun_reviewed_count": 28,
+      "rerun_review_early_stop": true
+    },
+    "procurement_source_links_and_registry": {
+      "source_only_documentation_analysis_jobs_supported": true,
+      "eis_links_classified_as_official_source": true,
+      "generic_procurement_links_supported": true,
+      "source_context_blocks_feed_ai_report_and_supplier_analysis": true,
+      "job_sources_persist_parse_status_and_extracted_chars": true,
+      "telegram_accepts_procurement_links_for_documentation_analysis_modes": true,
+      "telegram_rejects_procurement_links_for_plain_supplier_search": true,
+      "api_upload_accepts_source_urls_without_files": true,
+      "api_upload_rejects_supplier_search_source_urls_without_tz_file": true,
+      "ai_decides_minprom_registry_requirement": true,
+      "minprom_registry_search_runs_only_when_ai_marks_requirement_required": true,
+      "supplier_ai_verifier_receives_minprom_registry_context": true
+    },
+    "documentation_analysis_eis_link_incident": {
+      "failed_job_id": "186d6788fd3244f995fbaab9061386cc",
+      "root_cause_caption_link_was_not_saved": true,
+      "old_file_count": 1,
+      "old_source_count": 0,
+      "caption_links_collected_for_documentation_analysis": true,
+      "plain_supplier_search_rejects_links_without_tz_file": true,
+      "aipoisk_proxy_url_added_from_emailagent_db_proxy": true,
+      "eis_fetch_before_proxy": "fetch_failed",
+      "eis_fetch_after_fix_ok": true,
+      "eis_context_chars": 37280,
+      "eis_context_contains_customer": true,
+      "eis_context_contains_inn": "5504002648",
+      "eis_context_contains_kpp": "222543001",
+      "eis_context_contains_application_deadline": "08.06.2026",
+      "eis_context_contains_initial_price": "448 960,00 ₽",
+      "rerun_job_id": "4102f6bc5d1045f2a302737ceb238538",
+      "rerun_status": "completed",
+      "rerun_source_status": "ok",
+      "rerun_source_extracted_chars": 37280,
+      "rerun_docx_contains_customer": true,
+      "rerun_docx_contains_inn_kpp": true,
+      "rerun_docx_contains_application_deadline": true,
+      "rerun_docx_contains_results_date": true,
+      "rerun_docx_contains_platform": true,
+      "rerun_docx_has_old_customer_insufficient": false,
+      "rerun_docx_has_old_inn_insufficient": false,
+      "rerun_docx_has_old_deadline_insufficient": false
+    },
+    "mass_supplier_batch_recovery_20260603": {
+      "root_cause_long_cyrillic_result_filename": true,
+      "root_cause_broken_antiword_without_libreoffice_fallback": true,
+      "filename_truncation_is_utf8_byte_safe": true,
+      "doc_parser_falls_back_after_antiword_oserror": true,
+      "targeted_regressions": "2 passed",
+      "backend_suite": "110 passed, 35 subtests passed, 2 warnings",
+      "compileall_exit": 0,
+      "diff_check_exit": 0,
+      "db_backup": "data/aipoisk.db.backup-before-report-recovery-20260603T061856Z",
+      "recovered_jobs_without_research": 8,
+      "doc_job_rerun_status": "completed",
+      "doc_job_verified_count": 20,
+      "partial_job_rerun_status": "completed",
+      "partial_job_verified_count": 16,
+      "latest_split_batch_completed": "19/19",
+      "latest_split_batch_total_suppliers": 399,
+      "latest_split_batch_min_suppliers": 16,
+      "latest_split_batch_max_filename_bytes": 230,
+      "xlsx_headers_customer_facing": [
+        "Компания",
+        "Сайт",
+        "Телефоны",
+        "Email",
+        "Комментарий"
+      ],
+      "failed_jobs_with_supplier_rows": 0
+    },
+    "ai_supplier_search_architecture_20260603": {
+      "customer_supplier_counts_hide_internal_target_even_when_underfilled": true,
+      "analysis_and_suppliers_uses_ai_supplier_context_extraction": true,
+      "supplier_context_extraction_is_ai_required": true,
+      "underfilled_first_round_triggers_ai_recovery_queries": true,
+      "recovery_queries_use_profile_rejected_candidates_and_accepted_suppliers": true,
+      "deterministic_recovery_fallback_used": false,
+      "red_phase_regressions": "3 failed before implementation",
+      "green_phase_regressions": "3 passed after implementation",
+      "combined_mode_context_regression": "1 passed after implementation",
+      "expanded_targeted_suite": "110 passed, 35 subtests passed, 2 warnings",
+      "backend_suite": "113 passed, 35 subtests passed, 2 warnings",
+      "compileall_exit": 0,
+      "frontend_build_exit": 0,
+      "json_checks_exit": 0,
+      "diff_check_exit": 0
     },
     "services": {
       "aipoisk-api.service": "active",
       "aipoisk-bot.service": "active",
-      "nginx": "active",
-      "public_health": "HTTP 200"
+      "aipoisk-worker.service": "active",
+      "local_health": "HTTP 200",
+      "health_payload_ok": true,
+      "logistics_enabled": false,
+      "restart_timestamp_utc": "2026-06-03T14:53:07Z",
+      "post_restart_logs_have_tracebacks": false
     }
   },
   "known_risks": [
-    "In-process queue remains less robust than Redis/RQ/ARQ/Celery under high concurrent load.",
-    "JS-heavy supplier websites can still require browser-based contact extraction.",
-    "Only one real procurement job was used for live validation; broader domain evals are still needed."
+    "DB-backed worker queue is durable for the current single-worker deployment, but Redis/Postgres row locking would be stronger for multiple concurrent workers.",
+    "Browser rendering improves contact extraction, but anti-bot sites and unusual SPA flows can still require specialized handling.",
+    "The multi-domain eval suite is generic and should be expanded with more real procurement categories as new customer documents appear.",
+    "Monitoring is available in API/UI, but external alert delivery is not wired."
   ]
 }

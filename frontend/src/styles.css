@@ -86,10 +86,42 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .metric strong { display: block; font-size: 30px; margin: 3px 0; }
 .metric small { color: #64748b; }
 .wide-panel { grid-column: span 2; padding: 20px; }
+.full-width-panel { grid-column: 1 / -1; }
 .wide-panel h2, .form-panel h2 { margin: 0 0 14px; font-size: 18px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.panel-heading h2 { margin: 0; }
 .rule-list, .settings-summary { display: grid; gap: 10px; color: #334155; }
 .rule-list div { display: flex; align-items: center; gap: 9px; }
 .rule-list svg { color: #0f766e; }
+.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.kv-list { display: grid; gap: 9px; }
+.kv-list div { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #334155; }
+.alert-list { display: grid; gap: 8px; }
+.alert-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.alert-row.critical { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+.alert-row.warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.inline-empty { margin: 0; }
+.json-view {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
 
 .stack { display: grid; gap: 14px; }
 .toolbar-panel { padding: 14px; display: grid; grid-template-columns: 170px 1fr 1fr auto; gap: 10px; align-items: center; }
@@ -158,7 +190,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .main { padding: 18px; }
   .topbar { flex-direction: column; }
   .top-actions { width: 100%; flex-wrap: wrap; }
-  .content-grid, .settings-grid { grid-template-columns: 1fr; }
+  .content-grid, .settings-grid, .ops-grid { grid-template-columns: 1fr; }
   .wide-panel, .form-panel.full { grid-column: auto; }
   .toolbar-panel, .provider-row, .model-row { grid-template-columns: 1fr; }
 }
