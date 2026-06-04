@@ -57,6 +57,10 @@ def _ensure_schema() -> None:
         "trial_supplier_search_limit": "INTEGER DEFAULT 0",
         "trial_procurement_report_limit": "INTEGER DEFAULT 0",
         "trial_file_limit": "INTEGER DEFAULT 10",
+        "contact_email": "VARCHAR(255) DEFAULT ''",
+        "contact_telegram": "VARCHAR(255) DEFAULT ''",
+        "contact_website": "VARCHAR(255) DEFAULT ''",
+        "payment_instructions": "TEXT DEFAULT ''",
     }
     clients_existing = _existing_columns(inspector, "clients")
     client_additions = {

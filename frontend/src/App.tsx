@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Cpu,
+  CreditCard,
   Database,
   Download,
   FileText,
@@ -17,16 +18,18 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Save,
   Search,
   Server,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
   Users,
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'clients' | 'jobs' | 'quality' | 'settings' | 'ai'
+type View = 'dashboard' | 'clients' | 'jobs' | 'quality' | 'billing' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -41,6 +44,7 @@ type Dashboard = {
 type Client = {
   id: string
   telegram_id: string
+  is_pending: boolean
   name: string
   username: string
   is_active: boolean
@@ -56,6 +60,7 @@ type Client = {
   telegram_accounts: TelegramAccount[]
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
+  recent_billing: BillingTransaction[]
 }
 
 type ClientUsage = {
@@ -70,6 +75,12 @@ type UsageCounter = {
   remaining: number | null
   unlimited: boolean
   percent: number
+  available: number | null
+  reserved: number
+  spent: number
+  granted: number
+  source: string
+  low: boolean
 }
 
 type UsageEntry = {
@@ -91,7 +102,21 @@ type TelegramAccount = {
   username: string
   name: string
   is_active: boolean
+  is_pending: boolean
   notes: string
+}
+
+type AccountDraft = {
+  telegram_id: string
+  username: string
+  name: string
+}
+
+type GrantDraft = {
+  package_id: string
+  kind: string
+  units: string
+  note: string
 }
 
 type Job = {
@@ -150,7 +175,40 @@ type SettingsPayload = {
   report_settings_json: string
   document_settings_json: string
   bot_messages_json: string
+  contact_email: string
+  contact_telegram: string
+  contact_website: string
+  payment_instructions: string
   supplier_search_ui: SupplierSearchUi
+}
+
+type TariffPackage = {
+  id: string
+  kind: string
+  name: string
+  units: number
+  price_kopeks: number
+  price_rub: number
+  description: string
+  is_active: boolean
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+type BillingTransaction = {
+  id: string
+  client_id: string
+  job_id: string | null
+  package_id: string
+  kind: string
+  kind_label: string
+  operation: string
+  operation_label: string
+  units: number
+  note: string
+  created_by: string
+  created_at: string | null
 }
 
 type SupplierSearchUi = {
@@ -256,7 +314,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   clients: {
     title: 'Клиенты',
-    description: 'Клиенты, менеджеры в Telegram, доступы и два коммерческих лимита: поставщики и анализ.',
+    description: 'Клиенты, менеджеры в Telegram, баланс генераций и ручные начисления.',
   },
   jobs: {
     title: 'Задачи',
@@ -266,9 +324,13 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Контроль отчётов',
     description: 'Понятный мониторинг: где отчёты не собрались, где мало поставщиков и какие источники поиска сработали.',
   },
+  billing: {
+    title: 'Тарифы',
+    description: 'Пакеты как витрина, произвольные начисления клиентам и контактные инструкции для оплаты.',
+  },
   settings: {
     title: 'Настройки',
-    description: 'Бесплатный период, хранение файлов и поиск поставщиков.',
+    description: 'Бесплатный период, контакты, хранение файлов и поиск поставщиков.',
   },
   ai: {
     title: 'ИИ-модели',
@@ -286,12 +348,16 @@ const statusLabels: Record<string, string> = {
   active: 'включён',
   disabled: 'выключен',
   trial: 'бесплатный период',
+  account_pending: 'ожидает ID',
   pending: 'в очереди',
   running: 'в работе',
   completed: 'готово',
   partial: 'частично готово',
   needs_review: 'нужна проверка',
   failed: 'ошибка',
+  awaiting_customer_confirmation: 'ожидает клиента',
+  customer_declined: 'отклонено',
+  confirmation_expired: 'истёк срок',
 }
 
 const providerLabels: Record<string, string> = {
@@ -327,6 +393,15 @@ const functionLabels: Record<string, string> = {
   supplier_candidate_verifier: 'Проверка поставщиков',
 }
 
+const functionModelHints: Record<string, string> = {
+  procurement_document_analysis: 'Лучше ставить Pro-модель: она устойчивее на больших документах.',
+  procurement_report_verification: 'Лучше ставить ту же Pro-модель: это финальная проверка перед выдачей отчёта.',
+  procurement_key_info_extraction: 'Можно ставить быструю Flash Lite: задача короткая.',
+  procurement_search_query_generation: 'Можно ставить быструю Flash Lite: она только готовит поисковые фразы.',
+  supplier_query_generation: 'Можно ставить быструю Flash Lite: она только готовит поисковые фразы.',
+  supplier_candidate_verifier: 'Лучше не самая слабая модель: она решает, подходит ли сайт поставщика.',
+}
+
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
@@ -343,7 +418,14 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function formatError(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err || '')
+  const rawMessage = err instanceof Error ? err.message : String(err || '')
+  let message = rawMessage
+  try {
+    const parsed = JSON.parse(rawMessage)
+    if (typeof parsed?.detail === 'string') message = parsed.detail
+  } catch {
+    message = rawMessage
+  }
   if (message.includes('Invalid login or password') || message.includes('401')) {
     return 'Неверный логин или пароль.'
   }
@@ -550,6 +632,7 @@ export function App() {
   const [quality, setQuality] = useState<SupplierQualitySnapshot | null>(null)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [tariffs, setTariffs] = useState<TariffPackage[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -561,13 +644,14 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, tariffData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true'),
         api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
+        api<TariffPackage[]>('/api/tariffs'),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
@@ -575,6 +659,7 @@ export function App() {
       setQuality(qualityData)
       setOpsStatus(opsStatusData)
       setSettings(settingsData)
+      setTariffs(tariffData)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -611,6 +696,7 @@ export function App() {
     setQuality(null)
     setOpsStatus(null)
     setSettings(null)
+    setTariffs([])
     setUsername('')
     setPassword('')
   }
@@ -625,11 +711,25 @@ export function App() {
       .catch(() => setAuthenticated(false))
   }, [])
 
+  useEffect(() => {
+    function handleUnhandled(event: PromiseRejectionEvent) {
+      setError(formatError(event.reason))
+    }
+    window.addEventListener('unhandledrejection', handleUnhandled)
+    return () => window.removeEventListener('unhandledrejection', handleUnhandled)
+  }, [])
+
+  useEffect(() => {
+    const activeItem = document.querySelector('.nav-item.active')
+    activeItem?.scrollIntoView({ block: 'nearest', inline: 'center' })
+  }, [view])
+
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'quality' as const, label: 'Контроль', icon: CheckCircle2 },
+    { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
   ]
@@ -663,7 +763,7 @@ export function App() {
           {nav.map(item => {
             const Icon = item.icon
             return (
-              <button key={item.id} className={view === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setView(item.id)}>
+              <button key={item.id} className={view === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setError(''); setView(item.id) }}>
                 <Icon size={17} />
                 <span>{item.label}</span>
               </button>
@@ -690,9 +790,10 @@ export function App() {
 
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
-        {isReady && view === 'clients' && <ClientsView clients={clients} onChange={loadAll} />}
+        {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'quality' && <QualityView quality={quality} />}
+        {isReady && view === 'billing' && settings && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
       </main>
@@ -858,17 +959,30 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   )
 }
 
-function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () => Promise<void> }) {
-  const [form, setForm] = useState({ telegram_id: '', name: '', username: '', notes: '' })
-  const [accountForms, setAccountForms] = useState<Record<string, { telegram_id: string; username: string; name: string }>>({})
+function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
+  const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
+  const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
+  const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
+  const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const activeTariffs = tariffs.filter(item => item.is_active)
   async function createClient() {
-    await api('/api/clients', { method: 'POST', body: JSON.stringify(form) })
-    setForm({ telegram_id: '', name: '', username: '', notes: '' })
+    const usernames = parseTelegramUsernames(form.telegram_usernames)
+    await api('/api/clients', {
+      method: 'POST',
+      body: JSON.stringify({ ...form, telegram_usernames: usernames, username: usernames[0] || '' }),
+    })
+    setForm({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
     await onChange()
   }
   async function patchClient(client: Client, patch: Partial<Client>) {
     await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+    await onChange()
+  }
+  async function deleteClient(client: Client) {
+    const label = client.name || client.username || client.telegram_id || 'этого клиента'
+    if (!window.confirm(`Удалить клиента «${label}»? Это действие нельзя отменить.`)) return
+    await api(`/api/clients/${client.id}`, { method: 'DELETE' })
     await onChange()
   }
   async function createAccount(client: Client) {
@@ -881,33 +995,111 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
     await api(`/api/clients/${client.id}/telegram-accounts/${account.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
   }
+  async function deleteAccount(client: Client, account: TelegramAccount) {
+    const label = account.username ? `@${account.username}` : account.telegram_id || account.name || 'этот Telegram-аккаунт'
+    if (!window.confirm(`Удалить Telegram-аккаунт «${label}» у клиента «${client.name || 'без имени'}»?`)) return
+    await api(`/api/clients/${client.id}/telegram-accounts/${account.id}`, { method: 'DELETE' })
+    await onChange()
+  }
   function accountDraft(client: Client) {
     return accountForms[client.id] || { telegram_id: '', username: '', name: '' }
   }
-  function setAccountDraft(client: Client, patch: Partial<{ telegram_id: string; username: string; name: string }>) {
+  function setAccountDraft(client: Client, patch: Partial<AccountDraft>) {
     const current = accountDraft(client)
     setAccountForms({ ...accountForms, [client.id]: { ...current, ...patch } })
   }
-  function patchString(client: Client, key: keyof Pick<Client, 'access_until' | 'notes'>, value: string) {
-    if (value !== client[key]) void patchClient(client, { [key]: value })
+  function accountEditDraft(account: TelegramAccount) {
+    return accountEditForms[account.id] || {
+      telegram_id: account.telegram_id || '',
+      username: account.username ? `@${account.username}` : '',
+      name: account.name || '',
+    }
   }
-  function patchNumber(client: Client, key: keyof Pick<Client, 'monthly_supplier_search_limit' | 'monthly_procurement_report_limit'>, value: number) {
-    if (Number.isFinite(value) && value !== client[key]) void patchClient(client, { [key]: value })
+  function setAccountEditDraft(account: TelegramAccount, patch: Partial<AccountDraft>) {
+    const current = accountEditDraft(account)
+    setAccountEditForms({ ...accountEditForms, [account.id]: { ...current, ...patch } })
+  }
+  async function saveAccount(client: Client, account: TelegramAccount) {
+    const draft = accountEditDraft(account)
+    await patchAccount(client, account, {
+      telegram_id: draft.telegram_id,
+      username: draft.username,
+      name: draft.name,
+    })
+  }
+  function grantDraft(client: Client) {
+    return grantForms[client.id] || { package_id: '', kind: 'supplier_search', units: '1', note: '' }
+  }
+  function setGrantDraft(client: Client, patch: Partial<GrantDraft>) {
+    const current = grantDraft(client)
+    setGrantForms({ ...grantForms, [client.id]: { ...current, ...patch } })
+  }
+  function applyGrantTemplate(client: Client, packageId: string) {
+    const selected = activeTariffs.find(item => item.id === packageId)
+    const current = grantDraft(client)
+    setGrantForms({
+      ...grantForms,
+      [client.id]: selected
+        ? { ...current, package_id: packageId, kind: selected.kind, units: String(selected.units) }
+        : { ...current, package_id: '' },
+    })
+  }
+  async function grantUnits(client: Client) {
+    const draft = grantDraft(client)
+    const selected = activeTariffs.find(item => item.id === draft.package_id)
+    const units = Math.floor(Number(draft.units))
+    if (!Number.isFinite(units) || units < 1) return
+    const packageId = selected && selected.kind === draft.kind && selected.units === units ? selected.id : ''
+    await api(`/api/clients/${client.id}/billing/grants`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: draft.note }),
+    })
+    setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
+    await onChange()
+  }
+  function patchClientNote(client: Client, value: string) {
+    if (value !== client.notes) void patchClient(client, { notes: value })
   }
   return (
     <section className="stack">
-      <div className="toolbar-panel">
-        <input placeholder="ID первого менеджера" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
-        <input placeholder="Название клиента" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-        <input placeholder="Ник в Telegram" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
-        <button onClick={() => void createClient()} disabled={!form.telegram_id.trim()}><Plus size={16} />Добавить клиента</button>
+      <div className="client-create-panel">
+        <div className="client-create-head">
+          <div>
+            <h2>Добавить клиента</h2>
+            <p>Создайте клиента и привяжите один или несколько Telegram-аккаунтов.</p>
+          </div>
+        </div>
+        <div className="client-create-grid">
+          <label className="field">
+            Название клиента
+            <input placeholder="ООО Ромашка" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label className="field">
+            Telegram-ники
+            <input
+              placeholder="@manager, @buyer"
+              value={form.telegram_usernames}
+              onChange={e => setForm({ ...form, telegram_usernames: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            Telegram ID вручную
+            <input placeholder="Если ID известен" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
+          </label>
+          <button className="client-create-submit" onClick={() => void createClient()} disabled={!form.name.trim() || (!form.telegram_id.trim() && !parseTelegramUsernames(form.telegram_usernames).length)}>
+            <Plus size={16} />Добавить
+          </button>
+        </div>
+        <p className="client-create-hint">Если указать только ник, ID подтянется после первого входа пользователя в бота. Ручной ID можно указать сразу.</p>
       </div>
       <div className="client-card-list">
         {clients.map(client => {
           const draft = accountDraft(client)
           const accounts = client.telegram_accounts?.length ? client.telegram_accounts : []
           const expanded = Boolean(expandedClients[client.id])
-          const primaryAccount = accounts[0]
+          const grant = grantDraft(client)
+          const connectedCount = accounts.filter(account => !account.is_pending).length
+          const pendingCount = accounts.filter(account => account.is_pending).length
           return (
             <article className="client-card" key={client.id}>
               <div className="client-card-head">
@@ -922,127 +1114,145 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
                   </button>
                   <div>
                     <h2>{client.name || 'Без имени'}</h2>
-                    <p>{clientSummaryLine(client, accounts, primaryAccount)}</p>
+                    <p>{clientSummaryLine(client, accounts)}</p>
                   </div>
                 </div>
                 <div className="client-summary-pills">
-                  <span>Менеджеры: {accounts.length || (client.telegram_id ? 1 : 0)}</span>
+                  <span>Подключено: {connectedCount}</span>
+                  {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
                   <span>Поставщики: {client.usage ? usageSummaryText(client.usage.supplier_search) : 'нет данных'}</span>
                   <span>Анализ: {client.usage ? usageSummaryText(client.usage.procurement_report) : 'нет данных'}</span>
                 </div>
                 <div className="client-state">
                   <StatusBadge status={client.is_active ? 'active' : 'disabled'} />
-                  {client.is_trial && <StatusBadge status="trial" />}
                   <button className="ghost small-text" onClick={() => void patchClient(client, { is_active: !client.is_active })}>
                     {client.is_active ? 'Отключить' : 'Включить'}
+                  </button>
+                  <button className="danger small-text" onClick={() => void deleteClient(client)}>
+                    <Trash2 size={14} />Удалить
                   </button>
                 </div>
               </div>
 
               {expanded && <div className="client-card-grid">
-                <div className="client-section">
-                  <h3>Аккаунты менеджеров</h3>
-                  <div className="account-list">
-                    {accounts.map(account => (
-                      <div className="account-row" key={account.id}>
-                        <div>
-                          <strong>{account.telegram_id}</strong>
-                          <small>{account.username ? `@${account.username}` : account.name || 'имя не указано'}</small>
+                <div className="client-section client-telegram-section">
+                  <div className="section-head">
+                    <h3>Telegram-аккаунты</h3>
+                    <span>{accounts.length || 'нет'}</span>
+                  </div>
+                  <div className="account-edit-list">
+                    {accounts.map(account => {
+                      const edit = accountEditDraft(account)
+                      return (
+                        <div className="account-edit-row" key={account.id}>
+                          <label className="mini-field">
+                            <span>Ник</span>
+                            <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
+                          </label>
+                          <label className="mini-field">
+                            <span>Telegram ID</span>
+                            <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
+                          </label>
+                          <label className="mini-field">
+                            <span>Имя</span>
+                            <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
+                          </label>
+                          <div className="account-edit-actions">
+                            <StatusBadge status={account.is_pending ? 'account_pending' : account.is_active ? 'active' : 'disabled'} />
+                            <button className="ghost small-text" onClick={() => void patchAccount(client, account, { is_active: !account.is_active })}>
+                              {account.is_active ? 'Откл.' : 'Вкл.'}
+                            </button>
+                            <button className="small-text" onClick={() => void saveAccount(client, account)}>
+                              <Save size={14} />Сохранить
+                            </button>
+                            <button
+                              className="icon-button small danger"
+                              title="Удалить Telegram-аккаунт"
+                              onClick={() => void deleteAccount(client, account)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          className="ghost small-text"
-                          onClick={() => void patchAccount(client, account, { is_active: !account.is_active })}
-                        >
-                          {account.is_active ? 'Отключить' : 'Включить'}
-                        </button>
-                      </div>
-                    ))}
+                      )
+                    })}
                     {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
                     <div className="account-add">
-                      <input placeholder="ID менеджера" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
-                      <input placeholder="Ник в Telegram" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                      <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                      <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
                       <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
-                      <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim()}><Plus size={16} /></button>
+                      <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
                     </div>
                   </div>
                 </div>
 
-                <div className="client-section">
-                  <h3>Функции</h3>
-                  <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поиск поставщиков</label>
-                  <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
-                  <label><input type="checkbox" checked={client.is_trial} onChange={e => void patchClient(client, { is_trial: e.target.checked })} /> Бесплатный период</label>
-                </div>
-
-                <div className="client-section">
-                  <h3>Срок доступа</h3>
-                  <input
-                    className="client-date"
-                    type="text"
-                    placeholder="гггг-мм-дд"
-                    defaultValue={client.access_until || ''}
-                    onBlur={e => patchString(client, 'access_until', e.currentTarget.value)}
-                  />
-                </div>
-
-                <div className="client-section client-limits-section">
-                  <h3>Общие лимиты клиента</h3>
-                  <div className="client-limits">
-                    <label className="mini-field">
-                      <span>Отчёты по поставщикам</span>
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={client.monthly_supplier_search_limit}
-                        aria-label="Лимит отчётов по поиску поставщиков"
-                        onBlur={e => patchNumber(client, 'monthly_supplier_search_limit', Number(e.currentTarget.value))}
-                      />
-                    </label>
-                    <label className="mini-field">
-                      <span>Анализы документации</span>
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={client.monthly_procurement_report_limit}
-                        aria-label="Лимит отчётов анализа документации"
-                        onBlur={e => patchNumber(client, 'monthly_procurement_report_limit', Number(e.currentTarget.value))}
-                      />
-                    </label>
+                <div className="client-section client-balance-section">
+                  <div className="section-head">
+                    <h3>Баланс</h3>
+                    <span>не сгорает</span>
                   </div>
-                  <p className="field-help">Лимит общий для всех Telegram-аккаунтов этого клиента.</p>
                   {client.usage && (
-                    <div className="usage-grid">
-                      <UsageMeter counter={client.usage.supplier_search} />
-                      <UsageMeter counter={client.usage.procurement_report} />
+                    <div className="balance-compact-list">
+                      <BalanceLine counter={client.usage.supplier_search} />
+                      <BalanceLine counter={client.usage.procurement_report} />
                     </div>
                   )}
-                </div>
-
-                <div className="client-section recent-usage-section">
-                  <h3>Последние списания</h3>
-                  <div className="usage-history">
-                    {client.recent_usage?.map(item => (
-                      <div className="usage-history-row" key={item.id}>
-                        <div>
-                          <strong>{item.human_title}</strong>
-                          <small>{formatDate(item.created_at)} · менеджер {item.created_by_telegram_id || 'не указан'}</small>
-                        </div>
-                        <span>{usageEntryLabel(item)}</span>
-                      </div>
-                    ))}
-                    {!client.recent_usage?.length && <div className="inline-note">Списаний в этом месяце пока нет.</div>}
+                  <div className="manual-grant-panel">
+                    <label className="mini-field">
+                      <span>Тип</span>
+                      <select value={grant.kind} onChange={e => setGrantDraft(client, { kind: e.target.value, package_id: '' })}>
+                        <option value="supplier_search">Поставщики</option>
+                        <option value="procurement_report">Анализ документации</option>
+                      </select>
+                    </label>
+                    <label className="mini-field">
+                      <span>Количество</span>
+                      <input type="number" min={1} step={1} value={grant.units} onChange={e => setGrantDraft(client, { units: e.target.value, package_id: '' })} />
+                    </label>
+                    <label className="mini-field">
+                      <span>Шаблон</span>
+                      <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
+                        <option value="">Вручную</option>
+                        {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
+                      </select>
+                    </label>
+                    <input placeholder="Комментарий" value={grant.note} onChange={e => setGrantDraft(client, { note: e.target.value })} />
+                    <button onClick={() => void grantUnits(client)} disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1}><Plus size={16} />Начислить</button>
                   </div>
                 </div>
 
-                <div className="client-section client-notes">
-                  <h3>Заметки</h3>
+                <div className="client-section client-settings-section">
+                  <h3>Функции</h3>
+                  <div className="compact-switches">
+                    <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поставщики</label>
+                    <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
+                  </div>
                   <input
                     className="client-note"
-                    placeholder="Комментарий для себя"
+                    placeholder="Заметка по клиенту"
                     defaultValue={client.notes || ''}
-                    onBlur={e => patchString(client, 'notes', e.currentTarget.value)}
+                    onBlur={e => patchClientNote(client, e.currentTarget.value)}
                   />
                 </div>
+
+                <details className="client-section billing-history-details">
+                  <summary>
+                    <span>История баланса</span>
+                    <small>{client.recent_billing?.length || 0} операций</small>
+                  </summary>
+                  <div className="usage-history">
+                    {client.recent_billing?.map(item => (
+                      <div className="usage-history-row" key={item.id}>
+                        <div>
+                          <strong>{item.operation_label}: {item.kind_label}</strong>
+                          <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
+                        </div>
+                        <span>{item.units}</span>
+                      </div>
+                    ))}
+                    {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
+                  </div>
+                </details>
               </div>}
             </article>
           )
@@ -1052,36 +1262,65 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
   )
 }
 
-function clientSummaryLine(client: Client, accounts: TelegramAccount[], primaryAccount?: TelegramAccount) {
-  const username = client.username ? `@${client.username}` : ''
-  const primary = primaryAccount?.telegram_id || client.telegram_id || ''
-  const accountLabel = primary ? `первый Telegram ID: ${primary}` : 'Telegram ID не указан'
-  return [username, accountLabel].filter(Boolean).join(' · ')
+function parseTelegramUsernames(value: string) {
+  const seen = new Set<string>()
+  return value
+    .split(/[\s,;]+/)
+    .map(item => item.trim().replace(/^@/, '').toLowerCase())
+    .filter(item => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
+  const usernames = accounts.filter(account => account.username).map(account => `@${account.username}`).slice(0, 3)
+  const connected = accounts.filter(account => !account.is_pending)
+  const pending = accounts.filter(account => account.is_pending)
+  if (usernames.length) {
+    const more = accounts.length > usernames.length ? ` +${accounts.length - usernames.length}` : ''
+    return `${usernames.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
+  }
+  if (client.telegram_id) return `Telegram ID: ${client.telegram_id}`
+  return 'Telegram-аккаунты ожидают подключения'
 }
 
 function usageSummaryText(counter: UsageCounter) {
-  const limit = counter.unlimited ? 'без лимита' : counter.limit
-  return `${counter.used}/${limit}`
+  return `${counter.available ?? 'без лимита'} доступно`
 }
 
-function UsageMeter({ counter }: { counter: UsageCounter }) {
+function BalanceLine({ counter }: { counter: UsageCounter }) {
   return (
-    <div className="usage-meter">
-      <div className="usage-meter-head">
+    <div className={counter.low ? 'balance-line warning' : 'balance-line'}>
+      <div>
         <strong>{counter.label}</strong>
-        <span>{counter.used} из {counter.unlimited ? 'без лимита' : counter.limit}</span>
+        <small>начислено {counter.granted} · списано {counter.spent} · резерв {counter.reserved}</small>
       </div>
-      <div className="usage-bar"><span style={{ width: `${counter.percent}%` }} /></div>
-      <small>{counter.unlimited ? 'Ограничение не задано' : `Осталось: ${counter.remaining}`}</small>
+      <span>{counter.available ?? 'без лимита'}</span>
     </div>
   )
 }
 
-function usageEntryLabel(item: UsageEntry) {
-  const parts = []
-  if (item.supplier_units) parts.push(`поставщики: ${item.supplier_units}`)
-  if (item.procurement_report_units) parts.push(`анализ: ${item.procurement_report_units}`)
-  return parts.join(' · ') || item.mode_label
+function tariffOptionLabel(item: TariffPackage) {
+  return `${humanBillingKind(item.kind)} · ${item.name} · ${item.units} ед. · ${formatPrice(item.price_kopeks)}`
+}
+
+function humanBillingKind(kind: string) {
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+}
+
+function formatPrice(priceKopeks: number) {
+  if (!priceKopeks) return 'цена не указана'
+  return `${new Intl.NumberFormat('ru-RU').format(priceKopeks / 100)} ₽`
+}
+
+function kopeksToRubles(priceKopeks: number) {
+  return Math.round(Number(priceKopeks || 0)) / 100
+}
+
+function rublesToKopeks(rubles: number) {
+  return Math.max(0, Math.round(Number(rubles || 0) * 100))
 }
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
@@ -1278,6 +1517,101 @@ function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
   )
 }
 
+function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]; settings: SettingsPayload; onChange: () => Promise<void> }) {
+  const [newTariff, setNewTariff] = useState({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+  const [contactDraft, setContactDraft] = useState({
+    contact_email: settings.contact_email || '',
+    contact_telegram: settings.contact_telegram || '',
+    contact_website: settings.contact_website || '',
+    payment_instructions: settings.payment_instructions || '',
+  })
+
+  useEffect(() => {
+    setContactDraft({
+      contact_email: settings.contact_email || '',
+      contact_telegram: settings.contact_telegram || '',
+      contact_website: settings.contact_website || '',
+      payment_instructions: settings.payment_instructions || '',
+    })
+  }, [settings])
+
+  async function createTariff() {
+    await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
+    setNewTariff({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+    await onChange()
+  }
+  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
+    await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+    await onChange()
+  }
+  async function deleteTariff(item: TariffPackage) {
+    await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
+    await onChange()
+  }
+  async function saveContacts() {
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(contactDraft) })
+    await onChange()
+  }
+  const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
+  const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
+  return (
+    <section className="stack">
+      <div className="form-panel full-width-panel">
+        <h2>Новый пакет</h2>
+        <div className="tariff-form-grid">
+          <label className="field">
+            <span>Тип</span>
+            <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
+              <option value="supplier_search">Поставщики</option>
+              <option value="procurement_report">Анализ документации</option>
+            </select>
+          </label>
+          <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
+          <NumberField label="Генераций" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
+          <NumberField label="Цена, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать в боте</label>
+        </div>
+        <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
+      </div>
+
+      <TariffGroup title="Поставщики" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+
+      <div className="form-panel full-width-panel">
+        <h2>Контакты и ручная оплата</h2>
+        <div className="settings-grid compact-grid">
+          <TextField label="Email" value={contactDraft.contact_email} onChange={value => setContactDraft({ ...contactDraft, contact_email: value })} />
+          <TextField label="Telegram" value={contactDraft.contact_telegram} onChange={value => setContactDraft({ ...contactDraft, contact_telegram: value })} />
+          <TextField label="Сайт" value={contactDraft.contact_website} onChange={value => setContactDraft({ ...contactDraft, contact_website: value })} />
+        </div>
+        <TextArea className="payment-textarea" label="Инструкция оплаты в боте" value={contactDraft.payment_instructions} onChange={value => setContactDraft({ ...contactDraft, payment_instructions: value })} />
+        <p className="field-help">Пока YooKassa не подключена, бот показывает эту инструкцию, email, Telegram и сайт. Реквизиты не подставляются автоматически.</p>
+        <button onClick={() => void saveContacts()}><CheckCircle2 size={16} />Сохранить контакты</button>
+      </div>
+    </section>
+  )
+}
+
+function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
+  return (
+    <div className="form-panel full-width-panel">
+      <h2>{title}</h2>
+      <div className="tariff-list">
+        {tariffs.map(item => (
+          <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id}>
+            <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
+            <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
+            <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
+            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> В боте</label>
+            <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
+          </article>
+        ))}
+        {!tariffs.length && <div className="empty inline-empty">Пакеты ещё не добавлены.</div>}
+      </div>
+    </div>
+  )
+}
+
 function SettingsView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
   const [draft, setDraft] = useState(settings)
   const [adapterKey, setAdapterKey] = useState('')
@@ -1432,6 +1766,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     const [providerId, ...rest] = raw.split(':')
     const modelId = rest.join(':')
     const saved = savedModels.find(item => item.provider === providerId && item.modelId === modelId)
+    if (saved?.name) return `${saved.name} — ${saved.modelId}`
     if (saved) return saved.modelId || raw
     return modelId || raw
   }
@@ -1487,11 +1822,12 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     <section className="stack">
       <div className="form-panel full-width-panel">
         <h2>Модели для функций бота</h2>
-        <p className="field-help">В селекторах отображается только modelId.</p>
+        <p className="field-help">Для анализа документов выбирайте сильную модель, для простых поисковых шагов можно ставить быструю.</p>
         {aiRoutingKeys.map(key => (
           <ModelSelect
             key={key}
             label={functionLabels[key] || key}
+            help={functionModelHints[key]}
             value={resolvedModelValue(functionModels[key])}
             options={modelOptions}
             optionLabel={modelOptionLabel}
@@ -1558,12 +1894,14 @@ function updateArray<T>(items: T[], setter: (value: T[]) => void, index: number,
 
 function ModelSelect({
   label,
+  help = '',
   value,
   options,
   optionLabel = option => option,
   onChange,
 }: {
   label: string
+  help?: string
   value: string
   options: string[]
   optionLabel?: (option: string) => string
@@ -1584,6 +1922,7 @@ function ModelSelect({
         <option value="">Не выбрано</option>
         {options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}
       </select>
+      {help && <small className="field-help">{help}</small>}
     </label>
   )
 }
@@ -1600,8 +1939,8 @@ function NumberField({ label, value, onChange }: { label: string; value: number;
   return <label className="field"><span>{label}</span><input type="number" value={value || 0} onChange={e => onChange(Number(e.target.value))} /></label>
 }
 
-function TextArea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="field"><span>{label}</span><textarea value={value || ''} onChange={e => onChange(e.target.value)} /></label>
+function TextArea({ label, value, onChange, className = '' }: { label: string; value: string; onChange: (value: string) => void; className?: string }) {
+  return <label className={className ? `field ${className}` : 'field'}><span>{label}</span><textarea value={value || ''} onChange={e => onChange(e.target.value)} /></label>
 }
 
 function StatusBadge({ status }: { status: string }) {

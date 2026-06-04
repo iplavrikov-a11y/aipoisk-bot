@@ -4,31 +4,49 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.bot import (
+    AI_HELP_NOTE,
+    BOT_DESCRIPTION,
+    BOT_SHORT_DESCRIPTION,
     BUTTON_ANALYSIS_AND_SUPPLIERS,
+    BUTTON_ACCESS,
     BUTTON_CANCEL_BATCH,
+    BUTTON_CONTACTS,
+    BUTTON_CREATE,
+    BUTTON_HELP,
     BUTTON_REPORT,
     BUTTON_RUN_BATCH,
+    BUTTON_STATUS,
+    BUTTON_TARIFFS,
     BUTTON_SUPPLIERS_MULTI,
     BUTTON_SUPPLIERS_SINGLE,
     JobProgressSnapshot,
     PendingBatch,
     _add_pending_sources,
+    _contacts_text,
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
     _mode_label,
+    _owner_problem_alert_text,
+    _partial_confirmation_text,
     _pending_input_count,
     _progress_bar,
     _scenario_accepts_source_links,
     _source_link_rejection_text,
     _source_payloads_for_scenario,
     _status_label,
-    _batch_running_text,
     _pending_added_text,
+    _batch_running_text,
     _supplier_multi_intro_text,
     _supplier_multi_job_specs,
+    _tariffs_text,
+    batch_menu,
+    configure_bot_profile,
+    create_menu,
+    main_menu,
 )
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
+from app.models import SystemSettings, TariffPackage
 
 
 class BotProgressFormattingTests(unittest.TestCase):
@@ -88,6 +106,8 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("⚠️ Не удалось подготовить файл", text)
         self.assertIn("не удалось надёжно отобрать подходящие сайты поставщиков", text)
+        self.assertIn("Баланс не списан", text)
+        self.assertNotIn("не отправлять непроверенный список", text)
         self.assertNotIn("AI candidate reranking", text)
         self.assertNotIn("TimeoutError", text)
 
@@ -108,6 +128,124 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertNotIn("AI supplier query generation", text)
         self.assertNotIn("TimeoutError", text)
 
+    def test_partial_confirmation_text_requires_explicit_paid_delivery_consent(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job",
+            mode="supplier_search",
+            status="awaiting_customer_confirmation",
+            progress=100,
+            message="Найдено меньше поставщиков: найдено и проверено 8",
+            error="",
+            created_at=None,
+        )
+
+        text = _partial_confirmation_text(snapshot)
+
+        self.assertIn("Отправить отчёт?", text)
+        self.assertIn("будет списана генерация", text)
+        self.assertIn("только подтверждённые компании", text)
+        self.assertNotIn("target", text.lower())
+
+    def test_contacts_text_includes_site_when_configured(self) -> None:
+        settings = SystemSettings(
+            id=1,
+            contact_telegram="@owner",
+            contact_email="owner@example.ru",
+            contact_website="https://aipoisk.example",
+        )
+
+        text = _contacts_text(settings, telegram_id="123")
+
+        self.assertIn("Telegram: @owner", text)
+        self.assertIn("Email: owner@example.ru", text)
+        self.assertIn("Сайт: https://aipoisk.example", text)
+        self.assertIn("Ваш Telegram ID: 123", text)
+
+    def test_tariffs_text_uses_rubles_and_default_payment_instruction(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            settings = SystemSettings(id=1, payment_instructions="")
+            db.add(settings)
+            db.add(
+                TariffPackage(
+                    kind="supplier_search",
+                    name="Поставщики 20",
+                    units=20,
+                    price_kopeks=150000,
+                    is_active=True,
+                )
+            )
+            db.commit()
+
+            text = _tariffs_text(db, settings)
+        finally:
+            db.close()
+
+        self.assertIn("Поставщики 20", text)
+        self.assertIn("1 500 ₽", text)
+        self.assertIn("После подтверждения оплаты генерации будут начислены вручную", text)
+        self.assertIn(AI_HELP_NOTE, text)
+        self.assertNotIn("Как купить пакет:\n🧾 Чтобы купить пакет:", text)
+
+    def test_owner_problem_alert_keeps_actionable_context_short(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-123",
+            mode=MODE_PROCUREMENT_REPORT,
+            status="needs_review",
+            progress=100,
+            message="Анализ готов, нужна проверка AI-настроек",
+            error="AI report verification failed: timeout after 180 seconds",
+            created_at=None,
+        )
+
+        text = _owner_problem_alert_text(
+            snapshot,
+            title="Закупка на поставку оборудования",
+            client_telegram_id="555",
+            evidence_path="/tmp/evidence.json",
+            result_path="/tmp/report.docx",
+        )
+
+        self.assertIn("нужна проверка задачи", text)
+        self.assertIn("job-123", text)
+        self.assertIn("анализ документации", text)
+        self.assertIn("555", text)
+        self.assertIn("Evidence: /tmp/evidence.json", text)
+        self.assertIn("проверить настройки модели", text)
+
+    def test_main_menu_is_button_driven_and_mobile_readable(self) -> None:
+        keyboard = main_menu().keyboard
+        rows = [[button.text for button in row] for row in keyboard]
+        labels = [text for row in rows for text in row]
+
+        self.assertEqual(
+            rows,
+            [
+                [BUTTON_CREATE, BUTTON_ACCESS],
+                [BUTTON_TARIFFS, BUTTON_HELP],
+                [BUTTON_CONTACTS, BUTTON_STATUS],
+            ],
+        )
+        self.assertNotIn("🆔 Мой Telegram ID", labels)
+        self.assertNotIn("/start", " ".join(labels))
+
+    def test_create_menu_keeps_report_types_single_column_for_mobile(self) -> None:
+        keyboard = create_menu().keyboard
+        rows = [[button.text for button in row] for row in keyboard]
+
+        self.assertIn([BUTTON_SUPPLIERS_SINGLE], rows)
+        self.assertIn([BUTTON_SUPPLIERS_MULTI], rows)
+        self.assertIn([BUTTON_REPORT], rows)
+        self.assertIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
+
     def test_customer_buttons_use_procurement_language(self) -> None:
         labels = [
             BUTTON_SUPPLIERS_SINGLE,
@@ -125,6 +263,65 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Анализ + поставщики", joined)
         self.assertNotIn("Word", joined)
         self.assertNotIn("пач", joined.lower())
+
+    def test_batch_menu_keeps_long_mode_buttons_single_column_for_mobile(self) -> None:
+        keyboard = batch_menu().keyboard
+        rows = [[button.text for button in row] for row in keyboard]
+
+        self.assertIn([BUTTON_RUN_BATCH], rows)
+        self.assertIn([BUTTON_SUPPLIERS_SINGLE], rows)
+        self.assertIn([BUTTON_SUPPLIERS_MULTI], rows)
+        self.assertIn([BUTTON_REPORT], rows)
+        self.assertIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
+        self.assertIn([BUTTON_CANCEL_BATCH], rows)
+        self.assertNotIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
+
+    def test_early_job_eta_does_not_show_zero_seconds(self) -> None:
+        now = datetime(2026, 6, 2, 12, 10, tzinfo=timezone.utc)
+        snapshot = JobProgressSnapshot(
+            id="job",
+            mode="supplier_search",
+            status="running",
+            progress=50,
+            message="Проверено сайтов: 10",
+            error="",
+            created_at=now - timedelta(seconds=5),
+        )
+
+        text = _format_job_progress(snapshot, now=now)
+
+        self.assertIn("Ориентир: рассчитываю время", text)
+        self.assertNotIn("около 0 сек", text)
+
+    def test_bot_profile_hides_command_menu_for_button_driven_onboarding(self) -> None:
+        class FakeBot:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            async def set_my_short_description(self, *, short_description: str) -> None:
+                self.calls.append(("short_description", short_description))
+
+            async def set_my_description(self, *, description: str) -> None:
+                self.calls.append(("description", description))
+
+            async def delete_my_commands(self) -> None:
+                self.calls.append(("delete_commands", True))
+
+            async def set_chat_menu_button(self, *, menu_button) -> None:
+                self.calls.append(("menu_button", menu_button))
+
+        bot = FakeBot()
+
+        import asyncio
+
+        asyncio.run(configure_bot_profile(bot))
+
+        calls = dict(bot.calls)
+        self.assertEqual(calls["short_description"], BOT_SHORT_DESCRIPTION)
+        self.assertEqual(calls["description"], BOT_DESCRIPTION)
+        self.assertIn("Start/Запустить", BOT_DESCRIPTION)
+        self.assertTrue(calls["delete_commands"])
+        self.assertEqual(calls["menu_button"].type, "default")
 
     def test_supplier_multi_intro_explains_mass_processing_contract(self) -> None:
         text = _supplier_multi_intro_text()

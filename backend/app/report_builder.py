@@ -18,6 +18,11 @@ SUPPLIER_HEADERS = [
     "Комментарий",
 ]
 COMMENT_LIMIT = 260
+PROCUREMENT_REPORT_DISCLAIMER = (
+    "Важно: отчёт подготовлен с помощью AI и предназначен для быстрой оценки закупочной документации. "
+    "Критичные юридические, финансовые и технические условия сверяйте с официальными документами закупки. "
+    "Отчёт не заменяет профессиональную проверку; решения по участию, цене и обязательствам принимает пользователь."
+)
 
 
 MATCH_LEVEL_LABELS = {
@@ -185,6 +190,11 @@ def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Pa
         section.right_margin = Pt(34)
     heading = doc.add_heading(title or "Отчёт анализа закупки", level=1)
     heading.alignment = 1
+    disclaimer = doc.add_paragraph()
+    disclaimer.paragraph_format.space_after = Pt(8)
+    disclaimer_run = disclaimer.add_run(PROCUREMENT_REPORT_DISCLAIMER)
+    disclaimer_run.italic = True
+    disclaimer_run.font.size = Pt(9)
     lines = str(markdown or "").splitlines()
     index = 0
     while index < len(lines):

@@ -10,7 +10,10 @@ from app.procurement_report import (
     ProcurementReportAIRequiredError,
     clean_markdown_report,
     extract_official_card_facts,
+    extract_national_regime_requirement_types,
     generate_procurement_report,
+    normalize_national_regime_conditions,
+    normalize_vat_usn_risk,
     validate_report_against_official_card,
 )
 
@@ -59,6 +62,118 @@ class ProcurementReportPromptTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, DEFAULT_REPORT_SYSTEM_PROMPT + DEFAULT_VERIFICATION_PROMPT)
+
+    def test_national_regime_prompt_requires_direct_registry_answer(self) -> None:
+        for phrase in (
+            "Требуются ли выписки из реестра Минпромторга: **Да/Нет/Не указано**",
+            "при `ПРЕИМУЩЕСТВЕ` выписки НЕ ТРЕБУЮТСЯ",
+            "при `ОГРАНИЧЕНИИ` выписки НЕ ТРЕБУЮТСЯ",
+            "при действующем `ЗАПРЕТЕ` выписки ТРЕБУЮТСЯ",
+            "ЗАПРЕЩЕНО писать \"если применимо\"",
+            "сумма оплаты не увеличивается",
+            "уменьшить цену договора/оплату на сумму НДС",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, DEFAULT_REPORT_SYSTEM_PROMPT + DEFAULT_VERIFICATION_PROMPT)
+
+
+class ProcurementReportGuardrailTests(unittest.TestCase):
+    def test_extracts_marked_223_advantage_from_notice_form(self) -> None:
+        source_text = """Информация о запрете или об ограничении закупок товаров, о преимуществе в отношении товаров российского происхождения
+Указывается мера, установленная Правительством РФ:
+
+запрет закупок товаров
+-
+
+ограничение закупок товаров
+-
+
+преимущество в отношении товаров российского происхождения
+установлено
+"""
+
+        self.assertEqual(extract_national_regime_requirement_types(source_text), {"advantage"})
+
+    def test_extract_ignores_generic_application_form_measure_descriptions(self) -> None:
+        source_text = """2. Предоставление национального режима при осуществлении закупок
+1) если извещением установлен запрет закупок товара, не допускаются:
+б) при исполнении договора замена такого товара на иностранный товар, в отношении которого установлен данный запрет;
+2) если извещением установлено ограничение закупок товара, не допускаются:
+б) при исполнении договора замена товара на иностранный товар, в отношении которого установлено данное ограничение;
+3) если извещением установлено преимущество в отношении товара российского происхождения:
+а) при рассмотрении заявок осуществляется снижение на пятнадцать процентов ценового предложения.
+"""
+
+        self.assertEqual(extract_national_regime_requirement_types(source_text), set())
+
+    def test_normalizes_advantage_registry_contradiction(self) -> None:
+        report = """#### Условия закупки
+- Обеспечение заявки: Не установлено
+- Нацрежим: Установлено преимущество в отношении товаров российского происхождения. Требуется подтверждение страны происхождения (реестровые записи, если применимо).
+- ГОЗ/сопровождение: Не предусмотрено
+"""
+        source_text = """Информация о запрете или об ограничении закупок товаров, о преимуществе в отношении товаров российского происхождения
+запрет закупок товаров
+-
+ограничение закупок товаров
+-
+преимущество в отношении товаров российского происхождения
+установлено
+"""
+
+        result = normalize_national_regime_conditions(report, source_text)
+
+        self.assertIn("Нацрежим: **Установлено преимущество в отношении товаров российского происхождения.**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Нет**", result)
+        self.assertNotIn("если применимо", result)
+        self.assertNotIn("Требуется подтверждение страны происхождения", result)
+
+    def test_normalizes_restriction_registry_answer_to_no(self) -> None:
+        report = """#### Условия закупки
+- Нацрежим: **Есть (ПП РФ № 1875). Запрет действует.**
+- Требуются ли выписки из реестра Минпромторга: **Да**
+"""
+        source_text = """На основании ПП РФ № 1875 при осуществлении данной закупки установлено:
+- ограничение закупок товаров, происходящих из иностранных государств
+"""
+
+        result = normalize_national_regime_conditions(report, source_text)
+
+        self.assertIn("Нацрежим: **Действует ограничение закупок товаров.**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Нет**", result)
+        self.assertNotIn("Запрет действует", result)
+        self.assertNotIn("Требуются ли выписки из реестра Минпромторга: **Да**", result)
+
+    def test_normalizes_prohibition_registry_answer_to_yes(self) -> None:
+        report = """#### Условия закупки
+- Нацрежим: Не указано
+- Требуются ли выписки из реестра Минпромторга: **Нет**
+"""
+        source_text = """Применение национального режима по ст. 14 Закона № 44-ФЗ
+Объект закупки
+Вид требований
+Обоснование невозможности соблюдения запрета, ограничения
+25.11.23.120 Металлоконструкции
+Запрет закупок товаров, происходящих из иностранных государств
+"""
+
+        result = normalize_national_regime_conditions(report, source_text)
+
+        self.assertIn("Нацрежим: **Действует запрет закупок товаров.**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Да**", result)
+
+    def test_normalizes_vat_usn_bad_increase_wording(self) -> None:
+        report = """#### Финансы и НДС
+- НДС: Включен в НМЦК. Формулировка: "в том числе НДС или без НДС, если Поставщик не является его плательщиком". Риск для УСН: цена договора твердая, при отсутствии НДС у поставщика сумма оплаты не увеличивается.
+"""
+        source_text = """Цена договора является твердой.
+Цена договора составляет, в том числе НДС или без НДС, если Поставщик не является его плательщиком.
+"""
+
+        result = normalize_vat_usn_risk(report, source_text)
+
+        self.assertNotIn("сумма оплаты не увеличивается", result)
+        self.assertIn("рисков уменьшения цены/оплаты на сумму НДС", result)
 
 
 class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestCase):

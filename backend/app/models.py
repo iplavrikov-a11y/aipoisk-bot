@@ -9,6 +9,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+DEFAULT_PAYMENT_INSTRUCTIONS = (
+    "🧾 Чтобы купить пакет:\n"
+    "1. Выберите нужный пакет в списке выше.\n"
+    "2. Напишите владельцу сервиса в Telegram или на email.\n"
+    "3. Укажите название пакета и ваш Telegram ID.\n"
+    "4. После подтверждения оплаты генерации будут начислены вручную.\n\n"
+    "✅ Пакеты не сгорают и действуют до полного исчерпания."
+)
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -58,6 +67,10 @@ class SystemSettings(Base):
     report_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     document_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     bot_messages_json: Mapped[str] = mapped_column(Text, default="{}")
+    contact_email: Mapped[str] = mapped_column(String(255), default="")
+    contact_telegram: Mapped[str] = mapped_column(String(255), default="")
+    contact_website: Mapped[str] = mapped_column(String(255), default="")
+    payment_instructions: Mapped[str] = mapped_column(Text, default=DEFAULT_PAYMENT_INSTRUCTIONS)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -95,6 +108,10 @@ class SystemSettings(Base):
             "report_settings_json": self.report_settings_json,
             "document_settings_json": self.document_settings_json,
             "bot_messages_json": self.bot_messages_json,
+            "contact_email": self.contact_email,
+            "contact_telegram": self.contact_telegram,
+            "contact_website": self.contact_website,
+            "payment_instructions": self.payment_instructions or DEFAULT_PAYMENT_INSTRUCTIONS,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -123,9 +140,9 @@ class Client(Base):
     access_until: Mapped[str] = mapped_column(String(32), default="")
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
-    monthly_job_limit: Mapped[int] = mapped_column(Integer, default=100)
-    monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=100)
-    monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=100)
+    monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_file_limit: Mapped[int] = mapped_column(Integer, default=300)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -136,6 +153,7 @@ class Client(Base):
         back_populates="client",
         cascade="all, delete-orphan",
     )
+    billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
 
 
 class ClientTelegramAccount(Base):
@@ -179,6 +197,40 @@ class Job(Base):
     files: Mapped[list["JobFile"]] = relationship(back_populates="job", cascade="all, delete-orphan")
     sources: Mapped[list["JobSource"]] = relationship(back_populates="job", cascade="all, delete-orphan")
     suppliers: Mapped[list["SupplierResult"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="job")
+
+
+class TariffPackage(Base):
+    __tablename__ = "tariff_packages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    units: Mapped[int] = mapped_column(Integer, default=1)
+    price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class BillingTransaction(Base):
+    __tablename__ = "billing_transactions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    package_id: Mapped[str] = mapped_column(String(32), default="")
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    units: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    client: Mapped[Client] = relationship(back_populates="billing_transactions")
+    job: Mapped[Job | None] = relationship(back_populates="billing_transactions")
 
 
 class JobFile(Base):

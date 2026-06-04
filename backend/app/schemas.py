@@ -36,6 +36,10 @@ class SettingsPatch(BaseModel):
     report_settings_json: str | None = None
     document_settings_json: str | None = None
     bot_messages_json: str | None = None
+    contact_email: str | None = None
+    contact_telegram: str | None = None
+    contact_website: str | None = None
+    payment_instructions: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -44,17 +48,18 @@ class LoginRequest(BaseModel):
 
 
 class ClientCreate(BaseModel):
-    telegram_id: str
+    telegram_id: str = ""
     name: str = ""
     username: str = ""
+    telegram_usernames: list[str] = Field(default_factory=list)
     is_active: bool = True
     is_trial: bool = False
     access_until: str = ""
     allowed_supplier_search: bool = True
     allowed_procurement_report: bool = False
-    monthly_job_limit: int = Field(default=100, ge=0)
-    monthly_supplier_search_limit: int = Field(default=100, ge=0)
-    monthly_procurement_report_limit: int = Field(default=100, ge=0)
+    monthly_job_limit: int = Field(default=0, ge=0)
+    monthly_supplier_search_limit: int = Field(default=0, ge=0)
+    monthly_procurement_report_limit: int = Field(default=0, ge=0)
     monthly_file_limit: int = Field(default=300, ge=0)
     notes: str = ""
 
@@ -75,7 +80,7 @@ class ClientPatch(BaseModel):
 
 
 class ClientTelegramAccountCreate(BaseModel):
-    telegram_id: str
+    telegram_id: str = ""
     username: str = ""
     name: str = ""
     is_active: bool = True
@@ -83,6 +88,7 @@ class ClientTelegramAccountCreate(BaseModel):
 
 
 class ClientTelegramAccountPatch(BaseModel):
+    telegram_id: str | None = None
     username: str | None = None
     name: str | None = None
     is_active: bool | None = None
@@ -101,3 +107,30 @@ class ManualJobCreate(BaseModel):
     mode: str = "supplier_search"
     title: str = ""
     target_suppliers: int | None = None
+
+
+class TariffPackageCreate(BaseModel):
+    kind: str
+    name: str
+    units: int = Field(default=1, ge=1, le=100000)
+    price_kopeks: int = Field(default=0, ge=0, le=1000000000)
+    description: str = ""
+    is_active: bool = True
+    sort_order: int = Field(default=100, ge=0, le=100000)
+
+
+class TariffPackagePatch(BaseModel):
+    kind: str | None = None
+    name: str | None = None
+    units: int | None = Field(default=None, ge=1, le=100000)
+    price_kopeks: int | None = Field(default=None, ge=0, le=1000000000)
+    description: str | None = None
+    is_active: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+
+
+class BillingGrantCreate(BaseModel):
+    kind: str
+    units: int = Field(default=1, ge=1, le=100000)
+    package_id: str = ""
+    note: str = ""

@@ -6,10 +6,27 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from app.report_builder import write_supplier_xlsx
+from app.report_builder import PROCUREMENT_REPORT_DISCLAIMER, write_procurement_docx, write_supplier_xlsx
 
 
 class ReportBuilderTests(unittest.TestCase):
+    def test_procurement_docx_contains_soft_ai_disclaimer(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "analysis.docx"
+            write_procurement_docx(
+                path,
+                "#### Общая информация\n- Заказчик: Тестовый заказчик",
+                title="Анализ документации",
+            )
+
+            doc = Document(path)
+            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+
+        self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
+        self.assertIn("Критичные юридические, финансовые и технические условия", text)
+
     def test_supplier_xlsx_is_client_facing_without_technical_search_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"

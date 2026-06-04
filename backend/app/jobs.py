@@ -12,6 +12,15 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from . import document_parser
+from .billing import (
+    KIND_SUPPLIER_SEARCH,
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CONFIRMATION_EXPIRED,
+    STATUS_CUSTOMER_DECLINED,
+    release_job_kind_reservation,
+    release_job_reservation,
+    expire_stale_confirmations,
+)
 from .config import config
 from .db import SessionLocal
 from .models import Job, JobFile, JobSource, SupplierResult, now_utc
@@ -28,7 +37,15 @@ from .report_builder import write_evidence, write_procurement_docx, write_suppli
 from .supplier_search import discover_suppliers, extract_supplier_search_context
 
 _RUNNING: set[str] = set()
-TERMINAL_JOB_STATUSES = {"completed", "partial", "needs_review", "failed"}
+TERMINAL_JOB_STATUSES = {
+    "completed",
+    "partial",
+    "needs_review",
+    "failed",
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CUSTOMER_DECLINED,
+    STATUS_CONFIRMATION_EXPIRED,
+}
 STALE_RUNNING_AFTER = timedelta(minutes=30)
 WORKER_POLL_INTERVAL_SECONDS = 2.0
 MODE_SUPPLIER_SEARCH = "supplier_search"
@@ -215,6 +232,7 @@ async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS) ->
     while True:
         db = SessionLocal()
         try:
+            expire_stale_confirmations(db)
             job_id = claim_next_job(db, worker_id=worker_id)
         finally:
             db.close()
@@ -297,6 +315,7 @@ def _process_job_sync(job_id: str) -> None:
         file_context = document_parser.combined_document_context(parsed)
         context = "\n\n".join([*source_blocks, file_context]).strip()
         if len(context.strip()) < 50:
+            release_job_reservation(db, job, note="Резерв возвращён: документы или ссылки не прочитались")
             _set_job(
                 db,
                 job,
@@ -322,6 +341,7 @@ def _process_job_sync(job_id: str) -> None:
     except Exception as exc:
         job = db.get(Job, job_id)
         if job:
+            release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
             _persist_failure_evidence(db, job, exc, stage=stage)
             _set_job(db, job, status="failed", progress=100, message="Ошибка обработки", error=str(exc))
             job.completed_at = now_utc()
@@ -516,6 +536,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     job.evidence_path = str(evidence_path)
     if not accepted:
         job.result_path = ""
+        release_job_reservation(db, job, note="Резерв возвращён: поставщики не найдены")
         _set_job(
             db,
             job,
@@ -540,8 +561,8 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         status = "completed"
         message = _supplier_count_message("Готово", len(accepted), job.target_suppliers)
     elif settings.allow_partial_supplier_reports:
-        status = "partial"
-        message = _supplier_count_message("Частично готово", len(accepted), job.target_suppliers)
+        status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        message = _supplier_count_message("Найдено меньше поставщиков", len(accepted), job.target_suppliers)
     else:
         status = "needs_review"
         message = _supplier_count_message("Нужна ручная проверка", len(accepted), job.target_suppliers)
@@ -656,6 +677,12 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     job.result_path = str(zip_path)
     job.evidence_path = str(evidence_path)
     if not accepted:
+        release_job_kind_reservation(
+            db,
+            job,
+            KIND_SUPPLIER_SEARCH,
+            note="Резерв поставщиков возвращён: подтверждённых поставщиков нет",
+        )
         _set_job(
             db,
             job,
@@ -669,7 +696,14 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     elif len(accepted) >= job.target_suppliers:
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
     else:
-        _set_job(db, job, status="partial", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
+        _set_job(
+            db,
+            job,
+            status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+            progress=100,
+            message=_supplier_count_message("Анализ готов, найдено меньше поставщиков", len(accepted), job.target_suppliers),
+            error="",
+        )
     job.completed_at = now_utc()
     db.commit()
 
@@ -733,7 +767,7 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         .filter(
             or_(
                 and_(
-                    Job.status.in_(["completed", "partial", "needs_review"]),
+                    Job.status.in_(["completed", "partial", "needs_review", STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED]),
                     Job.completed_at.is_not(None),
                     Job.completed_at < completed_cutoff,
                 ),

@@ -10,6 +10,14 @@ from .models import SystemSettings, parse_json_dict, parse_json_list
 
 AI_ROUTING_FALLBACK_PRIMARY = "__primary__"
 AI_ROUTING_FALLBACK_LIGHT = "__light__"
+DEFAULT_MODEL_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "gemini-3.1-pro-preview": ("gemini-3-pro-preview", "gemini-2.5-flash"),
+    "gemini-3-pro-preview": ("gemini-3.1-pro-preview", "gemini-2.5-flash"),
+    "gemini-3-flash-preview": ("gemini-3.1-flash-lite-preview", "gemini-2.5-flash"),
+    "gemini-3.1-flash-lite-preview": ("gemini-3-flash-preview", "gemini-2.5-flash-lite"),
+    "gemini-3.5-flash": ("gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"),
+    "gemini-3.1-flash-lite": ("gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"),
+}
 
 
 @dataclass(frozen=True)
@@ -108,22 +116,48 @@ def get_model_selection(
     )
 
 
-async def call_llm(
+def model_fallbacks_for(model: str) -> tuple[str, ...]:
+    return DEFAULT_MODEL_FALLBACKS.get(str(model or "").strip(), ())
+
+
+def model_selection_attempts(
     settings: SystemSettings,
-    prompt: str,
     *,
-    system_prompt: str = "",
     tier: str = "light",
     routing_key: str | None = None,
     override: str | None = None,
-    json_mode: bool = False,
-    timeout_seconds: float = 90.0,
+) -> list[ModelSelection]:
+    first = get_model_selection(settings, tier=tier, routing_key=routing_key, override=override)
+    attempts = [first]
+    seen = {f"{first.provider_id}:{first.model}"}
+    if override:
+        return attempts
+    for model in model_fallbacks_for(first.model):
+        key = f"{first.provider_id}:{model}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            attempts.append(
+                get_model_selection(
+                    settings,
+                    tier=tier,
+                    routing_key=None,
+                    override=key,
+                )
+            )
+        except Exception:
+            continue
+    return attempts
+
+
+async def _post_llm_request(
+    selection: ModelSelection,
+    messages: list[dict[str, str]],
+    *,
+    json_mode: bool,
+    timeout_seconds: float,
 ) -> str:
-    selection = get_model_selection(settings, tier=tier, routing_key=routing_key, override=override)
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
     payload: dict[str, Any] = {
         "model": selection.model,
         "messages": messages,
@@ -141,6 +175,55 @@ async def call_llm(
         response.raise_for_status()
         data = response.json()
     return str(data["choices"][0]["message"]["content"] or "")
+
+
+async def call_llm(
+    settings: SystemSettings,
+    prompt: str,
+    *,
+    system_prompt: str = "",
+    tier: str = "light",
+    routing_key: str | None = None,
+    override: str | None = None,
+    json_mode: bool = False,
+    timeout_seconds: float = 90.0,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    attempts = model_selection_attempts(settings, tier=tier, routing_key=routing_key, override=override)
+    last_error: Exception | None = None
+    attempted_models: list[str] = []
+    for selection in attempts:
+        attempted_models.append(f"{selection.provider_name}:{selection.model}")
+        try:
+            result = await _post_llm_request(
+                selection,
+                messages,
+                json_mode=json_mode,
+                timeout_seconds=timeout_seconds,
+            )
+            if metadata is not None:
+                metadata.update(
+                    {
+                        "provider_id": selection.provider_id,
+                        "provider_name": selection.provider_name,
+                        "model": selection.model,
+                        "attempted_models": attempted_models.copy(),
+                    }
+                )
+            return result
+        except Exception as exc:
+            last_error = exc
+    if metadata is not None:
+        metadata["attempted_models"] = attempted_models.copy()
+    if last_error is None:
+        raise RuntimeError("AI model selection failed")
+    raise RuntimeError(
+        f"{last_error}; tried models: {', '.join(attempted_models)}"
+    ) from last_error
 
 
 def parse_json_object(text: str) -> dict:

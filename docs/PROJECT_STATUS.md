@@ -54,8 +54,17 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show linked Telegram accounts, access state, two commercial
-  limits, current usage, remaining units, and recent write-offs;
+- customer cards show linked Telegram accounts, access state, available balance,
+  reserved units, spent units, manual grants, and collapsed billing history;
+- the owner can create clients by Telegram username before the real Telegram ID
+  is known, edit linked Telegram accounts, grant arbitrary units by function,
+  and delete extra Telegram accounts;
+- customer deletion is allowed only when the customer has no jobs. If there are
+  no jobs, related billing rows are removed with the customer. If jobs exist,
+  deletion is blocked to preserve report and billing history, and the owner
+  should use `Отключить`;
+- admin API errors are shown as readable Russian messages in the top alert
+  instead of looking like a silent button failure;
 - service/internal jobs are hidden by default in the jobs list;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
@@ -175,18 +184,27 @@ Source-link contract:
 
 ## Procurement Documentation Analysis
 
-Documentation analysis is AI-required. The system must not generate a
-customer DOCX report when the AI provider is missing, report generation fails,
-or AI verification rejects the report without a corrected version.
+Documentation analysis is AI-required, but the paid product policy is to give
+the customer a useful report whenever the system can produce one. Quality work
+must focus on root-cause prevention: better model routing, stronger checks,
+repairs, owner alerts, and clearer customer disclaimers. Do not make "do not
+issue the report/result" the primary quality strategy unless the user explicitly
+asks for that policy.
 
 Hard contract:
 
 - source pages and uploaded documents are context for AI, not a replacement for
   AI analysis;
-- no deterministic fallback report is issued to the customer when AI is
-  unavailable;
+- if AI is unavailable or the draft cannot be produced at all, the user-facing
+  message should be soft and commercial: explain that the AI analysis service is
+  temporarily unavailable and that billing stays fair;
+- AI-generated customer reports should include a soft disclaimer: the report is
+  an AI-assisted procurement analysis, useful for preliminary/business review,
+  but critical legal, financial, technical, deadline, and submission decisions
+  should be checked against the official documents; the service owner does not
+  accept responsibility for decisions made solely from the AI report;
 - official procurement card fields are treated as authoritative facts before
-  the DOCX is released;
+  the DOCX is generated/repaired;
 - for EIS and other official source pages, the report must preserve literal
   card values for procurement method, submission deadline, results date, НМЦК,
   customer, ИНН/КПП, platform, and legal regime when present;
@@ -194,8 +212,10 @@ Hard contract:
   not add time to a results date when the official source contains only a date;
 - if the AI draft conflicts with official card facts, the system asks AI to
   repair the report and validates the repaired report again;
-- if official-card validation still fails after AI repair, the job fails
-  honestly instead of publishing a misleading DOCX.
+- if validation still finds issues after repair, the report should carry a
+  concise quality warning/evidence note and the owner should be alerted, while
+  engineering work focuses on fixing the root cause in prompts, validators,
+  model routing, or parsers.
 
 ## Minpromtorg And GISP Registry Handling
 
@@ -256,9 +276,29 @@ without polluting the customer's XLSX report.
 
 ## Verification Snapshot
 
-Latest task evidence: `.agent/tasks/2026-06-03-admin-ui-10/`.
+Latest task evidence: `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 
-Fresh checks from the latest admin UI / limits / provider-settings pass:
+Fresh checks from the latest billing, Telegram, and admin-button pass:
+
+- Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests` -> `169 passed`, `2` warnings.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- Live admin Playwright button check on `https://aipoisk.lexelence.ru`:
+  `32` checks passed, `0` failed API responses, `0` console errors, `0` page
+  errors.
+- Live admin button coverage included login, navigation, client create/open,
+  client disable/enable, Telegram account add/save/delete, manual grant, delete
+  new temporary client, confirm old `Тестовый клиент` is absent, job evidence,
+  job download, job retry on a temporary job, tariff create/edit/toggle/delete,
+  contact save, settings save, AI model check/save, and refresh.
+- Production services after verification: `aipoisk-api.service`,
+  `aipoisk-worker.service`, and `aipoisk-bot.service` were active; local health
+  returned `ok=true`.
+- Smoke cleanup check: temporary UI clients, tariffs, and test jobs were absent
+  after the Playwright run; old `Тестовый клиент` / Telegram ID `123456789` was
+  absent after deletion.
+
+Earlier admin UI / limits / provider-settings evidence:
 
 - Backend tests: `cd backend && PYTHONPATH=. pytest -q` -> `129 passed`,
   `2` warnings, `35` subtests passed.

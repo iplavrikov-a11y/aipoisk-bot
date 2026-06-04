@@ -37,7 +37,7 @@ Primary domain: `https://aipoisk.lexelence.ru`
 ## Current status
 
 - Current production status and the remaining commercial hardening backlog are documented in `docs/PROJECT_STATUS.md`.
-- Latest admin UI, limits, provider settings, and load-test evidence is in `.agent/tasks/2026-06-03-admin-ui-10/`.
+- Latest billing, Telegram UX, admin client deletion, tariff/payment, and button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 
 ## Local development
