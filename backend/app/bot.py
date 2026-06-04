@@ -24,7 +24,7 @@ from .jobs import (
 )
 from .models import Client, Job
 from .procurement_sources import source_label, source_payloads_from_text
-from .repository import client_access_error, get_or_create_settings, seed_owner_client
+from .repository import client_access_error, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client
 
 router = Router()
 PENDING_MODES: dict[int, str] = {}
@@ -108,6 +108,43 @@ def _supplier_multi_job_specs(pending: PendingBatch) -> list[tuple[str, list[tup
         (Path(filename).stem[:120], [(filename, content)])
         for filename, content in pending.files
     ]
+
+
+def _telegram_user_fields(message: Message) -> tuple[str, str, str]:
+    user = message.from_user
+    telegram_id = str(user.id if user else "")
+    username = str(getattr(user, "username", "") or "")
+    name = " ".join(
+        item
+        for item in [
+            str(getattr(user, "first_name", "") or "").strip(),
+            str(getattr(user, "last_name", "") or "").strip(),
+        ]
+        if item
+    )
+    return telegram_id, username, name
+
+
+def _trial_restricted_text(scenario: str) -> str:
+    if scenario == SCENARIO_SUPPLIERS_MULTI:
+        return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ для поиска поставщиков."
+    return "В бесплатном доступе режим «Анализ + поставщики» недоступен. Запустите анализ и поиск поставщиков отдельно."
+
+
+async def _reject_trial_restricted_scenario(message: Message, scenario: str) -> bool:
+    telegram_id, username, name = _telegram_user_fields(message)
+    db = SessionLocal()
+    try:
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await message.answer(account_error, reply_markup=main_menu())
+            return True
+        if client and client.is_trial:
+            await message.answer(_trial_restricted_text(scenario), reply_markup=main_menu())
+            return True
+    finally:
+        db.close()
+    return False
 
 
 def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
@@ -453,10 +490,13 @@ async def show_id(message: Message) -> None:
 
 @router.message(Command("status"))
 async def show_status(message: Message) -> None:
-    telegram_id = str(message.from_user.id if message.from_user else "")
+    telegram_id, username, name = _telegram_user_fields(message)
     db = SessionLocal()
     try:
-        client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await message.answer(account_error, reply_markup=main_menu())
+            return
         if not client:
             await message.answer(
                 "Доступ не подключён.\n\n"
@@ -515,6 +555,8 @@ async def supplier_single_button(message: Message) -> None:
 
 @router.message(F.text == BUTTON_SUPPLIERS_MULTI)
 async def supplier_multi_button(message: Message) -> None:
+    if await _reject_trial_restricted_scenario(message, SCENARIO_SUPPLIERS_MULTI):
+        return
     PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_MULTI
     await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
 
@@ -526,6 +568,8 @@ async def report_button(message: Message) -> None:
 
 @router.message(F.text == BUTTON_ANALYSIS_AND_SUPPLIERS)
 async def analysis_and_suppliers_button(message: Message) -> None:
+    if await _reject_trial_restricted_scenario(message, SCENARIO_ANALYSIS_AND_SUPPLIERS):
+        return
     PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
     await message.answer(
         "Анализ документации + поиск поставщиков.\n\n"
@@ -571,20 +615,28 @@ async def run_batch_button(message: Message) -> None:
     launch_started = False
     db = SessionLocal()
     try:
-        client = db.query(Client).filter(Client.telegram_id == pending.telegram_id).first()
-        error = client_access_error(db, client, pending.mode, incoming_file_count=len(pending.files))
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, pending.telegram_id)
+        supplier_job_specs = _supplier_multi_job_specs(pending)
+        supplier_search_count = len(supplier_job_specs) if supplier_job_specs else 1
+        error = account_error or client_access_error(
+            db,
+            client,
+            pending.mode,
+            incoming_file_count=len(pending.files),
+            supplier_search_count=supplier_search_count,
+        )
         if error:
             BATCH_RUNNING_CHATS.discard(message.chat.id)
             await message.answer(error, reply_markup=batch_menu())
             return
         assert client is not None
         settings = get_or_create_settings(db)
-        supplier_job_specs = _supplier_multi_job_specs(pending)
         if supplier_job_specs:
             for title, files in supplier_job_specs:
                 created = create_job(
                     db,
                     client_id=client.id,
+                    created_by_telegram_id=pending.telegram_id,
                     mode=MODE_SUPPLIER_SEARCH,
                     title=title,
                     target_suppliers=settings.default_supplier_target,
@@ -597,6 +649,7 @@ async def run_batch_button(message: Message) -> None:
             job = create_job(
                 db,
                 client_id=client.id,
+                created_by_telegram_id=pending.telegram_id,
                 mode=pending.mode,
                 title=title,
                 target_suppliers=settings.default_supplier_target,
@@ -675,10 +728,13 @@ def _output_caption(mode: str, output: Path) -> str:
 
 @router.message(F.text == BUTTON_ACCESS)
 async def access_button(message: Message) -> None:
-    telegram_id = str(message.from_user.id if message.from_user else "")
+    telegram_id, username, name = _telegram_user_fields(message)
     db = SessionLocal()
     try:
-        client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await message.answer(account_error, reply_markup=main_menu())
+            return
         if not client:
             await message.answer(
                 "Доступ не подключён.\n\n"
@@ -695,10 +751,11 @@ async def access_button(message: Message) -> None:
         await message.answer(
             "Ваш доступ:\n"
             f"Статус: {'включён' if client.is_active else 'выключен'}\n"
+            f"Тип: {'бесплатный' if client.is_trial else 'клиентский'}\n"
             f"Срок: {client.access_until or 'без даты'}\n"
             f"Функции: {', '.join(features) if features else 'не включены'}\n"
-            f"Лимит задач в месяц: {client.monthly_job_limit}\n"
-            f"Лимит файлов в месяц: {client.monthly_file_limit}",
+            f"Лимит поиска поставщиков в месяц: {client.monthly_supplier_search_limit}\n"
+            f"Лимит анализа документации в месяц: {client.monthly_procurement_report_limit}",
             reply_markup=main_menu(),
         )
     finally:
@@ -729,9 +786,9 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
     mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
     try:
-        telegram_id = str(message.from_user.id if message.from_user else "")
-        client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
-        error = client_access_error(db, client, mode, incoming_file_count=1)
+        telegram_id, username, name = _telegram_user_fields(message)
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        error = account_error or client_access_error(db, client, mode, incoming_file_count=1)
         if error:
             await message.answer(error, reply_markup=main_menu())
             return
@@ -757,6 +814,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             job = create_job(
                 db,
                 client_id=client.id,
+                created_by_telegram_id=telegram_id,
                 mode=mode,
                 title=title,
                 target_suppliers=settings.default_supplier_target,
@@ -805,9 +863,9 @@ async def _handle_source_text(message: Message) -> bool:
     db = SessionLocal()
     job_id: str | None = None
     try:
-        telegram_id = str(message.from_user.id if message.from_user else "")
-        client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
-        error = client_access_error(db, client, mode, incoming_file_count=0)
+        telegram_id, username, name = _telegram_user_fields(message)
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        error = account_error or client_access_error(db, client, mode, incoming_file_count=0)
         if error:
             await message.answer(error, reply_markup=main_menu())
             return True

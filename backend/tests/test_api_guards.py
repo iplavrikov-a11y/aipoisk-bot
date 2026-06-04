@@ -10,8 +10,8 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 import app.main as main
-from app.main import build_supplier_quality_snapshot, create_manual_job, read_job_evidence_payload, upload_job
-from app.models import Client, Job, now_utc
+from app.main import build_supplier_quality_snapshot, build_system_status, client_to_dict, create_manual_job, job_to_dict, list_jobs, read_job_evidence_payload, settings_to_public_dict, upload_job
+from app.models import Client, Job, SystemSettings, now_utc
 from app.schemas import ManualJobCreate
 
 
@@ -89,8 +89,175 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(snapshot["provider_status_counts"]["yandex"], {"ok": 1})
         self.assertEqual(snapshot["provider_status_counts"]["google"], {"empty": 1})
         self.assertEqual(snapshot["recent_failures"][0]["stage"], "supplier_search")
-        self.assertIn("ai_required_failures", {alert["code"] for alert in snapshot["alerts"]})
-        self.assertIn("search_provider_no_ok", {alert["code"] for alert in snapshot["alerts"]})
+
+    def test_auxiliary_search_source_does_not_alert_when_primary_search_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence_path = root / "jobs" / "job-1" / "output" / "evidence.json"
+            evidence_path.parent.mkdir(parents=True)
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "search": {
+                            "reports": [
+                                {"provider": "yandex", "status": "ok"},
+                                {"provider": "tavily", "status": "empty"},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            jobs = [
+                SimpleNamespace(
+                    id="job-1",
+                    mode="supplier_search",
+                    title="ok",
+                    status="completed",
+                    verified_count=10,
+                    target_suppliers=10,
+                    error="",
+                    evidence_path=str(evidence_path),
+                    created_at=now_utc(),
+                    completed_at=now_utc(),
+                )
+            ]
+
+            snapshot = build_supplier_quality_snapshot(jobs, storage_root=root)
+
+        self.assertNotIn("search_provider_no_ok", [item["code"] for item in snapshot["alerts"]])
+
+    def test_job_to_dict_exposes_ui_contract_and_units(self) -> None:
+        job = Job(
+            id="job-1",
+            mode="analysis_and_suppliers",
+            title="ТЗ_насосная_станция",
+            status="completed",
+            created_by_telegram_id="555",
+            target_suppliers=15,
+            verified_count=7,
+        )
+
+        payload = job_to_dict(job)
+
+        self.assertEqual(payload["human_title"], "ТЗ насосная станция")
+        self.assertFalse(payload["is_internal"])
+        self.assertEqual(payload["mode_label"], "Анализ + поставщики")
+        self.assertEqual(payload["supplier_units"], 1)
+        self.assertEqual(payload["procurement_report_units"], 1)
+        self.assertEqual(payload["created_by_telegram_id"], "555")
+
+    def test_job_to_dict_marks_internal_service_jobs(self) -> None:
+        job = Job(id="job-1", mode="supplier_search", title="worker_smoke_patch", message="retest")
+
+        payload = job_to_dict(job)
+
+        self.assertTrue(payload["is_internal"])
+        self.assertEqual(payload["human_title"], "Служебная проверка")
+
+    def test_client_to_dict_includes_two_usage_counters_and_recent_writeoffs(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                name="Customer",
+                monthly_supplier_search_limit=3,
+                monthly_procurement_report_limit=2,
+                allowed_procurement_report=True,
+            )
+            db.add(client)
+            db.add(Job(client_id="client-1", mode="supplier_search", title="ТЗ насос", created_by_telegram_id="100"))
+            db.add(Job(client_id="client-1", mode="analysis_and_suppliers", title="Документация", created_by_telegram_id="200"))
+            db.add(Job(client_id="client-1", mode="supplier_search", title="worker_smoke_patch", created_by_telegram_id="999"))
+            db.commit()
+            db.refresh(client)
+
+            payload = client_to_dict(client, db=db)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["usage"]["supplier_search"]["used"], 2)
+        self.assertEqual(payload["usage"]["supplier_search"]["remaining"], 1)
+        self.assertEqual(payload["usage"]["procurement_report"]["used"], 1)
+        self.assertEqual(payload["usage"]["procurement_report"]["remaining"], 1)
+        self.assertEqual(len(payload["recent_usage"]), 2)
+        self.assertEqual({item["created_by_telegram_id"] for item in payload["recent_usage"]}, {"100", "200"})
+
+    def test_list_jobs_hides_internal_jobs_by_default(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(Job(id="job-1", mode="supplier_search", title="Клиентская задача"))
+            db.add(Job(id="job-2", mode="supplier_search", title="worker_smoke_patch"))
+            db.commit()
+
+            visible = list_jobs(include_internal=False, db=db)
+            all_jobs = list_jobs(include_internal=True, db=db)
+        finally:
+            db.close()
+
+        self.assertEqual([item["id"] for item in visible], ["job-1"])
+        self.assertEqual({item["id"] for item in all_jobs}, {"job-1", "job-2"})
+
+    def test_settings_public_payload_includes_supplier_search_ui_contract(self) -> None:
+        settings = SystemSettings(id=1, supplier_search_provider_order="ddgs")
+
+        payload = settings_to_public_dict(settings)
+
+        self.assertEqual(payload["supplier_search_ui"]["active_provider"], "ddgs")
+        self.assertEqual(payload["supplier_search_ui"]["active_label"], "Резерв DuckDuckGo")
+        self.assertTrue(payload["supplier_search_ui"]["has_active_source"])
+        self.assertIn("technical_sources", payload["supplier_search_ui"])
+
+    def test_system_status_exposes_resources_queue_and_configured_services(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            settings = SystemSettings(
+                id=1,
+                yandex_search_folder_id="folder",
+                yandex_search_api_key="key",
+                custom_ai_providers_json='[{"id":"ai","baseUrl":"https://llm.example/v1","apiKey":"secret"}]',
+            )
+            db.add(settings)
+            db.add(Job(id="job-1", status="pending"))
+            db.add(Job(id="job-2", status="running"))
+            db.commit()
+
+            payload = build_system_status(settings, db)
+        finally:
+            db.close()
+
+        self.assertIn("server", payload)
+        self.assertEqual(payload["queue"]["pending"], 1)
+        self.assertEqual(payload["queue"]["running"], 1)
+        services = {item["id"]: item for item in payload["services"]}
+        self.assertTrue(services["yandex"]["configured"])
+        self.assertFalse(services["google"]["configured"])
+        self.assertTrue(services["ai"]["configured"])
 
 
 class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):

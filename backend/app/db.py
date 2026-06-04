@@ -37,6 +37,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
+    _ensure_legacy_client_accounts()
 
 
 def _ensure_schema() -> None:
@@ -52,6 +53,20 @@ def _ensure_schema() -> None:
         "yandex_search_api_key": "TEXT DEFAULT ''",
         "google_search_api_key": "TEXT DEFAULT ''",
         "google_search_cse_id": "VARCHAR(255) DEFAULT ''",
+        "trial_enabled": "BOOLEAN DEFAULT 0",
+        "trial_supplier_search_limit": "INTEGER DEFAULT 0",
+        "trial_procurement_report_limit": "INTEGER DEFAULT 0",
+        "trial_file_limit": "INTEGER DEFAULT 10",
+    }
+    clients_existing = _existing_columns(inspector, "clients")
+    client_additions = {
+        "is_trial": "BOOLEAN DEFAULT 0",
+        "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
+        "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
+    }
+    jobs_existing = _existing_columns(inspector, "jobs")
+    job_additions = {
+        "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
     }
     supplier_results_existing = _existing_columns(inspector, "supplier_results")
     supplier_results_additions = {
@@ -74,6 +89,30 @@ def _ensure_schema() -> None:
         for column, definition in system_settings_additions.items():
             if column not in system_settings_existing:
                 connection.execute(text(f"ALTER TABLE system_settings ADD COLUMN {column} {definition}"))
+        if "supplier_search_provider_order" in system_settings_existing:
+            connection.execute(
+                text(
+                    """
+                    UPDATE system_settings
+                    SET supplier_search_provider_order = 'yandex,google,tavily,ddgs'
+                    WHERE supplier_search_provider_order IS NULL
+                       OR TRIM(supplier_search_provider_order) = ''
+                       OR supplier_search_provider_order = 'tavily,ddgs'
+                    """
+                )
+            )
+        added_client_columns: set[str] = set()
+        for column, definition in client_additions.items():
+            if column not in clients_existing:
+                connection.execute(text(f"ALTER TABLE clients ADD COLUMN {column} {definition}"))
+                added_client_columns.add(column)
+        if "monthly_supplier_search_limit" in added_client_columns and "monthly_job_limit" in clients_existing:
+            connection.execute(text("UPDATE clients SET monthly_supplier_search_limit = monthly_job_limit"))
+        if "monthly_procurement_report_limit" in added_client_columns and "monthly_job_limit" in clients_existing:
+            connection.execute(text("UPDATE clients SET monthly_procurement_report_limit = monthly_job_limit"))
+        for column, definition in job_additions.items():
+            if column not in jobs_existing:
+                connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
         for column, definition in supplier_results_additions.items():
             if column not in supplier_results_existing:
                 connection.execute(text(f"ALTER TABLE supplier_results ADD COLUMN {column} {definition}"))
@@ -83,6 +122,38 @@ def _existing_columns(inspector, table_name: str) -> set[str]:
     if not inspector.has_table(table_name):
         return set()
     return {column["name"] for column in inspector.get_columns(table_name)}
+
+
+def _ensure_legacy_client_accounts() -> None:
+    from .models import Client, ClientTelegramAccount
+
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        clients = db.query(Client).all()
+        changed = False
+        for client in clients:
+            telegram_id = str(client.telegram_id or "").strip()
+            if not telegram_id:
+                continue
+            existing = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
+            if existing:
+                continue
+            db.add(
+                ClientTelegramAccount(
+                    client_id=client.id,
+                    telegram_id=telegram_id,
+                    username=client.username,
+                    name=client.name,
+                    is_active=True,
+                    notes="Migrated from clients.telegram_id",
+                )
+            )
+            changed = True
+        if changed:
+            db.commit()
+    finally:
+        db.close()
 
 
 def db_session():

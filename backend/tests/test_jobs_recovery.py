@@ -179,6 +179,25 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_claim_next_job_can_claim_100_pending_jobs_without_duplicates(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            jobs_to_add = [Job(mode="supplier_search", status="pending", title=f"queued-{index}") for index in range(100)]
+            db.add_all(jobs_to_add)
+            db.commit()
+
+            claimed = [claim_next_job(db, worker_id=f"worker-{index}") for index in range(100)]
+            extra_claim = claim_next_job(db, worker_id="worker-extra")
+
+            self.assertEqual(len([item for item in claimed if item]), 100)
+            self.assertEqual(len(set(claimed)), 100)
+            self.assertIsNone(extra_claim)
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

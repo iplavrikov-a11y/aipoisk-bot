@@ -1,0 +1,70 @@
+{
+  "status": "passed",
+  "checked_at": "2026-06-03",
+  "backend_tests": "129 passed, 2 warnings, 35 subtests passed",
+  "frontend_build": "passed: dist/assets/index-BArkB0qI.js and dist/assets/index-UyMd111n.css",
+  "diff_check": "passed",
+  "queue_stress_100": {
+    "created": 100,
+    "claimed": 100,
+    "duplicates": 0,
+    "pending": 0,
+    "running": 100,
+    "extra": null
+  },
+  "visual_audit": {
+    "horizontal_overflow": false,
+    "client_cards_collapsed_by_default": true,
+    "old_model_aliases_absent": true,
+    "tavily_not_before_yandex": true
+  },
+  "ai_models_focused_audit": {
+    "forbidden_ui_words_absent": true,
+    "function_dropdowns_show_model_id_only": true,
+    "standard_provider_rows_present": [
+      "openrouter:OpenRouter",
+      "open-ai:OpenAI",
+      "gemini:Gemini",
+      "polza:Polza"
+    ],
+    "openrouter_base_url": "https://openrouter.ai/api/v1",
+    "polza_base_url": "https://api.polza.ai/v1",
+    "provider_dropdowns_show_provider_id": true,
+    "desktop_horizontal_overflow": false,
+    "mobile_horizontal_overflow": false
+  },
+  "provider_settings_db_update": {
+    "backup": "data/aipoisk.db.backup-before-polza-url-fix-20260603T210910Z",
+    "openrouter_api_key_set": false,
+    "polza_api_key_set": false,
+    "open_ai_api_key_preserved": true,
+    "gemini_api_key_preserved": true
+  },
+  "safe_load_simulation_100_clients_1000_jobs": {
+    "clients": 100,
+    "jobs_per_client": 10,
+    "created_jobs": 1000,
+    "access_errors": 0,
+    "mode_counts": {
+      "supplier_search": 400,
+      "procurement_report": 300,
+      "analysis_and_suppliers": 300
+    },
+    "usage_ok": true,
+    "per_client_ok": true,
+    "workers": 40,
+    "claimed_jobs": 1000,
+    "duplicate_claims": 0,
+    "statuses": {
+      "running": 1000
+    },
+    "create_seconds": 6.391,
+    "claim_seconds": 6.778
+  },
+  "remaining_risks": [
+    "OpenRouter and Polza API keys are not present in saved settings, so these providers are configured by Base URL but not ready for live calls until keys are added.",
+    "Real external billing balances are not fetched because AI Poisk does not yet have confirmed billing API contracts for every configured service.",
+    "The 1000-job stress test validates client creation, limit accounting, queue claiming, and duplicate prevention without spending real AI/search balances; full production throughput still depends on worker count, external API limits, and document sizes.",
+    "Current runtime has one aipoisk-worker process, so a real 1000-job burst would queue successfully but process at single-worker throughput unless workers are scaled."
+  ]
+}

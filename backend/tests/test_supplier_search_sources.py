@@ -25,7 +25,7 @@ from app.supplier_search import (
 
 
 class SearchSourceTests(unittest.TestCase):
-    def test_provider_order_prefers_yandex_google_before_tavily_and_ddgs(self) -> None:
+    def test_provider_order_defaults_to_yandex_google_then_auxiliary_sources(self) -> None:
         settings = SimpleNamespace(supplier_search_provider_order="")
 
         self.assertEqual(_provider_order(settings), ["yandex", "google", "tavily", "ddgs"])

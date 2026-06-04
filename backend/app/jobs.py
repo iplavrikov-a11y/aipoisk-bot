@@ -46,6 +46,7 @@ def create_job(
     db: Session,
     *,
     client_id: str | None,
+    created_by_telegram_id: str = "",
     mode: str,
     title: str,
     target_suppliers: int,
@@ -56,6 +57,7 @@ def create_job(
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
         client_id=client_id,
+        created_by_telegram_id=str(created_by_telegram_id or ""),
         mode=mode,
         title=title,
         target_suppliers=target_suppliers,
@@ -147,22 +149,45 @@ def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNN
 
 def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STALE_RUNNING_AFTER) -> str | None:
     now = now_utc()
+    stale_cutoff = now - stale_after
     jobs = (
         db.query(Job)
-        .filter(Job.status.in_(["pending", "running"]))
+        .filter(
+            or_(
+                Job.status == "pending",
+                and_(Job.status == "running", Job.updated_at < stale_cutoff),
+            )
+        )
         .order_by(Job.created_at.asc())
         .limit(20)
         .all()
     )
     for job in jobs:
         if job.status == "pending" or should_requeue_stale_job(job.status, job.updated_at, now, stale_after):
-            job.status = "running"
-            job.progress = 0
-            job.message = "Задача взята в обработку"
-            job.error = ""
-            job.updated_at = now
-            db.commit()
-            return job.id
+            rows = (
+                db.query(Job)
+                .filter(Job.id == job.id)
+                .filter(
+                    or_(
+                        Job.status == "pending",
+                        and_(Job.status == "running", Job.updated_at < stale_cutoff),
+                    )
+                )
+                .update(
+                    {
+                        Job.status: "running",
+                        Job.progress: 0,
+                        Job.message: "Задача взята в обработку",
+                        Job.error: "",
+                        Job.updated_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if rows:
+                db.commit()
+                return job.id
+            db.rollback()
     return None
 
 

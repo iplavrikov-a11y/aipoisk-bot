@@ -13,6 +13,10 @@ class SettingsPatch(BaseModel):
     default_supplier_target: int | None = Field(default=None, ge=1, le=100)
     allow_partial_supplier_reports: bool | None = None
     logistics_enabled: bool | None = None
+    trial_enabled: bool | None = None
+    trial_supplier_search_limit: int | None = Field(default=None, ge=0, le=10000)
+    trial_procurement_report_limit: int | None = Field(default=None, ge=0, le=10000)
+    trial_file_limit: int | None = Field(default=None, ge=0, le=100000)
     primary_provider: str | None = None
     primary_model: str | None = None
     light_provider: str | None = None
@@ -44,10 +48,13 @@ class ClientCreate(BaseModel):
     name: str = ""
     username: str = ""
     is_active: bool = True
+    is_trial: bool = False
     access_until: str = ""
     allowed_supplier_search: bool = True
     allowed_procurement_report: bool = False
     monthly_job_limit: int = Field(default=100, ge=0)
+    monthly_supplier_search_limit: int = Field(default=100, ge=0)
+    monthly_procurement_report_limit: int = Field(default=100, ge=0)
     monthly_file_limit: int = Field(default=300, ge=0)
     notes: str = ""
 
@@ -56,11 +63,29 @@ class ClientPatch(BaseModel):
     name: str | None = None
     username: str | None = None
     is_active: bool | None = None
+    is_trial: bool | None = None
     access_until: str | None = None
     allowed_supplier_search: bool | None = None
     allowed_procurement_report: bool | None = None
     monthly_job_limit: int | None = Field(default=None, ge=0)
+    monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
+    monthly_procurement_report_limit: int | None = Field(default=None, ge=0)
     monthly_file_limit: int | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+
+class ClientTelegramAccountCreate(BaseModel):
+    telegram_id: str
+    username: str = ""
+    name: str = ""
+    is_active: bool = True
+    notes: str = ""
+
+
+class ClientTelegramAccountPatch(BaseModel):
+    username: str | None = None
+    name: str | None = None
+    is_active: bool | None = None
     notes: str | None = None
 
 

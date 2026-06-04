@@ -17,11 +17,18 @@ Primary domain: `https://aipoisk.lexelence.ru`
 
 ## MVP scope
 
-- Manual client access management from the admin panel.
-- Telegram document upload with per-user access checks.
+- Manual customer access management from the admin panel, including several
+  Telegram manager accounts under one customer.
+- Shared customer limits for all linked Telegram accounts.
+- Separate commercial limits for supplier reports and procurement-document
+  analyses. `Анализ + поставщики` consumes one unit from each limit.
 - Batch jobs for supplier search and procurement Word reports.
-- Flexible admin settings for storage, limits, report behavior, and AI providers.
-- OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints.
+- Free-period settings for new Telegram accounts, with separate free supplier
+  and documentation-analysis limits.
+- Flexible admin settings for storage, limits, report behavior, search sources,
+  and AI providers.
+- OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints,
+  OpenRouter, Gemini, and Polza.
 - ATI/logistics disabled by default.
 - Document parsing for TXT/CSV/HTML/DOCX/XLSX/XLS/PDF/DOC/RTF/ODT/PPTX/images with OCR, plus ZIP/RAR/7Z archives when system tools are available.
 - Procurement Word reports use the EmailAgent-style AI report structure when an AI provider is configured; otherwise a downloadable fallback draft is marked for review.
@@ -30,7 +37,7 @@ Primary domain: `https://aipoisk.lexelence.ru`
 ## Current status
 
 - Current production status and the remaining commercial hardening backlog are documented in `docs/PROJECT_STATUS.md`.
-- Latest task evidence is in `.agent/tasks/aipoisk-commercial-10/`.
+- Latest admin UI, limits, provider settings, and load-test evidence is in `.agent/tasks/2026-06-03-admin-ui-10/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 
 ## Local development

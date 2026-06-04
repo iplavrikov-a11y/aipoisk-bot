@@ -1,6 +1,6 @@
 # AI Poisk Bot: Project Status
 
-Date: 2026-06-02
+Date: 2026-06-04
 
 ## Current Production State
 
@@ -11,6 +11,70 @@ Date: 2026-06-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
+
+Current runtime note:
+
+- the queue is durable and DB-backed;
+- one `aipoisk-worker` process is currently running, so large real bursts are
+  queued safely but processed at single-worker throughput unless workers are
+  scaled;
+- live throughput also depends on external AI/search provider rate limits and
+  document sizes.
+
+## Commercial Access And Limits
+
+Commercial limits are customer-level, not Telegram-account-level. One customer
+can have several Telegram manager accounts; all linked accounts spend the same
+customer limits.
+
+There are exactly two commercial counters:
+
+- supplier reports;
+- procurement-document analyses.
+
+Mode accounting:
+
+- `Поиск поставщиков` spends supplier-report units;
+- mass supplier search spends one supplier-report unit per independent ТЗ;
+- `Анализ документации` spends one documentation-analysis unit;
+- `Анализ + поставщики` spends one supplier-report unit and one
+  documentation-analysis unit.
+
+Free-period customers can be enabled from admin settings. Trial access has
+separate supplier and documentation-analysis limits. Trial customers cannot use
+mass supplier processing or `Анализ + поставщики`; they must run analysis and
+supplier search separately.
+
+## Admin Console
+
+The admin UI is owner-facing and keeps technical details behind advanced
+sections where possible.
+
+Current admin capabilities:
+
+- collapsed customer cards by default, so long customer notes and usage blocks
+  do not make the customer list unscrollable;
+- customer cards show linked Telegram accounts, access state, two commercial
+  limits, current usage, remaining units, and recent write-offs;
+- service/internal jobs are hidden by default in the jobs list;
+- system status shows server disk/RAM/CPU, storage usage, queue counts, and
+  configured API services without inventing balances;
+- supplier-search settings show Yandex and Google as primary sources, with
+  Tavily as an additional reserve source;
+- AI model settings show exact `modelId` values in function selectors, while
+  provider `id`, `Base URL`, `API key`, and model rows live in the advanced
+  provider section.
+
+AI provider defaults currently used by the admin UI:
+
+- `openrouter`: `https://openrouter.ai/api/v1`;
+- `open-ai`: local OpenAI-compatible CLIProxyAPI endpoint from settings;
+- `gemini`: Gemini proxy endpoint from settings;
+- `polza`: `https://api.polza.ai/v1`.
+
+OpenRouter and Polza Base URLs are configured in the live settings, but their
+API keys are not present in saved settings. Existing OpenAI-compatible and
+Gemini keys are preserved.
 
 ## Supplier Search Architecture
 
@@ -192,32 +256,31 @@ without polluting the customer's XLSX report.
 
 ## Verification Snapshot
 
-Latest verified customer UX smoke job:
+Latest task evidence: `.agent/tasks/2026-06-03-admin-ui-10/`.
 
-- Job ID: `d345a5ca994c4c4cb3c227bbf30e2f96`.
-- Created only through `create_job`; no inline `process_job` call.
-- Queue before create: `0` pending/running jobs.
-- Result: `completed`, `1/1`.
-- Worker progress events: `0`, `28`, `42`, `50`, `66`, `74`, `100`.
-- Progress stages include AI ТЗ analysis, query generation, website search, AI
-  candidate filtering, and site verification.
-- Result XLSX exists.
-- XLSX sheet title: `Поставщики`.
-- Visible XLSX headers: `Компания`, `Сайт`, `Телефоны`, `Email`, `Комментарий`.
-- English/technical headers such as `Search Query`, `Evidence snippet`,
-  `Product fit`, `Contact URL`, and `AI уверенность` are not present.
+Fresh checks from the latest admin UI / limits / provider-settings pass:
 
-Fresh checks from the latest AI-required architecture pass:
-
-- Backend tests: `PYTHONPATH=backend pytest backend/tests -q` -> `88 passed`,
-  `26` subtests passed.
-- Targeted source/API/bot/report/supplier tests:
-  `44 passed`, `26` subtests passed.
-- Python compile check on changed backend modules: OK.
-- Frontend production build: OK.
-- venv dependency check: `No broken requirements found`.
+- Backend tests: `cd backend && PYTHONPATH=. pytest -q` -> `129 passed`,
+  `2` warnings, `35` subtests passed.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- Playwright focused AI model check -> function dropdowns show exact `modelId`;
+  OpenRouter, OpenAI, Gemini, and Polza provider rows are present; desktop and
+  mobile have no horizontal overflow.
+- UI text scan -> no old AI model aliases such as `Сильная модель`, `Быстрая
+  модель`, or `по умолчанию`.
+- Safe load simulation -> 100 customers, 10 jobs each, mixed modes, 1000 jobs
+  created, 40 concurrent claim workers, 1000 claimed, `0` duplicate claims.
 - `git diff --check`: OK.
 - Task verdict JSON syntax: OK.
+
+Load-test boundary:
+
+- the 1000-job simulation validates customer creation, two-counter limit
+  accounting, queue insertion, concurrent claiming, and duplicate prevention in
+  an isolated temporary SQLite DB;
+- it deliberately does not call live AI/search APIs or spend provider balances;
+- real production throughput still requires worker scaling and external
+  provider rate-limit planning.
 - Local health endpoint: HTTP 200.
 - API, bot, and worker services: active after restart.
 - Live DB has `job_sources`.
@@ -263,7 +326,8 @@ Fresh checks from the latest AI-required architecture pass:
   paid batch is run after the minimum is reached, but already AI-verified extra
   rows from the active batch stay in the XLSX.
 
-Detailed task evidence is stored under `.agent/tasks/aipoisk-commercial-10/`.
+Detailed task evidence for the latest admin UI / limits / provider-settings pass
+is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.
 
 ## Safe GitHub Rules
 
@@ -284,8 +348,10 @@ Commit only source code, tests, deploy templates, `.env.example`, README/docs, a
 The main architectural gaps addressed in this pass are implemented. Residual
 risks are narrower:
 
-- DB-backed queue is durable for the current single-worker deployment, but a
-  Redis/Postgres locked queue would be stronger for multiple concurrent workers.
+- DB-backed queue handled the safe 1000-job simulation without duplicate
+  claims, but the current live deployment still has one worker process.
+  Production bursts need worker scaling and external AI/search rate-limit
+  planning.
 - Browser rendering improves contact extraction, but anti-bot sites and unusual
   SPA flows can still require more specialized handling.
 - Procurement source pages can also be blocked by anti-bot controls; the system

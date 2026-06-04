@@ -32,6 +32,10 @@ class SystemSettings(Base):
     default_supplier_target: Mapped[int] = mapped_column(Integer, default=15)
     allow_partial_supplier_reports: Mapped[bool] = mapped_column(Boolean, default=True)
     logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    trial_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    trial_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
+    trial_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
+    trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
 
     primary_provider: Mapped[str] = mapped_column(String(80), default="")
     primary_model: Mapped[str] = mapped_column(String(160), default="")
@@ -68,6 +72,10 @@ class SystemSettings(Base):
             "default_supplier_target": self.default_supplier_target,
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
+            "trial_enabled": self.trial_enabled,
+            "trial_supplier_search_limit": self.trial_supplier_search_limit,
+            "trial_procurement_report_limit": self.trial_procurement_report_limit,
+            "trial_file_limit": self.trial_file_limit,
             "primary_provider": self.primary_provider,
             "primary_model": self.primary_model,
             "light_provider": self.light_provider,
@@ -111,16 +119,39 @@ class Client(Base):
     name: Mapped[str] = mapped_column(String(255), default="")
     username: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_trial: Mapped[bool] = mapped_column(Boolean, default=False)
     access_until: Mapped[str] = mapped_column(String(32), default="")
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=100)
+    monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=100)
+    monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=100)
     monthly_file_limit: Mapped[int] = mapped_column(Integer, default=300)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     jobs: Mapped[list["Job"]] = relationship(back_populates="client")
+    telegram_accounts: Mapped[list["ClientTelegramAccount"]] = relationship(
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
+
+
+class ClientTelegramAccount(Base):
+    __tablename__ = "client_telegram_accounts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(255), default="")
+    name: Mapped[str] = mapped_column(String(255), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship(back_populates="telegram_accounts")
 
 
 class Job(Base):
@@ -128,6 +159,7 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    created_by_telegram_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
