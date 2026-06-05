@@ -1,6 +1,6 @@
 # AI Poisk Bot: Project Status
 
-Date: 2026-06-04
+Date: 2026-06-05
 
 ## Current Production State
 
@@ -130,14 +130,16 @@ Supplier candidates are verified before they reach the final report:
 - customer-facing messages and XLSX summaries show only the actual number
   found and verified; they do not show the configured internal target/minimum.
 
-Mass supplier search contract:
+Telegram supplier input contract:
 
 - `Поставщики по одному ТЗ` creates one supplier-search job from one ТЗ/ООЗ
-  file and returns one XLSX;
+  file or one plain text technical assignment / object description message and
+  returns one XLSX;
 - `Поставщики по нескольким ТЗ` is a mass-processing mode, not a multi-document
   context mode;
-- each uploaded ТЗ/ООЗ file in mass-processing mode creates its own independent
-  supplier-search job with exactly that one file as context;
+- each uploaded ТЗ/ООЗ file or accepted plain text ТЗ message in
+  mass-processing mode creates its own independent supplier-search job with
+  exactly that one input as context;
 - each independent job extracts its own procurement profile, generates its own
   AI search queries, verifies suppliers independently, and returns its own XLSX;
 - unrelated ТЗ files must never be concatenated into one supplier-search
@@ -260,8 +262,9 @@ without polluting the customer's XLSX report.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
 - Telegram has four customer-facing scenarios: suppliers for one ТЗ, suppliers for several ТЗ, documentation analysis, and analysis plus suppliers.
 - Single-ТЗ supplier search starts after one uploaded ТЗ/ООЗ file;
-  multi-ТЗ supplier search collects several ТЗ/ООЗ files and the user starts
-  or clears that set explicitly.
+  it can also start from one plain text ТЗ/ООЗ message.
+- Multi-ТЗ supplier search collects several ТЗ/ООЗ files and/or accepted plain
+  text ТЗ messages; the user starts or clears that set explicitly.
 - Documentation-analysis scenarios can collect files, archives, and/or a
   procurement source link before the user starts processing.
 - `Анализ + поставщики` first uses the full documentation/source context for
@@ -273,12 +276,24 @@ without polluting the customer's XLSX report.
   filtering, site/contact verification, and completion.
 - Admin UI includes supplier quality monitoring and per-job evidence viewing.
 - Admin API exposes `/api/ops/supplier-quality` and `/api/jobs/{job_id}/evidence`.
+- Telegram routing-only code changes require restarting `aipoisk-bot.service`.
+  The API and durable worker can keep running unless their code or settings
+  contracts changed.
 
 ## Verification Snapshot
 
 Latest task evidence: `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 
-Fresh checks from the latest billing, Telegram, and admin-button pass:
+Fresh checks from the latest Telegram text-ТЗ pass:
+
+- Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests` -> `172 passed`, `2` warnings, `42` subtests passed.
+- Targeted Telegram tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
+  pytest backend/tests/test_bot_progress.py -q` -> `27 passed`.
+- Production `aipoisk-bot.service` restarted after routing change and returned
+  `active/running` with start time `2026-06-05 12:50:58 UTC`.
+
+Earlier billing, Telegram, and admin-button pass:
 
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
   backend/tests` -> `169 passed`, `2` warnings.

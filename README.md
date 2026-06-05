@@ -26,6 +26,9 @@ Primary domain: `https://aipoisk.lexelence.ru`
 - Separate commercial limits for supplier reports and procurement-document
   analyses. `Анализ + поставщики` consumes one unit from each limit.
 - Batch jobs for supplier search and procurement Word reports.
+- Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
+  technical assignment/object description message; the text is stored as a
+  `.txt` job input and processed by the same AI-first supplier pipeline.
 - Free-period settings for new Telegram accounts, with separate free supplier
   and documentation-analysis limits.
 - Flexible admin settings for storage, limits, report behavior, search sources,
@@ -83,6 +86,10 @@ cd backend
 . .venv/bin/activate
 python -m app.bot
 ```
+
+Production bot code changes require restarting only `aipoisk-bot.service`;
+the durable queue worker and FastAPI backend do not need a restart for
+Telegram routing-only changes.
 
 The admin panel runs with:
 

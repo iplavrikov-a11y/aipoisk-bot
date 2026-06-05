@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import app.bot as bot_module
 from app.bot import (
     AI_HELP_NOTE,
     BOT_DESCRIPTION,
@@ -26,6 +28,8 @@ from app.bot import (
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
+    _handle_supplier_text_tz,
+    _looks_like_supplier_text_tz,
     _mode_label,
     _owner_problem_alert_text,
     _partial_confirmation_text,
@@ -39,6 +43,7 @@ from app.bot import (
     _batch_running_text,
     _supplier_multi_intro_text,
     _supplier_multi_job_specs,
+    _supplier_text_tz_payload,
     _tariffs_text,
     batch_menu,
     configure_bot_profile,
@@ -431,6 +436,108 @@ class BotProgressFormattingTests(unittest.TestCase):
         )
 
         self.assertEqual(_supplier_multi_job_specs(pending), [])
+
+    def test_supplier_text_tz_detection_and_payload_use_txt_input(self) -> None:
+        text = (
+            "Техническое задание\n"
+            "Поставка насосов ЦНС 60-330, количество 3 шт. "
+            "Нужны производители или поставщики с контактами для запроса КП."
+        )
+
+        self.assertTrue(_looks_like_supplier_text_tz(text))
+        self.assertFalse(_looks_like_supplier_text_tz("https://etp.example.ru/procedure/123"))
+
+        filename, content, title = _supplier_text_tz_payload(text)
+
+        self.assertTrue(filename.endswith(".txt"))
+        self.assertEqual(title, "Техническое задание")
+        self.assertIn("Поставка насосов", content.decode("utf-8"))
+
+
+class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_supplier_text_tz_creates_single_supplier_job(self) -> None:
+        text = (
+            "Техническое задание\n"
+            "Поставка насосов ЦНС 60-330, количество 3 шт. "
+            "Нужны производители или поставщики с контактами для запроса КП."
+        )
+
+        class FakeDb:
+            def close(self) -> None:
+                return None
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.text = text
+                self.chat = SimpleNamespace(id=444)
+                self.from_user = SimpleNamespace(id=123, username="buyer", first_name="Ivan", last_name="")
+                self.answers: list[tuple[str, object]] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        created: dict = {}
+        sent_outputs: list[str] = []
+        message = FakeMessage()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "get_or_create_trial_client_by_telegram_id": bot_module.get_or_create_trial_client_by_telegram_id,
+            "client_access_error": bot_module.client_access_error,
+            "get_or_create_settings": bot_module.get_or_create_settings,
+            "create_job": bot_module.create_job,
+            "_reserve_created_job": bot_module._reserve_created_job,
+            "watch_job_progress": bot_module.watch_job_progress,
+            "_send_job_outputs": bot_module._send_job_outputs,
+        }
+        pending_modes = dict(bot_module.PENDING_MODES)
+        pending_uploads = dict(bot_module.PENDING_UPLOADS)
+        upload_locks = dict(bot_module.CHAT_UPLOAD_LOCKS)
+        try:
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.CHAT_UPLOAD_LOCKS.clear()
+            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS_SINGLE
+            bot_module.SessionLocal = lambda: FakeDb()
+            bot_module.get_or_create_trial_client_by_telegram_id = (
+                lambda _db, telegram_id, username="", name="": (SimpleNamespace(id="client-1"), "")
+            )
+            bot_module.client_access_error = lambda *_args, **_kwargs: ""
+            bot_module.get_or_create_settings = lambda _db: SimpleNamespace(default_supplier_target=3)
+            bot_module.create_job = lambda _db, **kwargs: created.update(kwargs) or SimpleNamespace(id="job-1")
+            bot_module._reserve_created_job = lambda _db, _client, _job: ""
+
+            async def fake_watch_job_progress(_message, job_id: str):
+                return None
+
+            async def fake_send_job_outputs(_message, job_id: str, snapshot=None) -> bool:
+                sent_outputs.append(job_id)
+                return True
+
+            bot_module.watch_job_progress = fake_watch_job_progress
+            bot_module._send_job_outputs = fake_send_job_outputs
+
+            handled = await _handle_supplier_text_tz(message)
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_MODES.update(pending_modes)
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS.update(pending_uploads)
+            bot_module.CHAT_UPLOAD_LOCKS.clear()
+            bot_module.CHAT_UPLOAD_LOCKS.update(upload_locks)
+
+        self.assertTrue(handled)
+        self.assertEqual(created["mode"], MODE_SUPPLIER_SEARCH)
+        self.assertEqual(created["title"], "Техническое задание")
+        self.assertEqual(created["target_suppliers"], 3)
+        self.assertEqual(created["created_by_telegram_id"], "123")
+        self.assertEqual(len(created["files"]), 1)
+        self.assertTrue(created["files"][0][0].endswith(".txt"))
+        self.assertIn("Поставка насосов", created["files"][0][1].decode("utf-8"))
+        self.assertEqual(sent_outputs, ["job-1"])
+        self.assertIn("Принял ТЗ из сообщения", message.answers[0][0])
 
 
 if __name__ == "__main__":

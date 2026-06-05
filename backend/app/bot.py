@@ -101,6 +101,8 @@ class JobProgressSnapshot:
 PENDING_UPLOADS: dict[int, PendingBatch] = {}
 CHAT_UPLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 BATCH_RUNNING_CHATS: set[int] = set()
+TEXT_TZ_MIN_CHARS = 50
+TEXT_TZ_MIN_WORDS = 6
 
 
 def _pending_input_count(pending: PendingBatch) -> int:
@@ -117,6 +119,59 @@ def _source_link_rejection_text() -> str:
         "Ссылку на закупку можно добавить в режимах «Анализ документации» "
         "и «Анализ + поставщики»."
     )
+
+
+def _looks_like_supplier_text_tz(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if len(cleaned) < TEXT_TZ_MIN_CHARS:
+        return False
+    words = _text_words(cleaned)
+    if len(words) < TEXT_TZ_MIN_WORDS:
+        return False
+    lowered = cleaned.lower()
+    markers = (
+        "тз",
+        "техничес",
+        "описание объекта",
+        "объект закуп",
+        "закуп",
+        "поставка",
+        "поставщик",
+        "производител",
+        "требуется",
+        "необходим",
+        "характерист",
+        "спецификац",
+        "количество",
+        "гост",
+        " ту ",
+        " шт",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _text_words(text: str) -> list[str]:
+    return [
+        word
+        for word in text.replace("/", " ").replace("\\", " ").split()
+        if word.strip(".,:;!?()[]{}«»\"'")
+    ]
+
+
+def _supplier_text_tz_payload(text: str, *, index: int | None = None) -> tuple[str, bytes, str]:
+    cleaned = str(text or "").strip()
+    title = _supplier_text_tz_title(cleaned)
+    suffix = f"_{index}" if index is not None else ""
+    filename = sanitize_filename(f"{title or 'ТЗ из сообщения'}{suffix}.txt")
+    return filename, cleaned.encode("utf-8"), title or "ТЗ из сообщения"
+
+
+def _supplier_text_tz_title(text: str) -> str:
+    for line in str(text or "").splitlines():
+        cleaned = " ".join(line.split()).strip(" .,:;\"'")
+        if cleaned:
+            return cleaned[:120]
+    return ""
 
 
 def _source_payloads_for_scenario(scenario: str, text: str) -> list[dict]:
@@ -1355,6 +1410,85 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             await _send_job_outputs(message, job_id, snapshot)
 
 
+async def _handle_supplier_text_tz(message: Message) -> bool:
+    async with _chat_upload_lock(message.chat.id):
+        return await _handle_supplier_text_tz_locked(message)
+
+
+async def _handle_supplier_text_tz_locked(message: Message) -> bool:
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+    if scenario not in {SCENARIO_SUPPLIERS_SINGLE, SCENARIO_SUPPLIERS_MULTI}:
+        return False
+    text = str(message.text or "").strip()
+    if not _looks_like_supplier_text_tz(text):
+        return False
+    if message.chat.id in BATCH_RUNNING_CHATS:
+        await message.answer(_batch_running_text(), reply_markup=ReplyKeyboardRemove())
+        return True
+
+    mode = MODE_SUPPLIER_SEARCH
+    job_id: str | None = None
+    db = SessionLocal()
+    try:
+        telegram_id, username, name = _telegram_user_fields(message)
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        error = account_error or client_access_error(db, client, mode, incoming_file_count=1)
+        if error:
+            await message.answer(error, reply_markup=main_menu())
+            return True
+        assert client is not None
+        settings = get_or_create_settings(db)
+
+        pending = PENDING_UPLOADS.get(message.chat.id)
+        if scenario == SCENARIO_SUPPLIERS_MULTI:
+            if pending and pending.mode != mode:
+                PENDING_UPLOADS.pop(message.chat.id, None)
+                pending = None
+            if not pending:
+                pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+                PENDING_UPLOADS[message.chat.id] = pending
+            if len(pending.files) >= settings.max_files_per_batch:
+                await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_menu())
+                return True
+            filename, content, _title = _supplier_text_tz_payload(text, index=len(pending.files) + 1)
+            pending.files.append((filename, content))
+            await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_menu())
+            return True
+
+        filename, content, title = _supplier_text_tz_payload(text)
+        job = create_job(
+            db,
+            client_id=client.id,
+            created_by_telegram_id=telegram_id,
+            mode=mode,
+            title=title,
+            target_suppliers=settings.default_supplier_target,
+            files=[(filename, content)],
+            sources=[],
+        )
+        reserve_error = _reserve_created_job(db, client, job)
+        if reserve_error:
+            await message.answer(reserve_error, reply_markup=main_menu())
+            return True
+        job_id = str(job.id)
+        PENDING_UPLOADS.pop(message.chat.id, None)
+        PENDING_MODES.pop(message.chat.id, None)
+        await message.answer(
+            "Принял ТЗ из сообщения. Запускаю поиск поставщиков и буду обновлять статус здесь.",
+            reply_markup=main_menu(),
+        )
+    finally:
+        db.close()
+
+    if job_id is not None:
+        snapshot = await watch_job_progress(message, job_id)
+        if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+            await _send_partial_confirmation(message, job_id, snapshot)
+        else:
+            await _send_job_outputs(message, job_id, snapshot)
+    return True
+
+
 async def _handle_source_text(message: Message) -> bool:
     sources = source_payloads_from_text(str(message.text or ""))
     if not sources:
@@ -1399,6 +1533,8 @@ async def _handle_source_text(message: Message) -> bool:
 
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
+    if await _handle_supplier_text_tz(message):
+        return
     if await _handle_source_text(message):
         return
     await message.answer(
