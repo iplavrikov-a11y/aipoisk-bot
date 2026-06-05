@@ -116,6 +116,11 @@ def health(db: Session = Depends(db_session)) -> dict:
     }
 
 
+@app.get("/api/public/site")
+def public_site_api(db: Session = Depends(db_session)) -> dict:
+    return public_site_payload(db)
+
+
 @app.post("/api/auth/login")
 def login(data: LoginRequest, request: Request, response: Response) -> dict:
     client_ip = request.client.host if request.client else "unknown"
@@ -800,6 +805,79 @@ def settings_to_public_dict(settings: SystemSettings) -> dict:
     data = settings.to_dict(include_secrets=False)
     data["supplier_search_ui"] = supplier_search_ui(settings)
     return data
+
+
+def public_site_payload(db: Session) -> dict:
+    settings = get_or_create_settings(db)
+    tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    return {
+        "site": {
+            "name": "TenderLex",
+            "domain": "https://tenderlex.ru",
+            "headline": "Анализ закупок и поиск поставщиков в одном Telegram-боте",
+            "description": (
+                "TenderLex анализирует закупочную документацию, помогает увидеть риски и собирает "
+                "поставщиков с email, телефонами, сайтами, страницами контактов и комментариями. "
+                "Новые пользователи могут попробовать оба сценария в Telegram."
+            ),
+        },
+        "bot": {
+            "telegram": settings.bot_telegram,
+            "telegram_url": telegram_public_url(settings.bot_telegram),
+        },
+        "contacts": {
+            "email": settings.contact_email,
+            "telegram": settings.contact_telegram,
+            "telegram_url": telegram_public_url(settings.contact_telegram),
+            "website": settings.contact_website,
+            "website_url": website_public_url(settings.contact_website),
+        },
+        "trial": {
+            "enabled": bool(settings.trial_enabled),
+            "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
+            "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
+            "file_limit": max(0, int(settings.trial_file_limit or 0)),
+        },
+        "tariffs": tariffs,
+        "tariff_groups": {
+            "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+        },
+        "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
+    }
+
+
+def tariff_to_public_dict(package: TariffPackage) -> dict:
+    return {
+        "id": package.id,
+        "kind": package.kind,
+        "label": billing_kind_label(package.kind),
+        "name": package.name,
+        "units": package.units,
+        "price_kopeks": package.price_kopeks,
+        "price_rub": round(package.price_kopeks / 100, 2),
+        "description": package.description,
+        "sort_order": package.sort_order,
+    }
+
+
+def telegram_public_url(value: str) -> str:
+    username = str(value or "").strip()
+    if not username:
+        return ""
+    if username.startswith("http://") or username.startswith("https://"):
+        return username
+    username = username.lstrip("@")
+    return f"https://t.me/{username}" if username else ""
+
+
+def website_public_url(value: str) -> str:
+    website = str(value or "").strip()
+    if not website:
+        return ""
+    if website.startswith("http://") or website.startswith("https://"):
+        return website
+    return f"https://{website}"
 
 
 def is_internal_job(job: Job | object) -> bool:

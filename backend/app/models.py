@@ -67,6 +67,7 @@ class SystemSettings(Base):
     report_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     document_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     bot_messages_json: Mapped[str] = mapped_column(Text, default="{}")
+    bot_telegram: Mapped[str] = mapped_column(String(255), default="@tenderlex_bot")
     contact_email: Mapped[str] = mapped_column(String(255), default="")
     contact_telegram: Mapped[str] = mapped_column(String(255), default="")
     contact_website: Mapped[str] = mapped_column(String(255), default="")
@@ -108,6 +109,7 @@ class SystemSettings(Base):
             "report_settings_json": self.report_settings_json,
             "document_settings_json": self.document_settings_json,
             "bot_messages_json": self.bot_messages_json,
+            "bot_telegram": self.bot_telegram,
             "contact_email": self.contact_email,
             "contact_telegram": self.contact_telegram,
             "contact_website": self.contact_website,

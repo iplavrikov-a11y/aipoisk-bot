@@ -10,8 +10,25 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 import app.main as main
-from app.main import build_supplier_quality_snapshot, build_system_status, client_to_dict, create_client, create_client_telegram_account, create_manual_job, delete_client, delete_client_telegram_account, grant_client_billing_units, job_to_dict, list_jobs, read_job_evidence_payload, settings_to_public_dict, update_client_telegram_account, upload_job
-from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, Job, SystemSettings, now_utc
+from app.main import (
+    build_supplier_quality_snapshot,
+    build_system_status,
+    client_to_dict,
+    create_client,
+    create_client_telegram_account,
+    create_manual_job,
+    delete_client,
+    delete_client_telegram_account,
+    grant_client_billing_units,
+    job_to_dict,
+    list_jobs,
+    public_site_payload,
+    read_job_evidence_payload,
+    settings_to_public_dict,
+    update_client_telegram_account,
+    upload_job,
+)
+from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, Job, SystemSettings, TariffPackage, now_utc
 from app.schemas import BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
@@ -503,12 +520,74 @@ class ApiGuardTests(unittest.TestCase):
         self.assertIn("technical_sources", payload["supplier_search_ui"])
 
     def test_settings_public_payload_includes_contact_site_and_default_payment_text(self) -> None:
-        settings = SystemSettings(id=1, contact_website="https://aipoisk.example", payment_instructions="")
+        settings = SystemSettings(
+            id=1,
+            bot_telegram="@tenderlex_bot",
+            contact_website="https://aipoisk.example",
+            payment_instructions="",
+        )
 
         payload = settings_to_public_dict(settings)
 
+        self.assertEqual(payload["bot_telegram"], "@tenderlex_bot")
         self.assertEqual(payload["contact_website"], "https://aipoisk.example")
         self.assertEqual(payload["payment_instructions"], DEFAULT_PAYMENT_INSTRUCTIONS)
+
+    def test_public_site_payload_exposes_only_active_tariffs_and_contacts(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    bot_telegram="@tenderlex_bot",
+                    contact_email="snab@example.ru",
+                    contact_telegram="@lexelence",
+                    contact_website="tenderlex.ru",
+                )
+            )
+            db.add(
+                TariffPackage(
+                    kind="supplier_search",
+                    name="10 запросов",
+                    units=10,
+                    price_kopeks=100000,
+                    description="Поиск поставщиков",
+                    is_active=True,
+                )
+            )
+            db.add(
+                TariffPackage(
+                    kind="procurement_report",
+                    name="Скрытый пакет",
+                    units=1,
+                    price_kopeks=10000,
+                    is_active=False,
+                )
+            )
+            db.commit()
+
+            payload = public_site_payload(db)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["site"]["domain"], "https://tenderlex.ru")
+        self.assertEqual(payload["bot"]["telegram"], "@tenderlex_bot")
+        self.assertEqual(payload["bot"]["telegram_url"], "https://t.me/tenderlex_bot")
+        self.assertEqual(payload["contacts"]["email"], "snab@example.ru")
+        self.assertEqual(payload["contacts"]["telegram_url"], "https://t.me/lexelence")
+        self.assertEqual(payload["contacts"]["website_url"], "https://tenderlex.ru")
+        self.assertEqual(len(payload["tariffs"]), 1)
+        self.assertEqual(payload["tariffs"][0]["label"], "Поставщики")
+        self.assertEqual(payload["tariff_groups"]["supplier_search"][0]["name"], "10 запросов")
+        self.assertEqual(payload["tariff_groups"]["procurement_report"], [])
 
     def test_system_status_exposes_resources_queue_and_configured_services(self) -> None:
         from sqlalchemy import create_engine

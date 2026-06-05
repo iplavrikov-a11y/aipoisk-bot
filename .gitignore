@@ -8,10 +8,13 @@ storage/
 storage-test/
 __pycache__/
 *.pyc
+*.tsbuildinfo
 .pytest_cache/
 node_modules/
 frontend/dist/
 frontend/.vite/
+site/.next/
+site/out/
 *.log
 .omx/
 .DS_Store

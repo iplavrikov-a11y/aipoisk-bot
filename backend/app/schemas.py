@@ -36,6 +36,7 @@ class SettingsPatch(BaseModel):
     report_settings_json: str | None = None
     document_settings_json: str | None = None
     bot_messages_json: str | None = None
+    bot_telegram: str | None = None
     contact_email: str | None = None
     contact_telegram: str | None = None
     contact_website: str | None = None

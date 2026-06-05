@@ -1,0 +1,113 @@
+# TenderLex Public Site
+
+The public site is a standalone Next.js app in `site/`. It is the business-card
+site for the TenderLex Telegram bot at `https://tenderlex.ru`.
+
+## Scope
+
+- Site-card/landing page only.
+- No blog, no CMS, no public admin panel.
+- Contacts and active tariffs come from the existing FastAPI backend through `GET /api/public/site`.
+- The first screen must sell two equal product scenarios: procurement-document analysis and supplier/contact search.
+- Public copy uses "Попробовать бесплатно" / "Пробный доступ"; avoid customer-facing "тест" wording on the site.
+
+## Public Data Contract
+
+- `GET /api/public/site` is the only public backend endpoint used by the site.
+- It exposes safe site metadata, active tariffs, grouped tariff lists, trial counters, public contact links, and the Telegram bot link.
+- It must not expose admin endpoints, customers, jobs, billing history, uploaded files, report files, AI provider keys, or other secrets.
+- `bot.telegram_url` is used for product/work CTAs such as "Попробовать бесплатно".
+- `contacts.telegram_url` is used for owner/contact and purchase CTAs such as "Выбрать пакет".
+- Current production values are `@tenderlex_bot` for bot use and `@lexelence` for owner contact.
+
+## Admin-Managed Fields
+
+The existing admin panel controls public business data without giving customers
+access to the admin panel.
+
+- Tariffs are managed from the tariff/package section.
+- `bot_telegram` is labelled "Telegram-бот для пробного запуска и работы".
+- `contact_telegram` is labelled "Telegram для связи и оплаты".
+- `contact_email`, `contact_website`, and payment instructions remain existing contact/payment settings.
+- Trial counters come from existing free-period settings: supplier search limit, procurement report limit, and file limit.
+
+## Frontend Structure
+
+- `site/src/app/page.tsx` renders the page sections, CTA routing, trial/probny access copy, and pricing tables.
+- `site/src/app/layout.tsx` owns public SEO metadata.
+- `site/src/lib/site-data.ts` defines the public payload type and safe fallback data.
+- `site/src/components/ui/button.tsx` contains the local button primitive.
+- `site/public/tenderlex-logo.png` is the provided logo used by the page and favicon metadata.
+- `site/public/tenderlex-product-preview.png` is the generated preview image asset.
+
+## Local Commands
+
+```bash
+cd site
+npm install
+npm run dev
+```
+
+Default local URL: `http://localhost:3093`.
+
+The site fetches public data from:
+
+```bash
+AIPOISK_SITE_API_BASE_URL=http://127.0.0.1:8088
+```
+
+If the backend is unavailable, the page renders a safe fallback using current public contacts and starter tariffs.
+
+## Verification Commands
+
+- Site typecheck: `cd site && npm run typecheck`
+- Site production build: `cd site && npm run build`
+- Admin production build, when public settings UI changes: `cd frontend && npm run build`
+- Targeted backend tests for the public endpoint/settings contract: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_api_guards.py backend/tests/test_access_limits.py -q`
+- Production smoke: `curl -fsS http://127.0.0.1:8088/api/public/site | jq '{bot, contacts, trial}'`
+- Production copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать бесплатно|Пробный доступ|тест|Тест'`
+
+## Production Wiring
+
+Deployment files:
+
+- `deploy/systemd/tenderlex-site.service`
+- `deploy/nginx/tenderlex.ru.conf`
+- `deploy/nginx/tenderlex.ru.http-only.conf`
+
+Production assumptions:
+
+- FastAPI backend is on `127.0.0.1:8088`.
+- Next.js site listens on `127.0.0.1:3093`.
+- Canonical public URL is `https://tenderlex.ru`.
+- `www.tenderlex.ru` redirects to `https://tenderlex.ru`.
+- `npm run build` copies `.next/static` and `public/` into the standalone bundle before `npm run start`.
+- Public `443` on this server is routed through the existing nginx stream layout to HTTPS vhosts listening on `4443`.
+
+Manual server activation, after build:
+
+```bash
+cp deploy/systemd/tenderlex-site.service /etc/systemd/system/tenderlex-site.service
+systemctl daemon-reload
+systemctl enable --now tenderlex-site.service
+
+mkdir -p /var/www/letsencrypt
+cp deploy/nginx/tenderlex.ru.conf /etc/nginx/sites-available/tenderlex.ru.conf
+ln -sf /etc/nginx/sites-available/tenderlex.ru.conf /etc/nginx/sites-enabled/tenderlex.ru.conf
+nginx -t
+certbot certonly --webroot -w /var/www/letsencrypt -d tenderlex.ru -d www.tenderlex.ru
+nginx -t
+systemctl reload nginx
+```
+
+Routine redeploy after code changes:
+
+```bash
+cd /root/projects/aipoisk-bot/site
+npm run build
+systemctl restart tenderlex-site.service
+systemctl is-active tenderlex-site.service
+```
+
+Restart `aipoisk-api.service` too when `GET /api/public/site`, settings schema,
+or contact/tariff public payload code changes.

@@ -175,6 +175,7 @@ type SettingsPayload = {
   report_settings_json: string
   document_settings_json: string
   bot_messages_json: string
+  bot_telegram: string
   contact_email: string
   contact_telegram: string
   contact_website: string
@@ -1520,6 +1521,7 @@ function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
 function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]; settings: SettingsPayload; onChange: () => Promise<void> }) {
   const [newTariff, setNewTariff] = useState({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
   const [contactDraft, setContactDraft] = useState({
+    bot_telegram: settings.bot_telegram || '@tenderlex_bot',
     contact_email: settings.contact_email || '',
     contact_telegram: settings.contact_telegram || '',
     contact_website: settings.contact_website || '',
@@ -1528,6 +1530,7 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
 
   useEffect(() => {
     setContactDraft({
+      bot_telegram: settings.bot_telegram || '@tenderlex_bot',
       contact_email: settings.contact_email || '',
       contact_telegram: settings.contact_telegram || '',
       contact_website: settings.contact_website || '',
@@ -1580,8 +1583,9 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
       <div className="form-panel full-width-panel">
         <h2>Контакты и ручная оплата</h2>
         <div className="settings-grid compact-grid">
+          <TextField label="Telegram-бот для пробного запуска и работы" value={contactDraft.bot_telegram} onChange={value => setContactDraft({ ...contactDraft, bot_telegram: value })} />
           <TextField label="Email" value={contactDraft.contact_email} onChange={value => setContactDraft({ ...contactDraft, contact_email: value })} />
-          <TextField label="Telegram" value={contactDraft.contact_telegram} onChange={value => setContactDraft({ ...contactDraft, contact_telegram: value })} />
+          <TextField label="Telegram для связи и оплаты" value={contactDraft.contact_telegram} onChange={value => setContactDraft({ ...contactDraft, contact_telegram: value })} />
           <TextField label="Сайт" value={contactDraft.contact_website} onChange={value => setContactDraft({ ...contactDraft, contact_website: value })} />
         </div>
         <TextArea className="payment-textarea" label="Инструкция оплаты в боте" value={contactDraft.payment_instructions} onChange={value => setContactDraft({ ...contactDraft, payment_instructions: value })} />
