@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import app.bot as bot_module
@@ -37,6 +39,7 @@ from app.bot import (
     _partial_confirmation_text,
     _pending_input_count,
     _progress_bar,
+    _send_job_outputs,
     _scenario_accepts_source_links,
     _source_link_rejection_text,
     _source_payloads_for_scenario,
@@ -51,6 +54,7 @@ from app.bot import (
     configure_bot_profile,
     create_menu,
     main_menu,
+    watch_job_progress,
 )
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
 from app.models import SystemSettings, TariffPackage
@@ -97,6 +101,23 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertEqual(_status_label("completed"), "готово")
         self.assertEqual(_job_eta_text(snapshot), "завершено")
+
+    def test_completed_procurement_progress_uses_finished_wording(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job",
+            mode=MODE_PROCUREMENT_REPORT,
+            status="completed",
+            progress=100,
+            message="Анализ документации готов",
+            error="",
+            created_at=None,
+        )
+
+        text = _format_job_progress(snapshot)
+
+        self.assertIn("✅ Файл готов", text)
+        self.assertIn("анализ документации готов", text)
+        self.assertNotIn("готовлю анализ документации", text)
 
     def test_failed_progress_hides_technical_error(self) -> None:
         snapshot = JobProgressSnapshot(
@@ -533,6 +554,128 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Поставка насосов", content.decode("utf-8"))
 
 
+class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_watch_job_progress_can_reuse_launch_message(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-1",
+            mode=MODE_PROCUREMENT_REPORT,
+            status="completed",
+            progress=100,
+            message="Анализ документации готов",
+            error="",
+            created_at=None,
+        )
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.answers: list[tuple[str, object]] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.edits: list[str] = []
+
+            async def edit_text(self, value: str):
+                self.edits.append(value)
+                return self
+
+            async def answer(self, value: str):
+                raise AssertionError(f"unexpected fallback status message: {value}")
+
+        message = FakeMessage()
+        status_message = FakeStatusMessage()
+        original_load = bot_module._load_job_snapshot
+        try:
+            bot_module._load_job_snapshot = lambda _job_id: snapshot
+
+            result = await watch_job_progress(message, "job-1", status_message=status_message)
+        finally:
+            bot_module._load_job_snapshot = original_load
+
+        self.assertEqual(result, snapshot)
+        self.assertEqual(message.answers, [])
+        self.assertEqual(len(status_message.edits), 2)
+        self.assertIn("анализ документации готов", status_message.edits[-1])
+
+    async def test_send_job_outputs_edits_file_caption_instead_of_sending_balance_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "analysis.docx"
+            output.write_bytes(b"docx")
+
+            done_job = SimpleNamespace(
+                id="job-1",
+                mode=MODE_PROCUREMENT_REPORT,
+                client=SimpleNamespace(id="client-1"),
+            )
+            charges: list[str] = []
+
+            class FakeDb:
+                def get(self, _model, job_id: str):
+                    assert job_id == "job-1"
+                    return done_job
+
+                def close(self) -> None:
+                    return None
+
+            class FakeSentDocument:
+                def __init__(self, caption: str, reply_markup) -> None:
+                    self.caption = caption
+                    self.reply_markup = reply_markup
+                    self.edits: list[tuple[str, object]] = []
+
+                async def edit_caption(self, *, caption: str, reply_markup=None):
+                    self.caption = caption
+                    self.reply_markup = reply_markup
+                    self.edits.append((caption, reply_markup))
+                    return self
+
+            class FakeMessage:
+                def __init__(self) -> None:
+                    self.answers: list[tuple[str, object]] = []
+                    self.documents: list[FakeSentDocument] = []
+
+                async def answer(self, value: str, reply_markup=None):
+                    self.answers.append((value, reply_markup))
+                    return self
+
+                async def answer_document(self, _document, *, caption: str, reply_markup=None):
+                    sent = FakeSentDocument(caption, reply_markup)
+                    self.documents.append(sent)
+                    return sent
+
+            message = FakeMessage()
+            originals = {
+                "SessionLocal": bot_module.SessionLocal,
+                "package_job_output_files": bot_module.package_job_output_files,
+                "charge_job_reservation": bot_module.charge_job_reservation,
+                "_after_delivery_balance_text": bot_module._after_delivery_balance_text,
+            }
+            try:
+                bot_module.SessionLocal = lambda: FakeDb()
+                bot_module.package_job_output_files = lambda _job: [output]
+                bot_module.charge_job_reservation = lambda _db, job: charges.append(job.id)
+                bot_module._after_delivery_balance_text = (
+                    lambda _db, _client: "✅ Результат отправлен. Баланс обновлён.\n\nВажно: проверьте первоисточники."
+                )
+
+                delivered = await _send_job_outputs(message, "job-1")
+            finally:
+                for name, value in originals.items():
+                    setattr(bot_module, name, value)
+
+        self.assertTrue(delivered)
+        self.assertEqual(charges, ["job-1"])
+        self.assertEqual(message.answers, [])
+        self.assertEqual(len(message.documents), 1)
+        self.assertIn("Анализ документации во вложении.", message.documents[0].caption)
+        self.assertIn("✅ Результат отправлен. Баланс обновлён.", message.documents[0].caption)
+        self.assertEqual(len(message.documents[0].edits), 1)
+        self.assertIsNotNone(message.documents[0].reply_markup)
+
+
 class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_supplier_text_tz_creates_single_supplier_job(self) -> None:
         text = (
@@ -586,7 +729,8 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
             bot_module.create_job = lambda _db, **kwargs: created.update(kwargs) or SimpleNamespace(id="job-1")
             bot_module._reserve_created_job = lambda _db, _client, _job: ""
 
-            async def fake_watch_job_progress(_message, job_id: str):
+            async def fake_watch_job_progress(_message, job_id: str, **kwargs):
+                self.assertIsNotNone(kwargs.get("status_message"))
                 return None
 
             async def fake_send_job_outputs(_message, job_id: str, snapshot=None) -> bool:

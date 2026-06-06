@@ -104,6 +104,7 @@ CHAT_UPLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 BATCH_RUNNING_CHATS: set[int] = set()
 TEXT_TZ_MIN_CHARS = 50
 TEXT_TZ_MIN_WORDS = 6
+TELEGRAM_CAPTION_LIMIT = 1024
 
 
 def _pending_input_count(pending: PendingBatch) -> int:
@@ -432,10 +433,14 @@ def _friendly_stage_text(message: str) -> str:
         return "проверяю сайты и контакты"
     if "готовлю результат" in lowered or "сохраняю" in lowered or "формирую xlsx" in lowered:
         return "собираю файл с поставщиками"
+    if "анализ документации готов" in lowered:
+        return "анализ документации готов"
+    if "анализ и поставщики готовы" in lowered:
+        return "анализ и поставщики готовы"
+    if lowered.startswith("готово") or lowered.endswith(" готов") or lowered.endswith(" готово"):
+        return "файл готов к отправке"
     if "анализ документации" in lowered or "формирую отчёт" in lowered or "формирую отчет" in lowered:
         return "готовлю анализ документации"
-    if "готово" in lowered:
-        return "готовлю файл к отправке"
     if "ошибка" in lowered:
         return "поиск остановлен"
     return raw
@@ -681,13 +686,23 @@ async def _edit_or_send_status(status_message: Message, text: str) -> Message:
         return await status_message.answer(text)
 
 
-async def watch_job_progress(message: Message, job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 5.0) -> JobProgressSnapshot | None:
+async def watch_job_progress(
+    message: Message,
+    job_id: str,
+    *,
+    status_message: Message | None = None,
+    timeout_seconds: int = 3600,
+    poll_interval: float = 5.0,
+) -> JobProgressSnapshot | None:
     started = asyncio.get_running_loop().time()
     snapshot = _load_job_snapshot(job_id)
     if snapshot is None:
         await message.answer("Задача не найдена. Сообщите владельцу сервиса.", reply_markup=main_menu())
         return None
-    status_message = await message.answer(_format_job_progress(snapshot))
+    if status_message is None:
+        status_message = await message.answer(_format_job_progress(snapshot))
+    else:
+        status_message = await _edit_or_send_status(status_message, _format_job_progress(snapshot))
     last_key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
     last_heartbeat = started
 
@@ -1021,6 +1036,7 @@ async def run_batch_button(message: Message) -> None:
     job_id: str | None = None
     batch_jobs: list[tuple[str, str]] = []
     launch_started = False
+    launch_message: Message | None = None
     db = SessionLocal()
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, pending.telegram_id)
@@ -1079,14 +1095,13 @@ async def run_batch_button(message: Message) -> None:
         PENDING_MODES.pop(message.chat.id, None)
         launch_started = True
         if batch_jobs:
-            await message.answer(
+            launch_message = await message.answer(
                 f"Обработка запущена: ТЗ {len(batch_jobs)}.\n"
-                "Кнопки добавления документов скрыты, чтобы случайно не запустить обработку повторно.\n"
-                "По каждому ТЗ пришлю отдельный Excel-файл.",
+                "Буду обновлять это сообщение и пришлю файлы по мере готовности.",
                 reply_markup=ReplyKeyboardRemove(),
             )
         else:
-            await message.answer(
+            launch_message = await message.answer(
                 f"Принял: файлов {len(pending.files)}, источников {len(pending.sources)}.\nСейчас начну обработку и буду обновлять статус здесь.",
                 reply_markup=ReplyKeyboardRemove(),
             )
@@ -1097,30 +1112,38 @@ async def run_batch_button(message: Message) -> None:
 
     try:
         if batch_jobs:
-            await _watch_supplier_multi_outputs(message, batch_jobs)
+            await _watch_supplier_multi_outputs(message, batch_jobs, status_message=launch_message)
             return
         if job_id is not None:
-            snapshot = await watch_job_progress(message, job_id)
+            snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
             if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
                 await _send_partial_confirmation(message, job_id, snapshot)
             else:
                 await _send_job_outputs(message, job_id, snapshot)
-                await message.answer("Обработка завершена. Можно выбрать следующее действие.", reply_markup=main_menu())
     finally:
         BATCH_RUNNING_CHATS.discard(message.chat.id)
 
 
-async def _watch_supplier_multi_outputs(message: Message, jobs: list[tuple[str, str]]) -> None:
+async def _watch_supplier_multi_outputs(
+    message: Message,
+    jobs: list[tuple[str, str]],
+    *,
+    status_message: Message | None = None,
+) -> None:
     total = len(jobs)
     for index, (job_id, filename) in enumerate(jobs, start=1):
         title = Path(filename).stem[:80]
-        await message.answer(f"Обрабатываю ТЗ {index}/{total}: {title}")
-        snapshot = await watch_job_progress(message, job_id)
+        if status_message is not None:
+            status_message = await _edit_or_send_status(status_message, f"Обрабатываю ТЗ {index}/{total}: {title}")
+        else:
+            status_message = await message.answer(f"Обрабатываю ТЗ {index}/{total}: {title}")
+        snapshot = await watch_job_progress(message, job_id, status_message=status_message)
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             await _send_partial_confirmation(message, job_id, snapshot)
         else:
             await _send_job_outputs(message, job_id, snapshot)
-    await message.answer("Массовая обработка ТЗ завершена.", reply_markup=main_menu())
+    if status_message is not None:
+        await _edit_or_send_status(status_message, "Массовая обработка ТЗ завершена. Файлы отправлены ниже.")
 
 
 async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgressSnapshot | None = None) -> bool:
@@ -1132,13 +1155,25 @@ async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgress
             return False
         outputs = package_job_output_files(done_job)
         if outputs:
-            for output in outputs:
-                await message.answer_document(FSInputFile(output), caption=_output_caption(done_job.mode, output))
+            sent_output_message: Message | None = None
+            sent_output_base_caption = ""
+            for index, output in enumerate(outputs):
+                is_last = index == len(outputs) - 1
+                sent_output_base_caption = _output_caption(done_job.mode, output)
+                sent_output_message = await message.answer_document(
+                    FSInputFile(output),
+                    caption=sent_output_base_caption,
+                    reply_markup=main_menu() if is_last else None,
+                )
             charge_job_reservation(db, done_job)
             if snapshot and snapshot.status in OWNER_ALERT_STATUSES:
                 await _alert_owner_about_job(message, snapshot, reason=f"problem_status:{snapshot.status}")
-            if done_job.client:
-                await message.answer(_after_delivery_balance_text(db, done_job.client), reply_markup=main_menu())
+            if done_job.client and sent_output_message is not None:
+                await _edit_output_delivery_caption(
+                    sent_output_message,
+                    sent_output_base_caption,
+                    _after_delivery_balance_text(db, done_job.client),
+                )
             return True
         elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
             await message.answer("Обработка продолжается. Статус можно проверить кнопкой «Последние задачи».", reply_markup=main_menu())
@@ -1157,6 +1192,26 @@ def _after_delivery_balance_text(db, client: Client) -> str:
         lines.append(f"⚠️ Заканчивается баланс: {', '.join(low)}.")
     lines.extend(["", AI_CUSTOMER_NOTE])
     return "\n".join(lines)
+
+
+def _join_caption(*parts: str) -> str:
+    text = "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    if len(text) <= TELEGRAM_CAPTION_LIMIT:
+        return text
+    return text[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…"
+
+
+async def _edit_output_delivery_caption(sent_message: Message, base_caption: str, delivery_text: str) -> None:
+    try:
+        await sent_message.edit_caption(
+            caption=_join_caption(base_caption, delivery_text),
+            reply_markup=main_menu(),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+    except Exception:
+        return
 
 
 async def _send_partial_confirmation(message: Message, job_id: str, snapshot: JobProgressSnapshot) -> None:
@@ -1340,6 +1395,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
     scenario = _scenario_for_message(message)
     mode = _job_mode_for_scenario(scenario)
     job_id: str | None = None
+    launch_message: Message | None = None
     db = SessionLocal()
     try:
         telegram_id, username, name = _telegram_user_fields(message)
@@ -1384,7 +1440,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             job_id = str(job.id)
             PENDING_UPLOADS.pop(message.chat.id, None)
             PENDING_MODES.pop(message.chat.id, None)
-            await message.answer(
+            launch_message = await message.answer(
                 "Принял ТЗ. Запускаю поиск поставщиков и буду обновлять статус здесь.",
                 reply_markup=main_menu(),
             )
@@ -1407,7 +1463,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
     finally:
         db.close()
     if job_id is not None:
-        snapshot = await watch_job_progress(message, job_id)
+        snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             await _send_partial_confirmation(message, job_id, snapshot)
         else:
@@ -1432,6 +1488,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
 
     mode = MODE_SUPPLIER_SEARCH
     job_id: str | None = None
+    launch_message: Message | None = None
     db = SessionLocal()
     try:
         telegram_id, username, name = _telegram_user_fields(message)
@@ -1477,7 +1534,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         job_id = str(job.id)
         PENDING_UPLOADS.pop(message.chat.id, None)
         PENDING_MODES.pop(message.chat.id, None)
-        await message.answer(
+        launch_message = await message.answer(
             "Принял ТЗ из сообщения. Запускаю поиск поставщиков и буду обновлять статус здесь.",
             reply_markup=main_menu(),
         )
@@ -1485,7 +1542,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         db.close()
 
     if job_id is not None:
-        snapshot = await watch_job_progress(message, job_id)
+        snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             await _send_partial_confirmation(message, job_id, snapshot)
         else:
