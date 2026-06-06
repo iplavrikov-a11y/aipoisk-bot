@@ -110,7 +110,7 @@ class JobRecoveryTests(unittest.TestCase):
         job = Job(mode=MODE_SUPPLIER_SEARCH, status="completed", title=long_title)
 
         stem = _result_stem(job, long_subject)
-        filename = f"{stem}_поставщики_12345678.xlsx"
+        filename = f"{stem}_поставщики.xlsx"
 
         self.assertLessEqual(len(filename.encode("utf-8")), 255)
         self.assertTrue(stem)
@@ -185,6 +185,14 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertEqual(supplier_count, 1)
         self.assertEqual([path.suffix for path in outputs], [".docx", ".xlsx"])
         self.assertEqual(Path(job.result_path).suffix, ".zip")
+        output_names = [path.name for path in outputs] + [Path(job.result_path).name]
+        self.assertEqual(output_names, [
+            "Сварочный полуавтомат_анализ.docx",
+            "Сварочный полуавтомат_поставщики.xlsx",
+            "Сварочный полуавтомат.zip",
+        ])
+        for name in output_names:
+            self.assertNotRegex(name, r"_[0-9a-f]{8}(?=\\.)")
 
     def test_claim_next_job_marks_pending_job_running_with_user_facing_message(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})

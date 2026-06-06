@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from aiogram.exceptions import TelegramBadRequest
+
 import app.bot as bot_module
 from app.bot import (
     AI_HELP_NOTE,
@@ -29,6 +31,7 @@ from app.bot import (
     PendingBatch,
     _add_pending_sources,
     _contacts_text,
+    _edit_or_send_status,
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
@@ -567,6 +570,34 @@ class BotProgressFormattingTests(unittest.TestCase):
 
 
 class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_edit_failure_replaces_and_deletes_old_progress_message(self) -> None:
+        class ReplacementMessage:
+            pass
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.answers: list[str] = []
+                self.deleted = False
+                self.replacement = ReplacementMessage()
+
+            async def edit_text(self, value: str):
+                raise TelegramBadRequest(method=None, message="Bad Request: message can't be edited")
+
+            async def answer(self, value: str):
+                self.answers.append(value)
+                return self.replacement
+
+            async def delete(self) -> None:
+                self.deleted = True
+
+        status_message = FakeStatusMessage()
+
+        result = await _edit_or_send_status(status_message, "новый статус")
+
+        self.assertIs(result, status_message.replacement)
+        self.assertEqual(status_message.answers, ["новый статус"])
+        self.assertTrue(status_message.deleted)
+
     async def test_watch_job_progress_can_reuse_launch_message(self) -> None:
         snapshot = JobProgressSnapshot(
             id="job-1",

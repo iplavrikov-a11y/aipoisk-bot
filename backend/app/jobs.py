@@ -653,7 +653,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         return
 
     xlsx_path = write_supplier_xlsx(
-        out_dir / f"{_result_stem(job, subject)}_{job.id[:8]}.xlsx",
+        out_dir / f"{_result_stem(job, subject)}_поставщики.xlsx",
         accepted,
         title=job.title,
         subject=subject,
@@ -682,7 +682,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     subject = _subject_from_report_text(result.report)
     report_title = _analysis_report_title(job, subject)
     docx_path = write_procurement_docx(
-        out_dir / f"{_result_stem(job, subject)}_анализ_{job.id[:8]}.docx",
+        out_dir / f"{_result_stem(job, subject)}_анализ.docx",
         result.report,
         title=report_title,
     )
@@ -741,7 +741,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     subject = _subject_from_supplier_evidence(supplier_evidence) or _subject_from_report_text(report.report)
     stem = _result_stem(job, subject)
     report_title = _analysis_report_title(job, subject)
-    docx_path = write_procurement_docx(out_dir / f"{stem}_анализ_{job.id[:8]}.docx", report.report, title=report_title)
+    docx_path = write_procurement_docx(out_dir / f"{stem}_анализ.docx", report.report, title=report_title)
     evidence_payload = {
         "mode": job.mode,
         "subject": subject,
@@ -767,7 +767,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     xlsx_path = None
     if accepted:
         xlsx_path = write_supplier_xlsx(
-            out_dir / f"{stem}_поставщики_{job.id[:8]}.xlsx",
+            out_dir / f"{stem}_поставщики.xlsx",
             accepted,
             title=job.title,
             subject=subject,
@@ -778,7 +778,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         output_files.append({"kind": "suppliers", "path": str(xlsx_path)})
     evidence_payload["output_files"] = output_files
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
-    zip_path = zip_paths(out_dir / f"{stem}_{job.id[:8]}.zip", [Path(item["path"]) for item in output_files])
+    zip_path = zip_paths(out_dir / f"{stem}.zip", [Path(item["path"]) for item in output_files])
     job.result_path = str(zip_path)
     job.evidence_path = str(evidence_path)
     if not accepted:

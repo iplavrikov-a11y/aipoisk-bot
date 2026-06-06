@@ -710,7 +710,12 @@ async def _edit_or_send_status(status_message: Message, text: str) -> Message:
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return status_message
-        return await status_message.answer(text)
+        replacement = await status_message.answer(text)
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+        return replacement
 
 
 async def watch_job_progress(
@@ -1124,12 +1129,10 @@ async def run_batch_button(message: Message) -> None:
                 f"🗂 Обработка запущена\n\n"
                 f"✅ Принято ТЗ: {len(batch_jobs)}\n"
                 "Буду обновлять это сообщение и пришлю файлы по мере готовности.",
-                reply_markup=ReplyKeyboardRemove(),
             )
         else:
             launch_message = await message.answer(
                 _format_launch_progress(_job_snapshot(job), _accepted_batch_text(pending)),
-                reply_markup=ReplyKeyboardRemove(),
             )
     finally:
         db.close()
