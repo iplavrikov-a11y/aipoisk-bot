@@ -12,6 +12,7 @@ from app.bot import (
     AI_HELP_NOTE,
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
+    BRAND_NAME,
     BUTTON_ANALYSIS_AND_SUPPLIERS,
     BUTTON_ACCESS,
     BUTTON_CANCEL_BATCH,
@@ -44,6 +45,7 @@ from app.bot import (
     _source_link_rejection_text,
     _source_payloads_for_scenario,
     _status_label,
+    _start_text,
     _pending_added_text,
     _batch_running_text,
     _supplier_multi_intro_text,
@@ -223,6 +225,13 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn(AI_HELP_NOTE, text)
         self.assertNotIn("Как купить пакет:\n🧾 Чтобы купить пакет:", text)
 
+    def test_start_text_uses_tenderlex_brand(self) -> None:
+        text = _start_text()
+
+        self.assertIn(f"Добро пожаловать в {BRAND_NAME}", text)
+        self.assertNotIn("AI Poisk", text)
+        self.assertNotIn("Аипоиск", text)
+
     def test_owner_problem_alert_keeps_actionable_context_short(self) -> None:
         snapshot = JobProgressSnapshot(
             id="job-123",
@@ -347,7 +356,11 @@ class BotProgressFormattingTests(unittest.TestCase):
         calls = dict(bot.calls)
         self.assertEqual(calls["short_description"], BOT_SHORT_DESCRIPTION)
         self.assertEqual(calls["description"], BOT_DESCRIPTION)
-        self.assertIn("Start/Запустить", BOT_DESCRIPTION)
+        self.assertIn(BRAND_NAME, BOT_SHORT_DESCRIPTION)
+        self.assertIn(BRAND_NAME, BOT_DESCRIPTION)
+        self.assertIn("Start", BOT_DESCRIPTION)
+        self.assertIn("Запустить", BOT_DESCRIPTION)
+        self.assertNotIn("AI Poisk", BOT_DESCRIPTION)
         self.assertTrue(calls["delete_commands"])
         self.assertEqual(calls["menu_button"].type, "default")
 

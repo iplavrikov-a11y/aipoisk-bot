@@ -1,1 +1,1 @@
-"""AI Poisk backend package."""
+"""TenderLex backend package."""

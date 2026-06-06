@@ -46,7 +46,7 @@ const featureItems = [
   {
     icon: MailCheck,
     title: "Контакты для запроса КП",
-    text: "На выходе не просто названия компаний: в XLSX попадают email, телефоны, сайт, страница контактов и комментарий по релевантности. Объем поиска задается под задачу.",
+    text: "На выходе не просто названия компаний: в XLSX попадают email, телефоны, сайт, страница контактов и комментарий по релевантности. Объём поиска задаётся под задачу.",
   },
 ];
 
@@ -90,7 +90,7 @@ const trustItems = [
   {
     icon: ShieldCheck,
     title: "Работа по документам и открытым источникам",
-    text: "Анализ строится по номеру извещения, Tenderplan/ЕИС и присланным документам, а поставщики и контакты проверяются по открытым сайтам.",
+    text: "Анализ строится по номеру извещения, официальным данным закупки и присланным документам, а поставщики и контакты проверяются по открытым сайтам.",
   },
   {
     icon: FileSearch,
@@ -141,7 +141,7 @@ export default async function Home() {
           <div className="hero-copy">
             <h1>Анализ закупок и поиск поставщиков в одном Telegram-боте</h1>
             <p>
-              TenderLex в Telegram закрывает два самостоятельных сценария: серьезный анализ закупочной
+              TenderLex в Telegram закрывает два самостоятельных сценария: серьёзный анализ закупочной
               документации и масштабируемый поиск поставщиков с email, телефонами, сайтами и комментариями для запроса КП.
             </p>
             <div className="hero-actions">
@@ -158,7 +158,7 @@ export default async function Home() {
             {trialAvailable ? <TrialCallout trial={trial} contactUrl={botUrl} /> : null}
             <dl className="hero-proof" aria-label="Коротко о сервисе">
               <ProofItem value="Анализ документации" label="тендерный лист DOCX и риски" />
-              <ProofItem value="Номер извещения" label="карточка Tenderplan и документы закупки" />
+              <ProofItem value="Номер извещения" label="карточка и документы закупки" />
               <ProofItem value="Поиск поставщиков" label="XLSX с контактами для КП" />
               <ProofItem value="Десятки / сотни" label="контактов, если нужен большой пул" />
               {trialAvailable ? <ProofItem value={trialProofValue(trial)} label="пробный доступ без оплаты" /> : null}
@@ -303,7 +303,7 @@ export default async function Home() {
           <p>
             {trialAvailable
               ? trialCtaText(trial)
-              : "Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков. Бот вернет рабочий результат в файлах."}
+              : "Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков. Бот вернёт рабочий результат в файлах."}
           </p>
           <div className="cta-actions">
             <Button asChild size="lg">
@@ -356,7 +356,7 @@ function HeroProduct() {
         <div>
           <Image src="/tenderlex-logo.png" alt="" width={32} height={32} />
           <div>
-            <strong>TenderLex Bot</strong>
+            <strong>TenderLex</strong>
             <span>Два режима в Telegram</span>
           </div>
         </div>
@@ -418,7 +418,7 @@ function HeroProduct() {
             <span>много строк</span>
           </div>
           <div className="supplier-scale">
-            Количество поставщиков задается под задачу: можно собрать расширенный список для массового запроса КП.
+            Количество поставщиков задаётся под задачу: можно собрать расширенный список для массового запроса КП.
           </div>
           <div className="supplier-mini-list">
             {contactRows.map(([company, email, phone, note]) => (
@@ -649,7 +649,7 @@ function Footer({ email, telegramUrl, telegram }: { email: string; telegramUrl: 
 function tariffCountLabel(tariff: PublicTariff) {
   const variants: [string, string, string] =
     tariff.kind === "procurement_report"
-      ? ["отчет", "отчета", "отчетов"]
+      ? ["отчёт", "отчёта", "отчётов"]
       : ["запрос", "запроса", "запросов"];
   return `${tariff.units} ${pluralizeRu(tariff.units, variants)}`;
 }
@@ -698,7 +698,7 @@ function trialLongText(trial: PublicTrial) {
 }
 
 function trialCtaText(trial: PublicTrial) {
-  return `${trialShortText(trial)} Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков, бот вернет рабочий результат в файлах.`;
+  return `${trialShortText(trial)} Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков, бот вернёт рабочий результат в файлах.`;
 }
 
 function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string, email: string) {

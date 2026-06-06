@@ -1,10 +1,11 @@
-# AI Poisk Bot: Project Status
+# TenderLex: Project Status
 
 Date: 2026-06-05
 
 ## Current Production State
 
-- Public URL: `https://aipoisk.lexelence.ru`.
+- Public URL: `https://tenderlex.ru`.
+- Admin URL used in earlier checks: `https://aipoisk.lexelence.ru`.
 - Backend service: `aipoisk-api.service`, FastAPI on `127.0.0.1:8088`.
 - Telegram worker: `aipoisk-bot.service`.
 - Durable job worker: `aipoisk-worker.service`.
@@ -366,7 +367,7 @@ Earlier billing, Telegram, and admin-button pass:
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
   backend/tests` -> `169 passed`, `2` warnings.
 - Frontend production build: `cd frontend && npm run build` -> OK.
-- Live admin Playwright button check on `https://aipoisk.lexelence.ru`:
+- Live admin Playwright button check on admin URL `https://aipoisk.lexelence.ru`:
   `32` checks passed, `0` failed API responses, `0` console errors, `0` page
   errors.
 - Live admin button coverage included login, navigation, client create/open,

@@ -361,7 +361,7 @@ async def _search_gisp_registry_page(query: str, *, max_results: int) -> list[di
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
             try:
-                page = await browser.new_page(user_agent="AI Poisk minprom registry parser")
+                page = await browser.new_page(user_agent="TenderLex minprom registry parser")
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(2000)
                 inputs = await page.query_selector_all("input")
@@ -856,7 +856,7 @@ async def _revise_supplier_queries_with_ai(
 Не повторяй ошибку: не делай каждый запрос с точным размером, ГОСТ, типом, маркой или артикулом.
 Точные характеристики оставь только в части запросов, чтобы найти точные совпадения.
 
-Цель отчета: найти до {target} проверенных поставщиков.
+Цель отчёта: найти до {target} проверенных поставщиков.
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
@@ -913,7 +913,7 @@ async def _build_supplier_recovery_queries_with_ai(
         }
         for item in accepted
     ][:20]
-    prompt = f"""Первый поисковый проход дал меньше подтвержденных поставщиков, чем нужно для качественного закупочного отчета.
+    prompt = f"""Первый поисковый проход дал меньше подтверждённых поставщиков, чем нужно для качественного закупочного отчёта.
 
 Сформируй дополнительный набор 8-16 поисковых запросов для второго прохода.
 Это должен быть не повтор точной позиции, а расширение поиска по товарной группе/номенклатуре.
@@ -1957,7 +1957,7 @@ async def verify_candidate(
 
 async def collect_pages(url: str) -> list[dict]:
     pages: list[dict] = []
-    async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "AI Poisk supplier verifier"}) as client:
+    async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "TenderLex supplier verifier"}) as client:
         first = await fetch_page(client, url)
         if first:
             pages.append(first)
@@ -2019,7 +2019,7 @@ async def fetch_page_with_browser(url: str) -> dict | None:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
             try:
-                page = await browser.new_page(user_agent="AI Poisk supplier verifier")
+                page = await browser.new_page(user_agent="TenderLex supplier verifier")
                 await page.goto(url, wait_until="networkidle", timeout=18000)
                 html_text = await page.content()
                 final_url = page.url
@@ -2102,7 +2102,7 @@ async def ai_verify(
         "pages": [{"url": page["url"], "text": page["text"][:2500]} for page in pages[:4]],
     }
     prompt = f"""Проверь поставщика для закупочного ТЗ.
-Твоя задача — финальный закупочный аудит перед попаданием строки в отчет.
+Твоя задача — финальный закупочный аудит перед попаданием строки в отчёт.
 
 Принимай только если одновременно верно:
 - сайт принадлежит компании, которая производит, продает, поставляет, дилерствует или дистрибутирует закупаемый товар/аналог;

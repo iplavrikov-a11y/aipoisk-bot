@@ -756,8 +756,8 @@ export function App() {
         <div className="brand">
           <div className="brand-mark"><Search size={18} /></div>
           <div>
-            <div className="brand-name">AI Поиск</div>
-            <div className="brand-sub">aipoisk.lexelence.ru</div>
+            <div className="brand-name">TenderLex</div>
+            <div className="brand-sub">tenderlex.ru</div>
           </div>
         </div>
         <nav className="nav">

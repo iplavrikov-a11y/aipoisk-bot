@@ -12,7 +12,7 @@ class AppConfig(BaseSettings):
         extra="ignore",
     )
 
-    public_base_url: str = "https://aipoisk.lexelence.ru"
+    public_base_url: str = "https://tenderlex.ru"
     database_url: str = "sqlite:///../data/aipoisk.db"
     storage_dir: str = "../storage"
     admin_token: str = "change-me"

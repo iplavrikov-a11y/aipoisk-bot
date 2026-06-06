@@ -31,7 +31,7 @@ class SystemSettings(Base):
     __tablename__ = "system_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    public_base_url: Mapped[str] = mapped_column(String(255), default="https://aipoisk.lexelence.ru")
+    public_base_url: Mapped[str] = mapped_column(String(255), default="https://tenderlex.ru")
 
     storage_retention_days: Mapped[int] = mapped_column(Integer, default=90)
     completed_job_retention_days: Mapped[int] = mapped_column(Integer, default=90)

@@ -77,7 +77,7 @@ from .security import (
 )
 from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
 
-app = FastAPI(title="AI Poisk Bot", version="0.1.0")
+app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 app.add_middleware(
     CORSMiddleware,
@@ -217,7 +217,7 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
-    # Product rule: ATI/logistics is disabled for AI Poisk.
+    # Product rule: ATI/logistics is disabled for TenderLex.
     settings.logistics_enabled = False
     db.commit()
     db.refresh(settings)
