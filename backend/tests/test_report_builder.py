@@ -69,7 +69,7 @@ class ReportBuilderTests(unittest.TestCase):
             wb.close()
 
         self.assertEqual(sheet_title, "Поставщики")
-        self.assertEqual(report_title, "Отчёт по ТЗ: ТЗ - Сварочный полуавтомат")
+        self.assertEqual(report_title, "Отчёт по ТЗ: Сварочный полуавтомат")
         self.assertEqual(
             headers,
             [

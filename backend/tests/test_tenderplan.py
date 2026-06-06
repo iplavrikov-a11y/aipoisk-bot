@@ -106,7 +106,7 @@ class TenderplanPureFunctionTests(unittest.TestCase):
             explanation_attachments=[{"realName": "Ответ на запрос.docx", "href": "https://zakupki.gov.ru/file.html?id=2", "size": 1024}],
         )
 
-        self.assertIn("ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN", context)
+        self.assertIn("ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ", context)
         self.assertIn("- Номер извещения: 0371100005626000040", context)
         self.assertIn("- Способ осуществления закупки: Электронный аукцион", context)
         self.assertIn("- Размещено: 01.06.2026", context)
@@ -134,7 +134,7 @@ class TenderplanPureFunctionTests(unittest.TestCase):
             explanation_attachments=[],
         )
 
-        self.assertIn("- Код способа закупки Tenderplan: 22", context)
+        self.assertIn("- Код способа закупки источника: 22", context)
         self.assertIn("Человекочитаемый способ закупки", context)
         self.assertNotIn("- Способ осуществления закупки: 22", context)
 
@@ -157,8 +157,8 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         )
 
         self.assertIn("- Способ осуществления закупки: Запрос котировок в электронной форме", context)
-        self.assertIn("- Код способа закупки Tenderplan: 22", context)
-        self.assertIn("- Источник расшифровки способа: Tenderplan globalSearch", context)
+        self.assertIn("- Код способа закупки источника: 22", context)
+        self.assertIn("- Источник расшифровки способа: текст карточки закупки", context)
         self.assertNotIn("Человекочитаемый способ закупки", context)
 
     def test_build_context_decodes_numeric_placing_way_from_dictionary(self) -> None:
@@ -184,9 +184,9 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         )
 
         self.assertIn("- Способ осуществления закупки: Запрос котировок в электронной форме", context)
-        self.assertIn("- Код способа закупки Tenderplan: 22", context)
-        self.assertIn("- Источник расшифровки способа: Tenderplan /api/tools/placingways/list", context)
-        self.assertIn("- Статус: Прием заявок (код Tenderplan: 1; источник: Tenderplan /api/tools/statuses/list)", context)
+        self.assertIn("- Код способа закупки источника: 22", context)
+        self.assertIn("- Источник расшифровки способа: официальный справочник способов закупки", context)
+        self.assertIn("- Статус: Прием заявок (код источника: 1; источник: официальный справочник статусов)", context)
         self.assertNotIn("Человекочитаемый способ закупки", context)
 
     def test_parse_tool_dictionary_uses_id_name_pairs(self) -> None:
@@ -225,8 +225,8 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         )
 
         self.assertIn("- Способ осуществления закупки: Иной способ", context)
-        self.assertIn("- Код способа закупки Tenderplan: 0", context)
-        self.assertIn("- Статус: Неизвестно (код Tenderplan: 0; источник: Tenderplan /api/tools/statuses/list)", context)
+        self.assertIn("- Код способа закупки источника: 0", context)
+        self.assertIn("- Статус: Неизвестно (код источника: 0; источник: официальный справочник статусов)", context)
 
     def test_download_context_surfaces_partial_download_failures(self) -> None:
         context = build_tenderplan_download_context([], [{"name": "ТЗ.docx", "error": "http_500"}])
@@ -540,7 +540,7 @@ class TenderplanPureFunctionTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.status, "partial")
-        self.assertIn("Предупреждения источника Tenderplan", result.context)
+        self.assertIn("Предупреждения источника документации", result.context)
         self.assertEqual(result.warnings, ["Не скачано файлов: 1"])
 
     def test_fetch_source_falls_back_to_local_client_when_shared_service_fails(self) -> None:

@@ -737,7 +737,7 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["id"], "job-1")
         self.assertEqual(captured["files"], [])
-        self.assertEqual(captured["title"], "Tenderplan / номер извещения")
+        self.assertEqual(captured["title"], "Закупка 0371100005626000040")
         self.assertEqual(captured["sources"][0]["kind"], "tenderplan_notice")
         self.assertEqual(captured["sources"][0]["value"], "0371100005626000040")
 

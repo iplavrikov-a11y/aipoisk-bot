@@ -95,7 +95,7 @@ def source_payloads_from_text(text: str) -> list[dict]:
 def source_label(value: str) -> str:
     raw = str(value or "").strip()
     if raw.isdigit() and len(raw) in {11, 19}:
-        return "Tenderplan / номер извещения"
+        return f"Закупка {raw}"
     host = (urlparse(raw).hostname or "").lower().removeprefix("www.")
     if classify_source_url(raw) == SOURCE_KIND_OFFICIAL:
         return "ЕИС / zakupki.gov.ru"
@@ -107,10 +107,10 @@ def build_source_context_block(*, kind: str, url: str, text: str) -> str:
     if not clean_text:
         return ""
     if kind == SOURCE_KIND_TENDERPLAN_NOTICE:
-        title = f"=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN ({url}) ==="
+        title = f"=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ ({url}) ==="
         instruction = (
-            "Это структурированные данные Tenderplan по номеру извещения. Tenderplan берет карточку, "
-            "сроки, нацрежим, документы и разъяснения из ЕИС. Используй эти данные как "
+            "Это структурированные данные по номеру извещения: карточка, сроки, "
+            "нацрежим, документы и разъяснения из ЕИС. Используй эти данные как "
             "основной источник критичных полей карточки закупки; даты ниже считай московским временем, "
             "если источник явно не говорит иное. Разъяснения и ответы заказчика имеют приоритет над "
             "исходной редакцией ТЗ."

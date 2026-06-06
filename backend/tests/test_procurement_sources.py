@@ -82,12 +82,12 @@ class ProcurementSourceTests(unittest.TestCase):
             [
                 {
                     "kind": SOURCE_KIND_TENDERPLAN_NOTICE,
-                    "label": "Tenderplan / номер извещения",
+                    "label": "Закупка 0371100005626000040",
                     "value": "0371100005626000040",
                 }
             ],
         )
-        self.assertEqual(source_label("32615728276"), "Tenderplan / номер извещения")
+        self.assertEqual(source_label("32615728276"), "Закупка 32615728276")
 
     def test_eis_candidate_urls_prioritize_original_notice_kind_pages(self) -> None:
         urls = candidate_source_urls(
@@ -131,7 +131,7 @@ class ProcurementSourceTests(unittest.TestCase):
             text="Карточка закупки:\n- НМЦК/цена: 100 000 руб.",
         )
 
-        self.assertIn("ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN", block)
+        self.assertIn("ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ", block)
         self.assertIn("основной источник критичных полей", block)
         self.assertIn("Разъяснения и ответы заказчика", block)
 

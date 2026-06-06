@@ -131,13 +131,13 @@ def fetch_tenderplan_source_sync(notice_number: str) -> TenderplanFetchResult:
                 ok=False,
                 status=service_result.status or "failed",
                 notice_number=notice_number,
-                error=f"{service_result.error}; резервный локальный Tenderplan token не настроен".strip("; "),
+                error=f"{service_result.error}; резервный локальный источник закупок не настроен".strip("; "),
             )
         return TenderplanFetchResult(
             ok=False,
             status="not_configured",
             notice_number=notice_number,
-            error="Tenderplan API token is not configured",
+            error="Источник закупок по номеру извещения не настроен",
         )
 
     client = TenderplanClient(token=token, base_url=config.tenderplan_base_url or TENDERPLAN_BASE_URL)
@@ -166,7 +166,7 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
             ok=False,
             status="service_failed",
             notice_number=notice_number,
-            error=f"Общий сервис Tenderplan недоступен: {exc}",
+            error=f"Общий сервис источников закупок недоступен: {exc}",
         )
 
     failed = list(payload.get("download_errors") or [])
@@ -177,9 +177,9 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
     error = str(payload.get("error") or "")
     warnings = [str(item) for item in payload.get("warnings") or [] if str(item).strip()]
     context = str(payload.get("context") or "")
-    if warnings and "Предупреждения источника Tenderplan" not in context:
+    if warnings and "Предупреждения источника документации" not in context:
         warning_text = "\n".join(f"- {warning}" for warning in warnings[:20])
-        context = f"Предупреждения источника Tenderplan:\n{warning_text}\n\n{context}".strip()
+        context = f"Предупреждения источника документации:\n{warning_text}\n\n{context}".strip()
     if file_errors:
         file_error_text = f"Не получено файлов из общего сервиса: {len(file_errors)}"
         error = f"{error}; {file_error_text}" if error else file_error_text
@@ -260,10 +260,10 @@ class TenderplanClient:
         search_payload = self._get_json("/api/search/tender", params={"number": number})
         matches = find_tender_matches(search_payload, number)
         if not matches:
-            return TenderplanFetchResult(ok=False, status="not_found", notice_number=number, error="Закупка не найдена в Tenderplan")
+            return TenderplanFetchResult(ok=False, status="not_found", notice_number=number, error="Закупка не найдена по номеру извещения")
         tender_id = str(matches[0].get("_id") or matches[0].get("id") or "").strip()
         if not tender_id:
-            return TenderplanFetchResult(ok=False, status="not_found", notice_number=number, error="Tenderplan не вернул ID закупки")
+            return TenderplanFetchResult(ok=False, status="not_found", notice_number=number, error="Источник закупки не вернул ID карточки")
 
         fullinfo_by_id: dict[str, dict] = {}
         related_tenders: list[dict] = []
@@ -285,10 +285,10 @@ class TenderplanClient:
                 hrefs = {str(item.get("href") or "").strip() for item in tenders if item.get("href")}
                 numbers = {str(item.get("number") or "").strip() for item in tenders if item.get("number")}
                 if any(item and item != number for item in numbers):
-                    return TenderplanFetchResult(ok=False, status="ambiguous", notice_number=number, error="Tenderplan вернул несколько закупок по номеру")
+                    return TenderplanFetchResult(ok=False, status="ambiguous", notice_number=number, error="Источник закупки вернул несколько карточек по номеру")
                 selected_id = preferred_tender_id(fullinfo_by_id, fallback_id=tender_id)
                 if len(hrefs) > 1 and not selected_id:
-                    return TenderplanFetchResult(ok=False, status="ambiguous", notice_number=number, error="Tenderplan вернул несколько закупок по номеру")
+                    return TenderplanFetchResult(ok=False, status="ambiguous", notice_number=number, error="Источник закупки вернул несколько карточек по номеру")
                 if selected_id:
                     tender_id = selected_id
                 related_ids = related_tender_ids(fullinfo_by_id, selected_id=tender_id)
@@ -365,17 +365,17 @@ class TenderplanClient:
         except httpx.HTTPError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Tenderplan request failed: {path}: {exc}") from exc
+            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: {exc}") from exc
         if response.status_code >= 400:
             if default is not None:
                 return default
-            raise TenderplanError(f"Tenderplan request failed: {path}: HTTP {response.status_code}")
+            raise TenderplanError(f"Запрос к источнику закупок не выполнен: {path}: HTTP {response.status_code}")
         try:
             return response.json()
         except ValueError as exc:
             if default is not None:
                 return default
-            raise TenderplanError(f"Tenderplan returned invalid JSON: {path}") from exc
+            raise TenderplanError(f"Источник закупок вернул некорректный JSON: {path}") from exc
 
     def tool_dictionary(self, name: str, *, force: bool = False) -> tuple[dict[str, str], str]:
         path, fallback = TENDERPLAN_TOOL_DICTIONARIES[name]
@@ -459,19 +459,19 @@ def build_tenderplan_context(
     )
 
     lines = [
-        f"=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN ({notice_number}) ===",
+        f"=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ ({notice_number}) ===",
         (
-            "Tenderplan получает карточку, сроки, нацрежим, документы и разъяснения из ЕИС. "
-            "Используй эти структурированные данные как основной источник критичных полей: номер извещения, "
+            "Это структурированные данные из ЕИС по номеру извещения. "
+            "Используй их как основной источник критичных полей: номер извещения, "
             "заказчик, НМЦК, сроки подачи заявок, дата аукциона, дата итогов, площадка, способ закупки, "
             "национальный режим и карточка закупки. Даты ниже нормализованы в московское время, если поле "
-            "является timestamp Tenderplan. Разъяснения и ответы заказчика имеют приоритет над исходным ТЗ, "
+            "является timestamp источника. Разъяснения и ответы заказчика имеют приоритет над исходным ТЗ, "
             "если уточняют характеристики, сроки, оплату или иные условия."
         ),
         "",
         "Карточка закупки:",
         f"- Номер извещения: {tender.get('number') or notice_number}",
-        f"- Tenderplan ID: {tender_id}",
+        f"- ID источника: {tender_id}",
         f"- Источник ЕИС: {tender.get('href') or ''}",
         f"- Наименование: {tender.get('orderName') or ''}",
         f"- Закон: {law_label(tender.get('href'))}",
@@ -484,7 +484,7 @@ def build_tenderplan_context(
         f"- Обеспечение контракта: {format_price(tender.get('guaranteeContract'))}",
         f"- СМП/СОНО: {bool(tender.get('smp'))}",
         "",
-        "Сроки Tenderplan (МСК):",
+        "Сроки закупки (МСК):",
         f"- Размещено: {dates.get('publication') or ''}",
         f"- Начало подачи заявок: {dates.get('submission_start') or ''}",
         f"- Дата и время окончания срока подачи заявок (МСК): {dates.get('submission_close') or ''}",
@@ -498,7 +498,7 @@ def build_tenderplan_context(
     ]
     related_lines = format_related_tenders(related_tenders or [], selected_tender_id=tender_id)
     if related_lines:
-        lines.extend(["", "Несколько карточек/лотов Tenderplan по этому извещению:", *related_lines, ""])
+        lines.extend(["", "Несколько карточек/лотов по этому извещению:", *related_lines, ""])
     for row in objects[:80]:
         lines.append(format_object_row(row))
     if len(objects) > 80:
@@ -506,7 +506,7 @@ def build_tenderplan_context(
     lines.extend(
         [
             "",
-            "Документы и служебные материалы Tenderplan:",
+            "Документы и служебные материалы:",
             f"- Документация: {len(attachment_items(attachments, 'documentation'))} файлов",
             f"- Разъяснения/ответы заказчика: {count_items(explanations)} записей, {len(attachment_items(explanation_attachments, 'explanation'))} файлов",
         ]
@@ -525,7 +525,7 @@ def build_tenderplan_context(
 
 def build_tenderplan_download_context(files: list[TenderplanDownloadedFile], failed: list[dict]) -> str:
     lines = [
-        "Скачивание документации Tenderplan:",
+        "Скачивание документации:",
         f"- Скачано файлов для последующего анализа: {len(files)}",
         f"- Не скачано файлов: {len(failed)}",
     ]
@@ -767,7 +767,7 @@ def extract_national_regime(objects: list[dict[str, str]], tender_json: dict) ->
             if value is not None:
                 label = {"requirements": "Требования", "restrictInfo": "Ограничения", "preference": "Преимущества"}[key]
                 result.append(f"{label}: {bool(value)}")
-    return result or ["Нет структурированных данных о нацрежиме в карточке Tenderplan"]
+    return result or ["Нет структурированных данных о нацрежиме в карточке источника"]
 
 
 def find_general_field(general: dict, fn: str):
@@ -852,12 +852,12 @@ def format_placing_way_lines(
         if label:
             lines = [
                 f"- Способ осуществления закупки: {label}",
-                f"- Код способа закупки Tenderplan: {text}",
-                f"- Источник расшифровки способа: {dictionary_source or 'справочник Tenderplan'}",
+                f"- Код способа закупки источника: {text}",
+                f"- Источник расшифровки способа: {_public_dictionary_source(dictionary_source)}",
             ]
             if text == "0":
                 lines.append(
-                    "- Детализация способа: Tenderplan передал обобщенный код 0 «Иной способ»; "
+                    "- Детализация способа: источник передал обобщенный код 0 «Иной способ»; "
                     "подвид нужно брать из извещения, документации или площадки, если он там указан."
                 )
             return lines
@@ -865,15 +865,15 @@ def format_placing_way_lines(
     if inferred and (not text or re.fullmatch(r"\d{1,4}", text)):
         lines = [f"- Способ осуществления закупки: {inferred}"]
         if text:
-            lines.append(f"- Код способа закупки Tenderplan: {text}")
-        lines.append("- Источник расшифровки способа: Tenderplan globalSearch")
+            lines.append(f"- Код способа закупки источника: {text}")
+        lines.append("- Источник расшифровки способа: текст карточки закупки")
         return lines
     if not text:
         return ["- Способ осуществления закупки: "]
     if re.fullmatch(r"\d{1,4}", text):
         return [
-            f"- Код способа закупки Tenderplan: {text}",
-            "- Человекочитаемый способ закупки: код не найден в справочнике Tenderplan; см. формулировку в извещении/документации",
+            f"- Код способа закупки источника: {text}",
+            "- Человекочитаемый способ закупки: код не найден в справочнике; см. формулировку в извещении/документации",
         ]
     return [f"- Способ осуществления закупки: {text}"]
 
@@ -895,9 +895,22 @@ def format_status_line(value, *, status_names: dict[str, str] | None = None, dic
     if re.fullmatch(r"\d{1,4}", text):
         label = (status_names or {}).get(text, "")
         if label:
-            return f"- Статус: {label} (код Tenderplan: {text}; источник: {dictionary_source or 'справочник Tenderplan'})"
-        return f"- Статус/код Tenderplan: {text}"
+            return f"- Статус: {label} (код источника: {text}; источник: {_public_dictionary_source(dictionary_source)})"
+        return f"- Статус/код источника: {text}"
     return f"- Статус: {text}"
+
+
+def _public_dictionary_source(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "официальный справочник"
+    if "/placingways/" in raw:
+        return "официальный справочник способов закупки"
+    if "/statuses/" in raw:
+        return "официальный справочник статусов"
+    if "fallback" in raw.lower():
+        return "локальный справочник"
+    return "официальный справочник"
 
 
 def format_related_tenders(tenders: list[dict], *, selected_tender_id: str) -> list[str]:

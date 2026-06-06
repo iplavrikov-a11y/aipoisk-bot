@@ -15,9 +15,11 @@ from app.jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_SUPPLIER_SEARCH,
     VALID_JOB_MODES,
+    _analysis_report_title,
     _result_stem,
     _process_analysis_and_suppliers,
     _supplier_count_message,
+    _update_job_title_from_source_context,
     build_failure_evidence,
     claim_next_job,
     package_job_output_files,
@@ -74,8 +76,33 @@ class JobRecoveryTests(unittest.TestCase):
 
         stem = _result_stem(job, "Средство для очистки поверхностей (кислотный концентрат)")
 
-        self.assertIn("Техническое задание 1 - Средство для очистки поверхностей кислотный концентрат", stem)
+        self.assertEqual(stem, "Средство для очистки поверхностей кислотный концентрат")
         self.assertNotIn("_кислотный", stem)
+
+    def test_source_only_procurement_title_uses_customer_facing_subject(self) -> None:
+        job = Job(mode="procurement_report", status="running", title="Tenderplan / номер извещения")
+
+        _update_job_title_from_source_context(
+            job,
+            "Карточка закупки:\n- Наименование: Поставка каната стального оцинкованного\n",
+        )
+
+        self.assertEqual(job.title, "Поставка каната стального оцинкованного")
+        self.assertEqual(
+            _analysis_report_title(job, "Поставка каната стального оцинкованного"),
+            "Анализ документации: Поставка каната стального оцинкованного",
+        )
+        self.assertEqual(_result_stem(job, "Поставка каната стального оцинкованного"), "Поставка каната стального оцинкованного")
+
+    def test_source_only_url_title_uses_customer_facing_subject(self) -> None:
+        job = Job(mode="procurement_report", status="running", title="ЕИС / zakupki.gov.ru")
+
+        _update_job_title_from_source_context(
+            job,
+            "Карточка закупки:\n- Наименование: Поставка насосного оборудования\n",
+        )
+
+        self.assertEqual(job.title, "Поставка насосного оборудования")
 
     def test_result_stem_keeps_cyrillic_output_filename_under_filesystem_limit(self) -> None:
         long_title = "Техническое задание " + "канат стальной оцинкованный " * 12

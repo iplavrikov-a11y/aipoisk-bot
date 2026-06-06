@@ -27,7 +27,7 @@ class ProcurementReportPromptTests(unittest.TestCase):
             "Электронная площадка",
             "Крайний срок подачи заявок",
             "Дата рассмотрения/подведения итогов",
-            "Tenderplan",
+            "официального источника",
             "ссылке на закупку",
             "Что уточнить",
             "Рыночная разведка (OSINT)",
@@ -180,11 +180,11 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
 
 class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestCase):
     def test_tenderplan_context_is_treated_as_official_card_facts(self) -> None:
-        source_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (0371100005626000040) ===
+        source_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (0371100005626000040) ===
 Карточка закупки:
 - Способ осуществления закупки: Электронный аукцион
 
-Сроки Tenderplan (МСК):
+Сроки закупки (МСК):
 - Дата и время окончания срока подачи заявок (МСК): 10.06.2026 10:00 МСК
 - Дата подведения итогов (МСК): 11.06.2026 13:00 МСК
 """
@@ -211,7 +211,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 
     def test_verification_prompt_rejects_official_card_field_mismatch(self) -> None:
         for phrase in (
-            "карточечного поля Tenderplan/ЕИС/электронной площадки",
+            "карточечного поля официального источника/ЕИС/электронной площадки",
             "нормализовал \"Иной способ\"",
             "добавил время к дате подведения итогов",
             "пересчитал местное время заказчика",
@@ -305,10 +305,10 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(validate_report_against_official_card(report, facts), [])
 
     def test_tenderplan_numeric_method_does_not_override_notice_method(self) -> None:
-        document_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (32616063169) ===
+        document_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (32616063169) ===
 Карточка закупки:
 - Способ осуществления закупки: 22
-Сроки Tenderplan (МСК):
+Сроки закупки (МСК):
 - Дата и время окончания срока подачи заявок (МСК): 09.06.2026 06:00 МСК
 - Дата подведения итогов (МСК): 09.06.2026 20:59 МСК
 
@@ -327,7 +327,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
         )
 
     def test_guardrails_repair_method_results_logistics_and_freshness(self) -> None:
-        source_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (32616063169) ===
+        source_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (32616063169) ===
 - Способ осуществления закупки: 22
 - Дата подведения итогов (МСК): 09.06.2026 20:59 МСК
 Способ закупки: запрос котировок в электронной форме.

@@ -294,7 +294,7 @@ def _process_job_sync(job_id: str) -> None:
         source_count = len(job.sources)
         for index, source in enumerate(job.sources, start=1):
             stage = "extract_sources"
-            label = "номер извещения Tenderplan" if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE else "ссылку закупки"
+            label = "номер извещения" if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE else "ссылку закупки"
             _set_job(db, job, status="running", progress=3 + int(5 * (index - 1) / max(1, source_count)), message=f"Читаю {label}: {index}/{source_count}")
             if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE:
                 result = fetch_tenderplan_source_sync(source.value)
@@ -302,6 +302,7 @@ def _process_job_sync(job_id: str) -> None:
                 source.extracted_chars = len(result.context)
                 source.error = result.error
                 if result.context:
+                    _update_job_title_from_source_context(job, result.context)
                     context_path = _persist_source_context(job, index, source.kind, result.context)
                     source.context_path = str(context_path)
                     source_blocks.append(result.context)
@@ -314,6 +315,7 @@ def _process_job_sync(job_id: str) -> None:
                 source.extracted_chars = result.extracted_chars
                 source.error = result.error
                 if result.context:
+                    _update_job_title_from_source_context(job, result.context)
                     context_path = _persist_source_context(job, index, source.kind, result.context)
                     source.context_path = str(context_path)
                     source_blocks.append(result.context)
@@ -425,6 +427,45 @@ def _job_files_evidence(job: Job) -> list[dict]:
     return result
 
 
+GENERIC_SOURCE_TITLE_RE = re.compile(
+    r"^(?:закупка\s+\d{11,19}|номер извещения|документация|source-only|"
+    r"(?:tenderplan|тендер\s*план|тендерплан)\s*(?:[-:]\s*)?(?:номер извещения)?)$",
+    re.I,
+)
+
+
+def _is_generic_source_title(value: object) -> bool:
+    text = _clean_label(value).lower()
+    if not text or GENERIC_SOURCE_TITLE_RE.fullmatch(text):
+        return True
+    has_notice_phrase = "номер извещения" in text
+    has_internal_brand = "tender" in text or "тендер" in text or "tande" in text
+    return has_notice_phrase and has_internal_brand
+
+
+def _extract_title_from_source_context(context: str) -> str:
+    text = str(context or "")
+    patterns = (
+        r"(?m)^\s*-\s*Наименование\s*:\s*(.+)$",
+        r"(?mi)^\s*(?:предмет|объект)\s+закупк[ии]\s*[:\-]\s*(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = _short_label(match.group(1), limit=120)
+        if value and not _is_generic_source_title(value):
+            return value
+    return ""
+
+
+def _update_job_title_from_source_context(job: Job, context: str) -> None:
+    title = _extract_title_from_source_context(context)
+    has_uploaded_files = bool(getattr(job, "files", []) or [])
+    if title and (_is_generic_source_title(job.title) or not has_uploaded_files):
+        job.title = title
+
+
 def _persist_source_context(job: Job, index: int, kind: str, context: str) -> Path:
     source_dir = job_dir(job.id) / "input" / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +541,7 @@ def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
 
 def _source_title(job: Job) -> str:
     title = _clean_label(job.title)
-    if title:
+    if title and not _is_generic_source_title(title):
         return title
     files = getattr(job, "files", []) or []
     if files:
@@ -541,18 +582,21 @@ def _subject_from_report_text(markdown: str) -> str:
 def _analysis_report_title(job: Job, subject: str) -> str:
     source = _source_title(job)
     item = _short_label(subject)
-    if source and item:
-        return f"Анализ документации: {source} - {item}"
+    if item:
+        return f"Анализ документации: {item}"
     return f"Анализ документации: {source}" if source else "Анализ документации"
 
 
 def _result_stem(job: Job, subject: str) -> str:
     source = _source_title(job)
     item = _short_label(subject)
-    base = f"{source} - {item}" if item else source
+    if item:
+        base = item
+    else:
+        base = source
     base = re.sub(r"[()\[\]{}]+", " ", base)
     base = re.sub(r"\s+", " ", base).strip()
-    return _truncate_filename_component(document_parser.sanitize_filename(base), RESULT_STEM_MAX_BYTES, fallback="result")
+    return _truncate_filename_component(document_parser.sanitize_filename(base), RESULT_STEM_MAX_BYTES, fallback="анализ_закупки")
 
 
 def _truncate_filename_component(value: str, max_bytes: int, *, fallback: str) -> str:

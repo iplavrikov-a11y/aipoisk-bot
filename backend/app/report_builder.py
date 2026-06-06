@@ -117,12 +117,10 @@ def _client_supplier_comment(row: dict) -> str:
 def _supplier_report_heading(title: str, subject: str = "") -> str:
     source = _clean_comment_text(title)
     item = _clean_comment_text(subject)
-    if source and item:
-        return f"Отчёт по ТЗ: {source} - {item}"
-    if source:
-        return f"Отчёт по ТЗ: {source}"
     if item:
         return f"Отчёт по ТЗ: {item}"
+    if source:
+        return f"Отчёт по ТЗ: {source}"
     return "Отчёт по ТЗ"
 
 

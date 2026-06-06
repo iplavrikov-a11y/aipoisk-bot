@@ -84,9 +84,9 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertNotIn("0291e2d4", text)
         self.assertNotIn("Режим:", text)
         self.assertIn("🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜ 50%", text)
-        self.assertIn("Сейчас: ищу сайты компаний", text)
-        self.assertIn("Прошло: 10 мин", text)
-        self.assertIn("Ориентир: около", text)
+        self.assertIn("• Этап: ищу сайты компаний", text)
+        self.assertIn("• Прошло: 10 мин", text)
+        self.assertIn("• Ориентир: около", text)
 
     def test_terminal_job_eta_says_finished(self) -> None:
         snapshot = JobProgressSnapshot(
@@ -318,7 +318,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         text = _format_job_progress(snapshot, now=now)
 
-        self.assertIn("Ориентир: рассчитываю время", text)
+        self.assertIn("• Ориентир: рассчитываю время", text)
         self.assertNotIn("около 0 сек", text)
 
     def test_bot_profile_hides_command_menu_for_button_driven_onboarding(self) -> None:
@@ -368,17 +368,15 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         text = _pending_added_text(pending, max_files=20)
 
-        self.assertIn("ТЗ добавлено: 2/20", text)
-        self.assertIn("Можно отправить ещё ТЗ", text)
-        self.assertIn("нажать «Запустить обработку»", text)
-        self.assertIn("по каждому ТЗ будет отдельный Excel-файл", text)
+        self.assertIn("✅ ТЗ добавлено", text)
+        self.assertIn("В комплекте: 2/20", text)
+        self.assertIn("нажмите «▶️ Запустить обработку»", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
         text = _batch_running_text()
 
-        self.assertIn("Обработка уже запущена", text)
-        self.assertIn("Кнопки добавления документов временно скрыты", text)
-        self.assertIn("пришлю файлы", text)
+        self.assertIn("Обработка уже идёт", text)
+        self.assertIn("пришлю файл", text)
 
     def test_mode_labels_are_customer_facing(self) -> None:
         self.assertEqual(_mode_label(MODE_SUPPLIER_SEARCH), "поиск поставщиков")
@@ -503,9 +501,9 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         text = _pending_added_text(pending, max_files=20, added_sources=1)
 
-        self.assertIn("Документ добавлен: 1/20", text)
-        self.assertIn("Источников добавлено: 1", text)
-        self.assertIn("Всего источников: 1", text)
+        self.assertIn("✅ Материалы добавлены", text)
+        self.assertIn("Файлов: 1/20", text)
+        self.assertIn("Источников: 1", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
         pending = PendingBatch(
@@ -597,7 +595,7 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, snapshot)
         self.assertEqual(message.answers, [])
-        self.assertEqual(len(status_message.edits), 2)
+        self.assertEqual(len(status_message.edits), 1)
         self.assertIn("анализ документации готов", status_message.edits[-1])
 
     async def test_send_job_outputs_edits_file_caption_instead_of_sending_balance_message(self) -> None:
@@ -726,7 +724,15 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
             bot_module.client_access_error = lambda *_args, **_kwargs: ""
             bot_module.get_or_create_settings = lambda _db: SimpleNamespace(default_supplier_target=3)
-            bot_module.create_job = lambda _db, **kwargs: created.update(kwargs) or SimpleNamespace(id="job-1")
+            bot_module.create_job = lambda _db, **kwargs: created.update(kwargs) or SimpleNamespace(
+                id="job-1",
+                mode=kwargs["mode"],
+                status="pending",
+                progress=0,
+                message="Задача создана",
+                error="",
+                created_at=datetime.now(timezone.utc),
+            )
             bot_module._reserve_created_job = lambda _db, _client, _job: ""
 
             async def fake_watch_job_progress(_message, job_id: str, **kwargs):
@@ -760,7 +766,7 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(created["files"][0][0].endswith(".txt"))
         self.assertIn("Поставка насосов", created["files"][0][1].decode("utf-8"))
         self.assertEqual(sent_outputs, ["job-1"])
-        self.assertIn("Принял ТЗ из сообщения", message.answers[0][0])
+        self.assertIn("✅ ТЗ из сообщения принято", message.answers[0][0])
 
 
 if __name__ == "__main__":

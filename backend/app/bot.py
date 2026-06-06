@@ -264,18 +264,24 @@ def _supplier_multi_intro_text() -> str:
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
     if pending.mode == MODE_SUPPLIER_SEARCH:
         return (
-            f"ТЗ добавлено: {len(pending.files)}/{max_files}.\n"
-            "Можно отправить ещё ТЗ или нажать «Запустить обработку».\n"
-            "После запуска по каждому ТЗ будет отдельный Excel-файл."
+            "✅ ТЗ добавлено\n"
+            f"• В комплекте: {len(pending.files)}/{max_files}\n\n"
+            "Добавьте ещё ТЗ или нажмите «▶️ Запустить обработку»."
         )
-    source_text = f"\nИсточников добавлено: {added_sources}. Всего источников: {len(pending.sources)}." if added_sources else ""
-    return f"Документ добавлен: {len(pending.files)}/{max_files}.{source_text}\nРежим: {_mode_label(pending.mode)}."
+    lines = [
+        "✅ Материалы добавлены",
+        f"• Файлов: {len(pending.files)}/{max_files}",
+    ]
+    if pending.sources:
+        lines.append(f"• Источников: {len(pending.sources)}")
+    lines.extend(["", "Добавьте ещё документы или нажмите «▶️ Запустить обработку»."])
+    return "\n".join(lines)
 
 
 def _batch_running_text() -> str:
     return (
-        "Обработка уже запущена.\n"
-        "Кнопки добавления документов временно скрыты. Я буду обновлять статус и пришлю файлы по мере готовности."
+        "⏳ Обработка уже идёт\n\n"
+        "Я обновляю статус и пришлю файл, когда он будет готов."
     )
 
 
@@ -419,6 +425,8 @@ def _friendly_stage_text(message: str) -> str:
         return "ожидаю обновления"
     if "задача создана" in lowered or "взята в обработку" in lowered:
         return "готовлю документы к обработке"
+    if "номер извещения" in lowered or "ссылку закупки" in lowered:
+        return "читаю карточку закупки"
     if "читаю документы" in lowered or "извлекаю" in lowered or "текст тз" in lowered:
         return "читаю ТЗ"
     if "анализирую тз" in lowered or "закупаемые позиции" in lowered:
@@ -543,19 +551,38 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
             [
                 _progress_heading(snapshot),
                 "",
-                _friendly_stage_text(snapshot.message),
-                f"Прошло: {elapsed}",
+                f"• Результат: {_friendly_stage_text(snapshot.message)}",
+                f"• Прошло: {elapsed}",
             ]
         )
     lines = [
         _progress_heading(snapshot),
         "",
         f"{_progress_bar(snapshot.progress)} {snapshot.progress}%",
-        f"Сейчас: {_friendly_stage_text(snapshot.message)}",
-        f"Прошло: {elapsed}",
-        f"Ориентир: {_job_eta_text(snapshot, now=now)}",
+        f"• Этап: {_friendly_stage_text(snapshot.message)}",
+        f"• Прошло: {elapsed}",
+        f"• Ориентир: {_job_eta_text(snapshot, now=now)}",
     ]
     return "\n".join(lines)
+
+
+def _format_launch_progress(snapshot: JobProgressSnapshot, accepted_text: str) -> str:
+    base = _format_job_progress(snapshot)
+    accepted = str(accepted_text or "").strip()
+    if not accepted:
+        return base
+    parts = base.split("\n\n", 1)
+    if len(parts) == 2:
+        return f"{parts[0]}\n\n{accepted}\n\n{parts[1]}"
+    return f"{accepted}\n\n{base}"
+
+
+def _accepted_batch_text(pending: PendingBatch) -> str:
+    return f"✅ Принято: файлов {len(pending.files)}, источников {len(pending.sources)}"
+
+
+def _accepted_single_tz_text(*, from_text: bool = False) -> str:
+    return "✅ ТЗ принято" if not from_text else "✅ ТЗ из сообщения принято"
 
 
 def _job_snapshot(job: Job) -> JobProgressSnapshot:
@@ -701,8 +728,6 @@ async def watch_job_progress(
         return None
     if status_message is None:
         status_message = await message.answer(_format_job_progress(snapshot))
-    else:
-        status_message = await _edit_or_send_status(status_message, _format_job_progress(snapshot))
     last_key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
     last_heartbeat = started
 
@@ -1096,13 +1121,14 @@ async def run_batch_button(message: Message) -> None:
         launch_started = True
         if batch_jobs:
             launch_message = await message.answer(
-                f"Обработка запущена: ТЗ {len(batch_jobs)}.\n"
+                f"🗂 Обработка запущена\n\n"
+                f"✅ Принято ТЗ: {len(batch_jobs)}\n"
                 "Буду обновлять это сообщение и пришлю файлы по мере готовности.",
                 reply_markup=ReplyKeyboardRemove(),
             )
         else:
             launch_message = await message.answer(
-                f"Принял: файлов {len(pending.files)}, источников {len(pending.sources)}.\nСейчас начну обработку и буду обновлять статус здесь.",
+                _format_launch_progress(_job_snapshot(job), _accepted_batch_text(pending)),
                 reply_markup=ReplyKeyboardRemove(),
             )
     finally:
@@ -1441,7 +1467,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             PENDING_UPLOADS.pop(message.chat.id, None)
             PENDING_MODES.pop(message.chat.id, None)
             launch_message = await message.answer(
-                "Принял ТЗ. Запускаю поиск поставщиков и буду обновлять статус здесь.",
+                _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text()),
                 reply_markup=main_menu(),
             )
         else:
@@ -1535,7 +1561,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         PENDING_UPLOADS.pop(message.chat.id, None)
         PENDING_MODES.pop(message.chat.id, None)
         launch_message = await message.answer(
-            "Принял ТЗ из сообщения. Запускаю поиск поставщиков и буду обновлять статус здесь.",
+            _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text(from_text=True)),
             reply_markup=main_menu(),
         )
     finally:

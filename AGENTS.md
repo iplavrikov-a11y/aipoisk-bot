@@ -6,6 +6,7 @@
 - Existing admin panel: React/Vite in `frontend/`.
 - Public business-card website: Next.js in `site/`, served for `tenderlex.ru`.
 - The public website is a landing/site-card only. Do not add a blog unless the user explicitly changes that scope.
+- Tenderplan/API procurement access is an internal data source. Do not expose the Tenderplan name in customer-facing Telegram messages, DOCX/XLSX titles, output filenames, report text, or customer-visible errors. Name output files and report headings by the procurement subject/product when it is available.
 
 ## Public Site Contract
 
