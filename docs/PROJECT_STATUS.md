@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-05
+Date: 2026-06-06
 
 ## Current Production State
 
@@ -35,16 +35,16 @@ There are exactly two commercial counters:
 
 Mode accounting:
 
-- `Поиск поставщиков` spends supplier-report units;
+- `🔎 Одно ТЗ` spends one supplier-report unit;
 - mass supplier search spends one supplier-report unit per independent ТЗ;
-- `Анализ документации` spends one documentation-analysis unit;
-- `Анализ + поставщики` spends one supplier-report unit and one
+- `📄 Анализ закупки` spends one documentation-analysis unit;
+- `📄🔎 Анализ + поиск` spends one supplier-report unit and one
   documentation-analysis unit.
 
 Free-period customers can be enabled from admin settings. Trial access has
 separate supplier and documentation-analysis limits. Trial customers cannot use
-mass supplier processing or `Анализ + поставщики`; they must run analysis and
-supplier search separately.
+mass supplier processing or `📄🔎 Анализ + поиск`; they must run analysis and
+supplier search separately when both functions are available.
 
 ## Admin Console
 
@@ -131,12 +131,18 @@ Supplier candidates are verified before they reach the final report:
 - customer-facing messages and XLSX summaries show only the actual number
   found and verified; they do not show the configured internal target/minimum.
 
-Telegram supplier input contract:
+Telegram supplier input and navigation contract:
 
-- `Поставщики по одному ТЗ` creates one supplier-search job from one ТЗ/ООЗ
+- Main customer navigation is a compact two-column reply keyboard:
+  `🚀 Создать`, `🕘 Задачи`, `📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`, and
+  `📞 Контакты`.
+- `🚀 Создать` opens the scenario keyboard: `🔎 Одно ТЗ`,
+  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, `📄🔎 Анализ + поиск`, and
+  `⬅️ Меню`.
+- `🔎 Одно ТЗ` creates one supplier-search job from one ТЗ/ООЗ
   file or one plain text technical assignment / object description message and
   returns one XLSX;
-- `Поставщики по нескольким ТЗ` is a mass-processing mode, not a multi-document
+- `🗂 Несколько ТЗ` is a mass-processing mode, not a multi-document
   context mode;
 - each uploaded ТЗ/ООЗ file or accepted plain text ТЗ message in
   mass-processing mode creates its own independent supplier-search job with
@@ -147,9 +153,19 @@ Telegram supplier input contract:
   context, because that causes dominant items to hide other procurements.
 - Telegram uploads in this mode are serialized per chat and retried on file
   download timeout, so large multi-file sends do not silently drop documents.
-- after processing starts, the bot removes the `Запустить обработку` /
-  `Очистить документы` keyboard until the batch finishes, preventing duplicate
-  launches and making the active state clear to the customer.
+- before processing starts, collected multi-file and documentation scenarios
+  show only `▶️ Запустить`, `🗑 Очистить`, and `⬅️ Меню`.
+- while any job is pending or running for the chat, the bot shows only
+  `⏳ В работе` and `🕘 Задачи`; it hides `🚀 Создать`, `▶️ Запустить`, and
+  all scenario buttons, preventing duplicate launches and making the active
+  state clear to the customer.
+- there is no customer-facing stop button yet, because safe worker
+  cancellation is not implemented; `🗑 Очистить` clears only materials that
+  have not been launched.
+- customer-facing Telegram copy must use the TenderLex brand only. It must not
+  show internal provider names, raw service booleans such as `True`/`False`,
+  task IDs, or diagnostic counters unless the user explicitly asks for status
+  details that require them.
 
 ## Procurement Source Links
 
@@ -159,18 +175,19 @@ or both. A source link is not limited to EIS: it can be `zakupki.gov.ru`, a
 
 Plain supplier-search scenarios are different: the customer sends a technical
 assignment / object description file, not a procurement link. Links are exposed
-in Telegram only for `Анализ документации` and `Анализ + поставщики`.
+in Telegram only for `📄 Анализ закупки` and `📄🔎 Анализ + поиск`.
 
-## Tenderplan API Source Contract
+## Structured Procurement Source API Contract
 
 Tenderplan API is the primary structured source when a customer starts
 documentation analysis by procurement notice number. The API token is a runtime
 secret and must stay only in environment/configuration, never in docs, commits,
-logs, public site copy, or task evidence.
+logs, public site copy, Telegram messages, report filenames, report titles, or
+task evidence.
 
 Current safe source priority:
 
-- for `Анализ документации` and `Анализ + поставщики`, a raw notice number is
+- for `📄 Анализ закупки` and `📄🔎 Анализ + поиск`, a raw notice number is
   stored as a `tenderplan_notice` source and resolved through Tenderplan;
 - Tenderplan card data is used as the main published source for notice number,
   customer, НМЦК, deadlines, bidding/results dates, platform, legal regime,
@@ -219,11 +236,11 @@ Mode boundary:
   number or procurement link, because analysis has separate access and limits;
 - if a customer sends a notice number/link while in supplier-search mode, the
   bot must answer with a clear warning and ask for a ТЗ/ООЗ file or text, or for
-  switching to `Анализ документации` / `Анализ + поставщики`;
+  switching to `📄 Анализ закупки` / `📄🔎 Анализ + поиск`;
 - the lower-level `create_job()` guard also rejects procurement sources for
   `supplier_search`, so another API path cannot silently bypass the mode
   boundary;
-- supplier search after `Анализ + поставщики` must use a separate extracted
+- supplier search after `📄🔎 Анализ + поиск` must use a separate extracted
   ТЗ/ООЗ/product-specification context, not the entire noisy procurement bundle.
 
 Source-link contract:
@@ -329,20 +346,24 @@ without polluting the customer's XLSX report.
 
 - API and Telegram bot only create durable DB-backed pending jobs.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
-- Telegram has four customer-facing scenarios: suppliers for one ТЗ, suppliers for several ТЗ, documentation analysis, and analysis plus suppliers.
+- Telegram has four customer-facing scenarios: `🔎 Одно ТЗ`,
+  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Single-ТЗ supplier search starts after one uploaded ТЗ/ООЗ file;
   it can also start from one plain text ТЗ/ООЗ message.
 - Multi-ТЗ supplier search collects several ТЗ/ООЗ files and/or accepted plain
   text ТЗ messages; the user starts or clears that set explicitly.
-- Documentation-analysis scenarios can collect files, archives, and/or a
-  procurement source link before the user starts processing.
-- `Анализ + поставщики` first uses the full documentation/source context for
+- Documentation-analysis scenarios can collect files, archives, procurement
+  source links, and notice numbers before the user starts processing.
+- `📄🔎 Анализ + поиск` first uses the full documentation/source context for
   the DOCX analysis, then uses a separate AI step to extract the ТЗ/ООЗ/product
   specification context for supplier search. Supplier discovery does not search
   against the noisy full documentation bundle.
 - Telegram bot edits a live progress message while the job runs: queue, AI analysis
   of the technical assignment, query generation, website search, AI candidate
   filtering, site/contact verification, and completion.
+- If a chat already has a pending/running job, Telegram answers with a concise
+  active-processing message and the `⏳ В работе` / `🕘 Задачи` keyboard instead
+  of offering new actions.
 - Admin UI includes supplier quality monitoring and per-job evidence viewing.
 - Admin API exposes `/api/ops/supplier-quality` and `/api/jobs/{job_id}/evidence`.
 - Telegram routing-only code changes require restarting `aipoisk-bot.service`.
@@ -353,14 +374,19 @@ without polluting the customer's XLSX report.
 
 Latest task evidence: `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 
-Fresh checks from the latest Telegram text-ТЗ pass:
+Fresh checks from the latest Telegram keyboard and source-input pass:
 
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
-  backend/tests` -> `172 passed`, `2` warnings, `42` subtests passed.
+  backend/tests -q` -> `221 passed`, `2` warnings, `43` subtests passed.
 - Targeted Telegram tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
-  pytest backend/tests/test_bot_progress.py -q` -> `27 passed`.
-- Production `aipoisk-bot.service` restarted after routing change and returned
-  `active/running` with start time `2026-06-05 12:50:58 UTC`.
+  pytest backend/tests/test_bot_progress.py -q` -> `38 passed`.
+- Production `aipoisk-api.service`, `aipoisk-worker.service`, and
+  `aipoisk-bot.service` were active after restart; local health returned
+  `ok=true`.
+- Telegram text guardrails covered by tests: no legacy brand names in customer
+  text, no internal source-provider name in source-input status, no raw `False`
+  booleans in customer-facing output, and processing keyboards hide new start
+  actions while a job is active.
 
 Earlier billing, Telegram, and admin-button pass:
 
@@ -458,14 +484,21 @@ is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.
 Do not commit:
 
 - `.env` or any real secret file;
+- real API tokens, bot tokens, provider keys, cookies, bearer headers, or
+  copied terminal output that contains them;
 - SQLite databases and DB backups;
 - `storage/` job outputs and uploaded procurement documents;
+- real procurement documentation, customer documents, customer personal data,
+  report outputs, screenshots with private Telegram/admin data, or raw API
+  responses from live customer work;
 - virtual environments;
 - `node_modules/`;
 - frontend build output;
 - runtime logs from `.omx/`.
 
-Commit only source code, tests, deploy templates, `.env.example`, README/docs, and non-secret task evidence.
+Commit only source code, tests, deploy templates, `.env.example`, README/docs,
+and task evidence that has been checked for secrets, private documents, customer
+data, and internal vendor diagnostics that should not be public.
 
 ## Remaining Risks
 

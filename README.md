@@ -1,8 +1,10 @@
-# AI Poisk Bot
+# TenderLex Bot
 
-Commercial Telegram bot and admin panel for procurement document processing.
+TenderLex Telegram bot and admin panel for procurement document analysis and
+supplier search.
 
-Primary domain: `https://aipoisk.lexelence.ru`
+Public product domain: `https://tenderlex.ru`
+Admin/internal domain: `https://aipoisk.lexelence.ru`
 
 ## Production notes
 
@@ -24,14 +26,15 @@ Primary domain: `https://aipoisk.lexelence.ru`
   Telegram manager accounts under one customer.
 - Shared customer limits for all linked Telegram accounts.
 - Separate commercial limits for supplier reports and procurement-document
-  analyses. `Анализ + поставщики` consumes one unit from each limit.
+  analyses. `📄🔎 Анализ + поиск` consumes one unit from each limit.
 - Batch jobs for supplier search and procurement Word reports.
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a
   `.txt` job input and processed by the same AI-first supplier pipeline.
 - Documentation analysis can start from a procurement notice number: the bot
-  treats it as a Tenderplan source, loads the structured card and available
-  procurement documents, and keeps manual upload/source-link flows available.
+  resolves it through the configured structured procurement source, loads the
+  published procurement card and available documents, and keeps manual upload
+  and source-link flows available.
 - Notice numbers and procurement links are intentionally not accepted as plain
   supplier-search input, because documentation analysis and supplier search have
   separate access rules and limits.
@@ -48,6 +51,26 @@ Primary domain: `https://aipoisk.lexelence.ru`
 - Document parsing for TXT/CSV/HTML/DOCX/XLSX/XLS/PDF/DOC/RTF/ODT/PPTX/images with OCR, plus ZIP/RAR/7Z archives when system tools are available.
 - Procurement Word reports use the EmailAgent-style AI report structure when an AI provider is configured; otherwise a downloadable fallback draft is marked for review.
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
+
+## Telegram customer UX
+
+- The bot presents compact reply-keyboard navigation under the TenderLex brand:
+  `🚀 Создать`, `🕘 Задачи`, `📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`,
+  and `📞 Контакты`.
+- `🚀 Создать` opens four work scenarios: `🔎 Одно ТЗ`, `🗂 Несколько ТЗ`,
+  `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
+- `🔎 Одно ТЗ` and `🗂 Несколько ТЗ` accept only a ТЗ/ООЗ file or a plain text
+  description of the procurement object. If the customer sends a notice number
+  or procurement link in these modes, the bot must show a clear warning instead
+  of silently starting analysis.
+- `📄 Анализ закупки` and `📄🔎 Анализ + поиск` accept uploaded files, archives,
+  procurement links, and notice numbers.
+- While any job is pending or running for the chat, the bot shows only
+  `⏳ В работе` and `🕘 Задачи`; new scenario/start buttons are hidden until the
+  active processing finishes.
+- Internal source/vendor names, service booleans, task IDs, and diagnostic
+  counters must not appear in Telegram messages, generated filenames, report
+  titles, or public site copy.
 
 ## Current status
 
