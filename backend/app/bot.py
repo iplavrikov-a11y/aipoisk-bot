@@ -47,20 +47,20 @@ SCENARIO_SUPPLIERS_SINGLE = "suppliers_single"
 SCENARIO_SUPPLIERS_MULTI = "suppliers_multi"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-BUTTON_SUPPLIERS_SINGLE = "🔎 Поставщики по одному ТЗ"
-BUTTON_SUPPLIERS_MULTI = "🗂 Поставщики по нескольким ТЗ"
-BUTTON_REPORT = "📄 Анализ документации"
-BUTTON_ANALYSIS_AND_SUPPLIERS = "📄🔎 Анализ + поставщики"
-BUTTON_CREATE = "🚀 Создать отчёт"
-BUTTON_STATUS = "🕘 Последние задачи"
-BUTTON_ACCESS = "📊 Мой кабинет"
-BUTTON_TARIFFS = "💳 Тарифы и оплата"
+BUTTON_SUPPLIERS_SINGLE = "🔎 Одно ТЗ"
+BUTTON_SUPPLIERS_MULTI = "🗂 Несколько ТЗ"
+BUTTON_REPORT = "📄 Анализ закупки"
+BUTTON_ANALYSIS_AND_SUPPLIERS = "📄🔎 Анализ + поиск"
+BUTTON_CREATE = "🚀 Создать"
+BUTTON_STATUS = "🕘 Задачи"
+BUTTON_ACCESS = "📊 Кабинет"
+BUTTON_TARIFFS = "💳 Тарифы"
 BUTTON_HELP = "❓ Помощь"
 BUTTON_CONTACTS = "📞 Контакты"
-BUTTON_RUN_BATCH = "▶️ Запустить обработку"
-BUTTON_CANCEL_BATCH = "🗑 Очистить документы"
-BUTTON_BACK_MAIN = "⬅️ Главное меню"
-BUTTON_PROCESSING_STATUS = "⏳ Обработка идёт"
+BUTTON_RUN_BATCH = "▶️ Запустить"
+BUTTON_CANCEL_BATCH = "🗑 Очистить"
+BUTTON_BACK_MAIN = "⬅️ Меню"
+BUTTON_PROCESSING_STATUS = "⏳ В работе"
 
 BRAND_NAME = "TenderLex"
 BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, номер извещения, документация и поставщики."
@@ -120,8 +120,8 @@ def _source_link_rejection_text() -> str:
     return (
         "⚠️ Номер извещения не добавлен\n\n"
         "Сейчас выбран поиск поставщиков. Для него нужен файл ТЗ/ООЗ или текстовое описание объекта закупки.\n\n"
-        "Чтобы работать по номеру извещения, сначала выберите «📄 Анализ документации» "
-        "или «Анализ + поставщики»."
+        f"Чтобы работать по номеру извещения, сначала выберите «{BUTTON_REPORT}» "
+        f"или «{BUTTON_ANALYSIS_AND_SUPPLIERS}»."
     )
 
 
@@ -257,11 +257,11 @@ def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
 
 def _supplier_multi_intro_text() -> str:
     return (
-        "🗂 Поставщики по нескольким ТЗ\n\n"
+        "🗂 Несколько ТЗ\n\n"
         "Каждый файл считается отдельным ТЗ. По каждому ТЗ будет отдельный Excel-файл.\n\n"
         "1. Отправьте все файлы ТЗ.\n"
         "2. Проверьте количество добавленных файлов.\n"
-        "3. Нажмите «▶️ Запустить обработку»."
+        f"3. Нажмите «{BUTTON_RUN_BATCH}»."
     )
 
 
@@ -270,7 +270,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         return (
             "✅ ТЗ добавлено\n"
             f"• В комплекте: {len(pending.files)}/{max_files}\n\n"
-            "Добавьте ещё ТЗ или нажмите «▶️ Запустить обработку»."
+            f"Добавьте ещё ТЗ или нажмите «{BUTTON_RUN_BATCH}»."
         )
     lines = [
         "✅ Материалы добавлены",
@@ -278,7 +278,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     ]
     if pending.sources:
         lines.append(f"• Источников: {len(pending.sources)}")
-    lines.extend(["", "Добавьте ещё документы или нажмите «▶️ Запустить обработку»."])
+    lines.extend(["", f"Добавьте ещё документы или нажмите «{BUTTON_RUN_BATCH}»."])
     return "\n".join(lines)
 
 
@@ -286,7 +286,7 @@ def _source_added_text(pending: PendingBatch) -> str:
     return (
         "📎 Источник добавлен\n\n"
         f"✅ Источников: {len(pending.sources)}\n"
-        "Можно добавить документы или нажать «▶️ Запустить обработку»."
+        f"Можно добавить документы или нажать «{BUTTON_RUN_BATCH}»."
     )
 
 
@@ -333,9 +333,9 @@ def _reserve_created_job(db, client: Client, job: Job) -> str:
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_CREATE), KeyboardButton(text=BUTTON_ACCESS)],
-            [KeyboardButton(text=BUTTON_TARIFFS), KeyboardButton(text=BUTTON_HELP)],
-            [KeyboardButton(text=BUTTON_CONTACTS), KeyboardButton(text=BUTTON_STATUS)],
+            [KeyboardButton(text=BUTTON_CREATE), KeyboardButton(text=BUTTON_STATUS)],
+            [KeyboardButton(text=BUTTON_ACCESS), KeyboardButton(text=BUTTON_TARIFFS)],
+            [KeyboardButton(text=BUTTON_HELP), KeyboardButton(text=BUTTON_CONTACTS)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие",
@@ -345,22 +345,19 @@ def main_menu() -> ReplyKeyboardMarkup:
 def create_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE)],
-            [KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
-            [KeyboardButton(text=BUTTON_REPORT)],
-            [KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
+            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE), KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
+            [KeyboardButton(text=BUTTON_REPORT), KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
             [KeyboardButton(text=BUTTON_BACK_MAIN)],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Выберите тип отчёта",
+        input_field_placeholder="Выберите сценарий",
     )
 
 
 def batch_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_RUN_BATCH)],
-            [KeyboardButton(text=BUTTON_CANCEL_BATCH)],
+            [KeyboardButton(text=BUTTON_RUN_BATCH), KeyboardButton(text=BUTTON_CANCEL_BATCH)],
             [KeyboardButton(text=BUTTON_BACK_MAIN)],
         ],
         resize_keyboard=True,
@@ -371,8 +368,7 @@ def batch_menu() -> ReplyKeyboardMarkup:
 def processing_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_PROCESSING_STATUS)],
-            [KeyboardButton(text=BUTTON_STATUS)],
+            [KeyboardButton(text=BUTTON_PROCESSING_STATUS), KeyboardButton(text=BUTTON_STATUS)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Дождитесь завершения обработки",
@@ -795,7 +791,7 @@ async def watch_job_progress(
             await _edit_or_send_status(
                 status_message,
                 _format_job_progress(snapshot)
-                + "\n\nЗадача всё ещё выполняется. Я продолжу обработку на сервере, статус можно проверить кнопкой «Последние задачи».",
+                + f"\n\nЗадача всё ещё выполняется. Я продолжу обработку на сервере, статус можно проверить кнопкой «{BUTTON_STATUS}».",
             )
             return snapshot
         await asyncio.sleep(poll_interval)
@@ -836,12 +832,12 @@ def _start_text() -> str:
         "📄 подготовить анализ закупочной документации;\n"
         "📄🔎 получить анализ и отдельный файл с поставщиками.\n\n"
         "Как начать:\n"
-        "1. Нажмите «Создать отчёт».\n"
+        f"1. Нажмите «{BUTTON_CREATE}».\n"
         "2. Выберите тип отчёта.\n"
         "3. Отправьте ТЗ, документацию, архив, номер извещения или ссылку.\n"
         "4. Дождитесь статуса и готового файла.\n\n"
         "💳 Списание только после выдачи результата. Если файл не подготовлен, списания нет.\n"
-        "📊 Остатки доступны в «Мой кабинет»."
+        f"📊 Остатки доступны в «{BUTTON_ACCESS}»."
     )
 
 
@@ -882,7 +878,7 @@ def _cabinet_text(db, client: Client, settings) -> str:
     low = [item["label"] for item in balances.values() if item.get("low")]
     if low:
         lines.extend(["", f"⚠️ Заканчивается баланс: {', '.join(low)}."])
-    lines.extend(["", "Пополнить пакет можно в разделе «Тарифы и оплата»."])
+    lines.extend(["", f"Пополнить пакет можно в разделе «{BUTTON_TARIFFS}»."])
     if settings.contact_telegram or settings.contact_email or getattr(settings, "contact_website", ""):
         lines.extend(["", _contacts_text(settings)])
     return "\n".join(lines)
@@ -1033,7 +1029,7 @@ async def supplier_mode(message: Message) -> None:
         return
     PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_SINGLE
     await message.answer(
-        "🔎 Поставщики по одному ТЗ\n\n"
+        "🔎 Одно ТЗ\n\n"
         "Отправьте один файл ТЗ/ООЗ или текстовое описание объекта закупки.\n"
         "Результат: Excel-файл с проверенными поставщиками.",
         reply_markup=main_menu(),
@@ -1046,9 +1042,9 @@ async def report_mode(message: Message) -> None:
         return
     PENDING_MODES[message.chat.id] = SCENARIO_REPORT
     await message.answer(
-        "📄 Анализ документации\n\n"
+        "📄 Анализ закупки\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        "Когда материалы добавлены, нажмите «▶️ Запустить обработку».",
+        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}».",
         reply_markup=batch_menu(),
     )
 
@@ -1063,8 +1059,12 @@ async def create_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
     await message.answer(
-        "🚀 Создать отчёт\n\n"
-        "Выберите сценарий работы.",
+        "🚀 Создать\n\n"
+        "Выберите сценарий:\n"
+        "🔎 Одно ТЗ — поставщики по одному ТЗ/ООЗ.\n"
+        "🗂 Несколько ТЗ — отдельный Excel по каждому ТЗ.\n"
+        "📄 Анализ закупки — DOCX-отчёт по документации.\n"
+        "📄🔎 Анализ + поиск — отчёт и поставщики по найденному ТЗ.",
         reply_markup=create_menu(),
     )
 
@@ -1073,7 +1073,7 @@ async def create_button(message: Message) -> None:
 async def back_main_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    await message.answer("🏠 Главное меню", reply_markup=main_menu())
+    await message.answer("🏠 Меню", reply_markup=main_menu())
 
 
 @router.message(F.text == BUTTON_SUPPLIERS_MULTI)
@@ -1099,7 +1099,7 @@ async def analysis_and_suppliers_button(message: Message) -> None:
         return
     PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
     await message.answer(
-        "📄🔎 Анализ + поставщики\n\n"
+        "📄🔎 Анализ + поиск\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
         "Результат: DOCX-анализ и Excel-файл с поставщиками по найденному ТЗ.",
         reply_markup=batch_menu(),
@@ -1307,7 +1307,7 @@ async def _send_job_outputs(
             return True
         elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
             await message.answer(
-                "⏳ Обработка продолжается\n\nСтатус можно проверить кнопкой «Последние задачи».",
+                f"⏳ Обработка продолжается\n\nСтатус можно проверить кнопкой «{BUTTON_STATUS}».",
                 reply_markup=processing_menu(),
             )
         elif snapshot:
@@ -1421,16 +1421,16 @@ async def contacts_button(message: Message) -> None:
 async def help_button(message: Message) -> None:
     await message.answer(
         "❓ Помощь\n\n"
-        "1. Нажмите «Создать отчёт».\n"
+        f"1. Нажмите «{BUTTON_CREATE}».\n"
         "2. Выберите нужный режим.\n"
         "3. Отправьте документы.\n\n"
         "Режимы:\n"
-        "🔎 «Поставщики по одному ТЗ» — один файл ТЗ или описание объекта закупки.\n"
-        "🗂 «Поставщики по нескольким ТЗ» — несколько файлов ТЗ/ООЗ, каждый файл обрабатывается отдельно.\n"
-        "📄 «Анализ документации» — номер извещения, комплект документации, архив или ссылка на закупку.\n"
-        "📄🔎 «Анализ + поставщики» — анализ документации и отдельный Excel с поставщиками по найденному ТЗ.\n\n"
+        f"{BUTTON_SUPPLIERS_SINGLE} — один файл ТЗ или описание объекта закупки.\n"
+        f"{BUTTON_SUPPLIERS_MULTI} — несколько ТЗ, отдельный Excel по каждому.\n"
+        f"{BUTTON_REPORT} — номер извещения, документы, архив или ссылка.\n"
+        f"{BUTTON_ANALYSIS_AND_SUPPLIERS} — анализ и Excel с поставщиками по ТЗ.\n\n"
         "💳 Генерация списывается только после выдачи результата.\n"
-        "📊 Остатки смотрите в «Мой кабинет».\n\n"
+        f"📊 Остатки смотрите в «{BUTTON_ACCESS}».\n\n"
         f"{AI_HELP_NOTE}\n\n"
         "Если доступа нет, нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
         reply_markup=_menu_for_chat(message.chat.id),

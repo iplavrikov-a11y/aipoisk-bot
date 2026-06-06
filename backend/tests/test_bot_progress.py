@@ -275,22 +275,26 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                [BUTTON_CREATE, BUTTON_ACCESS],
-                [BUTTON_TARIFFS, BUTTON_HELP],
-                [BUTTON_CONTACTS, BUTTON_STATUS],
+                [BUTTON_CREATE, BUTTON_STATUS],
+                [BUTTON_ACCESS, BUTTON_TARIFFS],
+                [BUTTON_HELP, BUTTON_CONTACTS],
             ],
         )
         self.assertNotIn("🆔 Мой Telegram ID", labels)
         self.assertNotIn("/start", " ".join(labels))
 
-    def test_create_menu_keeps_report_types_single_column_for_mobile(self) -> None:
+    def test_create_menu_is_compact_two_column_layout(self) -> None:
         keyboard = create_menu().keyboard
         rows = [[button.text for button in row] for row in keyboard]
 
-        self.assertIn([BUTTON_SUPPLIERS_SINGLE], rows)
-        self.assertIn([BUTTON_SUPPLIERS_MULTI], rows)
-        self.assertIn([BUTTON_REPORT], rows)
-        self.assertIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
+        self.assertEqual(
+            rows[:2],
+            [
+                [BUTTON_SUPPLIERS_SINGLE, BUTTON_SUPPLIERS_MULTI],
+                [BUTTON_REPORT, BUTTON_ANALYSIS_AND_SUPPLIERS],
+            ],
+        )
+        self.assertLessEqual(max(len(label) for row in rows for label in row), 18)
 
     def test_customer_buttons_use_procurement_language(self) -> None:
         labels = [
@@ -303,10 +307,10 @@ class BotProgressFormattingTests(unittest.TestCase):
         ]
         joined = " ".join(labels)
 
-        self.assertIn("Поставщики по одному ТЗ", joined)
-        self.assertIn("Поставщики по нескольким ТЗ", joined)
-        self.assertIn("Анализ документации", joined)
-        self.assertIn("Анализ + поставщики", joined)
+        self.assertIn("Одно ТЗ", joined)
+        self.assertIn("Несколько ТЗ", joined)
+        self.assertIn("Анализ закупки", joined)
+        self.assertIn("Анализ + поиск", joined)
         self.assertNotIn("Word", joined)
         self.assertNotIn("пач", joined.lower())
 
@@ -314,21 +318,19 @@ class BotProgressFormattingTests(unittest.TestCase):
         keyboard = batch_menu().keyboard
         rows = [[button.text for button in row] for row in keyboard]
 
-        self.assertIn([BUTTON_RUN_BATCH], rows)
-        self.assertIn([BUTTON_CANCEL_BATCH], rows)
+        self.assertIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
         self.assertNotIn([BUTTON_SUPPLIERS_SINGLE], rows)
         self.assertNotIn([BUTTON_SUPPLIERS_MULTI], rows)
         self.assertNotIn([BUTTON_REPORT], rows)
         self.assertNotIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
-        self.assertNotIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
+        self.assertLessEqual(max(len(label) for row in rows for label in row), 13)
 
     def test_processing_menu_hides_new_start_actions(self) -> None:
         keyboard = processing_menu().keyboard
         rows = [[button.text for button in row] for row in keyboard]
         labels = [text for row in rows for text in row]
 
-        self.assertIn([BUTTON_PROCESSING_STATUS], rows)
-        self.assertIn([BUTTON_STATUS], rows)
+        self.assertIn([BUTTON_PROCESSING_STATUS, BUTTON_STATUS], rows)
         self.assertNotIn(BUTTON_CREATE, labels)
         self.assertNotIn(BUTTON_RUN_BATCH, labels)
         self.assertNotIn(BUTTON_SUPPLIERS_SINGLE, labels)
@@ -429,7 +431,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Каждый файл считается отдельным ТЗ", text)
         self.assertIn("отдельный Excel-файл", text)
         self.assertIn("Проверьте количество", text)
-        self.assertIn("Запустить обработку", text)
+        self.assertIn(BUTTON_RUN_BATCH, text)
 
     def test_supplier_multi_added_text_explains_next_step(self) -> None:
         pending = PendingBatch(
@@ -442,7 +444,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("✅ ТЗ добавлено", text)
         self.assertIn("В комплекте: 2/20", text)
-        self.assertIn("нажмите «▶️ Запустить обработку»", text)
+        self.assertIn(f"нажмите «{BUTTON_RUN_BATCH}»", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
         text = _batch_running_text()
@@ -476,8 +478,8 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("Номер извещения", text)
         self.assertIn("файл ТЗ", text)
-        self.assertIn("Анализ документации", text)
-        self.assertIn("Анализ + поставщики", text)
+        self.assertIn(BUTTON_REPORT, text)
+        self.assertIn(BUTTON_ANALYSIS_AND_SUPPLIERS, text)
 
     def test_document_caption_source_link_is_captured_only_for_analysis(self) -> None:
         caption = "https://zakupki.gov.ru/epz/order/notice/zk20/view/common-info.html?regNumber=0317400001026000049"
@@ -593,7 +595,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("📎 Источник добавлен", text)
         self.assertIn("Источников: 1", text)
-        self.assertIn("▶️ Запустить обработку", text)
+        self.assertIn(BUTTON_RUN_BATCH, text)
         self.assertNotIn("Tenderplan", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
