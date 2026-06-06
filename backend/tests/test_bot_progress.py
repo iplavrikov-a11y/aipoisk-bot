@@ -238,7 +238,7 @@ class BotProgressFormattingTests(unittest.TestCase):
             mode=MODE_PROCUREMENT_REPORT,
             status="needs_review",
             progress=100,
-            message="Анализ готов, нужна проверка AI-настроек",
+            message="Анализ готов, нужна проверка ИИ-настроек",
             error="AI report verification failed: timeout after 180 seconds",
             created_at=None,
         )
@@ -255,7 +255,8 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("job-123", text)
         self.assertIn("анализ документации", text)
         self.assertIn("555", text)
-        self.assertIn("Evidence: /tmp/evidence.json", text)
+        self.assertIn("Данные проверки: /tmp/evidence.json", text)
+        self.assertNotIn("Evidence:", text)
         self.assertIn("проверить настройки модели", text)
 
     def test_main_menu_is_button_driven_and_mobile_readable(self) -> None:

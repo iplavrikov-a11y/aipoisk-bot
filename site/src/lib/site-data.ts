@@ -177,7 +177,7 @@ export function tariffDescription(tariff: PublicTariff) {
     return tariff.description;
   }
   if (tariff.kind === "procurement_report") {
-    return "AI-анализ закупочной документации с тендерным листом, рисками и ключевыми условиями.";
+    return "ИИ-анализ закупочной документации с тендерным листом, рисками и ключевыми условиями.";
   }
   return "Поиск и проверка поставщиков, email, телефонов, сайтов, страниц контактов и соответствия закупочной задаче.";
 }

@@ -620,7 +620,7 @@ def _clean_label(value: object) -> str:
 
 
 def _process_supplier_search(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=25, message="Запускаю AI-поиск поставщиков")
+    _set_job(db, job, progress=25, message="Запускаю ИИ-поиск поставщиков")
 
     async def progress_callback(progress: int, message: str) -> None:
         _set_job(db, job, status="running", progress=progress, message=message)
@@ -629,7 +629,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
     _persist_supplier_rows(db, job, accepted)
     job.verified_count = len(accepted)
-    _set_job(db, job, status="running", progress=97, message="Формирую XLSX и evidence")
+    _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(evidence)
     evidence["subject"] = subject
@@ -675,9 +675,9 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
 
 def _process_procurement_report(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=45, message="AI готовит анализ документации")
+    _set_job(db, job, progress=45, message="ИИ готовит анализ документации")
     result = asyncio.run(generate_procurement_report(settings, context))
-    _set_job(db, job, progress=90, message="Формирую отчёт и evidence")
+    _set_job(db, job, progress=90, message="Формирую отчёт и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_report_text(result.report)
     report_title = _analysis_report_title(job, subject)
@@ -711,7 +711,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
             job,
             status="needs_review",
             progress=100,
-            message="Анализ готов, нужна проверка AI-настроек",
+            message="Анализ готов, нужна проверка ИИ-настроек",
             error=result.warning,
         )
     else:
@@ -721,7 +721,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 
 
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=25, message="AI готовит анализ документации")
+    _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
     report = asyncio.run(generate_procurement_report(settings, context))
     _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
     supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
@@ -797,7 +797,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             error="Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
         )
     elif report.warning:
-        _set_job(db, job, status="needs_review", progress=100, message="Анализ и поставщики готовы, нужна проверка AI-настроек", error=report.warning)
+        _set_job(db, job, status="needs_review", progress=100, message="Анализ и поставщики готовы, нужна проверка ИИ-настроек", error=report.warning)
     elif len(accepted) >= job.target_suppliers:
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
     else:

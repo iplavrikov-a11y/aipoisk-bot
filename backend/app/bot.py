@@ -642,8 +642,8 @@ def _owner_problem_alert_text(
     if result_path:
         lines.append(f"Файл: {result_path}")
     if evidence_path:
-        lines.append(f"Evidence: {evidence_path}")
-    lines.append("Что сделать: проверить настройки модели, evidence и последние логи worker.")
+        lines.append(f"Данные проверки: {evidence_path}")
+    lines.append("Что сделать: проверить настройки модели, данные проверки и последние логи обработки.")
     return "\n".join(lines)
 
 

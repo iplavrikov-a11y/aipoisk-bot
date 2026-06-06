@@ -1856,9 +1856,9 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
         <details className="service-panel">
           <summary>Провайдеры и modelId</summary>
           <div className="advanced-section">
-            <h3>AI providers</h3>
-            <button onClick={addProvider}><Plus size={16} />Добавить provider</button>
-            <div className="provider-row-head"><span>provider id</span><span>provider name</span><span>Base URL</span><span>API key</span></div>
+            <h3>ИИ-провайдеры</h3>
+            <button onClick={addProvider}><Plus size={16} />Добавить провайдера</button>
+            <div className="provider-row-head"><span>ID провайдера</span><span>Название провайдера</span><span>Base URL</span><span>API key</span></div>
             {providers.map((provider, index) => (
               <div className="provider-row" key={provider.id}>
                 <input value={provider.id} placeholder="например openrouter" onChange={e => updateArray(providers, setProviders, index, { id: e.target.value })} />

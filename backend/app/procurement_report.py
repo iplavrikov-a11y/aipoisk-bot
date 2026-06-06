@@ -510,7 +510,7 @@ def normalize_logistics_estimate(report: str, document_text: str) -> str:
         if "общий вес" not in normalized and "вес/объем" not in normalized and "вес/обьем" not in normalized:
             continue
         prefix = _line_prefix(line)
-        lines[index] = f"{prefix}Общий вес/объем: {estimate}"
+        lines[index] = f"{prefix}Общий вес/объём: {estimate}"
         return "\n".join(lines)
     return report
 
@@ -532,7 +532,7 @@ def _known_logistics_estimate(document_text: str) -> str:
     kg_text = _format_integer(rounded_kg)
     return (
         f"ориентировочно **~{kg_text} кг нетто** для {quantity_text} км стального каната "
-        f"{diameter_text} мм; транспортный объем зависит от барабанов/бухт, для логистики "
+        f"{diameter_text} мм; транспортный объём зависит от барабанов/бухт, для логистики "
         "принять **~2-4 м³** и уточнить упаковку у поставщика."
     )
 

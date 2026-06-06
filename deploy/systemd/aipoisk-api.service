@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Poisk Backend (FastAPI)
+Description=TenderLex Backend (FastAPI)
 After=network.target
 Wants=network-online.target
 StartLimitIntervalSec=60

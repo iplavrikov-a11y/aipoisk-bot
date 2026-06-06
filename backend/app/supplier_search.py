@@ -988,9 +988,9 @@ async def ai_rerank_candidates(
     desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
     prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
 
-Нужно выбрать широкий пул кандидатов для дальнейшей AI-проверки сайтов и контактов, а не только точные товарные страницы.
+Нужно выбрать широкий пул кандидатов для дальнейшей ИИ-проверки сайтов и контактов, а не только точные товарные страницы.
 Выбирай производителей, заводы, дилеров, дистрибьюторов или B2B-поставщиков позиций из профиля закупки и релевантной товарной группы/номенклатуры.
-Если кандидат является профильным поставщиком категории, оставь его даже без точного размера, ГОСТ, артикула или модели в сниппете: финальный AI-аудит уточнит product_fit.
+Если кандидат является профильным поставщиком категории, оставь его даже без точного размера, ГОСТ, артикула или модели в сниппете: финальный ИИ-аудит уточнит product_fit.
 Для цели {target} поставщиков желательно оставить до {desired_review_count} кандидатов, если они похожи на сайты компаний.
 Понижай или отклоняй маркетплейсы, агрегаторы, тендеры, реестры, справочники, статьи, видео, учебные страницы и страницы профессий.
 Для multi-item закупки сохрани покрытие разных позиций, если в выдаче есть подходящие кандидаты.
@@ -1125,9 +1125,9 @@ async def _expand_candidate_rerank_with_ai(
     ]
     if not remaining or needed <= 0:
         return []
-    prompt = f"""Первый AI-отбор оставил слишком мало кандидатов для отчета на {target} поставщиков.
+    prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
 
-Выбери дополнительно до {needed} сайтов компаний для финального AI-аудита.
+Выбери дополнительно до {needed} сайтов компаний для финального ИИ-аудита.
 Расширяй пул за счет производителей, заводов, дилеров, дистрибьюторов и B2B-поставщиков товарной группы/номенклатуры, даже если в сниппете нет точного размера, ГОСТ, артикула или модели.
 Не выбирай маркетплейсы, агрегаторы, тендеры, реестры, справочники, статьи, видео, учебные и госстраницы.
 
@@ -1143,7 +1143,7 @@ async def _expand_candidate_rerank_with_ai(
         raw = await call_llm(
             settings,
             prompt,
-            system_prompt="Ты закупочный ресерчер. Расширяешь пул профильных сайтов для обязательного финального AI-аудита.",
+            system_prompt="Ты закупочный ресерчер. Расширяешь пул профильных сайтов для обязательного финального ИИ-аудита.",
             tier="light",
             routing_key="supplier_candidate_reranker",
             json_mode=True,
@@ -1892,7 +1892,7 @@ async def verify_candidate(
             "evidence_status": "weak",
             "source": candidate.source,
             "search_query": candidate.query,
-            "comments": "AI provider is required: candidate was not verified without AI audit.",
+            "comments": "Сервис ИИ недоступен: кандидат не проверен обязательным ИИ-аудитом.",
         }
     emails = prioritize_emails(EMAIL_RE.findall(combined_text), candidate.domain)
     phones = sorted(set(PHONE_RE.findall(combined_text)))
@@ -2079,7 +2079,7 @@ async def ai_verify(
             "confidence": 0,
             "site_type": "unknown",
             "product_fit": "unrelated",
-            "comments": "AI provider is required for supplier candidate verification.",
+            "comments": "Сервис ИИ недоступен для проверки кандидата.",
         }
     payload = {
         "target_tz_excerpt": context[:6000],
@@ -2165,7 +2165,7 @@ async def ai_verify(
             "confidence": 0,
             "site_type": "unknown",
             "product_fit": "unrelated",
-            "comments": "AI-аудит поставщика не выполнен: кандидат не принят без обязательной проверки ИИ.",
+            "comments": "ИИ-аудит поставщика не выполнен: кандидат не принят без обязательной проверки.",
         }
 
 
@@ -2218,7 +2218,7 @@ def keyword_verify(
 ) -> dict:
     match = match or assess_candidate_match(candidate, context, pages)
     if not match.accepted:
-        return {"action": "reject", "comments": match.reason or "Недостаточно совпадений с ТЗ без AI-проверки."}
+        return {"action": "reject", "comments": match.reason or "Недостаточно совпадений с ТЗ без ИИ-проверки."}
     context_words = set(important_terms(context))
     text = "\n".join(page["text"].lower() for page in pages)
     overlap = [word for word in context_words if word in text]

@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Poisk Telegram Bot
+Description=TenderLex Telegram Bot
 After=network.target aipoisk-api.service
 Wants=network-online.target
 PartOf=aipoisk-api.service
