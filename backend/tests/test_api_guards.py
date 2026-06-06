@@ -692,6 +692,55 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["files"], [])
         self.assertEqual(captured["sources"][0]["value"], "https://etp.example.ru/procedure/123")
 
+    async def test_upload_accepts_report_notice_number_without_files(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_create_job = main.create_job
+        original_enqueue_job = main.enqueue_job
+        captured: dict = {}
+
+        def fake_create_job(*args, **kwargs):
+            captured.update(kwargs)
+            return Job(id="job-1", client_id="client-1", mode=kwargs["mode"], title=kwargs["title"], target_suppliers=kwargs["target_suppliers"])
+
+        try:
+            db.add(
+                Client(
+                    id="client-1",
+                    telegram_id="123",
+                    allowed_procurement_report=True,
+                    monthly_procurement_report_limit=1,
+                )
+            )
+            db.commit()
+            main.create_job = fake_create_job
+            main.enqueue_job = lambda _job_id: None
+
+            result = await upload_job(
+                telegram_id="123",
+                mode="procurement_report",
+                files=[],
+                source_urls="0371100005626000040",
+                db=db,
+            )
+        finally:
+            main.create_job = original_create_job
+            main.enqueue_job = original_enqueue_job
+            db.close()
+
+        self.assertEqual(result["id"], "job-1")
+        self.assertEqual(captured["files"], [])
+        self.assertEqual(captured["title"], "Tenderplan / номер извещения")
+        self.assertEqual(captured["sources"][0]["kind"], "tenderplan_notice")
+        self.assertEqual(captured["sources"][0]["value"], "0371100005626000040")
+
     async def test_upload_supplier_search_multiple_files_creates_separate_jobs(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker

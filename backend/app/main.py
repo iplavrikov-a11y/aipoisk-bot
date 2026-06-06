@@ -728,10 +728,10 @@ async def upload_job(
     if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         raise HTTPException(
             status_code=400,
-            detail="Supplier search requires a technical assignment file; procurement links are accepted for documentation analysis.",
+            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis.",
         )
     if not files and not sources:
-        raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement source URL")
+        raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement notice number/source URL")
     client, account_error = get_client_by_telegram_id(db, telegram_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")

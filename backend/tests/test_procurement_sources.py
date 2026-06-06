@@ -15,11 +15,15 @@ from app.models import JobSource
 from app.procurement_sources import (
     SOURCE_KIND_OFFICIAL,
     SOURCE_KIND_PROCUREMENT_URL,
+    SOURCE_KIND_TENDERPLAN_NOTICE,
     build_source_context_block,
     candidate_source_urls,
     classify_source_url,
+    extract_notice_numbers,
     extract_source_urls,
     official_followup_urls_from_pages,
+    source_label,
+    source_payloads_from_text,
 )
 
 
@@ -53,6 +57,37 @@ class ProcurementSourceTests(unittest.TestCase):
     def test_classify_source_url_separates_eis_from_other_procurement_sites(self) -> None:
         self.assertEqual(classify_source_url("https://zakupki.gov.ru/epz/order/notice/ea44/view/common-info.html?regNumber=12345"), SOURCE_KIND_OFFICIAL)
         self.assertEqual(classify_source_url("https://etp.example.ru/procedure/123"), SOURCE_KIND_PROCUREMENT_URL)
+
+    def test_extract_notice_numbers_accepts_44fz_and_223fz_numbers(self) -> None:
+        numbers = extract_notice_numbers(
+            "44-ФЗ: 0371100005626000040; 223-ФЗ: 32615728276; "
+            "ИКЗ 261710600552071060100100350012620244 не источник."
+        )
+
+        self.assertEqual(numbers, ["0371100005626000040", "32615728276"])
+
+    def test_extract_notice_numbers_ignores_numbers_inside_urls(self) -> None:
+        numbers = extract_notice_numbers(
+            "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0371100005626000040 "
+            "и отдельно 0371100005626000041"
+        )
+
+        self.assertEqual(numbers, ["0371100005626000041"])
+
+    def test_source_payloads_include_tenderplan_notice_for_plain_number(self) -> None:
+        payloads = source_payloads_from_text("Прошу разобрать закупку 0371100005626000040")
+
+        self.assertEqual(
+            payloads,
+            [
+                {
+                    "kind": SOURCE_KIND_TENDERPLAN_NOTICE,
+                    "label": "Tenderplan / номер извещения",
+                    "value": "0371100005626000040",
+                }
+            ],
+        )
+        self.assertEqual(source_label("32615728276"), "Tenderplan / номер извещения")
 
     def test_eis_candidate_urls_prioritize_original_notice_kind_pages(self) -> None:
         urls = candidate_source_urls(
@@ -89,6 +124,17 @@ class ProcurementSourceTests(unittest.TestCase):
         self.assertIn("сроков подачи заявок", block)
         self.assertIn("Не пиши 'данных недостаточно'", block)
 
+    def test_tenderplan_context_block_marks_notice_as_primary_source(self) -> None:
+        block = build_source_context_block(
+            kind=SOURCE_KIND_TENDERPLAN_NOTICE,
+            url="0371100005626000040",
+            text="Карточка закупки:\n- НМЦК/цена: 100 000 руб.",
+        )
+
+        self.assertIn("ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN", block)
+        self.assertIn("основной источник критичных полей", block)
+        self.assertIn("Разъяснения и ответы заказчика", block)
+
     def test_official_followup_urls_include_customer_organization_page(self) -> None:
         urls = official_followup_urls_from_pages(
             [
@@ -109,7 +155,7 @@ class ProcurementSourceTests(unittest.TestCase):
             ],
         )
 
-    def test_create_job_persists_source_urls_without_files(self) -> None:
+    def test_create_job_persists_source_urls_without_files_for_report_mode(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -121,7 +167,7 @@ class ProcurementSourceTests(unittest.TestCase):
                 job = create_job(
                     db,
                     client_id=None,
-                    mode="supplier_search",
+                    mode="procurement_report",
                     title="source-only",
                     target_suppliers=3,
                     files=[],
@@ -138,6 +184,32 @@ class ProcurementSourceTests(unittest.TestCase):
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0].kind, SOURCE_KIND_PROCUREMENT_URL)
         self.assertEqual(sources[0].value, "https://etp.example.ru/procedure/123")
+
+    def test_create_job_rejects_procurement_source_for_supplier_search(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_job_dir = jobs.job_dir
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                with self.assertRaisesRegex(ValueError, "Режим поиска поставщиков"):
+                    create_job(
+                        db,
+                        client_id=None,
+                        mode="supplier_search",
+                        title="source-only",
+                        target_suppliers=3,
+                        files=[],
+                        sources=[{"kind": SOURCE_KIND_TENDERPLAN_NOTICE, "value": "0371100005626000040"}],
+                    )
+                sources = db.query(JobSource).all()
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(sources, [])
 
 
 if __name__ == "__main__":

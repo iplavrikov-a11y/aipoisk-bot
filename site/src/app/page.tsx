@@ -31,7 +31,7 @@ const featureItems = [
   {
     icon: FileArchive,
     title: "Анализ документации",
-    text: "Принимает архив закупки, отдельные файлы, проект договора, извещение и ссылку на ЕИС, ЭТП или сайт заказчика.",
+    text: "Принимает номер извещения, архив закупки, отдельные файлы, проект договора и ссылку на ЕИС, ЭТП или сайт заказчика.",
   },
   {
     icon: Table2,
@@ -57,7 +57,7 @@ const processSteps = [
   },
   {
     title: "Передайте входные данные",
-    text: "Для анализа отправьте архив, файлы или ссылку на закупку. Для поставщиков достаточно ТЗ, ООЗ или описания товара.",
+    text: "Для анализа отправьте номер извещения, архив, файлы или ссылку на закупку. Для поставщиков достаточно ТЗ, ООЗ или описания товара.",
   },
   {
     title: "Получите рабочие файлы",
@@ -90,7 +90,7 @@ const trustItems = [
   {
     icon: ShieldCheck,
     title: "Работа по документам и открытым источникам",
-    text: "Анализ строится по присланной закупке, а поставщики и контакты проверяются по открытым сайтам и страницам контактов.",
+    text: "Анализ строится по номеру извещения, Tenderplan/ЕИС и присланным документам, а поставщики и контакты проверяются по открытым сайтам.",
   },
   {
     icon: FileSearch,
@@ -158,6 +158,7 @@ export default async function Home() {
             {trialAvailable ? <TrialCallout trial={trial} contactUrl={botUrl} /> : null}
             <dl className="hero-proof" aria-label="Коротко о сервисе">
               <ProofItem value="Анализ документации" label="тендерный лист DOCX и риски" />
+              <ProofItem value="Номер извещения" label="карточка Tenderplan и документы закупки" />
               <ProofItem value="Поиск поставщиков" label="XLSX с контактами для КП" />
               <ProofItem value="Десятки / сотни" label="контактов, если нужен большой пул" />
               {trialAvailable ? <ProofItem value={trialProofValue(trial)} label="пробный доступ без оплаты" /> : null}
@@ -264,7 +265,7 @@ export default async function Home() {
             <PricingTable
               icon={FileText}
               title="Анализ документации"
-              subtitle="Тендерный лист по комплекту файлов, архиву или ссылке"
+              subtitle="Тендерный лист по номеру извещения, комплекту файлов, архиву или ссылке"
               tariffs={reportTariffs}
               contactUrl={contactUrl}
             />
@@ -302,7 +303,7 @@ export default async function Home() {
           <p>
             {trialAvailable
               ? trialCtaText(trial)
-              : "Передайте документы для анализа или ТЗ для поиска поставщиков. Бот вернет рабочий результат в файлах."}
+              : "Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков. Бот вернет рабочий результат в файлах."}
           </p>
           <div className="cta-actions">
             <Button asChild size="lg">
@@ -361,7 +362,7 @@ function HeroProduct() {
         </div>
         <span>
           <Paperclip size={15} aria-hidden="true" />
-          архив, ссылка или ТЗ
+          номер, архив, ссылка или ТЗ
         </span>
       </div>
 
@@ -628,7 +629,7 @@ function Footer({ email, telegramUrl, telegram }: { email: string; telegramUrl: 
             <Image src="/tenderlex-logo.png" alt="" width={30} height={30} />
             <span>TenderLex</span>
           </a>
-          <p>Telegram-бот для анализа закупочной документации, поиска поставщиков и пробного запуска перед оплатой.</p>
+          <p>Telegram-бот для анализа закупок по номеру извещения или файлам, поиска поставщиков и пробного запуска перед оплатой.</p>
         </div>
         <nav aria-label="Навигация в подвале">
           <a href="#features">Возможности</a>
@@ -697,7 +698,7 @@ function trialLongText(trial: PublicTrial) {
 }
 
 function trialCtaText(trial: PublicTrial) {
-  return `${trialShortText(trial)} Передайте документы для анализа или ТЗ для поиска поставщиков, бот вернет рабочий результат в файлах.`;
+  return `${trialShortText(trial)} Передайте номер извещения или документы для анализа, либо ТЗ для поиска поставщиков, бот вернет рабочий результат в файлах.`;
 }
 
 function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string, email: string) {
@@ -709,7 +710,7 @@ function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string
     operatingSystem: "Telegram",
     url: siteUrl,
     description:
-      "Telegram-бот для анализа закупочной документации, поиска поставщиков с контактами и бесплатного пробного запуска.",
+      "Telegram-бот для анализа закупок по номеру извещения или документации, поиска поставщиков с контактами и бесплатного пробного запуска.",
     offers: {
       "@type": "Offer",
       priceCurrency: "RUB",

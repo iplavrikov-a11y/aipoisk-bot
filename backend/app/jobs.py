@@ -26,6 +26,7 @@ from .db import SessionLocal
 from .models import Job, JobFile, JobSource, SupplierResult, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
+    SOURCE_KIND_TENDERPLAN_NOTICE,
     classify_source_url,
     fetch_source_context_sync,
     source_label,
@@ -35,6 +36,7 @@ from .procurement_report import generate_procurement_report
 from .repository import get_or_create_settings
 from .report_builder import write_evidence, write_procurement_docx, write_supplier_xlsx, zip_paths
 from .supplier_search import discover_suppliers, extract_supplier_search_context
+from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
 
 _RUNNING: set[str] = set()
 TERMINAL_JOB_STATUSES = {
@@ -70,6 +72,12 @@ def create_job(
     files: list[tuple[str, bytes]],
     sources: list[dict] | None = None,
 ) -> Job:
+    normalized_sources = _normalized_job_sources(sources or [])
+    if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
+        raise ValueError(
+            "Режим поиска поставщиков принимает только файл или текст ТЗ. "
+            "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
+        )
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
@@ -93,7 +101,7 @@ def create_job(
         stored_path.parent.mkdir(parents=True, exist_ok=True)
         stored_path.write_bytes(content)
         db.add(JobFile(job_id=job.id, original_filename=filename, stored_path=str(stored_path)))
-    for source in _normalized_job_sources(sources or []):
+    for source in normalized_sources:
         db.add(
             JobSource(
                 job_id=job.id,
@@ -286,18 +294,29 @@ def _process_job_sync(job_id: str) -> None:
         source_count = len(job.sources)
         for index, source in enumerate(job.sources, start=1):
             stage = "extract_sources"
-            _set_job(db, job, status="running", progress=3 + int(5 * (index - 1) / max(1, source_count)), message=f"Читаю ссылку закупки: {index}/{source_count}")
-            result = fetch_source_context_sync(source.kind, source.value)
-            source.parse_status = result.status
-            source.extracted_chars = result.extracted_chars
-            source.error = result.error
-            if result.context:
-                source_dir = job_dir(job.id) / "input" / "sources"
-                source_dir.mkdir(parents=True, exist_ok=True)
-                context_path = source_dir / f"{index:02d}_{source.kind}.txt"
-                context_path.write_text(result.context, encoding="utf-8")
-                source.context_path = str(context_path)
-                source_blocks.append(result.context)
+            label = "номер извещения Tenderplan" if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE else "ссылку закупки"
+            _set_job(db, job, status="running", progress=3 + int(5 * (index - 1) / max(1, source_count)), message=f"Читаю {label}: {index}/{source_count}")
+            if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE:
+                result = fetch_tenderplan_source_sync(source.value)
+                source.parse_status = result.status
+                source.extracted_chars = len(result.context)
+                source.error = result.error
+                if result.context:
+                    context_path = _persist_source_context(job, index, source.kind, result.context)
+                    source.context_path = str(context_path)
+                    source_blocks.append(result.context)
+                if result.downloaded_files:
+                    _store_tenderplan_downloaded_files(db, job, result.downloaded_files)
+                    db.expire(job, ["files"])
+            else:
+                result = fetch_source_context_sync(source.kind, source.value)
+                source.parse_status = result.status
+                source.extracted_chars = result.extracted_chars
+                source.error = result.error
+                if result.context:
+                    context_path = _persist_source_context(job, index, source.kind, result.context)
+                    source.context_path = str(context_path)
+                    source_blocks.append(result.context)
             db.commit()
 
         document_options = parse_json_dict(settings.document_settings_json)
@@ -365,6 +384,7 @@ def build_failure_evidence(job: Job, exc: Exception, *, stage: str) -> dict:
             "message": str(exc)[:2000],
         },
         "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
         "contract": (
             "Supplier report was not generated because AI-required supplier search failed before verified results were produced."
             if supplier_search
@@ -388,6 +408,45 @@ def _job_sources_evidence(job: Job) -> list[dict]:
             }
         )
     return result
+
+
+def _job_files_evidence(job: Job) -> list[dict]:
+    files = getattr(job, "files", []) or []
+    result: list[dict] = []
+    for file in files:
+        result.append(
+            {
+                "filename": getattr(file, "original_filename", ""),
+                "parse_status": getattr(file, "parse_status", ""),
+                "extracted_chars": getattr(file, "extracted_chars", 0),
+                "error": getattr(file, "error", ""),
+            }
+        )
+    return result
+
+
+def _persist_source_context(job: Job, index: int, kind: str, context: str) -> Path:
+    source_dir = job_dir(job.id) / "input" / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    context_path = source_dir / f"{index:02d}_{kind}.txt"
+    context_path.write_text(context, encoding="utf-8")
+    return context_path
+
+
+def _store_tenderplan_downloaded_files(db: Session, job: Job, files: list[TenderplanDownloadedFile]) -> None:
+    input_dir = job_dir(job.id) / "input" / "tenderplan"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    existing_names = {Path(str(item.stored_path)).name for item in getattr(job, "files", []) or []}
+    for index, downloaded in enumerate(files, start=1):
+        safe_name = document_parser.sanitize_filename(downloaded.filename)
+        stored_name = f"{index:02d}_{safe_name}"
+        while stored_name in existing_names:
+            stored_name = f"{index:02d}_{len(existing_names) + 1}_{safe_name}"
+        existing_names.add(stored_name)
+        stored_path = input_dir / stored_name
+        stored_path.write_bytes(downloaded.content)
+        db.add(JobFile(job_id=job.id, original_filename=downloaded.filename, stored_path=str(stored_path)))
+    job.file_count = int(job.file_count or 0) + len(files)
 
 
 def _persist_failure_evidence(db: Session, job: Job, exc: Exception, *, stage: str) -> None:
@@ -590,6 +649,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
             "subject": subject,
             "source_title": _source_title(job),
             "sources": _job_sources_evidence(job),
+            "files": _job_files_evidence(job),
             "output_files": [{"kind": "analysis", "path": str(docx_path)}],
             "ai_used": result.ai_used,
             "ai_model": result.ai_model,
@@ -643,6 +703,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         "subject": subject,
         "source_title": _source_title(job),
         "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
         "report": {
             "ai_used": report.ai_used,
             "ai_model": report.ai_model,

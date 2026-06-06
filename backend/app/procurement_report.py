@@ -10,8 +10,10 @@ from .models import SystemSettings, parse_json_dict
 DEFAULT_REPORT_SYSTEM_PROMPT = """Ты — Макс, экспертный тендерный аналитик.
 Работай строго по документам закупки. Не придумывай факты, поставщиков, цены, URL или нормативные требования.
 ATI и внешние логистические ставки отключены: не рассчитывай ATI, не пиши тарифы перевозчиков и не делай вид, что был внешний логистический запрос.
-Если в исходном контексте есть блок по ссылке на закупку, ЕИС или иной электронной площадке, используй его как опубликованный источник карточечных данных: номер закупки, заказчик, НМЦК, сроки, площадка, правовой режим. Товарную таблицу бери из наиболее полного ТЗ/ООЗ: если ссылка содержит структурированное ТЗ с характеристиками, используй его; если нет — используй приложенные документы.
-Для официального источника ЕИС или электронной площадки копируй карточечные поля буквально: "Способ осуществления закупки", дату/время окончания подачи заявок, дату подведения итогов, НМЦК, заказчика, ИНН/КПП и площадку. Не заменяй "Иной способ" на запрос котировок, аукцион, конкурс или другую процедуру без прямой такой формулировки в карточке. Не добавляй время к дате подведения итогов, если в источнике указана только дата без времени. Если время указано по местному времени заказчика, так и пиши; не пересчитывай его в другой часовой пояс без явной необходимости и пояснения.
+Если в исходном контексте есть блок Tenderplan по номеру извещения, используй его как основной опубликованный источник карточечных данных: номер закупки, заказчик, НМЦК, сроки, дата аукциона, дата итогов, площадка, правовой режим, нацрежим, разъяснения и ответы заказчика. Даты Tenderplan считай московским временем, если блок явно не говорит иное.
+Если в исходном контексте есть блок по ссылке на закупку, ЕИС или иной электронной площадке, используй его как опубликованный источник карточечных данных: номер закупки, заказчик, НМЦК, сроки, площадка, правовой режим. Товарную таблицу бери из наиболее полного ТЗ/ООЗ: если Tenderplan, ссылка или карточка содержит структурированное ТЗ с характеристиками, используй его; если нет — используй приложенные документы.
+Для Tenderplan, официального источника ЕИС или электронной площадки копируй карточечные поля буквально: "Способ осуществления закупки", дату/время окончания подачи заявок, дату подведения итогов, НМЦК, заказчика, ИНН/КПП и площадку. Не заменяй "Иной способ" на запрос котировок, аукцион, конкурс или другую процедуру без прямой такой формулировки в карточке. Не добавляй время к дате подведения итогов, если в источнике указана только дата без времени. Если время указано по местному времени заказчика или МСК, так и пиши; не пересчитывай его в другой часовой пояс без явной необходимости и пояснения.
+Если Tenderplan вернул только числовой код способа закупки (например, 22), не выводи этот код как пользовательский "Способ закупки"; найди человекочитаемый способ в извещении, документации или карточке площадки и укажи его. Если структурированный timestamp Tenderplan по дате итогов расходится с явной строкой извещения "рассмотрение/оценка/подведение итогов", укажи явную строку извещения и при необходимости зафиксируй расхождение в рисках.
 
 Сформируй подробный Markdown-отчет в структуре EmailAgent. Отчет должен быть практичным для закупщика:
 
@@ -73,6 +75,7 @@ ATI и внешние логистические ставки отключены
 
 #### Логистика (Оценка)
 Только оценка по документам без ATI и без ставок перевозчиков: общий вес, объем, транспорт, режим поставки, разгрузка/спецтехника, пронос/заезд, примечание.
+Если есть наименование товара, количество, единицы измерения, размеры/диаметр/ГОСТ/материал или другие физические признаки, дай ориентировочную оценку веса и объема. Не пиши "ДАННЫХ НЕДОСТАТОЧНО" в строке общего веса/объема при наличии расчетных исходных данных; пиши "ориентировочно", итоговое число/диапазон и что уточнить у поставщика/логиста. Не расписывай длинные формулы в пользовательском отчете.
 
 #### Критичные требования к товару
 - Дата производства
@@ -80,6 +83,7 @@ ATI и внешние логистические ставки отключены
 - Упаковка/тара/маркировка
 - Сертификаты/паспорта/регистры
 - Гарантия, если она относится к товару
+Не подменяй дату производства словами "товар новый", "не Б/У" или похожими базовыми требованиями. Если в документации указан год/период производства, пиши только его, например: "Дата производства: не ранее 2025 г.".
 
 #### Коммерческие условия
 - Штрафы/пени
@@ -126,13 +130,17 @@ DEFAULT_VERIFICATION_PROMPT = """Проверь отчет против исхо
 - раздел "Товары и требования" не содержит Markdown-таблицу с колонками №, Наименование, Характеристики, Ед.изм., Кол-во;
 - таблица ТЗ содержит документы, паспорта, сертификаты, гарантию или организационные обязанности как отдельные товарные позиции без прямого указания в исходной товарной спецификации;
 - в исходнике есть НМЦК/цена, правовой режим, площадка, срок подачи заявок или дата итогов, но эти поля не отражены в отчете;
-- отчет изменил буквальное значение официального карточечного поля ЕИС/электронной площадки: "Способ осуществления закупки", заказчик, ИНН/КПП, НМЦК, площадка, срок подачи заявок или дата итогов;
+- отчет изменил буквальное значение карточечного поля Tenderplan/ЕИС/электронной площадки: "Способ осуществления закупки", заказчик, ИНН/КПП, НМЦК, площадка, срок подачи заявок или дата итогов;
 - отчет нормализовал "Иной способ" в запрос котировок, аукцион, конкурс или другую процедуру без прямой такой формулировки в официальном источнике;
 - отчет добавил время к дате подведения итогов, если в официальном источнике указана только дата без времени;
 - отчет пересчитал местное время заказчика в другой часовой пояс без явного пояснения и без сохранения исходного времени;
+- отчет вывел числовой код Tenderplan как "Способ закупки", хотя в извещении/документации есть человекочитаемый способ закупки;
+- отчет взял технический timestamp Tenderplan по итогам, хотя в извещении есть явная дата/время рассмотрения, оценки и подведения итогов;
 - срок поставки перепутан со сроком действия договора;
 - отчет содержит дату, которой нет в исходных документах, или подставляет конкретную дату вместо отсутствующего графика поставки;
 - отчет рекомендует ГОСТ, ТУ, ТР ТС, реестры или иные нормативные требования, которых нет в исходных документах.
+- в логистике отчет пишет "ДАННЫХ НЕДОСТАТОЧНО" по общему весу/объему, хотя в исходнике есть товар, количество и физические параметры для ориентировочной оценки;
+- в критичных требованиях отчет добавляет "товар должен быть новым" вместо того, чтобы отдельно указать найденный год/дату производства.
 - по нацрежиму отчет пишет "преимущество", "ограничение" или "мера не применяется", но одновременно требует выписку/реестровую запись Минпромторга;
 - по нацрежиму отчет оставляет неопределенность "если применимо" вместо прямой строки "Требуются ли выписки из реестра Минпромторга: **Да/Нет/Не указано**";
 - по НДС отчет пишет "сумма оплаты не увеличивается" или иначе подменяет риск УСН: нужно проверять только риск уменьшения цены договора/оплаты на сумму НДС или удержания НДС при оплате.
@@ -153,16 +161,20 @@ DEFAULT_VERIFICATION_PROMPT = """Проверь отчет против исхо
 Не добавляй в пользовательский отчет служебные маркеры файлов вида [001_Извещение.docx] или [003_...].
 Если отчет приемлем, corrected_report оставь пустым."""
 
-DEFAULT_OFFICIAL_CARD_REPAIR_PROMPT = """Исправь отчет по официальной карточке закупки.
+DEFAULT_OFFICIAL_CARD_REPAIR_PROMPT = """Исправь отчет по официальной карточке закупки Tenderplan/ЕИС/электронной площадки.
 Это не творческая редактура: нужно исправить только перечисленные расхождения по карточечным полям официального источника.
 Для полей "Способ закупки", срок подачи заявок и дата подведения итогов копируй значения официального источника буквально.
 Если в официальном источнике указана только дата без времени, не добавляй время.
 Верни полный Markdown-отчет без служебных комментариев."""
 
 OFFICIAL_CARD_FIELD_LABELS = {
-    "procurement_method": "Способ осуществления закупки",
-    "submission_deadline": "Дата и время окончания срока подачи заявок (по местному времени заказчика)",
-    "results_date": "Дата подведения итогов",
+    "procurement_method": ("Способ осуществления закупки", "Способ/код размещения", "Способ закупки"),
+    "submission_deadline": (
+        "Дата и время окончания срока подачи заявок (по местному времени заказчика)",
+        "Дата и время окончания срока подачи заявок (МСК)",
+        "Окончание подачи заявок",
+    ),
+    "results_date": ("Дата подведения итогов", "Дата подведения итогов (МСК)", "Подведение итогов"),
 }
 
 REPORT_FIELD_ALIASES = {
@@ -177,6 +189,21 @@ REPORT_FIELD_ALIASES = {
         "Дата подведения итогов",
         "Дата рассмотрения",
     ),
+}
+
+RUSSIAN_MONTHS = {
+    "января": "01",
+    "февраля": "02",
+    "марта": "03",
+    "апреля": "04",
+    "мая": "05",
+    "июня": "06",
+    "июля": "07",
+    "августа": "08",
+    "сентября": "09",
+    "октября": "10",
+    "ноября": "11",
+    "декабря": "12",
 }
 
 NATIONAL_REGIME_LINES = {
@@ -353,13 +380,25 @@ async def repair_report_official_card_fields(
 
 def extract_official_card_facts(document_text: str) -> dict[str, str]:
     text = str(document_text or "")
-    if "ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ" not in text and "ЕИС" not in text:
+    if "ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ" not in text and "TENDERPLAN" not in text and "ЕИС" not in text:
         return {}
     facts: dict[str, str] = {}
-    for key, label in OFFICIAL_CARD_FIELD_LABELS.items():
-        value = _extract_following_line(text, label)
-        if value:
-            facts[key] = value
+    procurement_method = _extract_procurement_method_fact(text)
+    if procurement_method:
+        facts["procurement_method"] = procurement_method
+    for key, labels in OFFICIAL_CARD_FIELD_LABELS.items():
+        if key == "procurement_method":
+            continue
+        if key == "results_date":
+            results_date = _extract_results_date_fact(text)
+            if results_date:
+                facts[key] = results_date
+                continue
+        for label in labels:
+            value = _extract_labeled_value(text, label)
+            if value:
+                facts[key] = value
+                break
     return facts
 
 
@@ -416,9 +455,81 @@ def validate_report_against_official_card(report: str, facts: dict[str, str]) ->
 
 
 def normalize_procurement_report_guardrails(report: str, document_text: str) -> str:
-    value = normalize_national_regime_conditions(report, document_text)
+    value = normalize_official_card_report_fields(report, document_text)
+    value = normalize_logistics_estimate(value, document_text)
+    value = normalize_product_freshness_wording(value)
+    value = normalize_national_regime_conditions(value, document_text)
     value = normalize_vat_usn_risk(value, document_text)
     return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def normalize_official_card_report_fields(report: str, document_text: str) -> str:
+    facts = extract_official_card_facts(document_text)
+    value = str(report or "")
+    method = facts.get("procurement_method")
+    if method and not _is_numeric_procurement_method(method):
+        value = _replace_report_field(value, REPORT_FIELD_ALIASES["procurement_method"], "Способ закупки", method)
+    results_date = facts.get("results_date")
+    if results_date:
+        value = _replace_report_field(
+            value,
+            REPORT_FIELD_ALIASES["results_date"],
+            "Дата рассмотрения/подведения итогов",
+            results_date,
+        )
+    return value
+
+
+def normalize_product_freshness_wording(report: str) -> str:
+    value = str(report or "")
+    value = re.sub(
+        r"(?i)\b(?:поставляемый\s+)?товар\s+должен\s+быть\s+новым,\s*",
+        "",
+        value,
+    )
+    value = re.sub(r"(?i)\s*\bтовар\s+должен\s+быть\s+новым\.?", "", value)
+    value = re.sub(r"\s*\(\s*\)\s*\.?", "", value)
+    value = re.sub(r"\s+([,.;:])", r"\1", value)
+    return value
+
+
+def normalize_logistics_estimate(report: str, document_text: str) -> str:
+    estimate = _known_logistics_estimate(document_text)
+    if not estimate:
+        return report
+    lines = str(report or "").splitlines()
+    for index, line in enumerate(lines):
+        normalized = _normalize_fact(line)
+        if "данных недостаточно" not in normalized:
+            continue
+        if "общий вес" not in normalized and "вес/объем" not in normalized and "вес/обьем" not in normalized:
+            continue
+        prefix = _line_prefix(line)
+        lines[index] = f"{prefix}Общий вес/объем: {estimate}"
+        return "\n".join(lines)
+    return report
+
+
+def _known_logistics_estimate(document_text: str) -> str:
+    text = str(document_text or "")
+    normalized = _normalize_fact(text)
+    if "канат" not in normalized or "гост 3062-80" not in normalized:
+        return ""
+    diameter = _extract_rope_diameter_mm(text)
+    quantity_km = _extract_quantity_km(text)
+    if not diameter or not quantity_km:
+        return ""
+    kg_per_km = 5.12 * diameter * diameter
+    total_kg = kg_per_km * quantity_km
+    rounded_kg = _round_logistics_kg(total_kg)
+    diameter_text = _format_decimal(diameter)
+    quantity_text = _format_decimal(quantity_km)
+    kg_text = _format_integer(rounded_kg)
+    return (
+        f"ориентировочно **~{kg_text} кг нетто** для {quantity_text} км стального каната "
+        f"{diameter_text} мм; транспортный объем зависит от барабанов/бухт, для логистики "
+        "принять **~2-4 м³** и уточнить упаковку у поставщика."
+    )
 
 
 def extract_national_regime_requirement_types(document_text: str) -> set[str]:
@@ -753,6 +864,183 @@ def _extract_following_line(text: str, label: str) -> str:
     if not match:
         return ""
     return _clean_inline_text(match.group(1))
+
+
+def _extract_labeled_value(text: str, label: str) -> str:
+    inline = re.compile(rf"(?m)^\s*[-*]?\s*{re.escape(label)}\s*:\s*([^\n]+)")
+    match = inline.search(text)
+    if match:
+        return _clean_inline_text(match.group(1))
+    return _extract_following_line(text, label)
+
+
+def _extract_labeled_values(text: str, labels: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for label in labels:
+        inline = re.compile(rf"(?m)^\s*[-*]?\s*{re.escape(label)}\s*:\s*([^\n]+)")
+        for match in inline.finditer(text):
+            value = _clean_inline_text(match.group(1))
+            if value:
+                values.append(value)
+        following = _extract_following_line(text, label)
+        if following:
+            values.append(following)
+    return values
+
+
+def _extract_procurement_method_fact(text: str) -> str:
+    candidates = _extract_labeled_values(text, REPORT_FIELD_ALIASES["procurement_method"])
+    numeric_candidate = ""
+    for candidate in candidates:
+        cleaned = _clean_procurement_method_value(candidate)
+        if not cleaned:
+            continue
+        if _is_numeric_procurement_method(cleaned):
+            numeric_candidate = numeric_candidate or cleaned
+            continue
+        return _sentence_case(cleaned)
+    return numeric_candidate
+
+
+def _clean_procurement_method_value(value: str) -> str:
+    text = _clean_inline_text(value)
+    text = re.split(
+        r"\s+(?:Предмет закупки|Дата публикации|Дата и время|Начальная|НМЦК|Данная процедура|Запрос\s+\w+\s+проводится)\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    text = text.split("|", 1)[0].strip(" .;")
+    return text
+
+
+def _is_numeric_procurement_method(value: str) -> bool:
+    text = _normalize_fact(value)
+    return bool(re.fullmatch(r"(?:код\s+tenderplan\s*)?\d{1,4}", text))
+
+
+def _extract_results_date_fact(text: str) -> str:
+    document_value = _extract_document_results_date(text)
+    labeled_value = ""
+    for label in OFFICIAL_CARD_FIELD_LABELS["results_date"]:
+        labeled_value = _extract_labeled_value(text, label)
+        if labeled_value:
+            break
+    if document_value:
+        return document_value
+    return labeled_value
+
+
+def _extract_document_results_date(text: str) -> str:
+    patterns = (
+        r"Место\s+и\s+дата\s+рассмотрения,\s*оценки\s+и\s+подведения\s+итогов[^\n]{0,900}",
+        r"Дата\s+рассмотрения,\s*оценки\s+и\s+подведения\s+итогов[^\n]{0,900}",
+        r"Дата\s+подведения\s+итогов[^\n]{0,500}",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            value = _extract_russian_date_time(match.group(0))
+            if value:
+                return value
+    return ""
+
+
+def _extract_russian_date_time(value: str) -> str:
+    match = re.search(
+        r"[«\"“]?(\d{1,2})[»\"”]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*г(?:ода)?\.?(?:\s*(?:до|в)\s*(\d{1,2})[:.](\d{2}))?",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    month = RUSSIAN_MONTHS.get(match.group(2).lower().replace("ё", "е"))
+    if not month:
+        return ""
+    date = f"{int(match.group(1)):02d}.{month}.{match.group(3)}"
+    if match.group(4) and match.group(5):
+        return f"{date} {int(match.group(4)):02d}:{match.group(5)} МСК"
+    return date
+
+
+def _replace_report_field(report: str, aliases: tuple[str, ...], output_label: str, value: str) -> str:
+    lines = str(report or "").splitlines()
+    for index, line in enumerate(lines):
+        clean = _clean_inline_text(line).lstrip("-* ").strip()
+        if not any(clean.lower().startswith(f"{alias.lower()}:") for alias in aliases):
+            continue
+        prefix = _line_prefix(line)
+        lines[index] = f"{prefix}{output_label}: {value}"
+        return "\n".join(lines)
+
+    bounds = _find_report_section(lines, "общая")
+    if bounds:
+        insert_at = bounds[0] + 1
+        lines.insert(insert_at, f"- {output_label}: {value}")
+        return "\n".join(lines)
+    return f"- {output_label}: {value}\n{report}".strip()
+
+
+def _line_prefix(line: str) -> str:
+    indent = re.match(r"^\s*", str(line or "")).group(0)
+    stripped = str(line or "").lstrip()
+    if stripped.startswith("-"):
+        return f"{indent}- "
+    if stripped.startswith("*"):
+        return f"{indent}* "
+    return indent
+
+
+def _sentence_case(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text[:1].upper() + text[1:]
+
+
+def _extract_rope_diameter_mm(text: str) -> float:
+    patterns = (
+        r"(?:диам(?:етр)?\.?\s*-?\s*)(\d+(?:[,.]\d+)?)\s*мм",
+        r"(\d+(?:[,.]\d+)?)\s*мм[^\n]{0,120}\bканат",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _parse_decimal(match.group(1))
+    return 0.0
+
+
+def _extract_quantity_km(text: str) -> float:
+    matches = list(re.finditer(r"(\d+(?:[,.]\d+)?)\s*км\.?", text, flags=re.IGNORECASE))
+    for match in matches:
+        window = text[max(0, match.start() - 220) : match.end() + 80]
+        if re.search(r"канат|ГОСТ\s*3062-80", window, flags=re.IGNORECASE):
+            return _parse_decimal(match.group(1))
+    return _parse_decimal(matches[0].group(1)) if matches else 0.0
+
+
+def _parse_decimal(value: str) -> float:
+    try:
+        return float(str(value or "").replace(",", "."))
+    except ValueError:
+        return 0.0
+
+
+def _round_logistics_kg(value: float) -> int:
+    if value >= 1000:
+        return int(round(value / 100.0) * 100)
+    if value >= 100:
+        return int(round(value / 10.0) * 10)
+    return int(round(value))
+
+
+def _format_decimal(value: float) -> str:
+    if abs(value - round(value)) < 0.05:
+        return str(int(round(value)))
+    return f"{value:.1f}".replace(".", ",")
+
+
+def _format_integer(value: int) -> str:
+    return f"{int(value):,}".replace(",", " ")
 
 
 def _report_field_value(report: str, aliases: tuple[str, ...]) -> str:

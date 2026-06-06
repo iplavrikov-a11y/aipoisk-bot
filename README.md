@@ -29,6 +29,12 @@ Primary domain: `https://aipoisk.lexelence.ru`
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a
   `.txt` job input and processed by the same AI-first supplier pipeline.
+- Documentation analysis can start from a procurement notice number: the bot
+  treats it as a Tenderplan source, loads the structured card and available
+  procurement documents, and keeps manual upload/source-link flows available.
+- Notice numbers and procurement links are intentionally not accepted as plain
+  supplier-search input, because documentation analysis and supplier search have
+  separate access rules and limits.
 - Free-period settings for new Telegram accounts, with separate free supplier
   and documentation-analysis limits.
 - Flexible admin settings for storage, limits, report behavior, search sources,

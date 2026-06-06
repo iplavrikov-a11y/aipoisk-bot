@@ -160,13 +160,79 @@ Plain supplier-search scenarios are different: the customer sends a technical
 assignment / object description file, not a procurement link. Links are exposed
 in Telegram only for `Анализ документации` and `Анализ + поставщики`.
 
+## Tenderplan API Source Contract
+
+Tenderplan API is the primary structured source when a customer starts
+documentation analysis by procurement notice number. The API token is a runtime
+secret and must stay only in environment/configuration, never in docs, commits,
+logs, public site copy, or task evidence.
+
+Current safe source priority:
+
+- for `Анализ документации` and `Анализ + поставщики`, a raw notice number is
+  stored as a `tenderplan_notice` source and resolved through Tenderplan;
+- Tenderplan card data is used as the main published source for notice number,
+  customer, НМЦК, deadlines, bidding/results dates, platform, legal regime,
+  national-regime signals, document list, and explanations when the API returns
+  them;
+- `placingWay` and `status` are decoded through official Tenderplan tool
+  dictionaries (`/api/tools/placingways/list`, `/api/tools/statuses/list`) before
+  local fallback tables or text inference. Raw numeric codes must not be shown
+  as the user-facing procurement method. Code `0` is the generic official value
+  `Иной способ`; do not guess a more specific subtype without evidence from the
+  notice, documentation, or platform;
+- Tenderplan timestamps are rendered as Moscow time in source context, so the
+  report should not recalculate them through the VPS timezone;
+- Tenderplan attachments and explanation attachments are downloaded into the
+  normal job input flow and parsed with the same document pipeline as manually
+  uploaded files;
+- the shared local Tender Source Service adds `document_type` metadata for
+  downloaded files (`technical_spec`, `contract`, `nmck`, `notice`,
+  `clarification`, `application_requirements`, `other`) and exposes download
+  host diagnostics for allowlist/proxy troubleshooting;
+- shared bundle schema `2.1` also carries `document_type_source`,
+  `document_type_confidence`, `content_document_types`, `warnings`, and
+  `document_hints.primary_technical_spec`. Content-aware classification is
+  currently lightweight: DOCX/XLSX/PPTX/XML/text, PDF text layers, bounded ZIP
+  inspection, and RAR/7z filename listing can confirm strong document markers,
+  while OCR for scanned PDFs still belongs to the normal document parsing
+  pipeline;
+- the shared service response keeps raw `tender` data on a whitelist of
+  pre-award card fields only. Full Tenderplan `json`, protocols, participants,
+  contracts, sent/signed contracts, and unknown post-award fields must not be
+  exposed to consumers;
+- for 223-ФЗ legacy EIS `download.html?id=...` document links, the downloader
+  resolves the current EIS documents page and uses matched `file.html?uid=...`
+  links when available;
+- EIS/source-page parsing remains available as a control and legacy path, and
+  manual file upload remains fully supported;
+- if Tenderplan and another published source disagree, the report context must
+  preserve a short conflict note instead of silently mixing versions;
+- source fetch status, downloaded file counts, and failed download counts are
+  diagnostic evidence, not customer-facing noise unless a failure affects the
+  result.
+
+Mode boundary:
+
+- `Поиск поставщиков` must not auto-start procurement analysis from a notice
+  number or procurement link, because analysis has separate access and limits;
+- if a customer sends a notice number/link while in supplier-search mode, the
+  bot must answer with a clear warning and ask for a ТЗ/ООЗ file or text, or for
+  switching to `Анализ документации` / `Анализ + поставщики`;
+- the lower-level `create_job()` guard also rejects procurement sources for
+  `supplier_search`, so another API path cannot silently bypass the mode
+  boundary;
+- supplier search after `Анализ + поставщики` must use a separate extracted
+  ТЗ/ООЗ/product-specification context, not the entire noisy procurement bundle.
+
 Source-link contract:
 
 - Telegram and admin upload flows accept source URLs together with files or as
   the only input for documentation-analysis scenarios;
 - Telegram extracts procurement links from plain text messages and from file
   captions in documentation-analysis scenarios;
-- plain supplier search rejects source URLs and asks for a ТЗ/ООЗ file;
+- plain supplier search rejects procurement links and notice numbers with an
+  explicit explanation, and asks for a ТЗ/ООЗ file or text;
 - EIS links are marked as an official procurement source;
 - other procurement links are marked as procurement platform/source pages;
 - the worker fetches readable page text, with bounded HTTP and browser
@@ -179,6 +245,8 @@ Source-link contract:
 - AI report generation uses source pages for procurement card fields: notice
   number, customer, НМЦК, deadlines, platform, legal regime, and source-page
   facts;
+- when a Tenderplan block exists, it is prepended before source-page and file
+  context and is the main card/deadline/national-regime source;
 - attached ТЗ/ООЗ remains the primary source for the product table when it is
   more complete than the web page;
 - source parsing status and extracted character counts are stored in

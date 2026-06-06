@@ -13,6 +13,7 @@ from app.procurement_report import (
     extract_national_regime_requirement_types,
     generate_procurement_report,
     normalize_national_regime_conditions,
+    normalize_procurement_report_guardrails,
     normalize_vat_usn_risk,
     validate_report_against_official_card,
 )
@@ -26,6 +27,7 @@ class ProcurementReportPromptTests(unittest.TestCase):
             "Электронная площадка",
             "Крайний срок подачи заявок",
             "Дата рассмотрения/подведения итогов",
+            "Tenderplan",
             "ссылке на закупку",
             "Что уточнить",
             "Рыночная разведка (OSINT)",
@@ -177,6 +179,25 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
 
 
 class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_tenderplan_context_is_treated_as_official_card_facts(self) -> None:
+        source_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (0371100005626000040) ===
+Карточка закупки:
+- Способ осуществления закупки: Электронный аукцион
+
+Сроки Tenderplan (МСК):
+- Дата и время окончания срока подачи заявок (МСК): 10.06.2026 10:00 МСК
+- Дата подведения итогов (МСК): 11.06.2026 13:00 МСК
+"""
+
+        self.assertEqual(
+            extract_official_card_facts(source_text),
+            {
+                "procurement_method": "Электронный аукцион",
+                "submission_deadline": "10.06.2026 10:00 МСК",
+                "results_date": "11.06.2026 13:00 МСК",
+            },
+        )
+
     def test_official_source_prompt_requires_literal_card_fields(self) -> None:
         for phrase in (
             "копируй карточечные поля буквально",
@@ -190,7 +211,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 
     def test_verification_prompt_rejects_official_card_field_mismatch(self) -> None:
         for phrase in (
-            "изменил буквальное значение официального карточечного поля",
+            "карточечного поля Tenderplan/ЕИС/электронной площадки",
             "нормализовал \"Иной способ\"",
             "добавил время к дате подведения итогов",
             "пересчитал местное время заказчика",
@@ -282,6 +303,61 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 """
 
         self.assertEqual(validate_report_against_official_card(report, facts), [])
+
+    def test_tenderplan_numeric_method_does_not_override_notice_method(self) -> None:
+        document_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (32616063169) ===
+Карточка закупки:
+- Способ осуществления закупки: 22
+Сроки Tenderplan (МСК):
+- Дата и время окончания срока подачи заявок (МСК): 09.06.2026 06:00 МСК
+- Дата подведения итогов (МСК): 09.06.2026 20:59 МСК
+
+=== FILE: Извещение о проведении запроса котировок ЭТ.docx ===
+Способ закупки: запрос котировок в электронной форме.
+Место и дата рассмотрения, оценки и подведения итогов запроса котировок | 644033, г. Омск, ул. Красный Путь, 84. «09» июня 2026 года до 07:00 (время московское).
+"""
+
+        self.assertEqual(
+            extract_official_card_facts(document_text),
+            {
+                "procurement_method": "Запрос котировок в электронной форме",
+                "submission_deadline": "09.06.2026 06:00 МСК",
+                "results_date": "09.06.2026 07:00 МСК",
+            },
+        )
+
+    def test_guardrails_repair_method_results_logistics_and_freshness(self) -> None:
+        source_text = """=== ОСНОВНОЙ ИСТОЧНИК ЗАКУПКИ: TENDERPLAN (32616063169) ===
+- Способ осуществления закупки: 22
+- Дата подведения итогов (МСК): 09.06.2026 20:59 МСК
+Способ закупки: запрос котировок в электронной форме.
+Место и дата рассмотрения, оценки и подведения итогов запроса котировок | «09» июня 2026 года до 07:00 (время московское).
+Канат стальной оцинкованный диам.-7,4 мм ГОСТ 3062-80 10,00 км.
+Поставляемый Товар должен быть новым, произведенным не ранее 2025г.
+"""
+        report = """#### Общая информация
+- Способ закупки: 22
+- Дата рассмотрения/подведения итогов: 09.06.2026 20:59 МСК
+
+#### Логистика (Оценка)
+- Общий вес/объем: ДАННЫХ НЕДОСТАТОЧНО (требуется расчет массы 10 км стального каната 7,4 мм по ГОСТ 3062-80).
+- Транспорт: Стандартный грузовой транспорт.
+
+#### Критичные требования к товару
+- Дата производства: Не ранее 2025 г. Товар должен быть новым.
+- Сертификаты: **паспорт** ().
+"""
+
+        result = normalize_procurement_report_guardrails(report, source_text)
+
+        self.assertIn("- Способ закупки: Запрос котировок в электронной форме", result)
+        self.assertIn("- Дата рассмотрения/подведения итогов: 09.06.2026 07:00 МСК", result)
+        self.assertIn("ориентировочно", result.lower())
+        self.assertIn("~2 800 кг", result)
+        self.assertNotIn("ДАННЫХ НЕДОСТАТОЧНО", result)
+        self.assertIn("- Дата производства: Не ранее 2025 г.", result)
+        self.assertNotIn("Товар должен быть новым", result)
+        self.assertNotIn("()", result)
 
 
 if __name__ == "__main__":

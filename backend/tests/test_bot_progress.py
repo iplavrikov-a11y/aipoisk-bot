@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from app.bot import (
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
+    _handle_source_text,
     _handle_supplier_text_tz,
     _looks_like_supplier_text_tz,
     _mode_label,
@@ -381,6 +383,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         text = _source_link_rejection_text()
 
+        self.assertIn("Номер извещения", text)
         self.assertIn("файл ТЗ", text)
         self.assertIn("Анализ документации", text)
         self.assertIn("Анализ + поставщики", text)
@@ -395,6 +398,68 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(report_sources[0]["value"], caption)
         self.assertEqual(supplier_sources, [])
 
+    def test_notice_number_is_captured_only_for_analysis_modes(self) -> None:
+        report_sources = _source_payloads_for_scenario("analysis_and_suppliers", "0371100005626000040")
+        supplier_sources = _source_payloads_for_scenario("suppliers_single", "0371100005626000040")
+
+        self.assertEqual(len(report_sources), 1)
+        self.assertEqual(report_sources[0]["kind"], "tenderplan_notice")
+        self.assertEqual(report_sources[0]["value"], "0371100005626000040")
+        self.assertEqual(supplier_sources, [])
+
+    def test_notice_number_in_supplier_mode_is_rejected_without_switching_modes(self) -> None:
+        class FakeDb:
+            def close(self) -> None:
+                pass
+
+        class FakeMessage:
+            text = "32616063169"
+            chat = SimpleNamespace(id=456)
+            from_user = SimpleNamespace(id=123, username="", first_name="", last_name="")
+
+            def __init__(self) -> None:
+                self.answers = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        message = FakeMessage()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "get_or_create_trial_client_by_telegram_id": bot_module.get_or_create_trial_client_by_telegram_id,
+            "client_access_error": bot_module.client_access_error,
+            "get_or_create_settings": bot_module.get_or_create_settings,
+        }
+        pending_modes = dict(bot_module.PENDING_MODES)
+        pending_uploads = dict(bot_module.PENDING_UPLOADS)
+        try:
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS_SINGLE
+            bot_module.SessionLocal = lambda: FakeDb()
+            bot_module.get_or_create_trial_client_by_telegram_id = (
+                lambda _db, telegram_id, username="", name="": (SimpleNamespace(id="client-1"), "")
+            )
+            bot_module.client_access_error = lambda *_args, **_kwargs: ""
+            bot_module.get_or_create_settings = lambda _db: SimpleNamespace(default_supplier_target=3)
+
+            handled = asyncio.run(_handle_source_text(message))
+            switched_scenario = bot_module.PENDING_MODES.get(message.chat.id)
+            pending_exists = message.chat.id in bot_module.PENDING_UPLOADS
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_MODES.update(pending_modes)
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS.update(pending_uploads)
+
+        self.assertTrue(handled)
+        self.assertFalse(pending_exists)
+        self.assertEqual(switched_scenario, bot_module.SCENARIO_SUPPLIERS_SINGLE)
+        self.assertIn("Для поиска поставщиков нужен файл ТЗ", message.answers[0][0])
+
     def test_add_pending_sources_deduplicates_caption_and_text_links(self) -> None:
         pending = PendingBatch(telegram_id="123", mode=MODE_PROCUREMENT_REPORT, files=[])
         sources = [
@@ -406,6 +471,20 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertEqual(added, 1)
         self.assertEqual(_pending_input_count(pending), 1)
+
+    def test_pending_added_text_counts_procurement_sources_not_only_links(self) -> None:
+        pending = PendingBatch(
+            telegram_id="123",
+            mode=MODE_PROCUREMENT_REPORT,
+            files=[("Извещение.docx", b"notice")],
+            sources=[{"kind": "tenderplan_notice", "value": "0371100005626000040"}],
+        )
+
+        text = _pending_added_text(pending, max_files=20, added_sources=1)
+
+        self.assertIn("Документ добавлен: 1/20", text)
+        self.assertIn("Источников добавлено: 1", text)
+        self.assertIn("Всего источников: 1", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
         pending = PendingBatch(
