@@ -306,6 +306,8 @@ async def generate_procurement_report(settings: SystemSettings, document_text: s
     if normalized_report != report:
         report = normalized_report
         if verification is not None:
+            if verification.get("corrected_report"):
+                verification["corrected_report"] = report
             verification["postprocessing"] = {
                 "ok": True,
                 "national_regime_types": sorted(extract_national_regime_requirement_types(document_text)),
@@ -461,11 +463,32 @@ def validate_report_against_official_card(report: str, facts: dict[str, str]) ->
 
 def normalize_procurement_report_guardrails(report: str, document_text: str) -> str:
     value = normalize_official_card_report_fields(report, document_text)
+    value = normalize_customer_boolean_artifacts(value)
     value = normalize_logistics_estimate(value, document_text)
     value = normalize_product_freshness_wording(value)
     value = normalize_national_regime_conditions(value, document_text)
     value = normalize_vat_usn_risk(value, document_text)
     return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def normalize_customer_boolean_artifacts(report: str) -> str:
+    value = str(report or "")
+    value = re.sub(
+        r"(?i)(признак\s+СМП/СОНО\s+)отключ[её]н\s*\(\s*false\s*\)",
+        r"\1не установлен",
+        value,
+    )
+    value = re.sub(
+        r"(?i)(признак\s+СМП/СОНО\s+)включ[её]н\s*\(\s*true\s*\)",
+        r"\1установлен",
+        value,
+    )
+    value = re.sub(r"(?i)(СМП/СОНО\s*:\s*)false\b", r"\1не установлено", value)
+    value = re.sub(r"(?i)(СМП/СОНО\s*:\s*)true\b", r"\1установлено", value)
+    value = re.sub(r"(?i)\s*\(\s*(?:false|true)\s*\)", "", value)
+    value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])false(?![A-Za-zА-Яа-я])", "нет", value)
+    value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])true(?![A-Za-zА-Яа-я])", "да", value)
+    return value
 
 
 def normalize_official_card_report_fields(report: str, document_text: str) -> str:

@@ -60,6 +60,7 @@ BUTTON_CONTACTS = "📞 Контакты"
 BUTTON_RUN_BATCH = "▶️ Запустить обработку"
 BUTTON_CANCEL_BATCH = "🗑 Очистить документы"
 BUTTON_BACK_MAIN = "⬅️ Главное меню"
+BUTTON_PROCESSING_STATUS = "⏳ Обработка идёт"
 
 BRAND_NAME = "TenderLex"
 BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, номер извещения, документация и поставщики."
@@ -117,11 +118,9 @@ def _scenario_accepts_source_links(scenario: str) -> bool:
 
 def _source_link_rejection_text() -> str:
     return (
-        "Я распознал номер извещения или ссылку на закупку, но не добавил источник в режим поиска поставщиков.\n\n"
-        "Для поиска поставщиков нужен файл ТЗ/ООЗ или текстовое описание объекта закупки. "
-        "Номер извещения запускает работу с закупочной документацией, а это отдельные режимы "
-        "с отдельными доступами и лимитами.\n\n"
-        "Чтобы работать по номеру извещения, сначала выберите «Анализ документации» "
+        "⚠️ Номер извещения не добавлен\n\n"
+        "Сейчас выбран поиск поставщиков. Для него нужен файл ТЗ/ООЗ или текстовое описание объекта закупки.\n\n"
+        "Чтобы работать по номеру извещения, сначала выберите «📄 Анализ документации» "
         "или «Анализ + поставщики»."
     )
 
@@ -222,8 +221,14 @@ def _telegram_user_fields(message: Message) -> tuple[str, str, str]:
 
 def _trial_restricted_text(scenario: str) -> str:
     if scenario == SCENARIO_SUPPLIERS_MULTI:
-        return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ для поиска поставщиков."
-    return "В бесплатном доступе режим «Анализ + поставщики» недоступен. Запустите анализ и поиск поставщиков отдельно."
+        return (
+            "⚠️ Массовый поиск недоступен\n\n"
+            "В бесплатном доступе можно отправить одно ТЗ для поиска поставщиков."
+        )
+    return (
+        "⚠️ Режим недоступен\n\n"
+        "В бесплатном доступе анализ и поиск поставщиков запускаются отдельно."
+    )
 
 
 async def _reject_trial_restricted_scenario(message: Message, scenario: str) -> bool:
@@ -252,12 +257,11 @@ def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
 
 def _supplier_multi_intro_text() -> str:
     return (
-        "Массовый поиск поставщиков по нескольким ТЗ.\n\n"
-        "Каждый файл считается отдельным ТЗ. По каждому ТЗ я запущу отдельный поиск "
-        "и пришлю отдельный Excel-файл с поставщиками.\n\n"
+        "🗂 Поставщики по нескольким ТЗ\n\n"
+        "Каждый файл считается отдельным ТЗ. По каждому ТЗ будет отдельный Excel-файл.\n\n"
         "1. Отправьте все файлы ТЗ.\n"
-        "2. Дождитесь сообщений «ТЗ добавлено».\n"
-        "3. Нажмите «Запустить обработку»."
+        "2. Проверьте количество добавленных файлов.\n"
+        "3. Нажмите «▶️ Запустить обработку»."
     )
 
 
@@ -278,10 +282,18 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     return "\n".join(lines)
 
 
+def _source_added_text(pending: PendingBatch) -> str:
+    return (
+        "📎 Источник добавлен\n\n"
+        f"✅ Источников: {len(pending.sources)}\n"
+        "Можно добавить документы или нажать «▶️ Запустить обработку»."
+    )
+
+
 def _batch_running_text() -> str:
     return (
         "⏳ Обработка уже идёт\n\n"
-        "Я обновляю статус и пришлю файл, когда он будет готов."
+        "Новые действия пока не запускаются. Я обновляю статус и пришлю файл, когда он будет готов."
     )
 
 
@@ -348,17 +360,56 @@ def batch_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BUTTON_RUN_BATCH)],
-            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE)],
-            [KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
-            [KeyboardButton(text=BUTTON_REPORT)],
-            [KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
-            [KeyboardButton(text=BUTTON_STATUS), KeyboardButton(text=BUTTON_ACCESS)],
             [KeyboardButton(text=BUTTON_CANCEL_BATCH)],
             [KeyboardButton(text=BUTTON_BACK_MAIN)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Добавьте материалы или запустите обработку",
     )
+
+
+def processing_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BUTTON_PROCESSING_STATUS)],
+            [KeyboardButton(text=BUTTON_STATUS)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Дождитесь завершения обработки",
+    )
+
+
+def _chat_has_processing_job(chat_id: int) -> bool:
+    if chat_id in BATCH_RUNNING_CHATS:
+        return True
+    db = SessionLocal()
+    try:
+        return bool(
+            db.query(Job.id)
+            .filter(Job.created_by_telegram_id == str(chat_id))
+            .filter(Job.status.in_(["pending", "running"]))
+            .first()
+        )
+    except Exception:
+        return False
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _menu_for_chat(chat_id: int) -> ReplyKeyboardMarkup:
+    if _chat_has_processing_job(chat_id):
+        return processing_menu()
+    return main_menu()
+
+
+async def _reject_if_chat_processing(message: Message) -> bool:
+    if not _chat_has_processing_job(message.chat.id):
+        return False
+    await message.answer(_batch_running_text(), reply_markup=processing_menu())
+    return True
 
 
 def _mode_label(mode: str) -> str:
@@ -729,7 +780,10 @@ async def watch_job_progress(
     started = asyncio.get_running_loop().time()
     snapshot = _load_job_snapshot(job_id)
     if snapshot is None:
-        await message.answer("Задача не найдена. Сообщите владельцу сервиса.", reply_markup=main_menu())
+        await message.answer(
+            "⚠️ Задача не найдена\n\nСообщите владельцу сервиса.",
+            reply_markup=_menu_for_chat(message.chat.id),
+        )
         return None
     if status_message is None:
         status_message = await message.answer(_format_job_progress(snapshot))
@@ -904,16 +958,16 @@ async def start(message: Message) -> None:
             access_note = "\n\n✅ Telegram-аккаунт подключён. Можно работать через кнопки меню."
     finally:
         db.close()
-    await message.answer(_start_text() + access_note, reply_markup=main_menu())
+    await message.answer(_start_text() + access_note, reply_markup=_menu_for_chat(message.chat.id))
 
 
 @router.message(Command("id"))
 async def show_id(message: Message) -> None:
     telegram_id = str(message.from_user.id if message.from_user else "")
     await message.answer(
-        f"Ваш Telegram ID: {telegram_id}\n\n"
+        f"🆔 Ваш Telegram ID: {telegram_id}\n\n"
         "Если доступ ещё не подключён, отправьте этот ID владельцу сервиса.",
-        reply_markup=main_menu(),
+        reply_markup=_menu_for_chat(message.chat.id),
     )
 
 
@@ -926,13 +980,13 @@ async def show_status(message: Message) -> None:
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_menu())
+            await message.answer(account_error, reply_markup=_menu_for_chat(message.chat.id))
             return
         if not client:
             await message.answer(
-                "Доступ не подключён.\n\n"
+                "⚠️ Доступ не подключён\n\n"
                 "Нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
-                reply_markup=main_menu(),
+                reply_markup=_menu_for_chat(message.chat.id),
             )
             return
         jobs = (
@@ -943,16 +997,20 @@ async def show_status(message: Message) -> None:
             .all()
         )
         if not jobs:
-            await message.answer("Задач пока нет. Выберите режим и отправьте материалы закупки.", reply_markup=main_menu())
+            await message.answer(
+                "🕘 Задач пока нет\n\n"
+                "Выберите режим и отправьте материалы закупки.",
+                reply_markup=_menu_for_chat(message.chat.id),
+            )
             return
-        lines = ["Последние обращения:"]
+        lines = ["🕘 Последние задачи"]
         for index, job in enumerate(jobs, start=1):
             snapshot = _job_snapshot(job)
             lines.append(
                 f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
                 f"   {_friendly_stage_text(snapshot.message)}"
             )
-        await message.answer("\n".join(lines), reply_markup=main_menu())
+        await message.answer("\n".join(lines), reply_markup=_menu_for_chat(message.chat.id))
         for job in jobs:
             snapshot = _job_snapshot(job)
             job_id = str(job.id)
@@ -965,28 +1023,32 @@ async def show_status(message: Message) -> None:
     for job_id, snapshot in partial_confirmations:
         await _send_partial_confirmation(message, job_id, snapshot)
     for job_id, snapshot in recoverable_outputs:
-        await message.answer("Нашёл готовый результат, который ещё не был отправлен. Отправляю файл сейчас.")
+        await message.answer("✅ Нашёл готовый результат, который ещё не был отправлен. Отправляю файл сейчас.")
         await _send_job_outputs(message, job_id, snapshot)
 
 
 @router.message(Command("suppliers"))
 async def supplier_mode(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_SINGLE
     await message.answer(
-        "Поиск поставщиков по одному ТЗ.\n\n"
-        "Отправьте один файл ТЗ или описание объекта закупки. Я сразу запущу поиск и подготовлю Excel-файл с поставщиками.",
+        "🔎 Поставщики по одному ТЗ\n\n"
+        "Отправьте один файл ТЗ/ООЗ или текстовое описание объекта закупки.\n"
+        "Результат: Excel-файл с проверенными поставщиками.",
         reply_markup=main_menu(),
     )
 
 
 @router.message(Command("report"))
 async def report_mode(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     PENDING_MODES[message.chat.id] = SCENARIO_REPORT
     await message.answer(
-        "Анализ документации.\n\n"
-        "Отправьте комплект закупочной документации отдельными файлами или одним архивом. "
-        "Можно также добавить номер извещения или ссылку на страницу закупки: ЕИС, ЭТП или сайт заказчика. "
-        "Когда все документы будут добавлены, нажмите «Запустить обработку».",
+        "📄 Анализ документации\n\n"
+        "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
+        "Когда материалы добавлены, нажмите «▶️ Запустить обработку».",
         reply_markup=batch_menu(),
     )
 
@@ -998,20 +1060,26 @@ async def supplier_single_button(message: Message) -> None:
 
 @router.message(F.text == BUTTON_CREATE)
 async def create_button(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     await message.answer(
-        "Выберите тип отчёта.\n\n"
-        "Если не уверены, начните с «Поставщики по одному ТЗ» для одного файла или с «Анализ документации» по номеру извещения, файлам, архиву или ссылке.",
+        "🚀 Создать отчёт\n\n"
+        "Выберите сценарий работы.",
         reply_markup=create_menu(),
     )
 
 
 @router.message(F.text == BUTTON_BACK_MAIN)
 async def back_main_button(message: Message) -> None:
-    await message.answer("Главное меню.", reply_markup=main_menu())
+    if await _reject_if_chat_processing(message):
+        return
+    await message.answer("🏠 Главное меню", reply_markup=main_menu())
 
 
 @router.message(F.text == BUTTON_SUPPLIERS_MULTI)
 async def supplier_multi_button(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     if await _reject_trial_restricted_scenario(message, SCENARIO_SUPPLIERS_MULTI):
         return
     PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_MULTI
@@ -1025,13 +1093,15 @@ async def report_button(message: Message) -> None:
 
 @router.message(F.text == BUTTON_ANALYSIS_AND_SUPPLIERS)
 async def analysis_and_suppliers_button(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     if await _reject_trial_restricted_scenario(message, SCENARIO_ANALYSIS_AND_SUPPLIERS):
         return
     PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
     await message.answer(
-        "Анализ документации + поиск поставщиков.\n\n"
-        "Отправьте комплект документации отдельными файлами, одним архивом или добавьте номер извещения/ссылку на закупку. "
-        "Я подготовлю анализ и отдельно Excel-файл с поставщиками по найденному ТЗ.",
+        "📄🔎 Анализ + поставщики\n\n"
+        "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
+        "Результат: DOCX-анализ и Excel-файл с поставщиками по найденному ТЗ.",
         reply_markup=batch_menu(),
     )
 
@@ -1041,25 +1111,38 @@ async def status_button(message: Message) -> None:
     await show_status(message)
 
 
+@router.message(F.text == BUTTON_PROCESSING_STATUS)
+async def processing_status_button(message: Message) -> None:
+    if _chat_has_processing_job(message.chat.id):
+        await message.answer(_batch_running_text(), reply_markup=processing_menu())
+        return
+    await message.answer("✅ Активной обработки сейчас нет", reply_markup=main_menu())
+
+
 @router.message(F.text == BUTTON_CANCEL_BATCH)
 async def cancel_batch_button(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     PENDING_UPLOADS.pop(message.chat.id, None)
-    await message.answer("Документы очищены.", reply_markup=main_menu())
+    await message.answer("🗑 Материалы очищены", reply_markup=main_menu())
 
 
 @router.message(F.text == BUTTON_RUN_BATCH)
 async def run_batch_button(message: Message) -> None:
     if message.chat.id in BATCH_RUNNING_CHATS:
-        await message.answer(_batch_running_text(), reply_markup=ReplyKeyboardRemove())
+        await message.answer(_batch_running_text(), reply_markup=processing_menu())
         return
     pending = PENDING_UPLOADS.get(message.chat.id)
     if not pending or _pending_input_count(pending) == 0:
         scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
         if _scenario_accepts_source_links(scenario):
-            text = "Документы или источник закупки пока не добавлены. Отправьте файлы закупки, архив, номер извещения или ссылку на закупку."
+            text = (
+                "📎 Материалы не добавлены\n\n"
+                "Отправьте файлы закупки, архив, номер извещения или ссылку на закупку."
+            )
         else:
-            text = "ТЗ пока не добавлены. Отправьте файлы ТЗ или описание объекта закупки."
-        await message.answer(text, reply_markup=main_menu())
+            text = "📎 ТЗ не добавлено\n\nОтправьте файл ТЗ/ООЗ или текстовое описание объекта закупки."
+        await message.answer(text, reply_markup=batch_menu())
         return
     BATCH_RUNNING_CHATS.add(message.chat.id)
     job: Job | None = None
@@ -1129,10 +1212,12 @@ async def run_batch_button(message: Message) -> None:
                 f"🗂 Обработка запущена\n\n"
                 f"✅ Принято ТЗ: {len(batch_jobs)}\n"
                 "Буду обновлять это сообщение и пришлю файлы по мере готовности.",
+                reply_markup=processing_menu(),
             )
         else:
             launch_message = await message.answer(
                 _format_launch_progress(_job_snapshot(job), _accepted_batch_text(pending)),
+                reply_markup=processing_menu(),
             )
     finally:
         db.close()
@@ -1170,17 +1255,32 @@ async def _watch_supplier_multi_outputs(
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             await _send_partial_confirmation(message, job_id, snapshot)
         else:
-            await _send_job_outputs(message, job_id, snapshot)
+            await _send_job_outputs(
+                message,
+                job_id,
+                snapshot,
+                reply_markup=main_menu() if index == total else processing_menu(),
+            )
     if status_message is not None:
         await _edit_or_send_status(status_message, "Массовая обработка ТЗ завершена. Файлы отправлены ниже.")
 
 
-async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgressSnapshot | None = None) -> bool:
+async def _send_job_outputs(
+    message: Message,
+    job_id: str,
+    snapshot: JobProgressSnapshot | None = None,
+    *,
+    reply_markup: ReplyKeyboardMarkup | ReplyKeyboardRemove | None = None,
+) -> bool:
+    final_reply_markup = reply_markup or main_menu()
     db = SessionLocal()
     try:
         done_job = db.get(Job, job_id)
         if not done_job:
-            await message.answer("Задача потеряна. Сообщите владельцу сервиса.", reply_markup=main_menu())
+            await message.answer(
+                "⚠️ Задача не найдена\n\nСообщите владельцу сервиса.",
+                reply_markup=final_reply_markup,
+            )
             return False
         outputs = package_job_output_files(done_job)
         if outputs:
@@ -1192,7 +1292,7 @@ async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgress
                 sent_output_message = await message.answer_document(
                     FSInputFile(output),
                     caption=sent_output_base_caption,
-                    reply_markup=main_menu() if is_last else None,
+                    reply_markup=final_reply_markup if is_last else None,
                 )
             charge_job_reservation(db, done_job)
             if snapshot and snapshot.status in OWNER_ALERT_STATUSES:
@@ -1202,10 +1302,14 @@ async def _send_job_outputs(message: Message, job_id: str, snapshot: JobProgress
                     sent_output_message,
                     sent_output_base_caption,
                     _after_delivery_balance_text(db, done_job.client),
+                    reply_markup=final_reply_markup,
                 )
             return True
         elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
-            await message.answer("Обработка продолжается. Статус можно проверить кнопкой «Последние задачи».", reply_markup=main_menu())
+            await message.answer(
+                "⏳ Обработка продолжается\n\nСтатус можно проверить кнопкой «Последние задачи».",
+                reply_markup=processing_menu(),
+            )
         elif snapshot:
             await _alert_owner_about_job(message, snapshot, reason="missing_output", output_missing=True)
         return False
@@ -1230,11 +1334,17 @@ def _join_caption(*parts: str) -> str:
     return text[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…"
 
 
-async def _edit_output_delivery_caption(sent_message: Message, base_caption: str, delivery_text: str) -> None:
+async def _edit_output_delivery_caption(
+    sent_message: Message,
+    base_caption: str,
+    delivery_text: str,
+    *,
+    reply_markup: ReplyKeyboardMarkup | ReplyKeyboardRemove | None = None,
+) -> None:
     try:
         await sent_message.edit_caption(
             caption=_join_caption(base_caption, delivery_text),
-            reply_markup=main_menu(),
+            reply_markup=reply_markup or main_menu(),
         )
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
@@ -1270,18 +1380,18 @@ async def access_button(message: Message) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=main_menu())
+            await message.answer(account_error, reply_markup=_menu_for_chat(message.chat.id))
             return
         if not client:
             await message.answer(
-                "Доступ не подключён.\n\n"
+                "⚠️ Доступ не подключён\n\n"
                 f"Ваш Telegram ID: {telegram_id}\n"
                 "Отправьте этот ID владельцу сервиса, чтобы он включил доступ.\n\n"
                 + _contacts_text(settings),
-                reply_markup=main_menu(),
+                reply_markup=_menu_for_chat(message.chat.id),
             )
             return
-        await message.answer(_cabinet_text(db, client, settings), reply_markup=main_menu())
+        await message.answer(_cabinet_text(db, client, settings), reply_markup=_menu_for_chat(message.chat.id))
     finally:
         db.close()
 
@@ -1291,7 +1401,7 @@ async def tariffs_button(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        await message.answer(_tariffs_text(db, settings), reply_markup=main_menu())
+        await message.answer(_tariffs_text(db, settings), reply_markup=_menu_for_chat(message.chat.id))
     finally:
         db.close()
 
@@ -1302,7 +1412,7 @@ async def contacts_button(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        await message.answer(_contacts_text(settings, telegram_id=telegram_id), reply_markup=main_menu())
+        await message.answer(_contacts_text(settings, telegram_id=telegram_id), reply_markup=_menu_for_chat(message.chat.id))
     finally:
         db.close()
 
@@ -1323,7 +1433,7 @@ async def help_button(message: Message) -> None:
         "📊 Остатки смотрите в «Мой кабинет».\n\n"
         f"{AI_HELP_NOTE}\n\n"
         "Если доступа нет, нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
-        reply_markup=main_menu(),
+        reply_markup=_menu_for_chat(message.chat.id),
     )
 
 
@@ -1421,6 +1531,8 @@ async def handle_document(message: Message, bot: Bot) -> None:
 
 
 async def _handle_document_locked(message: Message, bot: Bot) -> None:
+    if await _reject_if_chat_processing(message):
+        return
     scenario = _scenario_for_message(message)
     mode = _job_mode_for_scenario(scenario)
     job_id: str | None = None
@@ -1469,9 +1581,10 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             job_id = str(job.id)
             PENDING_UPLOADS.pop(message.chat.id, None)
             PENDING_MODES.pop(message.chat.id, None)
+            BATCH_RUNNING_CHATS.add(message.chat.id)
             launch_message = await message.answer(
                 _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text()),
-                reply_markup=main_menu(),
+                reply_markup=processing_menu(),
             )
         else:
             job = None
@@ -1492,11 +1605,14 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
     finally:
         db.close()
     if job_id is not None:
-        snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
-        if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-            await _send_partial_confirmation(message, job_id, snapshot)
-        else:
-            await _send_job_outputs(message, job_id, snapshot)
+        try:
+            snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
+            if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+                await _send_partial_confirmation(message, job_id, snapshot)
+            else:
+                await _send_job_outputs(message, job_id, snapshot)
+        finally:
+            BATCH_RUNNING_CHATS.discard(message.chat.id)
 
 
 async def _handle_supplier_text_tz(message: Message) -> bool:
@@ -1512,7 +1628,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
     if not _looks_like_supplier_text_tz(text):
         return False
     if message.chat.id in BATCH_RUNNING_CHATS:
-        await message.answer(_batch_running_text(), reply_markup=ReplyKeyboardRemove())
+        await message.answer(_batch_running_text(), reply_markup=processing_menu())
         return True
 
     mode = MODE_SUPPLIER_SEARCH
@@ -1563,23 +1679,29 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         job_id = str(job.id)
         PENDING_UPLOADS.pop(message.chat.id, None)
         PENDING_MODES.pop(message.chat.id, None)
+        BATCH_RUNNING_CHATS.add(message.chat.id)
         launch_message = await message.answer(
             _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text(from_text=True)),
-            reply_markup=main_menu(),
+            reply_markup=processing_menu(),
         )
     finally:
         db.close()
 
     if job_id is not None:
-        snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
-        if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-            await _send_partial_confirmation(message, job_id, snapshot)
-        else:
-            await _send_job_outputs(message, job_id, snapshot)
+        try:
+            snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
+            if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+                await _send_partial_confirmation(message, job_id, snapshot)
+            else:
+                await _send_job_outputs(message, job_id, snapshot)
+        finally:
+            BATCH_RUNNING_CHATS.discard(message.chat.id)
     return True
 
 
 async def _handle_source_text(message: Message) -> bool:
+    if await _reject_if_chat_processing(message):
+        return True
     sources = source_payloads_from_text(str(message.text or ""))
     if not sources:
         return False
@@ -1608,8 +1730,7 @@ async def _handle_source_text(message: Message) -> bool:
             pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
-        text = f"Источник добавлен: {len(pending.sources)}. Можно добавить документы или нажать «Запустить обработку»."
-        await message.answer(text, reply_markup=batch_menu())
+        await message.answer(_source_added_text(pending), reply_markup=batch_menu())
     finally:
         db.close()
 
@@ -1626,8 +1747,9 @@ async def unknown_text(message: Message) -> None:
     if await _handle_source_text(message):
         return
     await message.answer(
-        "Выберите действие кнопкой ниже. Для поставщиков отправьте ТЗ/ООЗ, для анализа документации можно добавить номер извещения, файлы или ссылку на закупку.",
-        reply_markup=main_menu(),
+        "ℹ️ Выберите действие кнопкой ниже\n\n"
+        "Для поставщиков отправьте ТЗ/ООЗ. Для анализа документации можно добавить номер извещения, файлы или ссылку на закупку.",
+        reply_markup=_menu_for_chat(message.chat.id),
     )
 
 

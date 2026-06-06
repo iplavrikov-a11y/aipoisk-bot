@@ -359,6 +359,19 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
         self.assertNotIn("Товар должен быть новым", result)
         self.assertNotIn("()", result)
 
+    def test_guardrails_hide_raw_boolean_artifacts(self) -> None:
+        report = """#### Риски
+- Противоречие в документах: В карточке ЕИС признак СМП/СОНО отключен (False), но есть файл СМП.
+- СМП/СОНО: False
+"""
+
+        result = normalize_procurement_report_guardrails(report, "")
+
+        self.assertIn("признак СМП/СОНО не установлен", result)
+        self.assertIn("- СМП/СОНО: не установлено", result)
+        self.assertNotIn("False", result)
+        self.assertNotIn("(False)", result)
+
 
 if __name__ == "__main__":
     unittest.main()

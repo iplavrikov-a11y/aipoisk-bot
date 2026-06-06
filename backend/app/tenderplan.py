@@ -482,7 +482,7 @@ def build_tenderplan_context(
         f"- Площадка: {platform.get('name') or ''} {platform.get('href') or ''}".strip(),
         f"- Обеспечение заявки: {format_price(tender.get('guaranteeApp'))}",
         f"- Обеспечение контракта: {format_price(tender.get('guaranteeContract'))}",
-        f"- СМП/СОНО: {bool(tender.get('smp'))}",
+        f"- СМП/СОНО: {format_smp_sono(tender.get('smp'))}",
         "",
         "Сроки закупки (МСК):",
         f"- Размещено: {dates.get('publication') or ''}",
@@ -617,6 +617,18 @@ def format_price(value) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{number:,.2f} руб.".replace(",", " ")
+
+
+def format_smp_sono(value) -> str:
+    if value is None or value == "":
+        return "не указано"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "да", "установлено"}:
+            return "установлено"
+        if normalized in {"false", "0", "no", "нет", "не установлено"}:
+            return "не установлено"
+    return "установлено" if bool(value) else "не установлено"
 
 
 def format_size(value: int | None) -> str:

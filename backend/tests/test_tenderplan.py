@@ -20,6 +20,7 @@ from app.tenderplan import (
     find_tender_matches,
     format_related_tenders,
     format_msk,
+    format_smp_sono,
     fetch_tenderplan_source_sync,
     is_allowed_download_url,
     preferred_tender_id,
@@ -116,6 +117,15 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         self.assertIn("Насос погружной: Запрет закупок товаров", context)
         self.assertIn("Техническое задание.docx", context)
         self.assertIn("Разъяснения/ответы заказчика: 1 записей, 1 файлов", context)
+        self.assertIn("- СМП/СОНО: не указано", context)
+        self.assertNotIn("- СМП/СОНО: False", context)
+
+    def test_format_smp_sono_hides_raw_booleans(self) -> None:
+        self.assertEqual(format_smp_sono(True), "установлено")
+        self.assertEqual(format_smp_sono(False), "не установлено")
+        self.assertEqual(format_smp_sono("true"), "установлено")
+        self.assertEqual(format_smp_sono("false"), "не установлено")
+        self.assertEqual(format_smp_sono(None), "не указано")
 
     def test_build_context_renders_numeric_placing_way_as_code_not_method(self) -> None:
         context = build_tenderplan_context(
