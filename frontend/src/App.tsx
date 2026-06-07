@@ -399,17 +399,13 @@ const functionLabels: Record<string, string> = {
   procurement_report_verification: 'Проверка отчёта анализа',
   procurement_key_info_extraction: 'Извлечение условий закупки',
   procurement_search_query_generation: 'Запросы по закупке',
-  supplier_query_generation: 'Запросы для поиска поставщиков',
+  supplier_query_generation: 'Запросы поставщиков',
   supplier_candidate_verifier: 'Проверка поставщиков',
 }
 
-const functionModelHints: Record<string, string> = {
-  procurement_document_analysis: 'Лучше ставить Pro-модель: она устойчивее на больших документах.',
-  procurement_report_verification: 'Лучше ставить ту же Pro-модель: это финальная проверка перед выдачей отчёта.',
-  procurement_key_info_extraction: 'Можно ставить быструю Flash Lite: задача короткая.',
-  procurement_search_query_generation: 'Можно ставить быструю Flash Lite: она только готовит поисковые фразы.',
-  supplier_query_generation: 'Можно ставить быструю Flash Lite: она только готовит поисковые фразы.',
-  supplier_candidate_verifier: 'Лучше не самая слабая модель: она решает, подходит ли сайт поставщика.',
+const modelRoleLabels: Record<string, string> = {
+  __primary__: 'Основная',
+  __light__: 'Быстрая',
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -1850,27 +1846,27 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     return `${providerName} · ${modelId || raw}`
   }
   function providerOptionLabel(provider: CustomProvider) {
-    const name = providerDisplayName(provider.id)
-    return `${name} (${provider.id})`
+    return providerDisplayName(provider.id)
   }
   function selectedModelSummary(providerId: string, modelId: string) {
     if (!providerId || !modelId) return 'Модель не выбрана'
     return modelOptionLabel(`${providerId}:${modelId}`)
   }
-  function providerKeyStatus(providerId: string) {
-    return providersById.get(providerId)?.apiKey?.trim() ? 'ключ указан' : 'ключ не указан'
+  function currentModelValue(role: string) {
+    if (role === '__light__') return lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    return primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
   }
-  function resolvedModelValue(raw: string | undefined) {
+  function functionRoleValue(raw: string | undefined) {
     const value = String(raw || '').trim()
-    if (value === '__primary__' || !value) return primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
-    if (value === '__light__') return lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
-    return value
+    if (value === '__light__') return '__light__'
+    if (value === '__primary__' || !value) return '__primary__'
+    if (value === currentModelValue('__light__')) return '__light__'
+    return '__primary__'
   }
   function explicitFunctionModels() {
     const result: Record<string, string> = {}
     for (const key of aiRoutingKeys) {
-      const value = resolvedModelValue(functionModels[key])
-      if (value) result[key] = value
+      result[key] = functionRoleValue(functionModels[key])
     }
     return result
   }
@@ -1906,15 +1902,9 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       }))
       .filter(model => model.provider && model.modelId)
   }
-  function updateFunctionModel(key: string, provider: string, model: string) {
+  function updateFunctionModel(key: string, role: string) {
     setFunctionModels(current => {
-      const next = { ...current }
-      if (provider && model) {
-        next[key] = `${provider}:${model}`
-      } else {
-        delete next[key]
-      }
-      return next
+      return { ...current, [key]: role === '__light__' ? '__light__' : '__primary__' }
     })
     clearSaveStatus('functions')
   }
@@ -1948,7 +1938,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     if (!provider) return
     const relatedModels = savedModels.filter(model => model.provider === provider.id)
     const message = relatedModels.length
-      ? `Удалить провайдера «${providerOptionLabel(provider)}» и ${relatedModels.length} связанных modelId?`
+      ? `Удалить провайдера «${providerOptionLabel(provider)}» и ${relatedModels.length} связанных моделей?`
       : `Удалить провайдера «${providerOptionLabel(provider)}»?`
     if (!window.confirm(message)) return
     setProviders(providers.filter((_, itemIndex) => itemIndex !== index))
@@ -1961,13 +1951,11 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       setLightProvider('')
       setLightModel('')
     }
-    setFunctionModels(removeFunctionModelsForProvider(functionModels, provider.id))
-    clearSaveStatuses('providers', 'models', 'global', 'functions')
+    clearSaveStatuses('providers', 'models', 'global')
   }
   function removeModel(index: number) {
     const model = savedModels[index]
     if (!model) return
-    const value = `${model.provider}:${model.modelId}`
     setSavedModels(savedModels.filter((_, itemIndex) => itemIndex !== index))
     if (primaryProvider === model.provider && primaryModel === model.modelId) {
       setPrimaryProvider('')
@@ -1977,8 +1965,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       setLightProvider('')
       setLightModel('')
     }
-    setFunctionModels(removeFunctionModelValue(functionModels, value))
-    clearSaveStatuses('models', 'global', 'functions')
+    clearSaveStatuses('models', 'global')
   }
   async function saveSection(section: string, payload: Partial<SettingsPayload>) {
     await api('/api/settings', {
@@ -2013,7 +2000,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       primary_model: primaryValue && modelValues.has(primaryValue) ? primaryModel : '',
       light_provider: lightValue && modelValues.has(lightValue) ? lightProvider : '',
       light_model: lightValue && modelValues.has(lightValue) ? lightModel : '',
-      ai_function_models_json: stringify(filterFunctionModelValues(explicitFunctionModels(), modelValues)),
+      ai_function_models_json: stringify(explicitFunctionModels()),
     })
   }
   async function saveModelListSettings() {
@@ -2027,7 +2014,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       primary_model: !primaryValue || modelValues.has(primaryValue) ? primaryModel : '',
       light_provider: !lightValue || modelValues.has(lightValue) ? lightProvider : '',
       light_model: !lightValue || modelValues.has(lightValue) ? lightModel : '',
-      ai_function_models_json: stringify(filterFunctionModelValues(explicitFunctionModels(), modelValues)),
+      ai_function_models_json: stringify(explicitFunctionModels()),
     })
   }
   async function testAi(slot: string, provider: string, model: string) {
@@ -2096,34 +2083,12 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     return saveStatus[section] ? <span className="save-status">{saveStatus[section]}</span> : null
   }
   return (
-    <section className="stack">
-      <div className="form-panel full-width-panel">
-        <details className="service-panel" open>
-          <summary>Модели для функций бота</summary>
-          <p className="field-help">Для анализа документов выбирайте сильную модель, для простых поисковых шагов можно ставить быструю.</p>
-          {aiRoutingKeys.map(key => (
-            <ModelSelect
-              key={key}
-              label={functionLabels[key] || key}
-              help={functionModelHints[key]}
-              value={resolvedModelValue(functionModels[key])}
-              options={modelOptions}
-              optionLabel={modelOptionLabel}
-              onChange={(provider, model) => updateFunctionModel(key, provider, model)}
-            />
-          ))}
-          <div className="section-actions">
-            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить функции</button>
-            {sectionSaveStatus('functions')}
-          </div>
-        </details>
-      </div>
-      <div className="form-panel">
-        <details className="service-panel" open>
+    <section className="ai-settings">
+      <div className="ai-top-grid">
+        <details className="service-panel ai-panel" open>
           <summary>Основная и быстрая модель</summary>
           <ModelSelect
-            label="Основная модель"
-            help={`Сейчас: ${selectedModelSummary(primaryProvider, primaryModel)} · ${providerKeyStatus(primaryProvider)}`}
+            label="Основная"
             value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
@@ -2136,8 +2101,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
             }}
           />
           <ModelSelect
-            label="Быстрая модель"
-            help={`Сейчас: ${selectedModelSummary(lightProvider, lightModel)} · ${providerKeyStatus(lightProvider)}`}
+            label="Быстрая"
             value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
@@ -2150,102 +2114,89 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
             }}
           />
           <div className="section-actions">
-            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить основную/быструю</button>
+            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить модели</button>
             {sectionSaveStatus('global')}
           </div>
         </details>
-      </div>
-      <div className="form-panel full-width-panel">
-        <details className="service-panel">
-          <summary>ИИ-провайдеры</summary>
-          <div className="advanced-section">
-            <button onClick={addProvider}><Plus size={16} />Добавить провайдера</button>
-            <div className="provider-row-head"><span>ID провайдера</span><span>Название провайдера</span><span>Base URL</span><span>API key</span><span></span></div>
-            {providers.map((provider, index) => (
-              <div className="provider-row" key={`${provider.id}-${index}`}>
-                <input value={provider.id} placeholder="например openrouter" onChange={e => { updateArray(providers, setProviders, index, { id: e.target.value }); clearSaveStatus('providers') }} />
-                <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => { updateArray(providers, setProviders, index, { name: e.target.value }); clearSaveStatus('providers') }} />
-                <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => { updateArray(providers, setProviders, index, { baseUrl: e.target.value }); clearSaveStatus('providers') }} />
-                <div className="secret-cell">
-                  <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => { updateArray(providers, setProviders, index, { apiKey: e.target.value }); clearSaveStatus('providers') }} />
-                  <small className={provider.apiKey?.trim() ? 'key-status ok' : 'key-status missing'}>
-                    {provider.apiKey?.trim() ? 'ключ указан' : 'ключ не указан'}
-                  </small>
-                </div>
-                <RowActions
-                  index={index}
-                  count={providers.length}
-                  onMoveUp={() => moveProvider(index, -1)}
-                  onMoveDown={() => moveProvider(index, 1)}
-                  onRemove={() => removeProvider(index)}
-                  removeTitle="Удалить провайдера"
-                />
-              </div>
-            ))}
-            <div className="section-actions">
-              <button onClick={() => void saveProviderSettings()}><Save size={16} />Сохранить провайдеров</button>
-              {sectionSaveStatus('providers')}
-            </div>
+        <details className="service-panel ai-panel" open>
+          <summary>Модели для функций бота</summary>
+          <div className="function-route-list">
+            {aiRoutingKeys.map(key => {
+              const value = functionRoleValue(functionModels[key])
+              return (
+                <label className="function-route-row" key={key}>
+                  <span>{functionLabels[key] || key}</span>
+                  <select value={value} onChange={event => updateFunctionModel(key, event.target.value)}>
+                    <option value="__primary__">{modelRoleLabels.__primary__}</option>
+                    <option value="__light__">{modelRoleLabels.__light__}</option>
+                  </select>
+                </label>
+              )
+            })}
+          </div>
+          <div className="section-actions">
+            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить функции</button>
+            {sectionSaveStatus('functions')}
           </div>
         </details>
       </div>
-      <div className="form-panel full-width-panel">
-        <details className="service-panel">
-          <summary>Список modelId</summary>
-          <div className="advanced-section">
-            <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
-            <div className="model-row-head"><span>Провайдер</span><span>modelId</span><span></span></div>
-            {savedModels.map((model, index) => (
-              <div className="model-row" key={model.id}>
-                <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
-                  <option value="">provider id</option>
-                  {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-                </select>
-                <input value={model.modelId} placeholder="например gemini-3.1-flash-lite" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
-                <RowActions
-                  index={index}
-                  count={savedModels.length}
-                  onMoveUp={() => moveModel(index, -1)}
-                  onMoveDown={() => moveModel(index, 1)}
-                  onRemove={() => removeModel(index)}
-                  removeTitle="Удалить modelId"
-                />
-              </div>
-            ))}
-            <div className="section-actions">
-              <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить modelId</button>
-              {sectionSaveStatus('models')}
+      <details className="service-panel ai-panel">
+        <summary>Провайдеры ИИ</summary>
+        <div className="advanced-section">
+          <button className="ghost ai-add-button" onClick={addProvider}><Plus size={16} />Добавить провайдера</button>
+          <div className="provider-row-head"><span>Код</span><span>Название</span><span>Адрес API</span><span>Ключ API</span><span></span></div>
+          {providers.map((provider, index) => (
+            <div className="provider-row" key={`${provider.id}-${index}`}>
+              <input value={provider.id} placeholder="например openrouter" onChange={e => { updateArray(providers, setProviders, index, { id: e.target.value }); clearSaveStatus('providers') }} />
+              <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => { updateArray(providers, setProviders, index, { name: e.target.value }); clearSaveStatus('providers') }} />
+              <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => { updateArray(providers, setProviders, index, { baseUrl: e.target.value }); clearSaveStatus('providers') }} />
+              <input type="password" value={provider.apiKey} placeholder="Ключ API" onChange={e => { updateArray(providers, setProviders, index, { apiKey: e.target.value }); clearSaveStatus('providers') }} />
+              <RowActions
+                index={index}
+                count={providers.length}
+                onMoveUp={() => moveProvider(index, -1)}
+                onMoveDown={() => moveProvider(index, 1)}
+                onRemove={() => removeProvider(index)}
+                removeTitle="Удалить провайдера"
+              />
             </div>
+          ))}
+          <div className="section-actions">
+            <button onClick={() => void saveProviderSettings()}><Save size={16} />Сохранить провайдеров</button>
+            {sectionSaveStatus('providers')}
           </div>
-        </details>
-      </div>
+        </div>
+      </details>
+      <details className="service-panel ai-panel">
+        <summary>Доступные модели</summary>
+        <div className="advanced-section">
+          <button className="ghost ai-add-button" onClick={addModel}><Plus size={16} />Добавить модель</button>
+          <div className="model-row-head"><span>Провайдер</span><span>Модель</span><span></span></div>
+          {savedModels.map((model, index) => (
+            <div className="model-row" key={model.id}>
+              <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
+                <option value="">Провайдер</option>
+                {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
+              </select>
+              <input value={model.modelId} placeholder="например gpt-5.4" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
+              <RowActions
+                index={index}
+                count={savedModels.length}
+                onMoveUp={() => moveModel(index, -1)}
+                onMoveDown={() => moveModel(index, 1)}
+                onRemove={() => removeModel(index)}
+                removeTitle="Удалить модель"
+              />
+            </div>
+          ))}
+          <div className="section-actions">
+            <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить модели</button>
+            {sectionSaveStatus('models')}
+          </div>
+        </div>
+      </details>
     </section>
   )
-}
-
-function removeFunctionModelsForProvider(functionModels: Record<string, string>, providerId: string) {
-  const result: Record<string, string> = {}
-  const prefix = `${providerId}:`
-  for (const [key, value] of Object.entries(functionModels)) {
-    if (!String(value || '').startsWith(prefix)) result[key] = value
-  }
-  return result
-}
-
-function removeFunctionModelValue(functionModels: Record<string, string>, modelValue: string) {
-  const result: Record<string, string> = {}
-  for (const [key, value] of Object.entries(functionModels)) {
-    if (value !== modelValue) result[key] = value
-  }
-  return result
-}
-
-function filterFunctionModelValues(functionModels: Record<string, string>, allowedValues: Set<string>) {
-  const result: Record<string, string> = {}
-  for (const [key, value] of Object.entries(functionModels)) {
-    if (allowedValues.has(value)) result[key] = value
-  }
-  return result
 }
 
 function moveArrayItem<T>(items: T[], index: number, delta: number) {

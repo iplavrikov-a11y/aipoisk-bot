@@ -467,10 +467,6 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .save-status { color: #047857; font-size: 13px; font-weight: 750; }
 .provider-row, .model-row { display: grid; grid-template-columns: 150px 190px minmax(220px, 1fr) minmax(220px, 1fr) 104px; gap: 8px; align-items: start; }
 .model-row { grid-template-columns: 260px minmax(260px, 1fr) 104px; }
-.secret-cell { display: grid; gap: 4px; }
-.key-status { font-size: 12px; font-weight: 750; }
-.key-status.ok { color: #047857; }
-.key-status.missing { color: #b91c1c; }
 .provider-row-head, .model-row-head {
   display: grid;
   gap: 8px;
@@ -532,6 +528,48 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .service-panel[open] { background: #fff; }
 .service-panel[open] summary { margin-bottom: 10px; }
 .advanced-section { display: grid; gap: 10px; margin-top: 12px; }
+.ai-settings { display: grid; gap: 12px; }
+.ai-top-grid { display: grid; grid-template-columns: minmax(360px, .85fr) minmax(460px, 1.15fr); gap: 12px; align-items: start; }
+.ai-panel { padding: 10px 12px; gap: 9px; }
+.ai-panel summary { font-size: 15px; line-height: 1.2; }
+.ai-settings .field { gap: 4px; font-size: 12px; }
+.ai-settings input,
+.ai-settings select {
+  min-height: 32px;
+  padding: 5px 9px;
+  border-radius: 7px;
+}
+.ai-settings button { min-height: 32px; padding: 0 11px; border-radius: 7px; }
+.ai-settings .icon-button.small { width: 32px; min-height: 32px; }
+.ai-settings .section-actions { margin-top: 2px; }
+.ai-settings .advanced-section { gap: 7px; margin-top: 8px; }
+.ai-settings .advanced-section > button { justify-self: start; }
+.function-route-list { display: grid; grid-template-columns: repeat(2, minmax(250px, 1fr)); gap: 6px 10px; }
+.function-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 650;
+}
+.function-route-row span { min-width: 0; line-height: 1.25; overflow-wrap: anywhere; }
+.ai-settings .provider-row,
+.ai-settings .model-row {
+  grid-template-columns: 118px 150px minmax(210px, 1fr) minmax(180px, .9fr) 104px;
+  gap: 6px;
+  align-items: center;
+}
+.ai-settings .model-row { grid-template-columns: 220px minmax(260px, 1fr) 104px; }
+.ai-settings .provider-row-head,
+.ai-settings .model-row-head {
+  grid-template-columns: 118px 150px minmax(210px, 1fr) minmax(180px, .9fr) 104px;
+  gap: 6px;
+  font-size: 11px;
+}
+.ai-settings .model-row-head { grid-template-columns: 220px minmax(260px, 1fr) 104px; }
 .test-result {
   display: flex;
   align-items: flex-start;
@@ -543,6 +581,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   font-weight: 650;
   line-height: 1.45;
 }
+.ai-settings .test-result { gap: 7px; padding: 8px 10px; font-size: 13px; }
 .test-result span { display: grid; gap: 3px; }
 .test-result strong { color: #0f172a; }
 .test-result.success { border-color: #99f6e4; background: #f0fdfa; color: #115e59; }
@@ -611,9 +650,10 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .main { padding: 18px; }
   .topbar { flex-direction: column; }
   .top-actions { width: 100%; flex-wrap: wrap; }
-  .content-grid, .settings-grid, .ops-grid { grid-template-columns: 1fr; }
+  .content-grid, .settings-grid, .ops-grid, .ai-top-grid { grid-template-columns: 1fr; }
   .wide-panel, .form-panel.full { grid-column: auto; }
-  .toolbar-panel, .client-create-grid, .provider-row, .model-row, .provider-row-head, .model-row-head, .search-source-grid, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .manual-grant-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid { grid-template-columns: 1fr; }
+  .toolbar-panel, .client-create-grid, .provider-row, .model-row, .provider-row-head, .model-row-head, .function-route-list, .function-route-row, .search-source-grid, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .manual-grant-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid { grid-template-columns: 1fr; }
+  .ai-settings .provider-row, .ai-settings .model-row, .ai-settings .provider-row-head, .ai-settings .model-row-head, .function-route-row { grid-template-columns: 1fr; }
   .client-card-grid {
     grid-template-areas:
       "telegram"

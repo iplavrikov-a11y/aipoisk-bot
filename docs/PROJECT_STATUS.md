@@ -76,15 +76,14 @@ Current admin capabilities:
   configured API services without inventing balances;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
-- AI model settings show only provider name and exact `modelId` in selectors.
-  Free-form model comments are not shown in selectors or required in the model
-  list. Function routing, primary/fast models, provider rows, and the modelId
-  list are separate collapsible sections with their own save actions. Primary
-  and fast models are checked independently from the icon next to each selector.
-  Provider and modelId rows can be added, deleted, and moved up/down; empty
-  modelId rows are ignored on save. The model checker shows
-  running/success/error state in place and preserves the provider's HTTP error
-  text when a selected `modelId` is unavailable.
+- AI model settings are compact and split into section-scoped saves. Function
+  routing offers only two roles, `Основная` or `Быстрая`, and stores backend
+  routing tokens instead of exact provider/model pairs. Primary and fast models
+  still show provider name plus exact model identifier and are checked
+  independently from the icon next to each selector. Provider rows and available
+  model rows can be added, deleted, and moved up/down; empty model rows are
+  ignored on save. Free-form model comments and API-key status hints are not
+  shown in selectors.
 
 AI provider defaults currently used by the admin UI:
 
@@ -440,9 +439,9 @@ Earlier admin UI / limits / provider-settings evidence:
 - Backend tests: `cd backend && PYTHONPATH=. pytest -q` -> `129 passed`,
   `2` warnings, `35` subtests passed.
 - Frontend production build: `cd frontend && npm run build` -> OK.
-- Playwright focused AI model check -> function dropdowns show exact `modelId`;
-  OpenRouter, OpenAI, Gemini, and Polza provider rows are present; desktop and
-  mobile have no horizontal overflow.
+- Playwright focused AI model check -> function dropdowns route to only
+  `Основная` / `Быстрая`; OpenRouter, OpenAI, Gemini, and Polza provider rows
+  are present; desktop and mobile have no horizontal overflow.
 - UI text scan -> no old AI model aliases such as `Сильная модель`, `Быстрая
   модель`, or `по умолчанию`.
 - Safe load simulation -> 100 customers, 10 jobs each, mixed modes, 1000 jobs
