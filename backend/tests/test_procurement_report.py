@@ -349,23 +349,36 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 
 #### Риски
 1. Расхождение сроков: В извещении указано время подведения итогов до 07:00 МСК 09.06.2026, а в структурированных данных площадки — 20:59 МСК. Необходимо ориентироваться на более ранний срок.
+2. Логистические издержки: требуется разгрузка силами поставщика.
 """
 
         result = normalize_procurement_report_guardrails(report, source_text)
 
         self.assertIn("- Способ закупки: Запрос котировок в электронной форме", result)
         self.assertIn("- Дата рассмотрения/подведения итогов: 09.06.2026 07:00 МСК", result)
-        self.assertIn("Расхождение в дате подведения итогов", result)
-        self.assertIn("в структурированной карточке источника — 20:59 МСК", result)
-        self.assertIn("использовано явное время из извещения", result)
+        self.assertNotIn("Расхождение сроков", result)
+        self.assertNotIn("Расхождение в дате подведения итогов", result)
+        self.assertNotIn("20:59 МСК", result)
         self.assertNotIn("структурированных данных площадки", result)
         self.assertNotIn("ориентироваться на более ранний срок", result)
+        self.assertIn("1. Логистические издержки", result)
         self.assertIn("ориентировочно", result.lower())
         self.assertIn("~2 800 кг", result)
         self.assertNotIn("ДАННЫХ НЕДОСТАТОЧНО", result)
         self.assertIn("- Дата производства: Не ранее 2025 г.", result)
         self.assertNotIn("Товар должен быть новым", result)
         self.assertNotIn("()", result)
+
+    def test_guardrails_keep_results_conflict_when_dates_differ(self) -> None:
+        report = """#### Риски
+1. Расхождение сроков: В извещении указано время подведения итогов до 07:00 МСК 09.06.2026, а в структурированных данных площадки — 10.06.2026 20:59 МСК. Необходимо ориентироваться на более ранний срок.
+"""
+
+        result = normalize_procurement_report_guardrails(report, "")
+
+        self.assertIn("Расхождение в дате подведения итогов", result)
+        self.assertIn("в структурированной карточке источника — 10.06.2026 20:59 МСК", result)
+        self.assertIn("использовано явное время из извещения", result)
 
     def test_guardrails_hide_raw_boolean_artifacts(self) -> None:
         report = """#### Риски

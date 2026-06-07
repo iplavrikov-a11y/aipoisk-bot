@@ -493,14 +493,14 @@ def normalize_customer_boolean_artifacts(report: str) -> str:
 
 
 def normalize_source_conflict_wording(report: str) -> str:
-    value = str(report or "")
+    value = _remove_noncritical_results_time_conflicts(str(report or ""))
     value = re.sub(
         r"(?i)Расхождение\s+сроков:\s*В\s+извещении\s+указано\s+время\s+подведения\s+итогов",
         "Расхождение в дате подведения итогов: В файле извещения указано время подведения итогов",
         value,
     )
     value = re.sub(
-        r"(?i)в\s+структурированных\s+данных\s+площадки\s*[—-]\s*([^.\n]+)\.\s*"
+        r"(?i)в\s+структурированных\s+данных\s+площадки\s*[—-]\s*(.+?)\.\s*"
         r"Необходимо\s+ориентироваться\s+на\s+более\s+ранний\s+срок\.",
         (
             r"в структурированной карточке источника — \1. "
@@ -514,6 +514,53 @@ def normalize_source_conflict_wording(report: str) -> str:
         value,
     )
     return value
+
+
+def _remove_noncritical_results_time_conflicts(report: str) -> str:
+    lines = str(report or "").splitlines()
+    changed = False
+    kept: list[str] = []
+    for line in lines:
+        if _is_noncritical_results_time_conflict(line):
+            changed = True
+            continue
+        kept.append(line)
+    if not changed:
+        return report
+    return _renumber_ordered_markdown_lists("\n".join(kept))
+
+
+def _is_noncritical_results_time_conflict(line: str) -> bool:
+    normalized = _normalize_fact(line)
+    if "расхожд" not in normalized or "подвед" not in normalized or "итог" not in normalized:
+        return False
+    if any(token in normalized for token in ("аукцион", "торг", "подач", "заяв")):
+        return False
+    times = re.findall(r"\b\d{1,2}:\d{2}\b", str(line or ""))
+    if len(set(times)) < 2:
+        return False
+    dates = re.findall(r"\b\d{1,2}\.\d{1,2}\.\d{4}\b", str(line or ""))
+    return len(set(dates)) <= 1
+
+
+def _renumber_ordered_markdown_lists(report: str) -> str:
+    lines = str(report or "").splitlines()
+    next_number = 1
+    in_list = False
+    result: list[str] = []
+    for line in lines:
+        match = re.match(r"^(\s*)(\d+)([.)])(\s+)(.*)$", line)
+        if not match:
+            in_list = False
+            next_number = 1
+            result.append(line)
+            continue
+        if not in_list:
+            next_number = 1
+            in_list = True
+        result.append(f"{match.group(1)}{next_number}{match.group(3)}{match.group(4)}{match.group(5)}")
+        next_number += 1
+    return "\n".join(result)
 
 
 def normalize_official_card_report_fields(report: str, document_text: str) -> str:
