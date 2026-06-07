@@ -1,10 +1,11 @@
-# AI Poisk Bot: Project Status
+# TenderLex: Project Status
 
-Date: 2026-06-04
+Date: 2026-06-07
 
 ## Current Production State
 
-- Public URL: `https://aipoisk.lexelence.ru`.
+- Public URL: `https://tenderlex.ru`.
+- Admin URL used in earlier checks: `https://aipoisk.lexelence.ru`.
 - Backend service: `aipoisk-api.service`, FastAPI on `127.0.0.1:8088`.
 - Telegram worker: `aipoisk-bot.service`.
 - Durable job worker: `aipoisk-worker.service`.
@@ -34,16 +35,16 @@ There are exactly two commercial counters:
 
 Mode accounting:
 
-- `Поиск поставщиков` spends supplier-report units;
+- `🔎 Одно ТЗ` spends one supplier-report unit;
 - mass supplier search spends one supplier-report unit per independent ТЗ;
-- `Анализ документации` spends one documentation-analysis unit;
-- `Анализ + поставщики` spends one supplier-report unit and one
+- `📄 Анализ закупки` spends one documentation-analysis unit;
+- `📄🔎 Анализ + поиск` spends one supplier-report unit and one
   documentation-analysis unit.
 
 Free-period customers can be enabled from admin settings. Trial access has
 separate supplier and documentation-analysis limits. Trial customers cannot use
-mass supplier processing or `Анализ + поставщики`; they must run analysis and
-supplier search separately.
+mass supplier processing or `📄🔎 Анализ + поиск`; they must run analysis and
+supplier search separately when both functions are available.
 
 ## Admin Console
 
@@ -54,16 +55,47 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show linked Telegram accounts, access state, two commercial
-  limits, current usage, remaining units, and recent write-offs;
+- customer cards show linked Telegram accounts, access state, available balance,
+  reserved units, spent units, manual grants, and collapsed billing history;
+- the owner can create clients by Telegram username before the real Telegram ID
+  is known, edit linked Telegram accounts, grant arbitrary units by function,
+  and delete extra Telegram accounts;
+- if a manager first used the bot as a separate trial customer, the owner can
+  move that existing Telegram account into the correct customer card after
+  explicit confirmation. A single-account trial customer is merged with its job
+  and billing history; regular multi-account customers remain in place and keep
+  their remaining Telegram account as primary;
+- customer deletion is allowed only when the customer has no jobs. If there are
+  no jobs, related billing rows are removed with the customer. If jobs exist,
+  deletion is blocked to preserve report and billing history, and the owner
+  should use `Отключить`;
+- admin API errors are shown as readable Russian messages in the top alert
+  instead of looking like a silent button failure;
 - service/internal jobs are hidden by default in the jobs list;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
+- statistics show the Telegram-bot business funnel for the last 30 days:
+  clients, Telegram accounts, active users, task volume, trial usage,
+  conversion to manual grants, top customers, and trial users who used the bot
+  but have not received paid/manual grants yet;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
-- AI model settings show exact `modelId` values in function selectors, while
-  provider `id`, `Base URL`, `API key`, and model rows live in the advanced
-  provider section.
+- AI model settings are compact and split into section-scoped saves.
+  Documentation analysis has an owner-selected primary model and fast model.
+  Supplier search has one separate owner-selected model for the whole supplier
+  flow, so supplier query generation, profile extraction, reranking,
+  Minprom-registry checks, and candidate verification are not exposed as
+  separate UI groups. Documentation-analysis routing still offers only two
+  roles, `Основная` or `Быстрая`, and stores backend routing tokens instead of
+  exact provider/model pairs. Visible model selectors show provider name plus
+  exact model identifier and are checked independently from the icon next to
+  each selector. Provider rows and available model rows can be added, deleted,
+  and moved up/down; empty model rows are ignored on save. Free-form model
+  comments and API-key status hints are not shown in selectors.
+- Tariff settings keep the current manual payment flow and include a YooKassa
+  settings foundation: provider mode, Shop ID, Secret key, and Return URL. This
+  does not create payment links yet; checkout creation remains a future
+  integration step after the YooKassa account is connected.
 
 AI provider defaults currently used by the admin UI:
 
@@ -72,9 +104,9 @@ AI provider defaults currently used by the admin UI:
 - `gemini`: Gemini proxy endpoint from settings;
 - `polza`: `https://api.polza.ai/v1`.
 
-OpenRouter and Polza Base URLs are configured in the live settings, but their
-API keys are not present in saved settings. Existing OpenAI-compatible and
-Gemini keys are preserved.
+OpenRouter, OpenAI-compatible, Gemini, and Polza provider rows are configured in
+the live settings. API keys are runtime secrets stored in settings/DB only and
+must not be copied into git, docs, logs, or customer-facing output.
 
 ## Supplier Search Architecture
 
@@ -121,23 +153,41 @@ Supplier candidates are verified before they reach the final report:
 - customer-facing messages and XLSX summaries show only the actual number
   found and verified; they do not show the configured internal target/minimum.
 
-Mass supplier search contract:
+Telegram supplier input and navigation contract:
 
-- `Поставщики по одному ТЗ` creates one supplier-search job from one ТЗ/ООЗ
-  file and returns one XLSX;
-- `Поставщики по нескольким ТЗ` is a mass-processing mode, not a multi-document
+- Main customer navigation is a compact two-column reply keyboard:
+  `🚀 Создать`, `🕘 Задачи`, `📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`, and
+  `📞 Контакты`.
+- `🚀 Создать` opens the scenario keyboard: `🔎 Одно ТЗ`,
+  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, `📄🔎 Анализ + поиск`, and
+  `⬅️ Меню`.
+- `🔎 Одно ТЗ` creates one supplier-search job from one ТЗ/ООЗ
+  file or one plain text technical assignment / object description message and
+  returns one XLSX;
+- `🗂 Несколько ТЗ` is a mass-processing mode, not a multi-document
   context mode;
-- each uploaded ТЗ/ООЗ file in mass-processing mode creates its own independent
-  supplier-search job with exactly that one file as context;
+- each uploaded ТЗ/ООЗ file or accepted plain text ТЗ message in
+  mass-processing mode creates its own independent supplier-search job with
+  exactly that one input as context;
 - each independent job extracts its own procurement profile, generates its own
   AI search queries, verifies suppliers independently, and returns its own XLSX;
 - unrelated ТЗ files must never be concatenated into one supplier-search
   context, because that causes dominant items to hide other procurements.
 - Telegram uploads in this mode are serialized per chat and retried on file
   download timeout, so large multi-file sends do not silently drop documents.
-- after processing starts, the bot removes the `Запустить обработку` /
-  `Очистить документы` keyboard until the batch finishes, preventing duplicate
-  launches and making the active state clear to the customer.
+- before processing starts, collected multi-file and documentation scenarios
+  show only `▶️ Запустить`, `🗑 Очистить`, and `⬅️ Меню`.
+- while any job is pending or running for the chat, the bot shows only
+  `⏳ В работе` and `🕘 Задачи`; it hides `🚀 Создать`, `▶️ Запустить`, and
+  all scenario buttons, preventing duplicate launches and making the active
+  state clear to the customer.
+- there is no customer-facing stop button yet, because safe worker
+  cancellation is not implemented; `🗑 Очистить` clears only materials that
+  have not been launched.
+- customer-facing Telegram copy must use the TenderLex brand only. It must not
+  show internal provider names, raw service booleans such as `True`/`False`,
+  task IDs, or diagnostic counters unless the user explicitly asks for status
+  details that require them.
 
 ## Procurement Source Links
 
@@ -147,7 +197,73 @@ or both. A source link is not limited to EIS: it can be `zakupki.gov.ru`, a
 
 Plain supplier-search scenarios are different: the customer sends a technical
 assignment / object description file, not a procurement link. Links are exposed
-in Telegram only for `Анализ документации` and `Анализ + поставщики`.
+in Telegram only for `📄 Анализ закупки` and `📄🔎 Анализ + поиск`.
+
+## Structured Procurement Source API Contract
+
+Tenderplan API is the primary structured source when a customer starts
+documentation analysis by procurement notice number. The API token is a runtime
+secret and must stay only in environment/configuration, never in docs, commits,
+logs, public site copy, Telegram messages, report filenames, report titles, or
+task evidence.
+
+Current safe source priority:
+
+- for `📄 Анализ закупки` and `📄🔎 Анализ + поиск`, a raw notice number is
+  stored as a `tenderplan_notice` source and resolved through Tenderplan;
+- Tenderplan card data is used as the main published source for notice number,
+  customer, НМЦК, deadlines, bidding/results dates, platform, legal regime,
+  national-regime signals, document list, and explanations when the API returns
+  them;
+- `placingWay` and `status` are decoded through official Tenderplan tool
+  dictionaries (`/api/tools/placingways/list`, `/api/tools/statuses/list`) before
+  local fallback tables or text inference. Raw numeric codes must not be shown
+  as the user-facing procurement method. Code `0` is the generic official value
+  `Иной способ`; do not guess a more specific subtype without evidence from the
+  notice, documentation, or platform;
+- Tenderplan timestamps are rendered as Moscow time in source context, so the
+  report should not recalculate them through the VPS timezone;
+- Tenderplan attachments and explanation attachments are downloaded into the
+  normal job input flow and parsed with the same document pipeline as manually
+  uploaded files;
+- the shared local Tender Source Service adds `document_type` metadata for
+  downloaded files (`technical_spec`, `contract`, `nmck`, `notice`,
+  `clarification`, `application_requirements`, `other`) and exposes download
+  host diagnostics for allowlist/proxy troubleshooting;
+- shared bundle schema `2.1` also carries `document_type_source`,
+  `document_type_confidence`, `content_document_types`, `warnings`, and
+  `document_hints.primary_technical_spec`. Content-aware classification is
+  currently lightweight: DOCX/XLSX/PPTX/XML/text, PDF text layers, bounded ZIP
+  inspection, and RAR/7z filename listing can confirm strong document markers,
+  while OCR for scanned PDFs still belongs to the normal document parsing
+  pipeline;
+- the shared service response keeps raw `tender` data on a whitelist of
+  pre-award card fields only. Full Tenderplan `json`, protocols, participants,
+  contracts, sent/signed contracts, and unknown post-award fields must not be
+  exposed to consumers;
+- for 223-ФЗ legacy EIS `download.html?id=...` document links, the downloader
+  resolves the current EIS documents page and uses matched `file.html?uid=...`
+  links when available;
+- EIS/source-page parsing remains available as a control and legacy path, and
+  manual file upload remains fully supported;
+- if Tenderplan and another published source disagree, the report context must
+  preserve a short conflict note instead of silently mixing versions;
+- source fetch status, downloaded file counts, and failed download counts are
+  diagnostic evidence, not customer-facing noise unless a failure affects the
+  result.
+
+Mode boundary:
+
+- `Поиск поставщиков` must not auto-start procurement analysis from a notice
+  number or procurement link, because analysis has separate access and limits;
+- if a customer sends a notice number/link while in supplier-search mode, the
+  bot must answer with a clear warning and ask for a ТЗ/ООЗ file or text, or for
+  switching to `📄 Анализ закупки` / `📄🔎 Анализ + поиск`;
+- the lower-level `create_job()` guard also rejects procurement sources for
+  `supplier_search`, so another API path cannot silently bypass the mode
+  boundary;
+- supplier search after `📄🔎 Анализ + поиск` must use a separate extracted
+  ТЗ/ООЗ/product-specification context, not the entire noisy procurement bundle.
 
 Source-link contract:
 
@@ -155,7 +271,8 @@ Source-link contract:
   the only input for documentation-analysis scenarios;
 - Telegram extracts procurement links from plain text messages and from file
   captions in documentation-analysis scenarios;
-- plain supplier search rejects source URLs and asks for a ТЗ/ООЗ file;
+- plain supplier search rejects procurement links and notice numbers with an
+  explicit explanation, and asks for a ТЗ/ООЗ file or text;
 - EIS links are marked as an official procurement source;
 - other procurement links are marked as procurement platform/source pages;
 - the worker fetches readable page text, with bounded HTTP and browser
@@ -168,6 +285,8 @@ Source-link contract:
 - AI report generation uses source pages for procurement card fields: notice
   number, customer, НМЦК, deadlines, platform, legal regime, and source-page
   facts;
+- when a Tenderplan block exists, it is prepended before source-page and file
+  context and is the main card/deadline/national-regime source;
 - attached ТЗ/ООЗ remains the primary source for the product table when it is
   more complete than the web page;
 - source parsing status and extracted character counts are stored in
@@ -175,27 +294,46 @@ Source-link contract:
 
 ## Procurement Documentation Analysis
 
-Documentation analysis is AI-required. The system must not generate a
-customer DOCX report when the AI provider is missing, report generation fails,
-or AI verification rejects the report without a corrected version.
+Documentation analysis is AI-required, but the paid product policy is to give
+the customer a useful report whenever the system can produce one. Quality work
+must focus on root-cause prevention: better model routing, stronger checks,
+repairs, owner alerts, and clearer customer disclaimers. Do not make "do not
+issue the report/result" the primary quality strategy unless the user explicitly
+asks for that policy.
 
 Hard contract:
 
 - source pages and uploaded documents are context for AI, not a replacement for
   AI analysis;
-- no deterministic fallback report is issued to the customer when AI is
-  unavailable;
+- if AI is unavailable or the draft cannot be produced at all, the user-facing
+  message should be soft and commercial: explain that the AI analysis service is
+  temporarily unavailable and that billing stays fair;
+- AI-generated customer reports should include a soft disclaimer: the report is
+  an AI-assisted procurement analysis, useful for preliminary/business review,
+  but critical legal, financial, technical, deadline, and submission decisions
+  should be checked against the official documents; the service owner does not
+  accept responsibility for decisions made solely from the AI report;
 - official procurement card fields are treated as authoritative facts before
-  the DOCX is released;
+  the DOCX is generated/repaired;
 - for EIS and other official source pages, the report must preserve literal
   card values for procurement method, submission deadline, results date, НМЦК,
   customer, ИНН/КПП, platform, and legal regime when present;
 - the report must not normalize `Иной способ` into another procedure and must
   not add time to a results date when the official source contains only a date;
+- same-day differences only in the hour of results review / подведение итогов
+  are not customer-critical and should not be shown as a separate risk. The
+  report should still use the explicit notice/document value for the visible
+  card field;
+- the report must keep customer-facing warnings for genuinely critical timing
+  conflicts: different calendar dates, bid-submission deadline conflicts,
+  auction/trading start conflicts, and any other discrepancy that can affect
+  whether the customer can submit or participate on time;
 - if the AI draft conflicts with official card facts, the system asks AI to
   repair the report and validates the repaired report again;
-- if official-card validation still fails after AI repair, the job fails
-  honestly instead of publishing a misleading DOCX.
+- if validation still finds issues after repair, the report should carry a
+  concise quality warning/evidence note and the owner should be alerted, while
+  engineering work focuses on fixing the root cause in prompts, validators,
+  model routing, or parsers.
 
 ## Minpromtorg And GISP Registry Handling
 
@@ -238,34 +376,99 @@ without polluting the customer's XLSX report.
 
 - API and Telegram bot only create durable DB-backed pending jobs.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
-- Telegram has four customer-facing scenarios: suppliers for one ТЗ, suppliers for several ТЗ, documentation analysis, and analysis plus suppliers.
+- Telegram has four customer-facing scenarios: `🔎 Одно ТЗ`,
+  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Single-ТЗ supplier search starts after one uploaded ТЗ/ООЗ file;
-  multi-ТЗ supplier search collects several ТЗ/ООЗ files and the user starts
-  or clears that set explicitly.
-- Documentation-analysis scenarios can collect files, archives, and/or a
-  procurement source link before the user starts processing.
-- `Анализ + поставщики` first uses the full documentation/source context for
+  it can also start from one plain text ТЗ/ООЗ message.
+- Multi-ТЗ supplier search collects several ТЗ/ООЗ files and/or accepted plain
+  text ТЗ messages; the user starts or clears that set explicitly.
+- Documentation-analysis scenarios can collect files, archives, procurement
+  source links, and notice numbers before the user starts processing.
+- `📄🔎 Анализ + поиск` first uses the full documentation/source context for
   the DOCX analysis, then uses a separate AI step to extract the ТЗ/ООЗ/product
   specification context for supplier search. Supplier discovery does not search
   against the noisy full documentation bundle.
 - Telegram bot edits a live progress message while the job runs: queue, AI analysis
   of the technical assignment, query generation, website search, AI candidate
   filtering, site/contact verification, and completion.
+- If a chat already has a pending/running job, Telegram answers with a concise
+  active-processing message and the `⏳ В работе` / `🕘 Задачи` keyboard instead
+  of offering new actions.
 - Admin UI includes supplier quality monitoring and per-job evidence viewing.
 - Admin API exposes `/api/ops/supplier-quality` and `/api/jobs/{job_id}/evidence`.
+- Telegram routing-only code changes require restarting `aipoisk-bot.service`.
+  The API and durable worker can keep running unless their code or settings
+  contracts changed.
 
 ## Verification Snapshot
 
-Latest task evidence: `.agent/tasks/2026-06-03-admin-ui-10/`.
+Latest task evidence: current AI-settings/statistics/YooKassa foundation pass
+in git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the
+earlier Telegram UX and admin-button pass.
 
-Fresh checks from the latest admin UI / limits / provider-settings pass:
+Fresh checks from the latest AI model separation, bot statistics, and YooKassa
+settings pass:
+
+- Targeted backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests/test_ai.py backend/tests/test_access_limits.py
+  backend/tests/test_api_guards.py -q` -> `54 passed`, `2` warnings.
+- Full backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests -q` -> `233 passed`, `2` warnings, `43` subtests passed.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- `git diff --check` -> OK.
+- Local health endpoint: `curl -fsS http://127.0.0.1:8088/api/health` ->
+  `ok=true`, `domain=https://tenderlex.ru`, `logistics_enabled=false`.
+
+Fresh checks from the latest Telegram keyboard, source-input, and
+procurement-report guardrail pass:
+
+- Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests -q` -> `222 passed`, `2` warnings, `43` subtests passed.
+- Targeted Telegram tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
+  pytest backend/tests/test_bot_progress.py -q` -> `38 passed`.
+- Targeted procurement-report tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
+  pytest backend/tests/test_procurement_report.py -q` -> `22 passed`, `43`
+  subtests passed.
+- Production `aipoisk-api.service`, `aipoisk-worker.service`, and
+  `aipoisk-bot.service` were active after restart; local health returned
+  `ok=true`.
+- Telegram text guardrails covered by tests: no legacy brand names in customer
+  text, no internal source-provider name in source-input status, no raw `False`
+  booleans in customer-facing output, and processing keyboards hide new start
+  actions while a job is active.
+- Procurement-report guardrails covered by tests: same-day differences only in
+  the hour of results review are removed from `Риски`, while different dates
+  remain visible and source-card timestamps are not incorrectly attributed to
+  an electronic trading platform.
+
+Earlier billing, Telegram, and admin-button pass:
+
+- Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests` -> `169 passed`, `2` warnings.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- Live admin Playwright button check on admin URL `https://aipoisk.lexelence.ru`:
+  `32` checks passed, `0` failed API responses, `0` console errors, `0` page
+  errors.
+- Live admin button coverage included login, navigation, client create/open,
+  client disable/enable, Telegram account add/save/delete, manual grant, delete
+  new temporary client, confirm old `Тестовый клиент` is absent, job evidence,
+  job download, job retry on a temporary job, tariff create/edit/toggle/delete,
+  contact save, settings save, AI model check/save, and refresh.
+- Production services after verification: `aipoisk-api.service`,
+  `aipoisk-worker.service`, and `aipoisk-bot.service` were active; local health
+  returned `ok=true`.
+- Smoke cleanup check: temporary UI clients, tariffs, and test jobs were absent
+  after the Playwright run; old `Тестовый клиент` / Telegram ID `123456789` was
+  absent after deletion.
+
+Earlier admin UI / limits / provider-settings evidence:
 
 - Backend tests: `cd backend && PYTHONPATH=. pytest -q` -> `129 passed`,
   `2` warnings, `35` subtests passed.
 - Frontend production build: `cd frontend && npm run build` -> OK.
-- Playwright focused AI model check -> function dropdowns show exact `modelId`;
-  OpenRouter, OpenAI, Gemini, and Polza provider rows are present; desktop and
-  mobile have no horizontal overflow.
+- Playwright focused AI model check -> function dropdowns route to only
+  `Основная` / `Быстрая`; OpenRouter, OpenAI, Gemini, and Polza provider rows
+  are present; desktop and mobile have no horizontal overflow.
 - UI text scan -> no old AI model aliases such as `Сильная модель`, `Быстрая
   модель`, or `по умолчанию`.
 - Safe load simulation -> 100 customers, 10 jobs each, mixed modes, 1000 jobs
@@ -334,14 +537,21 @@ is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.
 Do not commit:
 
 - `.env` or any real secret file;
+- real API tokens, bot tokens, provider keys, cookies, bearer headers, or
+  copied terminal output that contains them;
 - SQLite databases and DB backups;
 - `storage/` job outputs and uploaded procurement documents;
+- real procurement documentation, customer documents, customer personal data,
+  report outputs, screenshots with private Telegram/admin data, or raw API
+  responses from live customer work;
 - virtual environments;
 - `node_modules/`;
 - frontend build output;
 - runtime logs from `.omx/`.
 
-Commit only source code, tests, deploy templates, `.env.example`, README/docs, and non-secret task evidence.
+Commit only source code, tests, deploy templates, `.env.example`, README/docs,
+and task evidence that has been checked for secrets, private documents, customer
+data, and internal vendor diagnostics that should not be public.
 
 ## Remaining Risks
 

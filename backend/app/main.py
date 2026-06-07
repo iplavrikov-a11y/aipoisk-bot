@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import timedelta
 from pathlib import Path
 
 import time
@@ -13,6 +14,17 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from .ai import call_llm
+from .billing import (
+    VALID_BILLING_KINDS,
+    billing_kind_label,
+    client_balance_summary,
+    expire_stale_confirmations,
+    grant_package_units,
+    list_tariffs,
+    recent_billing_transactions,
+    tariff_to_dict,
+    transaction_to_dict,
+)
 from .config import config
 from .db import db_session, init_db
 from .jobs import (
@@ -26,16 +38,20 @@ from .jobs import (
     package_job_outputs,
     recover_interrupted_jobs,
 )
-from .models import Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, parse_json_list
+from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, now_utc, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
     commercial_jobs_query,
     current_function_usage,
     ensure_client_telegram_account,
+    ensure_pending_client_telegram_account,
     get_client_by_telegram_id,
     get_or_create_settings,
+    is_pending_telegram_id,
     is_internal_job_record,
+    new_pending_telegram_id,
+    normalize_telegram_username,
     requested_function_units,
     seed_owner_client,
 )
@@ -45,9 +61,12 @@ from .schemas import (
     ClientPatch,
     ClientTelegramAccountCreate,
     ClientTelegramAccountPatch,
+    BillingGrantCreate,
     LoginRequest,
     ManualJobCreate,
     SettingsPatch,
+    TariffPackageCreate,
+    TariffPackagePatch,
 )
 from .security import (
     ADMIN_COOKIE,
@@ -59,7 +78,7 @@ from .security import (
 )
 from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
 
-app = FastAPI(title="AI Poisk Bot", version="0.1.0")
+app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 app.add_middleware(
     CORSMiddleware,
@@ -80,6 +99,7 @@ async def startup() -> None:
         settings = get_or_create_settings(db)
         seed_owner_client(db)
         cleanup_expired_jobs(db, settings)
+        expire_stale_confirmations(db)
         recovered_job_ids = recover_interrupted_jobs(db)
     finally:
         db.close()
@@ -95,6 +115,11 @@ def health(db: Session = Depends(db_session)) -> dict:
         "domain": settings.public_base_url,
         "logistics_enabled": settings.logistics_enabled,
     }
+
+
+@app.get("/api/public/site")
+def public_site_api(db: Session = Depends(db_session)) -> dict:
+    return public_site_payload(db)
 
 
 @app.post("/api/auth/login")
@@ -168,6 +193,12 @@ def supplier_quality_ops(db: Session = Depends(db_session)) -> dict:
     return build_supplier_quality_snapshot(jobs)
 
 
+@app.get("/api/analytics/bot", dependencies=[Depends(require_admin)])
+def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) -> dict:
+    safe_days = min(365, max(1, int(period_days or 30)))
+    return build_bot_analytics(db, period_days=safe_days)
+
+
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
 def get_settings_api(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
@@ -183,6 +214,7 @@ def get_settings_keys(db: Session = Depends(db_session)) -> dict:
         "supplier_search_adapter_api_key": settings.supplier_search_adapter_api_key,
         "yandex_search_api_key": settings.yandex_search_api_key,
         "google_search_api_key": settings.google_search_api_key,
+        "yookassa_secret_key": settings.yookassa_secret_key,
     }
 
 
@@ -193,11 +225,53 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
-    # Product rule: ATI/logistics is disabled for AI Poisk.
+    # Product rule: ATI/logistics is disabled for TenderLex.
     settings.logistics_enabled = False
     db.commit()
     db.refresh(settings)
     return {"success": True, "settings": settings_to_public_dict(settings)}
+
+
+@app.get("/api/tariffs", dependencies=[Depends(require_admin)])
+def list_tariffs_api(active_only: bool = False, db: Session = Depends(db_session)) -> list[dict]:
+    return [tariff_to_dict(item) for item in list_tariffs(db, active_only=active_only)]
+
+
+@app.post("/api/tariffs", dependencies=[Depends(require_admin)])
+def create_tariff_api(data: TariffPackageCreate, db: Session = Depends(db_session)) -> dict:
+    if data.kind not in VALID_BILLING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    package = TariffPackage(**data.model_dump())
+    db.add(package)
+    db.commit()
+    db.refresh(package)
+    return tariff_to_dict(package)
+
+
+@app.patch("/api/tariffs/{package_id}", dependencies=[Depends(require_admin)])
+def patch_tariff_api(package_id: str, data: TariffPackagePatch, db: Session = Depends(db_session)) -> dict:
+    package = db.get(TariffPackage, package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Tariff package not found")
+    payload = data.model_dump(exclude_unset=True)
+    if "kind" in payload and payload["kind"] not in VALID_BILLING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    for key, value in payload.items():
+        if value is not None:
+            setattr(package, key, value)
+    db.commit()
+    db.refresh(package)
+    return tariff_to_dict(package)
+
+
+@app.delete("/api/tariffs/{package_id}", dependencies=[Depends(require_admin)])
+def delete_tariff_api(package_id: str, db: Session = Depends(db_session)) -> dict:
+    package = db.get(TariffPackage, package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Tariff package not found")
+    db.delete(package)
+    db.commit()
+    return {"success": True}
 
 
 @app.get("/api/clients", dependencies=[Depends(require_admin)])
@@ -206,30 +280,53 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
     return [client_to_dict(client, db=db) for client in clients]
 
 
+def _normalized_usernames(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        username = normalize_telegram_username(value)
+        if username and username not in seen:
+            normalized.append(username)
+            seen.add(username)
+    return normalized
+
+
 @app.post("/api/clients", dependencies=[Depends(require_admin)])
 def create_client(data: ClientCreate, db: Session = Depends(db_session)) -> dict:
     telegram_id = data.telegram_id.strip()
-    if not telegram_id:
-        raise HTTPException(status_code=400, detail="Telegram ID is required")
-    existing = db.query(Client).filter(Client.telegram_id == telegram_id).first()
-    existing_account = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
-    if existing_account:
-        existing = existing_account.client
-    if existing:
-        raise HTTPException(status_code=409, detail="Client with this Telegram ID already exists")
-    payload = data.model_dump()
-    payload["telegram_id"] = telegram_id
+    usernames = _normalized_usernames([data.username, *data.telegram_usernames])
+    if not telegram_id and not usernames:
+        raise HTTPException(status_code=400, detail="Telegram username or Telegram ID is required")
+    if telegram_id:
+        existing = db.query(Client).filter(Client.telegram_id == telegram_id).first()
+        existing_account = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
+        if existing_account:
+            existing = existing_account.client
+        if existing:
+            raise HTTPException(status_code=409, detail="Client with this Telegram ID already exists")
+    payload = data.model_dump(exclude={"telegram_usernames"})
+    payload["telegram_id"] = telegram_id or new_pending_telegram_id()
+    payload["username"] = usernames[0] if usernames else normalize_telegram_username(data.username)
     client = Client(**payload)
     db.add(client)
     db.flush()
-    ensure_client_telegram_account(
-        db,
-        client,
-        telegram_id,
-        username=client.username,
-        name=client.name,
-        notes="Primary Telegram account",
-    )
+    try:
+        if telegram_id:
+            ensure_client_telegram_account(
+                db,
+                client,
+                telegram_id,
+                username=usernames[0] if usernames else client.username,
+                name=client.name,
+                notes="Primary Telegram account",
+            )
+            for username in usernames[1:]:
+                ensure_pending_client_telegram_account(db, client, username, name=client.name)
+        else:
+            for username in usernames:
+                ensure_pending_client_telegram_account(db, client, username, name=client.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()
     db.refresh(client)
     return client_to_dict(client, db=db)
@@ -248,27 +345,283 @@ def update_client(client_id: str, data: ClientPatch, db: Session = Depends(db_se
     return client_to_dict(client, db=db)
 
 
+@app.delete("/api/clients/{client_id}", dependencies=[Depends(require_admin)])
+def delete_client(client_id: str, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    has_jobs = bool(db.query(Job.id).filter(Job.client_id == client.id).first())
+    if has_jobs:
+        raise HTTPException(
+            status_code=409,
+            detail="У клиента уже есть задачи. Чтобы не потерять историю отчётов и списаний, удаление заблокировано. Отключите клиента кнопкой «Отключить».",
+        )
+    db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).delete(synchronize_session=False)
+    db.delete(client)
+    db.commit()
+    return {"success": True}
+
+
+@app.post("/api/clients/{client_id}/billing/grants", dependencies=[Depends(require_admin)])
+def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    package = db.get(TariffPackage, data.package_id) if data.package_id else None
+    if data.package_id and not package:
+        raise HTTPException(status_code=404, detail="Tariff package not found")
+    kind = package.kind if package else data.kind
+    units = package.units if package else data.units
+    if kind not in VALID_BILLING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown billing kind")
+    note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
+    transaction = grant_package_units(
+        db,
+        client,
+        kind=kind,
+        units=units,
+        package_id=package.id if package else data.package_id,
+        note=note,
+        created_by="admin",
+    )
+    db.refresh(client)
+    return {
+        "success": True,
+        "transaction": transaction_to_dict(transaction),
+        "client": client_to_dict(client, db=db),
+    }
+
+
+def _client_display_name(client: Client | None) -> str:
+    if not client:
+        return "без имени"
+    return client.name or (f"@{client.username}" if client.username else "") or client.telegram_id or "без имени"
+
+
+def _transfer_required_message(source_client: Client) -> str:
+    return (
+        "Telegram-аккаунт уже привязан к клиенту "
+        f"«{_client_display_name(source_client)}». Подтвердите перенос, чтобы подключить "
+        "этого менеджера к выбранному клиенту."
+    )
+
+
+def _find_existing_telegram_account(
+    db: Session,
+    *,
+    telegram_id: str = "",
+    username: str = "",
+) -> ClientTelegramAccount | None:
+    by_id = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.telegram_id == telegram_id)
+        .first()
+        if telegram_id
+        else None
+    )
+    by_username = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.username == username)
+        .first()
+        if username
+        else None
+    )
+    if by_id and by_username and by_id.id != by_username.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram ID и username уже привязаны к разным клиентам. Проверьте данные перед переносом.",
+        )
+    return by_id or by_username
+
+
+def _set_client_primary_from_accounts(db: Session, client: Client, *, moved_account_id: str = "") -> None:
+    remaining = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.client_id == client.id)
+        .filter(ClientTelegramAccount.id != moved_account_id)
+        .order_by(ClientTelegramAccount.created_at.desc())
+        .all()
+    )
+    if remaining:
+        primary = remaining[0]
+        client.telegram_id = primary.telegram_id
+        client.username = primary.username
+        return
+    client.telegram_id = new_pending_telegram_id()
+    client.username = ""
+    client.is_active = False
+    note = "Telegram-аккаунты перенесены к другому клиенту"
+    client.notes = f"{client.notes}\n{note}".strip() if client.notes else note
+
+
+def _move_existing_telegram_account(
+    db: Session,
+    *,
+    target_client: Client,
+    account: ClientTelegramAccount,
+    data: ClientTelegramAccountCreate,
+    username: str,
+    telegram_id: str,
+) -> ClientTelegramAccount:
+    source_client = account.client
+    if source_client.id == target_client.id:
+        if telegram_id:
+            account.telegram_id = telegram_id
+        if username:
+            account.username = username
+        if data.name:
+            account.name = data.name
+        account.is_active = data.is_active
+        if data.notes:
+            account.notes = data.notes
+        return account
+
+    source_account_count = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.client_id == source_client.id)
+        .count()
+    )
+    merge_source_client = bool(source_client.is_trial and source_account_count == 1)
+
+    target_needs_primary = (
+        not target_client.telegram_id
+        or is_pending_telegram_id(target_client.telegram_id)
+    )
+    account.client = target_client
+    if telegram_id:
+        account.telegram_id = telegram_id
+    if username:
+        account.username = username
+    if data.name:
+        account.name = data.name
+    account.is_active = data.is_active
+    if data.notes:
+        account.notes = data.notes
+    elif account.notes.startswith("Trial "):
+        account.notes = ""
+
+    if not target_client.username and account.username:
+        target_client.username = account.username
+
+    if merge_source_client:
+        if target_needs_primary:
+            source_client.telegram_id = new_pending_telegram_id()
+        db.query(Job).filter(Job.client_id == source_client.id).update(
+            {Job.client_id: target_client.id},
+            synchronize_session=False,
+        )
+        db.query(BillingTransaction).filter(BillingTransaction.client_id == source_client.id).update(
+            {BillingTransaction.client_id: target_client.id},
+            synchronize_session=False,
+        )
+        db.flush()
+        db.delete(source_client)
+    else:
+        _set_client_primary_from_accounts(db, source_client, moved_account_id=account.id)
+        db.flush()
+    if target_needs_primary:
+        target_client.telegram_id = account.telegram_id
+    return account
+
+
 @app.post("/api/clients/{client_id}/telegram-accounts", dependencies=[Depends(require_admin)])
 def create_client_telegram_account(client_id: str, data: ClientTelegramAccountCreate, db: Session = Depends(db_session)) -> dict:
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     telegram_id = data.telegram_id.strip()
-    if not telegram_id:
-        raise HTTPException(status_code=400, detail="Telegram ID is required")
-    existing_account = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
-    existing_client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
-    if existing_account or (existing_client and existing_client.id != client.id):
-        raise HTTPException(status_code=409, detail="Telegram ID is already linked to a client")
-    account = ClientTelegramAccount(
-        client_id=client.id,
-        telegram_id=telegram_id,
-        username=data.username,
-        name=data.name,
-        is_active=data.is_active,
-        notes=data.notes,
-    )
-    db.add(account)
+    username = normalize_telegram_username(data.username)
+    if not telegram_id and not username:
+        raise HTTPException(status_code=400, detail="Telegram username or Telegram ID is required")
+    try:
+        if telegram_id:
+            existing_account = _find_existing_telegram_account(db, telegram_id=telegram_id, username=username)
+            existing_client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
+            if existing_account and existing_account.client_id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_account.client))
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id=telegram_id,
+                )
+            elif existing_client and existing_client.id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_client))
+                existing_account = ensure_client_telegram_account(
+                    db,
+                    existing_client,
+                    telegram_id,
+                    username=existing_client.username,
+                    name=existing_client.name,
+                )
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username or existing_account.username,
+                    telegram_id=telegram_id,
+                )
+            elif existing_account:
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id=telegram_id,
+                )
+            else:
+                account = ClientTelegramAccount(
+                    client_id=client.id,
+                    telegram_id=telegram_id,
+                    username=username,
+                    name=data.name,
+                    is_active=data.is_active,
+                    notes=data.notes,
+                )
+                db.add(account)
+                if is_pending_telegram_id(client.telegram_id):
+                    client.telegram_id = telegram_id
+                if not client.username and username:
+                    client.username = username
+        else:
+            existing_account = _find_existing_telegram_account(db, username=username)
+            if existing_account and existing_account.client_id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_account.client))
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id="",
+                )
+            elif existing_account:
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id="",
+                )
+            else:
+                account = ensure_pending_client_telegram_account(
+                    db,
+                    client,
+                    username,
+                    name=data.name,
+                    notes=data.notes,
+                )
+                account.is_active = data.is_active
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()
     db.refresh(account)
     return telegram_account_to_dict(account)
@@ -281,6 +634,9 @@ def update_client_telegram_account(
     data: ClientTelegramAccountPatch,
     db: Session = Depends(db_session),
 ) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
     account = (
         db.query(ClientTelegramAccount)
         .filter(ClientTelegramAccount.id == account_id)
@@ -289,12 +645,81 @@ def update_client_telegram_account(
     )
     if not account:
         raise HTTPException(status_code=404, detail="Telegram account not found")
-    for key, value in data.model_dump(exclude_unset=True).items():
+    payload = data.model_dump(exclude_unset=True)
+    if "telegram_id" in payload:
+        next_telegram_id = str(payload.pop("telegram_id") or "").strip()
+        if next_telegram_id:
+            existing_account = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.telegram_id == next_telegram_id)
+                .first()
+            )
+            if existing_account and existing_account.id != account.id:
+                raise HTTPException(status_code=409, detail="Telegram ID is already linked to a client")
+            existing_client = db.query(Client).filter(Client.telegram_id == next_telegram_id).first()
+            if existing_client and existing_client.id != client.id:
+                raise HTTPException(status_code=409, detail="Telegram ID is already linked to a client")
+            previous_telegram_id = account.telegram_id
+            account.telegram_id = next_telegram_id
+            if (
+                not client.telegram_id
+                or is_pending_telegram_id(client.telegram_id)
+                or client.telegram_id == previous_telegram_id
+            ):
+                client.telegram_id = next_telegram_id
+    if "username" in payload:
+        next_username = normalize_telegram_username(str(payload.pop("username") or ""))
+        if next_username:
+            existing_username = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.username == next_username)
+                .first()
+            )
+            if existing_username and existing_username.id != account.id:
+                raise HTTPException(status_code=409, detail="Telegram username is already linked to a client")
+        account.username = next_username
+        if next_username and not client.username:
+            client.username = next_username
+    for key, value in payload.items():
         if value is not None:
             setattr(account, key, value)
     db.commit()
     db.refresh(account)
     return telegram_account_to_dict(account)
+
+
+@app.delete("/api/clients/{client_id}/telegram-accounts/{account_id}", dependencies=[Depends(require_admin)])
+def delete_client_telegram_account(
+    client_id: str,
+    account_id: str,
+    db: Session = Depends(db_session),
+) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    account = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.id == account_id)
+        .filter(ClientTelegramAccount.client_id == client_id)
+        .first()
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Telegram account not found")
+    remaining_accounts = [
+        item
+        for item in client.telegram_accounts
+        if item.id != account.id
+    ]
+    if not remaining_accounts:
+        raise HTTPException(status_code=409, detail="Client must have at least one Telegram account")
+    db.delete(account)
+    primary = sorted(remaining_accounts, key=lambda item: item.created_at, reverse=True)[0]
+    if client.telegram_id == account.telegram_id or not client.telegram_id:
+        client.telegram_id = primary.telegram_id
+    if client.username == account.username or not client.username:
+        client.username = primary.username
+    db.commit()
+    return {"success": True, "client": client_to_dict(client, db=db)}
 
 
 @app.get("/api/jobs", dependencies=[Depends(require_admin)])
@@ -502,10 +927,10 @@ async def upload_job(
     if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         raise HTTPException(
             status_code=400,
-            detail="Supplier search requires a technical assignment file; procurement links are accepted for documentation analysis.",
+            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis.",
         )
     if not files and not sources:
-        raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement source URL")
+        raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement notice number/source URL")
     client, account_error = get_client_by_telegram_id(db, telegram_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -564,21 +989,343 @@ async def upload_job(
 async def test_ai(data: AiTestRequest, db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
     override = f"{data.provider}:{data.model}" if data.provider and data.model else None
-    text = await call_llm(
-        settings,
-        data.prompt,
-        tier="light",
-        routing_key=data.routing_key,
-        override=override,
-        timeout_seconds=45,
-    )
-    return {"success": True, "response": text[:1000]}
+    metadata: dict = {}
+    try:
+        text = await call_llm(
+            settings,
+            data.prompt,
+            tier="light",
+            routing_key=data.routing_key,
+            override=override,
+            timeout_seconds=45,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Проверка модели не прошла: {exc}",
+        ) from exc
+    return {
+        "success": True,
+        "response": text[:1000],
+        "provider_id": metadata.get("provider_id", data.provider or ""),
+        "provider_name": metadata.get("provider_name", data.provider or ""),
+        "model": metadata.get("model", data.model or ""),
+        "attempted_models": metadata.get("attempted_models", []),
+    }
 
 
 def settings_to_public_dict(settings: SystemSettings) -> dict:
     data = settings.to_dict(include_secrets=False)
     data["supplier_search_ui"] = supplier_search_ui(settings)
     return data
+
+
+def build_bot_analytics(db: Session, *, period_days: int = 30) -> dict:
+    now = now_utc()
+    cutoff = now - timedelta(days=period_days)
+    settings = get_or_create_settings(db)
+    clients = db.query(Client).all()
+    accounts = db.query(ClientTelegramAccount).all()
+    period_jobs_raw = (
+        db.query(Job)
+        .filter(Job.created_at >= cutoff)
+        .order_by(Job.created_at.desc())
+        .all()
+    )
+    period_jobs = [job for job in period_jobs_raw if not is_internal_job_record(job)]
+    all_jobs = [job for job in db.query(Job).all() if not is_internal_job_record(job)]
+    billing_period = (
+        db.query(BillingTransaction)
+        .filter(BillingTransaction.created_at >= cutoff)
+        .all()
+    )
+    grants_all = db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
+
+    clients_with_jobs = {job.client_id for job in all_jobs if job.client_id}
+    period_clients_with_jobs = {job.client_id for job in period_jobs if job.client_id}
+    clients_with_grants = {item.client_id for item in grants_all if item.client_id}
+    trial_clients = [client for client in clients if client.is_trial]
+    trial_clients_with_jobs = [client for client in trial_clients if client.id in clients_with_jobs]
+    trial_clients_with_grants = [client for client in trial_clients if client.id in clients_with_grants]
+    active_telegram_ids = {
+        str(job.created_by_telegram_id or "").strip()
+        for job in period_jobs
+        if str(job.created_by_telegram_id or "").strip()
+    }
+
+    jobs_by_mode = _count_by(period_jobs, lambda job: str(job.mode or ""))
+    jobs_by_status = _count_by(period_jobs, lambda job: str(job.status or ""))
+    daily = _daily_job_series(period_jobs, now=now, period_days=min(period_days, 45))
+    billing_by_kind = _billing_period_summary(billing_period)
+    top_clients = _analytics_top_clients(db, clients, period_jobs)
+    trial_followups = _analytics_trial_followups(db, trial_clients, all_jobs, clients_with_grants)
+    yookassa_ready = _settings_yookassa_ready(settings)
+
+    return {
+        "period_days": period_days,
+        "generated_at": now.isoformat(),
+        "summary": {
+            "clients_total": len(clients),
+            "active_clients": sum(1 for client in clients if client.is_active),
+            "telegram_accounts": len(accounts),
+            "trial_clients": len(trial_clients),
+            "period_jobs": len(period_jobs),
+            "period_active_users": len(active_telegram_ids),
+            "period_active_clients": len(period_clients_with_jobs),
+            "clients_with_usage": len(clients_with_jobs),
+            "clients_with_grants": len(clients_with_grants),
+        },
+        "funnel": {
+            "trial_started": len(trial_clients),
+            "trial_used_bot": len(trial_clients_with_jobs),
+            "trial_with_grants": len(trial_clients_with_grants),
+            "trial_to_grant_percent": _percent(len(trial_clients_with_grants), len(trial_clients)),
+            "usage_to_grant_percent": _percent(len(clients_with_grants), len(clients_with_jobs)),
+        },
+        "jobs": {
+            "by_mode": _mode_count_items(jobs_by_mode),
+            "by_status": _status_count_items(jobs_by_status),
+            "daily": daily,
+        },
+        "billing": {
+            "period": billing_by_kind,
+            "payment_provider": settings.payment_provider or "manual",
+            "yookassa_ready": yookassa_ready,
+        },
+        "top_clients": top_clients,
+        "trial_followups": trial_followups,
+    }
+
+
+def _count_by(items: list, key_fn) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for item in items:
+        key = key_fn(item) or "unknown"
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
+def _percent(part: int, total: int) -> int:
+    return 0 if total <= 0 else min(100, round(part * 100 / total))
+
+
+def _mode_count_items(counts: dict[str, int]) -> list[dict]:
+    return [
+        {"mode": mode, "label": mode_label(mode), "count": count}
+        for mode, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _status_count_items(counts: dict[str, int]) -> list[dict]:
+    return [
+        {"status": status, "label": human_status_label(status), "count": count}
+        for status, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def human_status_label(status: str) -> str:
+    labels = {
+        "pending": "в очереди",
+        "running": "в работе",
+        "completed": "готово",
+        "partial": "частично",
+        "needs_review": "нужна проверка",
+        "failed": "ошибка",
+        "awaiting_customer_confirmation": "ожидает клиента",
+        "customer_declined": "отклонено",
+        "confirmation_expired": "истёк срок",
+    }
+    return labels.get(str(status or ""), str(status or "") or "неизвестно")
+
+
+def client_display_name(client: Client) -> str:
+    return client.name or (f"@{client.username}" if client.username else "") or client.telegram_id or "без имени"
+
+
+def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
+    start = (now - timedelta(days=period_days - 1)).date()
+    buckets = {
+        (start + timedelta(days=index)).isoformat(): {
+            "date": (start + timedelta(days=index)).isoformat(),
+            "supplier_search": 0,
+            "procurement_report": 0,
+            "analysis_and_suppliers": 0,
+            "total": 0,
+        }
+        for index in range(period_days)
+    }
+    for job in jobs:
+        if not job.created_at:
+            continue
+        key = job.created_at.date().isoformat()
+        if key not in buckets:
+            continue
+        mode = str(job.mode or "")
+        if mode in buckets[key]:
+            buckets[key][mode] += 1
+        buckets[key]["total"] += 1
+    return list(buckets.values())
+
+
+def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict]:
+    rows: dict[str, dict] = {}
+    for item in transactions:
+        kind = str(item.kind or "")
+        row = rows.setdefault(
+            kind,
+            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0},
+        )
+        units = int(item.units or 0)
+        if item.operation == "grant":
+            row["granted"] += units
+        elif item.operation == "reserve":
+            row["reserved"] += units
+        elif item.operation == "charge":
+            row["charged"] += units
+        elif item.operation == "release":
+            row["released"] += units
+    return sorted(rows.values(), key=lambda item: item["label"])
+
+
+def _analytics_top_clients(db: Session, clients: list[Client], period_jobs: list[Job]) -> list[dict]:
+    jobs_by_client: dict[str, list[Job]] = {}
+    for job in period_jobs:
+        if job.client_id:
+            jobs_by_client.setdefault(job.client_id, []).append(job)
+    client_map = {client.id: client for client in clients}
+    rows: list[dict] = []
+    for client_id, jobs in jobs_by_client.items():
+        client = client_map.get(client_id)
+        if not client:
+            continue
+        rows.append(_analytics_client_row(db, client, jobs))
+    return sorted(rows, key=lambda item: (-item["jobs_total"], item["name"]))[:12]
+
+
+def _analytics_trial_followups(
+    db: Session,
+    trial_clients: list[Client],
+    all_jobs: list[Job],
+    clients_with_grants: set[str],
+) -> list[dict]:
+    jobs_by_client: dict[str, list[Job]] = {}
+    for job in all_jobs:
+        if job.client_id:
+            jobs_by_client.setdefault(job.client_id, []).append(job)
+    rows: list[dict] = []
+    for client in trial_clients:
+        jobs = jobs_by_client.get(client.id, [])
+        if not jobs or client.id in clients_with_grants:
+            continue
+        rows.append(_analytics_client_row(db, client, jobs))
+    return sorted(rows, key=lambda item: item["last_job_at"] or "", reverse=True)[:20]
+
+
+def _analytics_client_row(db: Session, client: Client, jobs: list[Job]) -> dict:
+    supplier_jobs = sum(1 for job in jobs if job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS})
+    report_jobs = sum(1 for job in jobs if job.mode in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS})
+    completed = sum(1 for job in jobs if job.status == "completed")
+    failed = sum(1 for job in jobs if job.status == "failed")
+    last_job_at = max((job.created_at for job in jobs if job.created_at), default=None)
+    balances = client_balance_summary(db, client)
+    return {
+        "client_id": client.id,
+        "name": client_display_name(client),
+        "telegram_id": "" if is_pending_telegram_id(client.telegram_id) else client.telegram_id,
+        "username": client.username,
+        "is_trial": bool(client.is_trial),
+        "is_active": bool(client.is_active),
+        "jobs_total": len(jobs),
+        "supplier_jobs": supplier_jobs,
+        "report_jobs": report_jobs,
+        "completed_jobs": completed,
+        "failed_jobs": failed,
+        "last_job_at": last_job_at.isoformat() if last_job_at else None,
+        "supplier_available": balances["supplier_search"].get("available"),
+        "report_available": balances["procurement_report"].get("available"),
+    }
+
+
+def _settings_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(settings.payment_provider or "").lower() == "yookassa"
+        and str(settings.yookassa_shop_id or "").strip()
+        and str(settings.yookassa_secret_key or "").strip()
+    )
+
+
+def public_site_payload(db: Session) -> dict:
+    settings = get_or_create_settings(db)
+    tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    return {
+        "site": {
+            "name": "TenderLex",
+            "domain": "https://tenderlex.ru",
+            "headline": "Анализ закупок и поиск поставщиков в одном Telegram-боте",
+            "description": (
+                "TenderLex анализирует закупочную документацию, помогает увидеть риски и собирает "
+                "поставщиков с email, телефонами, сайтами, страницами контактов и комментариями. "
+                "Новые пользователи могут попробовать оба сценария в Telegram."
+            ),
+        },
+        "bot": {
+            "telegram": settings.bot_telegram,
+            "telegram_url": telegram_public_url(settings.bot_telegram),
+        },
+        "contacts": {
+            "email": settings.contact_email,
+            "telegram": settings.contact_telegram,
+            "telegram_url": telegram_public_url(settings.contact_telegram),
+            "website": settings.contact_website,
+            "website_url": website_public_url(settings.contact_website),
+        },
+        "trial": {
+            "enabled": bool(settings.trial_enabled),
+            "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
+            "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
+            "file_limit": max(0, int(settings.trial_file_limit or 0)),
+        },
+        "tariffs": tariffs,
+        "tariff_groups": {
+            "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+        },
+        "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
+    }
+
+
+def tariff_to_public_dict(package: TariffPackage) -> dict:
+    return {
+        "id": package.id,
+        "kind": package.kind,
+        "label": billing_kind_label(package.kind),
+        "name": package.name,
+        "units": package.units,
+        "price_kopeks": package.price_kopeks,
+        "price_rub": round(package.price_kopeks / 100, 2),
+        "description": package.description,
+        "sort_order": package.sort_order,
+    }
+
+
+def telegram_public_url(value: str) -> str:
+    username = str(value or "").strip()
+    if not username:
+        return ""
+    if username.startswith("http://") or username.startswith("https://"):
+        return username
+    username = username.lstrip("@")
+    return f"https://t.me/{username}" if username else ""
+
+
+def website_public_url(value: str) -> str:
+    website = str(value or "").strip()
+    if not website:
+        return ""
+    if website.startswith("http://") or website.startswith("https://"):
+        return website
+    return f"https://{website}"
 
 
 def is_internal_job(job: Job | object) -> bool:
@@ -612,18 +1359,33 @@ def mode_label(mode: str) -> str:
 
 
 def client_usage_summary(db: Session, client: Client) -> dict:
-    supplier_used, report_used, _file_count = current_function_usage(db, client)
+    balances = client_balance_summary(db, client)
     return {
-        "supplier_search": usage_counter(
-            label="Отчёты по поставщикам",
-            used=supplier_used,
-            limit=client.monthly_supplier_search_limit,
-        ),
-        "procurement_report": usage_counter(
-            label="Анализы документации",
-            used=report_used,
-            limit=client.monthly_procurement_report_limit,
-        ),
+        "supplier_search": usage_counter_from_balance(balances["supplier_search"]),
+        "procurement_report": usage_counter_from_balance(balances["procurement_report"]),
+    }
+
+
+def usage_counter_from_balance(counter: dict) -> dict:
+    granted = int(counter.get("granted") or 0)
+    spent = int(counter.get("spent") or 0)
+    available = counter.get("available")
+    reserved = int(counter.get("reserved") or 0)
+    unlimited = bool(counter.get("unlimited"))
+    percent = 0 if unlimited or granted <= 0 else min(100, round((spent + reserved) * 100 / granted))
+    return {
+        "label": counter.get("label") or billing_kind_label(str(counter.get("kind") or "")),
+        "used": spent,
+        "limit": granted,
+        "remaining": available,
+        "unlimited": unlimited,
+        "percent": percent,
+        "available": available,
+        "reserved": reserved,
+        "spent": spent,
+        "granted": granted,
+        "source": counter.get("source") or "ledger",
+        "low": bool(counter.get("low")),
     }
 
 
@@ -877,9 +1639,11 @@ def now_iso() -> str:
 
 
 def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
+    primary_telegram_id = "" if is_pending_telegram_id(client.telegram_id) else client.telegram_id
     return {
         "id": client.id,
-        "telegram_id": client.telegram_id,
+        "telegram_id": primary_telegram_id,
+        "is_pending": is_pending_telegram_id(client.telegram_id),
         "name": client.name,
         "username": client.username,
         "is_active": client.is_active,
@@ -895,19 +1659,22 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
         "usage": client_usage_summary(db, client) if db else None,
         "recent_usage": client_recent_usage(db, client) if db else [],
+        "recent_billing": recent_billing_transactions(db, client) if db else [],
         "created_at": client.created_at.isoformat() if client.created_at else None,
         "updated_at": client.updated_at.isoformat() if client.updated_at else None,
     }
 
 
 def telegram_account_to_dict(account: ClientTelegramAccount) -> dict:
+    pending = is_pending_telegram_id(account.telegram_id)
     return {
         "id": account.id,
         "client_id": account.client_id,
-        "telegram_id": account.telegram_id,
+        "telegram_id": "" if pending else account.telegram_id,
         "username": account.username,
         "name": account.name,
         "is_active": account.is_active,
+        "is_pending": pending,
         "notes": account.notes,
         "created_at": account.created_at.isoformat() if account.created_at else None,
         "updated_at": account.updated_at.isoformat() if account.updated_at else None,

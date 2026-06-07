@@ -1,0 +1,315 @@
+# Evidence
+
+Date: 2026-06-04
+
+## Code Changes
+
+- `backend/app/billing.py`
+  - Added non-expiring balance ledger: grants, reserves, charges, releases.
+  - Added tariff serialization and manual grant helpers.
+  - Added 24-hour expiration for partial-report customer confirmations.
+- `backend/app/models.py`, `backend/app/db.py`, `backend/app/schemas.py`
+  - Added `tariff_packages` and `billing_transactions`.
+  - Added admin-editable contact/payment fields in system settings, including website.
+  - Added a default manual-payment instruction for the bot and admin panel.
+  - New clients default to zero paid units unless trial/package grants are configured.
+- `backend/app/repository.py`
+  - Access checks now use available generation balance while preserving legacy limits as first-reserve migration input.
+- `backend/app/jobs.py`
+  - Failed jobs release reserved units.
+  - Partial supplier reports move to `awaiting_customer_confirmation` instead of being delivered automatically.
+  - Stale confirmations expire and release reservation.
+- `backend/app/bot.py`
+  - Added Telegram onboarding, create-report menu, customer cabinet, tariffs/payment, contacts, and partial-report inline confirmation.
+  - Charges reserved units only after successful Telegram file delivery.
+  - Kept long Telegram mode buttons single-column in batch mode for mobile readability.
+- `backend/app/main.py`
+  - Added admin tariff CRUD and manual package grant endpoints.
+  - Client payloads expose available/reserved/spent/granted balance and recent billing operations.
+- `frontend/src/App.tsx`, `frontend/src/styles.css`
+  - Added admin `Тарифы` section.
+  - Added client-card package grant controls and balance history.
+  - Added mobile-responsive billing layouts.
+  - Tariff prices are shown and entered in rubles (`Цена, ₽`); internal kopeck storage is converted behind the UI.
+  - Removed the technical tariff `Порядок` field from the owner-facing tariff form.
+  - Removed tariff description fields from the owner-facing tariff create/edit UI.
+  - Added website to payment contacts and made the payment-instruction textarea more readable on mobile.
+
+## Fresh Verification
+
+- Client admin UX update:
+  - Admin can create a client with `name` + one or more Telegram usernames without knowing internal Telegram ID.
+  - Manual Telegram ID entry remains available on both client creation and per-client Telegram account addition.
+  - Username-only entries are stored as pending Telegram accounts and hide the internal `pending:<uuid>` value from the admin UI.
+  - `/start` now resolves pending usernames to the real Telegram ID when the user first opens the bot.
+  - Client and Telegram account API payloads expose `is_pending` so the UI can show `ожидает Start`.
+  - Follow-up visual fix: the client creation form is now a compact card with a heading, one row of proportional inputs on desktop, no large textarea, and a short `Добавить` button.
+  - Client cards now include a red `Удалить` action in addition to `Отключить`.
+  - `DELETE /api/clients/{client_id}` removes clients without jobs/billing history and rejects deletion when history exists, preserving financial/report history.
+- `cd backend && PYTHONPATH=. pytest tests/test_access_limits.py tests/test_api_guards.py -q`
+  - Client username/manual-ID/delete result: `29 passed, 2 warnings`.
+- `cd backend && PYTHONPATH=. pytest -q`
+  - Client username/manual-ID/delete full backend result: `148 passed, 2 warnings, 35 subtests passed`.
+- `cd frontend && npm run build`
+  - Client username/manual-ID/delete frontend result: Vite production build passed, generated `dist/assets/index-BADZ2HgG.css` and `dist/assets/index-B8B8Pznu.js`.
+- Playwright production Clients visual smoke on `https://aipoisk.lexelence.ru`
+  - Result JSON:
+    - `ok=true`
+    - `desktopOk=true`
+    - `mobileOk=true`
+    - `hasClientNameFirst=true`
+    - `hasTelegramUsernames=true`
+    - `hasManualId=true`
+    - `hasCompactHeading=true`
+    - `hasDeleteButton=true`
+    - `hasOldFirstManagerId=false`
+    - `hasTelegramTextarea=false`
+    - desktop compact create panel: `panelHeight=184`, `submitWidth=132`
+    - `horizontalOverflow=false` on desktop and mobile
+  - Screenshots:
+    - `/tmp/aipoisk-clients-desktop.png`
+    - `/tmp/aipoisk-clients-mobile.png`
+- Production `/api/clients` smoke:
+  - Authenticated request returned `count=2`.
+  - Client payload includes `is_pending`.
+  - Telegram account payload includes `is_pending`.
+- Production DELETE client smoke:
+  - Created temporary pending client `Codex delete smoke`.
+  - Deleted it via `DELETE /api/clients/{client_id}`.
+  - Client count returned from `2` to `2`.
+- Incident fix after live Telegram upload regression:
+  - Symptom: after `Принял ТЗ. Запускаю поиск поставщиков...` the bot did not send the progress bar or result.
+  - Root cause from `journalctl -u aipoisk-bot.service`: `DetachedInstanceError` at `backend/app/bot.py` when accessing `job.id` after `db.close()`.
+  - Cause detail: the new billing reserve path commits the SQLAlchemy session, expiring the `Job` instance; after session close, `job.id` triggered a refresh on a detached instance.
+  - Fix: capture `job_id` as a plain string before closing the DB session in single-file and batch launch flows.
+  - Recovery fix: `Последние задачи` can now deliver completed jobs that still have an unsettled reservation, then charge only after successful file delivery.
+- `cd backend && PYTHONPATH=. pytest tests/test_billing.py tests/test_bot_progress.py -q`
+  - Incident targeted result: `29 passed`.
+- `cd backend && PYTHONPATH=. pytest -q`
+  - Incident full backend result: `143 passed, 2 warnings, 35 subtests passed`.
+- `cd backend && PYTHONPATH=. pytest tests/test_bot_progress.py -q`
+  - Final Telegram UX polish result: `24 passed`.
+- `python3 -m compileall backend/app backend/tests`
+  - Result: exit 0.
+- `cd backend && PYTHONPATH=. pytest tests/test_bot_progress.py tests/test_api_guards.py -q`
+  - Result: `35 passed, 2 warnings`.
+- `cd backend && PYTHONPATH=. pytest tests/test_bot_progress.py -q`
+  - Result: `20 passed`.
+- `cd backend && PYTHONPATH=. pytest -q`
+  - Result: `138 passed, 2 warnings, 35 subtests passed`.
+- `cd frontend && npm run build`
+  - Result: Vite production build passed, generated `dist/assets/index-nIKnTNmG.css` and `dist/assets/index-Nc7XSwRl.js`.
+- `git diff --check`
+  - Result: exit 0.
+- Telegram UX visual snapshot generated from live `backend/app/bot.py` functions and current DB settings:
+  - HTML: `/tmp/aipoisk-telegram-ux.html`
+  - Mobile screenshot: `/tmp/aipoisk-telegram-mobile.png`
+  - Desktop screenshot: `/tmp/aipoisk-telegram-desktop.png`
+  - Playwright visual checks:
+    - `ok=true`
+    - `horizontalOverflow=false` on mobile and desktop
+    - `overflowingButtons=[]` on mobile and desktop
+    - no visible `/start`, `/status`, `/id` manual-command prompt in the customer journey
+    - no `🆔 Мой Telegram ID` main-menu button
+    - no duplicate payment heading
+    - no `около 0 сек` ETA
+    - Start/Запустить button is present in the first-entry screen
+- Playwright visual audit against isolated local backend on `127.0.0.1:8089` and Vite on `localhost:3091`
+  - Result JSON:
+    - `desktopBillingOverflow=false`
+    - `desktopClientGrantOverflow=false`
+    - `mobileBillingOverflow=false`
+    - `mobileClientGrantOverflow=false`
+  - Screenshots:
+    - `/tmp/aipoisk-billing-ux/desktop-billing.png`
+    - `/tmp/aipoisk-billing-ux/desktop-client-billing.png`
+    - `/tmp/aipoisk-billing-ux/mobile-billing.png`
+    - `/tmp/aipoisk-billing-ux/mobile-client-billing.png`
+- Playwright tariff visual smoke against isolated local backend on `127.0.0.1:8089` and Vite on `localhost:3093`
+  - Result JSON:
+    - `ok=true`
+    - `createdPriceKopeks=150000` after entering `1500` rubles in the UI.
+    - `hasKopeksLabel=false`
+    - `hasTariffOrderLabel=false`
+    - `desktopOverflow=[]`
+    - `mobileOverflow=[]`
+    - `consoleErrors=[]`
+  - Screenshots:
+    - `/tmp/aipoisk-tariffs-desktop.png`
+    - `/tmp/aipoisk-tariffs-mobile.png`
+- Playwright production tariff/contact smoke on `https://aipoisk.lexelence.ru`
+  - Result JSON:
+    - `ok=true`
+    - `contactEmail=snab@dealpartner.ru`
+    - `contactTelegram=@lexelence`
+    - `contactWebsite=tenderlex.ru`
+    - `hasDescriptionLabel=false`
+    - `hasOldDescriptionText=false`
+    - `hasPriceLabel=true`
+    - `hasKopeksText=false`
+    - `hasTariffOrderLabel=false`
+    - `contactInputsMatchSettings.email=true`
+    - `contactInputsMatchSettings.telegram=true`
+    - `contactInputsMatchSettings.website=true`
+    - `desktopOverflow=[]`
+    - `mobileOverflow=[]`
+    - `consoleErrors=[]`
+  - Screenshots:
+    - `/tmp/aipoisk-prod-tariffs-desktop.png`
+    - `/tmp/aipoisk-prod-tariffs-mobile.png`
+- Live Telegram contact text generated by `backend/app/bot.py`:
+  - `Telegram: @lexelence`
+  - `Email: snab@dealpartner.ru`
+  - `Сайт: tenderlex.ru`
+- Live Telegram Bot API after bot restart and direct profile refresh:
+  - `getMyCommands`: `[]`
+  - `getChatMenuButton`: returned Telegram's default command-menu type with an empty command list; no `/status` or `/id` commands are exposed.
+
+## Production Verification
+
+- Backup before live DB migration/restart:
+  - `/root/projects/aipoisk-bot/data/aipoisk.db.backup-before-billing-20260604T061350Z`
+  - `/root/projects/aipoisk-bot/data/aipoisk.db.backup-before-tariff-rubles-20260604T071210Z`
+  - Backup file exists; SQLite integrity check was `ok`.
+- Live services:
+  - `systemctl is-active aipoisk-api.service aipoisk-bot.service aipoisk-worker.service nginx`
+  - Result: all four services are `active`.
+- Live schema:
+  - `tariff_packages` and `billing_transactions` exist.
+  - `system_settings` contains `contact_email`, `contact_telegram`, `contact_website`, and `payment_instructions`.
+  - Default payment instruction is present in `system_settings`.
+  - `pragma integrity_check` result: `ok`.
+  - Current live counts after smoke cleanup: `tariffs_count=0`, `billing_transactions_count=0`.
+- Live health:
+  - `curl -fsS http://127.0.0.1:8088/api/health`
+  - `curl -fsS https://aipoisk.lexelence.ru/api/health`
+  - Result: both returned `{"ok":true,"domain":"https://aipoisk.lexelence.ru","logistics_enabled":false}`.
+- Live frontend:
+  - `https://aipoisk.lexelence.ru/` returned status `200`.
+  - Root HTML references `assets/index-Nc7XSwRl.js` and `assets/index-nIKnTNmG.css`.
+  - Both assets returned status `200` with the expected JS/CSS content types.
+- Live admin API smoke over HTTPS:
+  - Login status: `200`.
+  - Cookie-authenticated `/api/auth/me`, `/api/tariffs`, `/api/settings`, `/api/clients`: all `200`.
+  - Header-token `/api/settings`: `200`.
+  - `/api/settings` exposes website and default payment instructions.
+  - Created a temporary inactive tariff with `price_kopeks=150000`, verified `price_rub=1500`, patched to `price_rub=2000`, deleted it, then verified it was absent.
+- Live logs:
+  - `journalctl -u aipoisk-api.service -u aipoisk-bot.service -u aipoisk-worker.service --since '15 minutes ago'`
+  - No matches for `traceback|exception|failed|critical|error`.
+- Final Telegram UX polish deployment:
+  - Restarted `aipoisk-bot.service` after removing visible Telegram commands and keeping hidden command handlers as fallback.
+  - `systemctl is-active aipoisk-api.service aipoisk-bot.service aipoisk-worker.service nginx`: all `active`.
+  - Localhost and HTTPS `/api/health`: both returned `ok=true`.
+  - `journalctl -u aipoisk-api.service -u aipoisk-bot.service -u aipoisk-worker.service --since '5 minutes ago' | rg -i 'traceback|exception|failed|critical|error'`: no matches.
+- Incident production recovery:
+  - Restarted `aipoisk-bot.service` after the `DetachedInstanceError` fix.
+  - Services `aipoisk-api.service`, `aipoisk-bot.service`, `aipoisk-worker.service`, and `nginx`: all `active`.
+  - Localhost and HTTPS `/api/health`: both returned `ok=true`.
+  - Logs after restart (`since 2026-06-04 09:37:33 UTC`) have no matches for `traceback|exception|failed|critical|error|DetachedInstanceError`.
+  - Affected job `30491d02478e45069e0f108f29e0c76d` was already `completed|100|Готово: найдено и проверено 25`; the generated `.xlsx` was sent through Telegram API and the reserved supplier generation was charged only after the successful send.
+- Client username/manual-ID production deployment:
+  - Restarted `aipoisk-api.service` and `aipoisk-bot.service`.
+  - `systemctl is-active aipoisk-api.service aipoisk-bot.service aipoisk-worker.service nginx`: all `active`.
+  - Localhost and HTTPS `/api/health`: both returned `ok=true`.
+  - Logs after deployment and visual/API smoke have no matches for `traceback|exception|failed|critical|error|DetachedInstanceError`.
+- Client balance/admin UX cleanup:
+  - Client billing grants are no longer package-only in the admin UI.
+  - The client card now supports arbitrary manual grants by function, e.g. `3`, `157`, `289`, `1012` units, with tariff packages acting only as optional templates.
+  - Existing tariff packages remain editable and usable as public/payment templates; arbitrary one-off purchases do not require creating a tariff.
+  - Telegram account rows are editable: username, Telegram ID, and manager name can be saved for existing/pending accounts.
+  - Pending internal Telegram IDs remain hidden; the admin can replace a pending account with a real Telegram ID manually.
+  - Client-card history is collapsed by default with a visible `+/-` affordance.
+  - The visible client card no longer shows `Срок доступа`, `Бесплатный период`, or `ожидает Start`.
+  - Access enforcement no longer blocks by `access_until`; packages are non-expiring and access is controlled by active status, enabled functions, and balance.
+  - Telegram `Мой кабинет` no longer displays `Срок доступа`.
+- Fresh verification for client balance/admin UX cleanup:
+  - `cd backend && PYTHONPATH=. pytest tests/test_api_guards.py tests/test_access_limits.py tests/test_bot_progress.py -q`
+    - Result: `57 passed, 2 warnings`.
+  - `cd backend && PYTHONPATH=. pytest -q`
+    - Result: `152 passed, 2 warnings, 35 subtests passed`.
+  - `cd frontend && npm run build`
+    - Result: Vite production build passed, latest public assets `assets/index-DMB4pDxN.js` and `assets/index-BHkdW4lw.css`.
+  - `git diff --check`
+    - Result: exit 0.
+  - Playwright production Clients visual smoke on `https://aipoisk.lexelence.ru`
+    - Result JSON:
+      - `ok=true`
+      - `desktopOk=true`
+      - `mobileOk=true`
+      - `hasManualGrant=true`
+      - `hasGrantType=true`
+      - `hasGrantUnits=true`
+      - `hasGrantTemplate=true`
+      - `hasEditableTelegramId=true`
+      - `hasSaveAccountButton=true`
+      - `historyCollapsed=true`
+      - `hasAccessDateCopy=false`
+      - `hasTrialCopyInClientCard=false`
+      - `hasPendingCopy=false`
+      - `horizontalOverflow=false` on desktop and mobile
+    - Screenshots:
+      - `/tmp/aipoisk-clients-desktop.png`
+      - `/tmp/aipoisk-clients-mobile.png`
+  - Production restart and health:
+    - Restarted `aipoisk-api.service`, `aipoisk-bot.service`, and `aipoisk-worker.service`.
+    - `systemctl is-active aipoisk-api.service aipoisk-bot.service aipoisk-worker.service nginx`: all `active`.
+    - `curl -fsS http://127.0.0.1:8088/api/health` and `curl -fsS https://aipoisk.lexelence.ru/api/health`: both returned `ok=true`.
+    - Fresh service logs had no matches for `traceback|exception|failed|critical|error|DetachedInstanceError`.
+- Telegram-account delete follow-up:
+  - Added `DELETE /api/clients/{client_id}/telegram-accounts/{account_id}`.
+- Admin button/delete-client follow-up:
+  - Root cause: the old customer delete guard blocked deletion when a customer
+    had billing rows, even when the customer had no jobs/reports. The live
+    `Тестовый клиент` had `0` jobs and `2` billing rows, so the API returned a
+    conflict while the admin UI did not show the readable API error clearly.
+  - Fix: `DELETE /api/clients/{client_id}` now blocks only customers with jobs;
+    customers without jobs are deleted together with their billing rows.
+  - Fix: admin async/API errors are surfaced in the top error alert with the
+    backend `detail` text.
+  - Targeted backend delete-client tests:
+    - client without history deletes;
+    - client with billing rows but no jobs deletes and removes billing rows;
+    - client with jobs is rejected with a clear Russian message.
+  - `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests`
+    - Result: `169 passed, 2 warnings`.
+  - `cd frontend && npm run build`
+    - Result: Vite production build passed.
+  - Production deployment check:
+    - Restarted `aipoisk-api.service`.
+    - `aipoisk-api.service`, `aipoisk-worker.service`, and
+      `aipoisk-bot.service`: all `active`.
+    - `curl -fsS http://127.0.0.1:8088/api/health`: returned `ok=true`.
+  - Playwright live admin button check on `https://aipoisk.lexelence.ru`:
+    - Result: `ok=true`.
+    - `32` checks passed.
+    - `0` failed API responses.
+    - `0` console errors.
+    - `0` page errors.
+    - Covered login, section navigation, client create/open/disable/enable,
+      Telegram account add/save/delete, function toggle, manual grant, delete
+      temporary client, old `Тестовый клиент` absence, job evidence/download/
+      retry, tariff create/edit/toggle/delete, contacts save, settings save,
+      AI model check/save, and refresh.
+  - Cleanup check after Playwright:
+    - temporary UI clients: `0`;
+    - temporary UI tariffs: `0`;
+    - temporary UI jobs: `0`;
+    - old `Тестовый клиент` / Telegram ID `123456789`: `0`.
+  - Admin UI now shows a compact red trash icon on every Telegram-account row.
+  - Deleting the last Telegram account is rejected with `409`, so a client cannot accidentally remain without any Telegram binding.
+  - If the primary Telegram account is deleted while another account remains, the client primary Telegram ID is reassigned to the remaining account.
+  - Fresh verification:
+    - `cd backend && PYTHONPATH=. pytest tests/test_api_guards.py -q`: `26 passed, 2 warnings`.
+    - `cd backend && PYTHONPATH=. pytest -q`: `155 passed, 2 warnings, 35 subtests passed`.
+    - `cd frontend && npm run build`: passed, latest public assets `assets/index-CyLSz3JO.js` and `assets/index-DdYkl7ZC.css`.
+    - `git diff --check`: exit 0.
+    - Production smoke created a temporary client, added a second Telegram account, deleted that account via API, verified one account remained, then deleted the temporary client.
+    - Playwright production Clients visual smoke: `ok=true`, `desktopOk=true`, `mobileOk=true`, `hasAccountDeleteButton=true`, `horizontalOverflow=false`.
+    - Localhost and HTTPS `/api/health`: both returned `ok=true`; fresh service logs had no matches for `traceback|exception|failed|critical|error|DetachedInstanceError`.
+
+## Notes
+
+- The visual audit used a temporary SQLite database at `/tmp/aipoisk-billing-visual.db` and temporary storage under `/tmp/aipoisk-billing-storage`, so it did not modify the runtime project DB.
+- YooKassa is intentionally not implemented yet; the admin can edit manual payment instructions and contacts now, and a future YooKassa integration can grant the same ledger packages after payment confirmation.
+- Actual Telegram mobile/desktop client screenshots were not captured from a real Telegram app session. The final visual check used generated Telegram-like screenshots from the bot's real message/keyboard functions, plus live Bot API verification that visible commands are empty.

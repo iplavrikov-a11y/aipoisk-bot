@@ -10,7 +10,13 @@ import app.db as app_db
 from app.db import Base
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
 from app.models import Client, ClientTelegramAccount, Job, SystemSettings
-from app.repository import client_access_error, get_client_by_telegram_id, get_or_create_trial_client_by_telegram_id
+from app.repository import (
+    client_access_error,
+    ensure_pending_client_telegram_account,
+    get_client_by_telegram_id,
+    get_or_create_trial_client_by_telegram_id,
+    is_pending_telegram_id,
+)
 
 
 class AccessLimitTests(unittest.TestCase):
@@ -18,6 +24,55 @@ class AccessLimitTests(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
         self.Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def test_legacy_settings_schema_adds_supplier_ai_and_yookassa_columns(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        original_engine = app_db.engine
+        app_db.engine = engine
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        CREATE TABLE system_settings (
+                            id INTEGER PRIMARY KEY,
+                            light_provider VARCHAR(80) DEFAULT '',
+                            light_model VARCHAR(160) DEFAULT ''
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO system_settings (id, light_provider, light_model)
+                        VALUES (1, 'polza', 'cheap-model')
+                        """
+                    )
+                )
+                connection.execute(text("CREATE TABLE clients (id VARCHAR(32) PRIMARY KEY, monthly_job_limit INTEGER DEFAULT 0)"))
+                connection.execute(text("CREATE TABLE jobs (id VARCHAR(32) PRIMARY KEY)"))
+                connection.execute(text("CREATE TABLE supplier_results (id VARCHAR(32) PRIMARY KEY)"))
+
+            app_db._ensure_schema()
+            inspector = inspect(engine)
+            settings_columns = {column["name"] for column in inspector.get_columns("system_settings")}
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT supplier_ai_provider, supplier_ai_model, payment_provider, yookassa_shop_id, yookassa_secret_key, yookassa_return_url FROM system_settings WHERE id = 1")
+                ).mappings().first()
+        finally:
+            app_db.engine = original_engine
+
+        self.assertIn("supplier_ai_provider", settings_columns)
+        self.assertIn("supplier_ai_model", settings_columns)
+        self.assertIn("payment_provider", settings_columns)
+        self.assertEqual(row["supplier_ai_provider"], "polza")
+        self.assertEqual(row["supplier_ai_model"], "cheap-model")
+        self.assertEqual(row["payment_provider"], "manual")
+        self.assertEqual(row["yookassa_shop_id"], "")
+        self.assertEqual(row["yookassa_secret_key"], "")
+        self.assertEqual(row["yookassa_return_url"], "")
 
     def test_multiple_telegram_accounts_share_customer_supplier_limit(self) -> None:
         db = self.Session()
@@ -40,7 +95,8 @@ class AccessLimitTests(unittest.TestCase):
             error = account_error or client_access_error(db, resolved, MODE_SUPPLIER_SEARCH)
 
             self.assertEqual(resolved.id, "client-1")
-            self.assertIn("лимит поиска поставщиков", error)
+            self.assertIn("Недостаточно генераций", error)
+            self.assertIn("Поставщики", error)
         finally:
             db.close()
 
@@ -62,7 +118,8 @@ class AccessLimitTests(unittest.TestCase):
             report_error = client_access_error(db, client, MODE_PROCUREMENT_REPORT)
 
             self.assertEqual(supplier_error, "")
-            self.assertIn("лимит анализа документации", report_error)
+            self.assertIn("Недостаточно генераций", report_error)
+            self.assertIn("Анализ документации", report_error)
         finally:
             db.close()
 
@@ -77,7 +134,7 @@ class AccessLimitTests(unittest.TestCase):
             self.assertEqual(client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=2), "")
             error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=3)
 
-            self.assertIn("лимит поиска поставщиков", error)
+            self.assertIn("Недостаточно генераций", error)
         finally:
             db.close()
 
@@ -111,6 +168,32 @@ class AccessLimitTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_pending_username_account_resolves_on_first_bot_contact(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="pending:client-1", name="Customer")
+            db.add(client)
+            db.flush()
+            account = ensure_pending_client_telegram_account(db, client, "@BuyerOne")
+            db.commit()
+
+            resolved, account_error = get_or_create_trial_client_by_telegram_id(
+                db,
+                "777",
+                username="buyerone",
+                name="Buyer One",
+            )
+            db.refresh(account)
+            db.refresh(client)
+
+            self.assertEqual(account_error, "")
+            self.assertEqual(resolved.id, "client-1")
+            self.assertEqual(account.telegram_id, "777")
+            self.assertEqual(client.telegram_id, "777")
+            self.assertFalse(is_pending_telegram_id(account.telegram_id))
+        finally:
+            db.close()
+
     def test_file_count_is_not_a_commercial_access_limit(self) -> None:
         db = self.Session()
         try:
@@ -124,6 +207,24 @@ class AccessLimitTests(unittest.TestCase):
             db.commit()
 
             error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, incoming_file_count=5)
+
+            self.assertEqual(error, "")
+        finally:
+            db.close()
+
+    def test_access_until_is_ignored_for_non_expiring_packages(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                access_until="2020-01-01",
+                monthly_supplier_search_limit=10,
+            )
+            db.add(client)
+            db.commit()
+
+            error = client_access_error(db, client, MODE_SUPPLIER_SEARCH)
 
             self.assertEqual(error, "")
         finally:

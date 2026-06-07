@@ -6,8 +6,9 @@ import re
 from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
+from .billing import access_error_for_units, requested_billing_units
 from .config import config
-from .models import Client, ClientTelegramAccount, Job, SystemSettings, now_utc
+from .models import DEFAULT_PAYMENT_INSTRUCTIONS, Client, ClientTelegramAccount, Job, SystemSettings, new_id, now_utc
 
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
@@ -16,11 +17,28 @@ INTERNAL_JOB_PATTERN = re.compile(
     r"(smoke|retest|patch2?|remain|pusher|ai_required|live_|worker_smoke)",
     re.IGNORECASE,
 )
+PENDING_TELEGRAM_ID_PREFIX = "pending:"
+
+
+def normalize_telegram_username(value: str) -> str:
+    return str(value or "").strip().lstrip("@").lower()
+
+
+def is_pending_telegram_id(value: str) -> bool:
+    return str(value or "").startswith(PENDING_TELEGRAM_ID_PREFIX)
+
+
+def new_pending_telegram_id() -> str:
+    return f"{PENDING_TELEGRAM_ID_PREFIX}{new_id()}"
 
 
 def get_or_create_settings(db: Session) -> SystemSettings:
     settings = db.get(SystemSettings, 1)
     if settings:
+        if not str(settings.payment_instructions or "").strip():
+            settings.payment_instructions = DEFAULT_PAYMENT_INSTRUCTIONS
+            db.commit()
+            db.refresh(settings)
         return settings
     settings = SystemSettings(
         id=1,
@@ -32,6 +50,8 @@ def get_or_create_settings(db: Session) -> SystemSettings:
         primary_model=config.default_primary_model,
         light_provider=config.default_light_provider,
         light_model=config.default_light_model,
+        supplier_ai_provider=config.default_supplier_ai_provider or config.default_light_provider,
+        supplier_ai_model=config.default_supplier_ai_model or config.default_light_model,
         supplier_search_adapter_base_url=config.default_supplier_search_adapter_base_url,
         supplier_search_adapter_api_key=config.default_supplier_search_adapter_api_key,
         supplier_search_adapter_model=config.default_supplier_search_adapter_model,
@@ -41,6 +61,7 @@ def get_or_create_settings(db: Session) -> SystemSettings:
         google_search_api_key=config.default_google_search_api_key,
         google_search_cse_id=config.default_google_search_cse_id,
         document_settings_json=config.default_document_settings_json,
+        payment_instructions=DEFAULT_PAYMENT_INSTRUCTIONS,
     )
     db.add(settings)
     db.commit()
@@ -187,6 +208,88 @@ def ensure_client_telegram_account(
     return account
 
 
+def find_client_telegram_account_by_username(db: Session, username: str) -> ClientTelegramAccount | None:
+    normalized = normalize_telegram_username(username)
+    if not normalized:
+        return None
+    return (
+        db.query(ClientTelegramAccount)
+        .filter(func.lower(ClientTelegramAccount.username) == normalized)
+        .order_by(ClientTelegramAccount.created_at.asc())
+        .first()
+    )
+
+
+def ensure_pending_client_telegram_account(
+    db: Session,
+    client: Client,
+    username: str,
+    *,
+    name: str = "",
+    notes: str = "",
+) -> ClientTelegramAccount:
+    normalized_username = normalize_telegram_username(username)
+    if not normalized_username:
+        raise ValueError("telegram username is required")
+    existing = find_client_telegram_account_by_username(db, normalized_username)
+    if existing:
+        if existing.client_id != client.id:
+            raise ValueError("telegram username is already linked to another client")
+        return existing
+    account = ClientTelegramAccount(
+        client_id=client.id,
+        telegram_id=new_pending_telegram_id(),
+        username=normalized_username,
+        name=name or client.name,
+        is_active=True,
+        notes=notes or "Ожидает первого входа в бот",
+    )
+    db.add(account)
+    return account
+
+
+def resolve_pending_telegram_account_by_username(
+    db: Session,
+    telegram_id: str,
+    *,
+    username: str = "",
+    name: str = "",
+) -> tuple[Client | None, str]:
+    normalized_id = str(telegram_id or "").strip()
+    normalized_username = normalize_telegram_username(username)
+    if not normalized_id or not normalized_username:
+        return None, ""
+    account = (
+        db.query(ClientTelegramAccount)
+        .filter(func.lower(ClientTelegramAccount.username) == normalized_username)
+        .filter(ClientTelegramAccount.telegram_id.like(f"{PENDING_TELEGRAM_ID_PREFIX}%"))
+        .order_by(ClientTelegramAccount.created_at.asc())
+        .first()
+    )
+    if not account:
+        return None, ""
+    existing_account = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == normalized_id).first()
+    if existing_account and existing_account.id != account.id:
+        return existing_account.client, "Этот Telegram ID уже привязан к другому доступу."
+    existing_client = db.query(Client).filter(Client.telegram_id == normalized_id).first()
+    if existing_client and existing_client.id != account.client_id:
+        return existing_client, "Этот Telegram ID уже привязан к другому доступу."
+    account.telegram_id = normalized_id
+    account.username = normalized_username
+    if name:
+        account.name = name
+    if account.notes == "Ожидает первого входа в бот":
+        account.notes = ""
+    client = account.client
+    if is_pending_telegram_id(client.telegram_id) or not str(client.telegram_id or "").strip():
+        client.telegram_id = normalized_id
+    if not client.username:
+        client.username = normalized_username
+    if not client.name and name:
+        client.name = name
+    return client, ""
+
+
 def get_client_by_telegram_id(db: Session, telegram_id: str) -> tuple[Client | None, str]:
     normalized = str(telegram_id or "").strip()
     if not normalized:
@@ -214,6 +317,17 @@ def get_or_create_trial_client_by_telegram_id(
     client, account_error = get_client_by_telegram_id(db, telegram_id)
     if client or account_error:
         return client, account_error
+    pending_client, pending_error = resolve_pending_telegram_account_by_username(
+        db,
+        telegram_id,
+        username=username,
+        name=name,
+    )
+    if pending_client or pending_error:
+        db.commit()
+        if pending_client:
+            db.refresh(pending_client)
+        return pending_client, pending_error
     settings = get_or_create_settings(db)
     if not settings.trial_enabled:
         return None, ""
@@ -273,9 +387,6 @@ def client_access_error(
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
     if not client.is_active:
         return "Доступ отключён. Свяжитесь с администратором."
-    access_until = parse_access_until(client.access_until)
-    if access_until and access_until < now_utc():
-        return "Срок доступа истёк. Свяжитесь с администратором."
     if mode == MODE_PROCUREMENT_REPORT and not client.allowed_procurement_report:
         return "Функция анализа документации пока не включена для вашего доступа."
     if mode == MODE_SUPPLIER_SEARCH and not client.allowed_supplier_search:
@@ -293,13 +404,8 @@ def client_access_error(
     if client.is_trial and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:
         return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ за один запуск."
 
-    supplier_used, report_used, _file_count = current_function_usage(db, client)
-    if supplier_units and client.monthly_supplier_search_limit >= 0:
-        projected_supplier = supplier_used + supplier_units
-        if projected_supplier > client.monthly_supplier_search_limit:
-            return f"Месячный лимит поиска поставщиков исчерпан: {supplier_used}/{client.monthly_supplier_search_limit}."
-    if report_units and client.monthly_procurement_report_limit >= 0:
-        projected_reports = report_used + report_units
-        if projected_reports > client.monthly_procurement_report_limit:
-            return f"Месячный лимит анализа документации исчерпан: {report_used}/{client.monthly_procurement_report_limit}."
-    return ""
+    return access_error_for_units(
+        db,
+        client,
+        requested_billing_units(mode, supplier_search_count=supplier_search_count),
+    )

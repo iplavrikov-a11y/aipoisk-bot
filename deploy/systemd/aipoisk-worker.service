@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Poisk Durable Job Worker
+Description=TenderLex Durable Job Worker
 After=network.target aipoisk-api.service
 Wants=network-online.target
 PartOf=aipoisk-api.service

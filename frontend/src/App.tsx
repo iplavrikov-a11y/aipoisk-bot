@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Bot,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
   Cpu,
+  CreditCard,
   Database,
   Download,
   FileText,
@@ -17,16 +20,18 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Save,
   Search,
   Server,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
   Users,
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'clients' | 'jobs' | 'quality' | 'settings' | 'ai'
+type View = 'dashboard' | 'analytics' | 'clients' | 'jobs' | 'quality' | 'billing' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -41,6 +46,7 @@ type Dashboard = {
 type Client = {
   id: string
   telegram_id: string
+  is_pending: boolean
   name: string
   username: string
   is_active: boolean
@@ -56,6 +62,7 @@ type Client = {
   telegram_accounts: TelegramAccount[]
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
+  recent_billing: BillingTransaction[]
 }
 
 type ClientUsage = {
@@ -70,6 +77,12 @@ type UsageCounter = {
   remaining: number | null
   unlimited: boolean
   percent: number
+  available: number | null
+  reserved: number
+  spent: number
+  granted: number
+  source: string
+  low: boolean
 }
 
 type UsageEntry = {
@@ -91,7 +104,21 @@ type TelegramAccount = {
   username: string
   name: string
   is_active: boolean
+  is_pending: boolean
   notes: string
+}
+
+type AccountDraft = {
+  telegram_id: string
+  username: string
+  name: string
+}
+
+type GrantDraft = {
+  package_id: string
+  kind: string
+  units: string
+  note: string
 }
 
 type Job = {
@@ -135,6 +162,8 @@ type SettingsPayload = {
   primary_model: string
   light_provider: string
   light_model: string
+  supplier_ai_provider: string
+  supplier_ai_model: string
   custom_ai_providers_json: string
   saved_models_json: string
   ai_function_models_json: string
@@ -150,7 +179,98 @@ type SettingsPayload = {
   report_settings_json: string
   document_settings_json: string
   bot_messages_json: string
+  bot_telegram: string
+  contact_email: string
+  contact_telegram: string
+  contact_website: string
+  payment_instructions: string
+  payment_provider: string
+  yookassa_shop_id: string
+  yookassa_secret_key_set: boolean
+  yookassa_secret_key?: string
+  yookassa_return_url: string
   supplier_search_ui: SupplierSearchUi
+}
+
+type TariffPackage = {
+  id: string
+  kind: string
+  name: string
+  units: number
+  price_kopeks: number
+  price_rub: number
+  description: string
+  is_active: boolean
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+type BillingTransaction = {
+  id: string
+  client_id: string
+  job_id: string | null
+  package_id: string
+  kind: string
+  kind_label: string
+  operation: string
+  operation_label: string
+  units: number
+  note: string
+  created_by: string
+  created_at: string | null
+}
+
+type BotAnalytics = {
+  period_days: number
+  generated_at: string
+  summary: {
+    clients_total: number
+    active_clients: number
+    telegram_accounts: number
+    trial_clients: number
+    period_jobs: number
+    period_active_users: number
+    period_active_clients: number
+    clients_with_usage: number
+    clients_with_grants: number
+  }
+  funnel: {
+    trial_started: number
+    trial_used_bot: number
+    trial_with_grants: number
+    trial_to_grant_percent: number
+    usage_to_grant_percent: number
+  }
+  jobs: {
+    by_mode: Array<{ mode: string; label: string; count: number }>
+    by_status: Array<{ status: string; label: string; count: number }>
+    daily: Array<{ date: string; supplier_search: number; procurement_report: number; analysis_and_suppliers: number; total: number }>
+  }
+  billing: {
+    period: Array<{ kind: string; label: string; granted: number; reserved: number; charged: number; released: number }>
+    payment_provider: string
+    yookassa_ready: boolean
+  }
+  top_clients: AnalyticsClient[]
+  trial_followups: AnalyticsClient[]
+}
+
+type AnalyticsClient = {
+  client_id: string
+  name: string
+  telegram_id: string
+  username: string
+  is_trial: boolean
+  is_active: boolean
+  jobs_total: number
+  supplier_jobs: number
+  report_jobs: number
+  completed_jobs: number
+  failed_jobs: number
+  last_job_at: string | null
+  supplier_available: number | null
+  report_available: number | null
 }
 
 type SupplierSearchUi = {
@@ -239,13 +359,28 @@ type SavedModel = {
   modelId: string
 }
 
+type AiTestState = {
+  status: 'idle' | 'running' | 'success' | 'error'
+  message: string
+  providerName?: string
+  model?: string
+}
+
 const apiBase = ''
-const aiRoutingKeys = [
+const procurementAiRoutingKeys = [
   'procurement_document_analysis',
   'procurement_report_verification',
   'procurement_key_info_extraction',
   'procurement_search_query_generation',
+  'procurement_report_official_card_repair',
+]
+const supplierAiRoutingKeys = [
+  'minprom_registry_requirement',
+  'minprom_registry_query_generation',
+  'supplier_procurement_profile',
   'supplier_query_generation',
+  'supplier_tz_context_extraction',
+  'supplier_candidate_reranker',
   'supplier_candidate_verifier',
 ]
 
@@ -254,9 +389,13 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Сводка',
     description: 'Короткая картина по клиентам, задачам и текущим настройкам сервиса.',
   },
+  analytics: {
+    title: 'Статистика',
+    description: 'Воронка Telegram-бота, активность клиентов, триал для дожима и готовность оплаты.',
+  },
   clients: {
     title: 'Клиенты',
-    description: 'Клиенты, менеджеры в Telegram, доступы и два коммерческих лимита: поставщики и анализ.',
+    description: 'Клиенты, менеджеры в Telegram, баланс генераций и ручные начисления.',
   },
   jobs: {
     title: 'Задачи',
@@ -266,9 +405,13 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Контроль отчётов',
     description: 'Понятный мониторинг: где отчёты не собрались, где мало поставщиков и какие источники поиска сработали.',
   },
+  billing: {
+    title: 'Тарифы',
+    description: 'Пакеты как витрина, произвольные начисления клиентам и контактные инструкции для оплаты.',
+  },
   settings: {
     title: 'Настройки',
-    description: 'Бесплатный период, хранение файлов и поиск поставщиков.',
+    description: 'Бесплатный период, контакты, хранение файлов и поиск поставщиков.',
   },
   ai: {
     title: 'ИИ-модели',
@@ -286,12 +429,16 @@ const statusLabels: Record<string, string> = {
   active: 'включён',
   disabled: 'выключен',
   trial: 'бесплатный период',
+  account_pending: 'ожидает ID',
   pending: 'в очереди',
   running: 'в работе',
   completed: 'готово',
   partial: 'частично готово',
   needs_review: 'нужна проверка',
   failed: 'ошибка',
+  awaiting_customer_confirmation: 'ожидает клиента',
+  customer_declined: 'отклонено',
+  confirmation_expired: 'истёк срок',
 }
 
 const providerLabels: Record<string, string> = {
@@ -323,8 +470,14 @@ const functionLabels: Record<string, string> = {
   procurement_report_verification: 'Проверка отчёта анализа',
   procurement_key_info_extraction: 'Извлечение условий закупки',
   procurement_search_query_generation: 'Запросы по закупке',
-  supplier_query_generation: 'Запросы для поиска поставщиков',
+  procurement_report_official_card_repair: 'Сверка карточки закупки',
+  supplier_query_generation: 'Запросы поставщиков',
   supplier_candidate_verifier: 'Проверка поставщиков',
+}
+
+const modelRoleLabels: Record<string, string> = {
+  __primary__: 'Основная',
+  __light__: 'Быстрая',
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -343,7 +496,14 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function formatError(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err || '')
+  const rawMessage = err instanceof Error ? err.message : String(err || '')
+  let message = rawMessage
+  try {
+    const parsed = JSON.parse(rawMessage)
+    if (typeof parsed?.detail === 'string') message = parsed.detail
+  } catch {
+    message = rawMessage
+  }
   if (message.includes('Invalid login or password') || message.includes('401')) {
     return 'Неверный логин или пароль.'
   }
@@ -351,6 +511,41 @@ function formatError(err: unknown) {
     return 'Слишком много попыток входа. Подождите несколько минут и попробуйте снова.'
   }
   return message || 'Ошибка загрузки'
+}
+
+function normalizeTelegramUsername(value: string) {
+  return String(value || '').trim().replace(/^@+/, '').toLowerCase()
+}
+
+function clientDisplayName(client: Client) {
+  return client.name || (client.username ? `@${client.username}` : '') || client.telegram_id || 'без имени'
+}
+
+function accountDisplayName(account?: TelegramAccount) {
+  if (!account) return 'этот Telegram-аккаунт'
+  return account.name || (account.username ? `@${account.username}` : '') || account.telegram_id || 'этот Telegram-аккаунт'
+}
+
+function findLinkedTelegramAccount(clients: Client[], targetClient: Client, draft: AccountDraft) {
+  const telegramId = draft.telegram_id.trim()
+  const username = normalizeTelegramUsername(draft.username)
+  for (const client of clients) {
+    if (client.id === targetClient.id) continue
+    for (const account of client.telegram_accounts || []) {
+      if (telegramId && account.telegram_id === telegramId) return { client, account }
+      if (username && normalizeTelegramUsername(account.username) === username) return { client, account }
+    }
+    if (telegramId && client.telegram_id === telegramId) return { client, account: undefined }
+  }
+  return null
+}
+
+function transferAccountMessage(sourceClient: Client, targetClient: Client, account?: TelegramAccount) {
+  return [
+    `Telegram-аккаунт ${accountDisplayName(account)} уже привязан к клиенту «${clientDisplayName(sourceClient)}».`,
+    `Перенести его к клиенту «${clientDisplayName(targetClient)}»?`,
+    'Если это отдельный тестовый клиент с одним аккаунтом, его история и списания будут объединены с выбранным клиентом.',
+  ].join('\n\n')
 }
 
 function supplierCountLabel(job: Job) {
@@ -381,6 +576,11 @@ function canonicalProviderName(providerId: string) {
     polza: 'Polza',
   }
   return names[normalized] || providerId || 'Custom provider'
+}
+
+function isKnownProviderId(providerId: string) {
+  const normalized = String(providerId || '').trim().toLowerCase()
+  return ['openrouter', 'open-router', 'openai', 'open-ai', 'gemini', 'google', 'polza'].includes(normalized)
 }
 
 function defaultProviderBaseUrl(providerId: string) {
@@ -426,7 +626,8 @@ function normalizeProvider(provider: CustomProvider): CustomProvider {
 }
 
 function ensureModelProviders(providers: CustomProvider[], models: SavedModel[]) {
-  const orderedIds = ['openrouter', 'open-ai', 'gemini']
+  const hasConfiguredProviders = providers.some(provider => String(provider.id || '').trim())
+  const orderedIds = hasConfiguredProviders ? [] : ['openrouter', 'open-ai', 'gemini']
   for (const model of models) {
     const providerId = String(model.provider || '').trim()
     if (providerId && !orderedIds.includes(providerId)) orderedIds.push(providerId)
@@ -550,6 +751,8 @@ export function App() {
   const [quality, setQuality] = useState<SupplierQualitySnapshot | null>(null)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
+  const [tariffs, setTariffs] = useState<TariffPackage[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -561,13 +764,15 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true'),
         api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
+        api<BotAnalytics>('/api/analytics/bot?period_days=30'),
+        api<TariffPackage[]>('/api/tariffs'),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
@@ -575,6 +780,8 @@ export function App() {
       setQuality(qualityData)
       setOpsStatus(opsStatusData)
       setSettings(settingsData)
+      setAnalytics(analyticsData)
+      setTariffs(tariffData)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -611,6 +818,8 @@ export function App() {
     setQuality(null)
     setOpsStatus(null)
     setSettings(null)
+    setAnalytics(null)
+    setTariffs([])
     setUsername('')
     setPassword('')
   }
@@ -625,11 +834,26 @@ export function App() {
       .catch(() => setAuthenticated(false))
   }, [])
 
+  useEffect(() => {
+    function handleUnhandled(event: PromiseRejectionEvent) {
+      setError(formatError(event.reason))
+    }
+    window.addEventListener('unhandledrejection', handleUnhandled)
+    return () => window.removeEventListener('unhandledrejection', handleUnhandled)
+  }, [])
+
+  useEffect(() => {
+    const activeItem = document.querySelector('.nav-item.active')
+    activeItem?.scrollIntoView({ block: 'nearest', inline: 'center' })
+  }, [view])
+
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
+    { id: 'analytics' as const, label: 'Статистика', icon: Database },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'quality' as const, label: 'Контроль', icon: CheckCircle2 },
+    { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
   ]
@@ -655,15 +879,15 @@ export function App() {
         <div className="brand">
           <div className="brand-mark"><Search size={18} /></div>
           <div>
-            <div className="brand-name">AI Поиск</div>
-            <div className="brand-sub">aipoisk.lexelence.ru</div>
+            <div className="brand-name">TenderLex</div>
+            <div className="brand-sub">tenderlex.ru</div>
           </div>
         </div>
         <nav className="nav">
           {nav.map(item => {
             const Icon = item.icon
             return (
-              <button key={item.id} className={view === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setView(item.id)}>
+              <button key={item.id} className={view === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setError(''); setView(item.id) }}>
                 <Icon size={17} />
                 <span>{item.label}</span>
               </button>
@@ -690,9 +914,11 @@ export function App() {
 
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
-        {isReady && view === 'clients' && <ClientsView clients={clients} onChange={loadAll} />}
+        {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
+        {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'quality' && <QualityView quality={quality} />}
+        {isReady && view === 'billing' && settings && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
       </main>
@@ -802,6 +1028,134 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
   )
 }
 
+function AnalyticsView({ analytics }: { analytics: BotAnalytics | null }) {
+  if (!analytics) return <div className="empty">Статистика пока не загружена.</div>
+  const summary = analytics.summary
+  const funnel = analytics.funnel
+  const maxDaily = Math.max(1, ...analytics.jobs.daily.map(item => item.total))
+  const metrics = [
+    { label: 'Клиентов', value: summary.clients_total, note: `${summary.active_clients} активных`, icon: Users },
+    { label: 'Telegram', value: summary.telegram_accounts, note: `${summary.period_active_users} активных за ${analytics.period_days} дней`, icon: Bot },
+    { label: 'Задач', value: summary.period_jobs, note: `${summary.period_active_clients} клиентов запускали бота`, icon: FileText },
+    { label: 'Триал', value: `${funnel.trial_to_grant_percent}%`, note: `${funnel.trial_with_grants}/${funnel.trial_started} дошли до оплаты`, icon: CreditCard },
+  ]
+  return (
+    <section className="stack">
+      <div className="content-grid">
+        {metrics.map(item => {
+          const Icon = item.icon
+          return (
+            <div className="metric" key={item.label}>
+              <Icon size={20} />
+              <div>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.note}</small>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="analytics-grid">
+        <div className="form-panel">
+          <h2>Воронка</h2>
+          <div className="kv-list">
+            <div><span>Триал создан</span><strong>{funnel.trial_started}</strong></div>
+            <div><span>Триал пользовался ботом</span><strong>{funnel.trial_used_bot}</strong></div>
+            <div><span>Получили начисления</span><strong>{funnel.trial_with_grants}</strong></div>
+            <div><span>Конверсия использования</span><strong>{funnel.usage_to_grant_percent}%</strong></div>
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Задачи по режимам</h2>
+          <div className="kv-list">
+            {analytics.jobs.by_mode.map(item => <div key={item.mode}><span>{item.label}</span><strong>{item.count}</strong></div>)}
+            {!analytics.jobs.by_mode.length && <div className="inline-note">За период задач не было.</div>}
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Статусы задач</h2>
+          <div className="kv-list">
+            {analytics.jobs.by_status.map(item => <div key={item.status}><span>{item.label}</span><strong>{item.count}</strong></div>)}
+            {!analytics.jobs.by_status.length && <div className="inline-note">Статусов за период нет.</div>}
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Оплата</h2>
+          <div className="kv-list">
+            <div><span>Текущий режим</span><strong>{paymentProviderLabel(analytics.billing.payment_provider)}</strong></div>
+            <div><span>YooKassa</span><strong>{analytics.billing.yookassa_ready ? 'готова' : 'не готова'}</strong></div>
+          </div>
+          <div className="billing-mini-list">
+            {analytics.billing.period.map(item => (
+              <div key={item.kind}>
+                <strong>{item.label}</strong>
+                <span>начислено {item.granted} · списано {item.charged} · резерв {item.reserved}</span>
+              </div>
+            ))}
+            {!analytics.billing.period.length && <span className="inline-note">Начислений за период нет.</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="form-panel full-width-panel">
+        <h2>Динамика запусков</h2>
+        <div className="daily-bars">
+          {analytics.jobs.daily.map(item => (
+            <div className="daily-bar" key={item.date} title={`${item.date}: ${item.total}`}>
+              <span style={{ height: `${Math.max(6, Math.round(item.total * 100 / maxDaily))}%` }} />
+              <small>{new Date(item.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <AnalyticsClientList
+        title="Триал для дожима"
+        empty="Нет триальных клиентов с использованием без начислений."
+        clients={analytics.trial_followups}
+      />
+      <AnalyticsClientList
+        title="Топ клиентов за период"
+        empty="За период нет активных клиентов."
+        clients={analytics.top_clients}
+      />
+    </section>
+  )
+}
+
+function AnalyticsClientList({ title, empty, clients }: { title: string; empty: string; clients: AnalyticsClient[] }) {
+  return (
+    <div className="form-panel full-width-panel">
+      <h2>{title}</h2>
+      <div className="analytics-client-list">
+        {clients.map(client => (
+          <div className="analytics-client-row" key={client.client_id}>
+            <div>
+              <strong>{client.name}</strong>
+              <small>{client.username ? `@${client.username}` : client.telegram_id || 'Telegram не указан'} · последний запуск {formatDate(client.last_job_at)}</small>
+            </div>
+            <span>{client.jobs_total} задач</span>
+            <span>поставщики {client.supplier_jobs}</span>
+            <span>анализ {client.report_jobs}</span>
+            <span>{analyticsBalance(client)}</span>
+          </div>
+        ))}
+        {!clients.length && <div className="empty inline-empty">{empty}</div>}
+      </div>
+    </div>
+  )
+}
+
+function analyticsBalance(client: AnalyticsClient) {
+  return `баланс: ${client.supplier_available ?? 'без лимита'} / ${client.report_available ?? 'без лимита'}`
+}
+
+function paymentProviderLabel(provider: string) {
+  return provider === 'yookassa' ? 'YooKassa' : 'ручная оплата'
+}
+
 function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   if (!opsStatus) {
     return <div className="form-panel full-width-panel"><h2>Состояние системы</h2><div className="empty inline-empty">Данные состояния пока не загружены.</div></div>
@@ -858,22 +1212,54 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   )
 }
 
-function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () => Promise<void> }) {
-  const [form, setForm] = useState({ telegram_id: '', name: '', username: '', notes: '' })
-  const [accountForms, setAccountForms] = useState<Record<string, { telegram_id: string; username: string; name: string }>>({})
+function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
+  const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
+  const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
+  const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
+  const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const activeTariffs = tariffs.filter(item => item.is_active)
   async function createClient() {
-    await api('/api/clients', { method: 'POST', body: JSON.stringify(form) })
-    setForm({ telegram_id: '', name: '', username: '', notes: '' })
+    const usernames = parseTelegramUsernames(form.telegram_usernames)
+    await api('/api/clients', {
+      method: 'POST',
+      body: JSON.stringify({ ...form, telegram_usernames: usernames, username: usernames[0] || '' }),
+    })
+    setForm({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
     await onChange()
   }
   async function patchClient(client: Client, patch: Partial<Client>) {
     await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
   }
+  async function deleteClient(client: Client) {
+    const label = client.name || client.username || client.telegram_id || 'этого клиента'
+    if (!window.confirm(`Удалить клиента «${label}»? Это действие нельзя отменить.`)) return
+    await api(`/api/clients/${client.id}`, { method: 'DELETE' })
+    await onChange()
+  }
   async function createAccount(client: Client) {
     const draft = accountForms[client.id] || { telegram_id: '', username: '', name: '' }
-    await api(`/api/clients/${client.id}/telegram-accounts`, { method: 'POST', body: JSON.stringify(draft) })
+    const payload: AccountDraft & { transfer_existing?: boolean } = { ...draft }
+    const linkedAccount = findLinkedTelegramAccount(clients, client, draft)
+    if (linkedAccount) {
+      if (!window.confirm(transferAccountMessage(linkedAccount.client, client, linkedAccount.account))) return
+      payload.transfer_existing = true
+    }
+    const create = (body: AccountDraft & { transfer_existing?: boolean }) => (
+      api(`/api/clients/${client.id}/telegram-accounts`, { method: 'POST', body: JSON.stringify(body) })
+    )
+    try {
+      await create(payload)
+    } catch (err) {
+      const message = formatError(err)
+      if (!payload.transfer_existing && message.includes('Подтвердите перенос')) {
+        if (!window.confirm(`${message}\n\nПеренести аккаунт к клиенту «${clientDisplayName(client)}»?`)) return
+        await create({ ...payload, transfer_existing: true })
+      } else {
+        throw err
+      }
+    }
     setAccountForms({ ...accountForms, [client.id]: { telegram_id: '', username: '', name: '' } })
     await onChange()
   }
@@ -881,33 +1267,111 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
     await api(`/api/clients/${client.id}/telegram-accounts/${account.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
   }
+  async function deleteAccount(client: Client, account: TelegramAccount) {
+    const label = account.username ? `@${account.username}` : account.telegram_id || account.name || 'этот Telegram-аккаунт'
+    if (!window.confirm(`Удалить Telegram-аккаунт «${label}» у клиента «${client.name || 'без имени'}»?`)) return
+    await api(`/api/clients/${client.id}/telegram-accounts/${account.id}`, { method: 'DELETE' })
+    await onChange()
+  }
   function accountDraft(client: Client) {
     return accountForms[client.id] || { telegram_id: '', username: '', name: '' }
   }
-  function setAccountDraft(client: Client, patch: Partial<{ telegram_id: string; username: string; name: string }>) {
+  function setAccountDraft(client: Client, patch: Partial<AccountDraft>) {
     const current = accountDraft(client)
     setAccountForms({ ...accountForms, [client.id]: { ...current, ...patch } })
   }
-  function patchString(client: Client, key: keyof Pick<Client, 'access_until' | 'notes'>, value: string) {
-    if (value !== client[key]) void patchClient(client, { [key]: value })
+  function accountEditDraft(account: TelegramAccount) {
+    return accountEditForms[account.id] || {
+      telegram_id: account.telegram_id || '',
+      username: account.username ? `@${account.username}` : '',
+      name: account.name || '',
+    }
   }
-  function patchNumber(client: Client, key: keyof Pick<Client, 'monthly_supplier_search_limit' | 'monthly_procurement_report_limit'>, value: number) {
-    if (Number.isFinite(value) && value !== client[key]) void patchClient(client, { [key]: value })
+  function setAccountEditDraft(account: TelegramAccount, patch: Partial<AccountDraft>) {
+    const current = accountEditDraft(account)
+    setAccountEditForms({ ...accountEditForms, [account.id]: { ...current, ...patch } })
+  }
+  async function saveAccount(client: Client, account: TelegramAccount) {
+    const draft = accountEditDraft(account)
+    await patchAccount(client, account, {
+      telegram_id: draft.telegram_id,
+      username: draft.username,
+      name: draft.name,
+    })
+  }
+  function grantDraft(client: Client) {
+    return grantForms[client.id] || { package_id: '', kind: 'supplier_search', units: '1', note: '' }
+  }
+  function setGrantDraft(client: Client, patch: Partial<GrantDraft>) {
+    const current = grantDraft(client)
+    setGrantForms({ ...grantForms, [client.id]: { ...current, ...patch } })
+  }
+  function applyGrantTemplate(client: Client, packageId: string) {
+    const selected = activeTariffs.find(item => item.id === packageId)
+    const current = grantDraft(client)
+    setGrantForms({
+      ...grantForms,
+      [client.id]: selected
+        ? { ...current, package_id: packageId, kind: selected.kind, units: String(selected.units) }
+        : { ...current, package_id: '' },
+    })
+  }
+  async function grantUnits(client: Client) {
+    const draft = grantDraft(client)
+    const selected = activeTariffs.find(item => item.id === draft.package_id)
+    const units = Math.floor(Number(draft.units))
+    if (!Number.isFinite(units) || units < 1) return
+    const packageId = selected && selected.kind === draft.kind && selected.units === units ? selected.id : ''
+    await api(`/api/clients/${client.id}/billing/grants`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: draft.note }),
+    })
+    setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
+    await onChange()
+  }
+  function patchClientNote(client: Client, value: string) {
+    if (value !== client.notes) void patchClient(client, { notes: value })
   }
   return (
     <section className="stack">
-      <div className="toolbar-panel">
-        <input placeholder="ID первого менеджера" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
-        <input placeholder="Название клиента" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-        <input placeholder="Ник в Telegram" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
-        <button onClick={() => void createClient()} disabled={!form.telegram_id.trim()}><Plus size={16} />Добавить клиента</button>
+      <div className="client-create-panel">
+        <div className="client-create-head">
+          <div>
+            <h2>Добавить клиента</h2>
+            <p>Создайте клиента и привяжите один или несколько Telegram-аккаунтов.</p>
+          </div>
+        </div>
+        <div className="client-create-grid">
+          <label className="field">
+            Название клиента
+            <input placeholder="ООО Ромашка" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label className="field">
+            Telegram-ники
+            <input
+              placeholder="@manager, @buyer"
+              value={form.telegram_usernames}
+              onChange={e => setForm({ ...form, telegram_usernames: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            Telegram ID вручную
+            <input placeholder="Если ID известен" value={form.telegram_id} onChange={e => setForm({ ...form, telegram_id: e.target.value })} />
+          </label>
+          <button className="client-create-submit" onClick={() => void createClient()} disabled={!form.name.trim() || (!form.telegram_id.trim() && !parseTelegramUsernames(form.telegram_usernames).length)}>
+            <Plus size={16} />Добавить
+          </button>
+        </div>
+        <p className="client-create-hint">Если указать только ник, ID подтянется после первого входа пользователя в бота. Ручной ID можно указать сразу.</p>
       </div>
       <div className="client-card-list">
         {clients.map(client => {
           const draft = accountDraft(client)
           const accounts = client.telegram_accounts?.length ? client.telegram_accounts : []
           const expanded = Boolean(expandedClients[client.id])
-          const primaryAccount = accounts[0]
+          const grant = grantDraft(client)
+          const connectedCount = accounts.filter(account => !account.is_pending).length
+          const pendingCount = accounts.filter(account => account.is_pending).length
           return (
             <article className="client-card" key={client.id}>
               <div className="client-card-head">
@@ -922,127 +1386,145 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
                   </button>
                   <div>
                     <h2>{client.name || 'Без имени'}</h2>
-                    <p>{clientSummaryLine(client, accounts, primaryAccount)}</p>
+                    <p>{clientSummaryLine(client, accounts)}</p>
                   </div>
                 </div>
                 <div className="client-summary-pills">
-                  <span>Менеджеры: {accounts.length || (client.telegram_id ? 1 : 0)}</span>
+                  <span>Подключено: {connectedCount}</span>
+                  {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
                   <span>Поставщики: {client.usage ? usageSummaryText(client.usage.supplier_search) : 'нет данных'}</span>
                   <span>Анализ: {client.usage ? usageSummaryText(client.usage.procurement_report) : 'нет данных'}</span>
                 </div>
                 <div className="client-state">
                   <StatusBadge status={client.is_active ? 'active' : 'disabled'} />
-                  {client.is_trial && <StatusBadge status="trial" />}
                   <button className="ghost small-text" onClick={() => void patchClient(client, { is_active: !client.is_active })}>
                     {client.is_active ? 'Отключить' : 'Включить'}
+                  </button>
+                  <button className="danger small-text" onClick={() => void deleteClient(client)}>
+                    <Trash2 size={14} />Удалить
                   </button>
                 </div>
               </div>
 
               {expanded && <div className="client-card-grid">
-                <div className="client-section">
-                  <h3>Аккаунты менеджеров</h3>
-                  <div className="account-list">
-                    {accounts.map(account => (
-                      <div className="account-row" key={account.id}>
-                        <div>
-                          <strong>{account.telegram_id}</strong>
-                          <small>{account.username ? `@${account.username}` : account.name || 'имя не указано'}</small>
+                <div className="client-section client-telegram-section">
+                  <div className="section-head">
+                    <h3>Telegram-аккаунты</h3>
+                    <span>{accounts.length || 'нет'}</span>
+                  </div>
+                  <div className="account-edit-list">
+                    {accounts.map(account => {
+                      const edit = accountEditDraft(account)
+                      return (
+                        <div className="account-edit-row" key={account.id}>
+                          <label className="mini-field">
+                            <span>Ник</span>
+                            <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
+                          </label>
+                          <label className="mini-field">
+                            <span>Telegram ID</span>
+                            <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
+                          </label>
+                          <label className="mini-field">
+                            <span>Имя</span>
+                            <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
+                          </label>
+                          <div className="account-edit-actions">
+                            <StatusBadge status={account.is_pending ? 'account_pending' : account.is_active ? 'active' : 'disabled'} />
+                            <button className="ghost small-text" onClick={() => void patchAccount(client, account, { is_active: !account.is_active })}>
+                              {account.is_active ? 'Откл.' : 'Вкл.'}
+                            </button>
+                            <button className="small-text" onClick={() => void saveAccount(client, account)}>
+                              <Save size={14} />Сохранить
+                            </button>
+                            <button
+                              className="icon-button small danger"
+                              title="Удалить Telegram-аккаунт"
+                              onClick={() => void deleteAccount(client, account)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          className="ghost small-text"
-                          onClick={() => void patchAccount(client, account, { is_active: !account.is_active })}
-                        >
-                          {account.is_active ? 'Отключить' : 'Включить'}
-                        </button>
-                      </div>
-                    ))}
+                      )
+                    })}
                     {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
                     <div className="account-add">
-                      <input placeholder="ID менеджера" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
-                      <input placeholder="Ник в Telegram" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                      <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                      <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
                       <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
-                      <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim()}><Plus size={16} /></button>
+                      <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
                     </div>
                   </div>
                 </div>
 
-                <div className="client-section">
-                  <h3>Функции</h3>
-                  <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поиск поставщиков</label>
-                  <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
-                  <label><input type="checkbox" checked={client.is_trial} onChange={e => void patchClient(client, { is_trial: e.target.checked })} /> Бесплатный период</label>
-                </div>
-
-                <div className="client-section">
-                  <h3>Срок доступа</h3>
-                  <input
-                    className="client-date"
-                    type="text"
-                    placeholder="гггг-мм-дд"
-                    defaultValue={client.access_until || ''}
-                    onBlur={e => patchString(client, 'access_until', e.currentTarget.value)}
-                  />
-                </div>
-
-                <div className="client-section client-limits-section">
-                  <h3>Общие лимиты клиента</h3>
-                  <div className="client-limits">
-                    <label className="mini-field">
-                      <span>Отчёты по поставщикам</span>
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={client.monthly_supplier_search_limit}
-                        aria-label="Лимит отчётов по поиску поставщиков"
-                        onBlur={e => patchNumber(client, 'monthly_supplier_search_limit', Number(e.currentTarget.value))}
-                      />
-                    </label>
-                    <label className="mini-field">
-                      <span>Анализы документации</span>
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={client.monthly_procurement_report_limit}
-                        aria-label="Лимит отчётов анализа документации"
-                        onBlur={e => patchNumber(client, 'monthly_procurement_report_limit', Number(e.currentTarget.value))}
-                      />
-                    </label>
+                <div className="client-section client-balance-section">
+                  <div className="section-head">
+                    <h3>Баланс</h3>
+                    <span>не сгорает</span>
                   </div>
-                  <p className="field-help">Лимит общий для всех Telegram-аккаунтов этого клиента.</p>
                   {client.usage && (
-                    <div className="usage-grid">
-                      <UsageMeter counter={client.usage.supplier_search} />
-                      <UsageMeter counter={client.usage.procurement_report} />
+                    <div className="balance-compact-list">
+                      <BalanceLine counter={client.usage.supplier_search} />
+                      <BalanceLine counter={client.usage.procurement_report} />
                     </div>
                   )}
-                </div>
-
-                <div className="client-section recent-usage-section">
-                  <h3>Последние списания</h3>
-                  <div className="usage-history">
-                    {client.recent_usage?.map(item => (
-                      <div className="usage-history-row" key={item.id}>
-                        <div>
-                          <strong>{item.human_title}</strong>
-                          <small>{formatDate(item.created_at)} · менеджер {item.created_by_telegram_id || 'не указан'}</small>
-                        </div>
-                        <span>{usageEntryLabel(item)}</span>
-                      </div>
-                    ))}
-                    {!client.recent_usage?.length && <div className="inline-note">Списаний в этом месяце пока нет.</div>}
+                  <div className="manual-grant-panel">
+                    <label className="mini-field">
+                      <span>Тип</span>
+                      <select value={grant.kind} onChange={e => setGrantDraft(client, { kind: e.target.value, package_id: '' })}>
+                        <option value="supplier_search">Поставщики</option>
+                        <option value="procurement_report">Анализ документации</option>
+                      </select>
+                    </label>
+                    <label className="mini-field">
+                      <span>Количество</span>
+                      <input type="number" min={1} step={1} value={grant.units} onChange={e => setGrantDraft(client, { units: e.target.value, package_id: '' })} />
+                    </label>
+                    <label className="mini-field">
+                      <span>Шаблон</span>
+                      <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
+                        <option value="">Вручную</option>
+                        {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
+                      </select>
+                    </label>
+                    <input placeholder="Комментарий" value={grant.note} onChange={e => setGrantDraft(client, { note: e.target.value })} />
+                    <button onClick={() => void grantUnits(client)} disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1}><Plus size={16} />Начислить</button>
                   </div>
                 </div>
 
-                <div className="client-section client-notes">
-                  <h3>Заметки</h3>
+                <div className="client-section client-settings-section">
+                  <h3>Функции</h3>
+                  <div className="compact-switches">
+                    <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поставщики</label>
+                    <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
+                  </div>
                   <input
                     className="client-note"
-                    placeholder="Комментарий для себя"
+                    placeholder="Заметка по клиенту"
                     defaultValue={client.notes || ''}
-                    onBlur={e => patchString(client, 'notes', e.currentTarget.value)}
+                    onBlur={e => patchClientNote(client, e.currentTarget.value)}
                   />
                 </div>
+
+                <details className="client-section billing-history-details">
+                  <summary>
+                    <span>История баланса</span>
+                    <small>{client.recent_billing?.length || 0} операций</small>
+                  </summary>
+                  <div className="usage-history">
+                    {client.recent_billing?.map(item => (
+                      <div className="usage-history-row" key={item.id}>
+                        <div>
+                          <strong>{item.operation_label}: {item.kind_label}</strong>
+                          <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
+                        </div>
+                        <span>{item.units}</span>
+                      </div>
+                    ))}
+                    {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
+                  </div>
+                </details>
               </div>}
             </article>
           )
@@ -1052,36 +1534,74 @@ function ClientsView({ clients, onChange }: { clients: Client[]; onChange: () =>
   )
 }
 
-function clientSummaryLine(client: Client, accounts: TelegramAccount[], primaryAccount?: TelegramAccount) {
-  const username = client.username ? `@${client.username}` : ''
-  const primary = primaryAccount?.telegram_id || client.telegram_id || ''
-  const accountLabel = primary ? `первый Telegram ID: ${primary}` : 'Telegram ID не указан'
-  return [username, accountLabel].filter(Boolean).join(' · ')
+function parseTelegramUsernames(value: string) {
+  const seen = new Set<string>()
+  return value
+    .split(/[\s,;]+/)
+    .map(item => normalizeTelegramUsername(item))
+    .filter(item => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
+  const usernames = accounts.filter(account => account.username).map(account => `@${account.username}`).slice(0, 3)
+  const connected = accounts.filter(account => !account.is_pending)
+  const pending = accounts.filter(account => account.is_pending)
+  if (usernames.length) {
+    const more = accounts.length > usernames.length ? ` +${accounts.length - usernames.length}` : ''
+    return `${usernames.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
+  }
+  if (client.telegram_id) return `Telegram ID: ${client.telegram_id}`
+  return 'Telegram-аккаунты ожидают подключения'
 }
 
 function usageSummaryText(counter: UsageCounter) {
-  const limit = counter.unlimited ? 'без лимита' : counter.limit
-  return `${counter.used}/${limit}`
+  return `${counter.available ?? 'без лимита'} доступно`
 }
 
-function UsageMeter({ counter }: { counter: UsageCounter }) {
+function BalanceLine({ counter }: { counter: UsageCounter }) {
   return (
-    <div className="usage-meter">
-      <div className="usage-meter-head">
+    <div className={counter.low ? 'balance-line warning' : 'balance-line'}>
+      <div>
         <strong>{counter.label}</strong>
-        <span>{counter.used} из {counter.unlimited ? 'без лимита' : counter.limit}</span>
+        <small>начислено {counter.granted} · списано {counter.spent} · резерв {counter.reserved}</small>
       </div>
-      <div className="usage-bar"><span style={{ width: `${counter.percent}%` }} /></div>
-      <small>{counter.unlimited ? 'Ограничение не задано' : `Осталось: ${counter.remaining}`}</small>
+      <span>{counter.available ?? 'без лимита'}</span>
     </div>
   )
 }
 
-function usageEntryLabel(item: UsageEntry) {
-  const parts = []
-  if (item.supplier_units) parts.push(`поставщики: ${item.supplier_units}`)
-  if (item.procurement_report_units) parts.push(`анализ: ${item.procurement_report_units}`)
-  return parts.join(' · ') || item.mode_label
+function tariffOptionLabel(item: TariffPackage) {
+  return `${humanBillingKind(item.kind)} · ${item.name} · ${item.units} ед. · ${formatPrice(item.price_kopeks)}`
+}
+
+function humanBillingKind(kind: string) {
+  return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+}
+
+function formatPrice(priceKopeks: number) {
+  if (!priceKopeks) return 'цена не указана'
+  return `${new Intl.NumberFormat('ru-RU').format(priceKopeks / 100)} ₽`
+}
+
+function kopeksToRubles(priceKopeks: number) {
+  return Math.round(Number(priceKopeks || 0)) / 100
+}
+
+function rublesToKopeks(rubles: number) {
+  return Math.max(0, Math.round(Number(rubles || 0) * 100))
+}
+
+function fallbackDownloadName(job: Job, extension: string) {
+  const base = String(job.human_title || job.title || humanMode(job.mode) || 'TenderLex')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90)
+  return `${base || 'TenderLex'}.${extension}`
 }
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
@@ -1130,7 +1650,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
     const fallbackExt = job.mode === 'analysis_and_suppliers' ? 'zip' : job.mode === 'procurement_report' ? 'docx' : 'xlsx'
     link.href = url
-    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || `aipoisk-${job.id.slice(0, 8)}.${fallbackExt}`
+    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || fallbackDownloadName(job, fallbackExt)
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -1278,6 +1798,148 @@ function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
   )
 }
 
+function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]; settings: SettingsPayload; onChange: () => Promise<void> }) {
+  const [newTariff, setNewTariff] = useState({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+  const [contactDraft, setContactDraft] = useState({
+    bot_telegram: settings.bot_telegram || '@tenderlex_bot',
+    contact_email: settings.contact_email || '',
+    contact_telegram: settings.contact_telegram || '',
+    contact_website: settings.contact_website || '',
+    payment_instructions: settings.payment_instructions || '',
+  })
+  const [paymentDraft, setPaymentDraft] = useState({
+    payment_provider: settings.payment_provider || 'manual',
+    yookassa_shop_id: settings.yookassa_shop_id || '',
+    yookassa_return_url: settings.yookassa_return_url || '',
+  })
+  const [yookassaSecret, setYookassaSecret] = useState('')
+
+  useEffect(() => {
+    setContactDraft({
+      bot_telegram: settings.bot_telegram || '@tenderlex_bot',
+      contact_email: settings.contact_email || '',
+      contact_telegram: settings.contact_telegram || '',
+      contact_website: settings.contact_website || '',
+      payment_instructions: settings.payment_instructions || '',
+    })
+    setPaymentDraft({
+      payment_provider: settings.payment_provider || 'manual',
+      yookassa_shop_id: settings.yookassa_shop_id || '',
+      yookassa_return_url: settings.yookassa_return_url || '',
+    })
+  }, [settings])
+  useEffect(() => {
+    void api<{ yookassa_secret_key?: string }>('/api/settings/keys')
+      .then(data => setYookassaSecret(data.yookassa_secret_key || ''))
+      .catch(() => setYookassaSecret(''))
+  }, [])
+
+  async function createTariff() {
+    await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
+    setNewTariff({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+    await onChange()
+  }
+  async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
+    await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+    await onChange()
+  }
+  async function deleteTariff(item: TariffPackage) {
+    await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
+    await onChange()
+  }
+  async function saveContacts() {
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(contactDraft) })
+    await onChange()
+  }
+  async function savePaymentSettings() {
+    const payload: Partial<SettingsPayload> = {
+      ...paymentDraft,
+    }
+    if (yookassaSecret.trim() || !settings.yookassa_secret_key_set) {
+      payload.yookassa_secret_key = yookassaSecret
+    }
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(payload) })
+    await onChange()
+  }
+  const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
+  const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
+  return (
+    <section className="stack">
+      <div className="form-panel full-width-panel">
+        <h2>Новый пакет</h2>
+        <div className="tariff-form-grid">
+          <label className="field">
+            <span>Тип</span>
+            <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
+              <option value="supplier_search">Поставщики</option>
+              <option value="procurement_report">Анализ документации</option>
+            </select>
+          </label>
+          <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
+          <NumberField label="Генераций" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
+          <NumberField label="Цена, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать в боте</label>
+        </div>
+        <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
+      </div>
+
+      <TariffGroup title="Поставщики" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+
+      <div className="form-panel full-width-panel">
+        <h2>Контакты и ручная оплата</h2>
+        <div className="settings-grid compact-grid">
+          <TextField label="Telegram-бот для пробного запуска и работы" value={contactDraft.bot_telegram} onChange={value => setContactDraft({ ...contactDraft, bot_telegram: value })} />
+          <TextField label="Email" value={contactDraft.contact_email} onChange={value => setContactDraft({ ...contactDraft, contact_email: value })} />
+          <TextField label="Telegram для связи и оплаты" value={contactDraft.contact_telegram} onChange={value => setContactDraft({ ...contactDraft, contact_telegram: value })} />
+          <TextField label="Сайт" value={contactDraft.contact_website} onChange={value => setContactDraft({ ...contactDraft, contact_website: value })} />
+        </div>
+        <TextArea className="payment-textarea" label="Инструкция оплаты в боте" value={contactDraft.payment_instructions} onChange={value => setContactDraft({ ...contactDraft, payment_instructions: value })} />
+        <p className="field-help">Пока YooKassa не подключена, бот показывает эту инструкцию, email, Telegram и сайт. Реквизиты не подставляются автоматически.</p>
+        <button onClick={() => void saveContacts()}><CheckCircle2 size={16} />Сохранить контакты</button>
+      </div>
+
+      <div className="form-panel full-width-panel">
+        <h2>YooKassa</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Режим оплаты</span>
+            <select value={paymentDraft.payment_provider} onChange={e => setPaymentDraft({ ...paymentDraft, payment_provider: e.target.value })}>
+              <option value="manual">Ручная оплата</option>
+              <option value="yookassa">YooKassa</option>
+            </select>
+          </label>
+          <TextField label="Shop ID" value={paymentDraft.yookassa_shop_id} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_shop_id: value })} />
+          <TextField label="Return URL" value={paymentDraft.yookassa_return_url} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_return_url: value })} />
+          <SecretField label="Secret key" value={yookassaSecret} onChange={setYookassaSecret} />
+        </div>
+        <p className="field-help">Это заготовка настроек кассы. Приём платежей включим отдельным шагом после подключения YooKassa.</p>
+        <button onClick={() => void savePaymentSettings()}><Save size={16} />Сохранить оплату</button>
+      </div>
+    </section>
+  )
+}
+
+function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
+  return (
+    <div className="form-panel full-width-panel">
+      <h2>{title}</h2>
+      <div className="tariff-list">
+        {tariffs.map(item => (
+          <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id}>
+            <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
+            <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
+            <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
+            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> В боте</label>
+            <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
+          </article>
+        ))}
+        {!tariffs.length && <div className="empty inline-empty">Пакеты ещё не добавлены.</div>}
+      </div>
+    </div>
+  )
+}
+
 function SettingsView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
   const [draft, setDraft] = useState(settings)
   const [adapterKey, setAdapterKey] = useState('')
@@ -1411,7 +2073,10 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   const [primaryModel, setPrimaryModel] = useState(settings.primary_model)
   const [lightProvider, setLightProvider] = useState(settings.light_provider)
   const [lightModel, setLightModel] = useState(settings.light_model)
-  const [testResult, setTestResult] = useState('')
+  const [supplierProvider, setSupplierProvider] = useState(settings.supplier_ai_provider || settings.light_provider)
+  const [supplierModel, setSupplierModel] = useState(settings.supplier_ai_model || settings.light_model)
+  const [testResults, setTestResults] = useState<Record<string, AiTestState>>({})
+  const [saveStatus, setSaveStatus] = useState<Record<string, string>>({})
 
   useEffect(() => {
     const parsedModels = parseJson<SavedModel[]>(settings.saved_models_json, [])
@@ -1422,133 +2087,458 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     setPrimaryModel(settings.primary_model)
     setLightProvider(settings.light_provider)
     setLightModel(settings.light_model)
+    setSupplierProvider(settings.supplier_ai_provider || settings.light_provider)
+    setSupplierModel(settings.supplier_ai_model || settings.light_model)
   }, [settings])
 
   const modelOptions = useMemo(
     () => savedModels.filter(model => model.provider && model.modelId).map(model => `${model.provider}:${model.modelId}`),
     [savedModels],
   )
+  const providersById = useMemo(() => new Map(providers.map(provider => [provider.id, provider])), [providers])
+  function providerDisplayName(providerId: string) {
+    const provider = providersById.get(providerId)
+    return isKnownProviderId(providerId)
+      ? canonicalProviderName(providerId)
+      : (provider?.name || providerId || 'Custom provider')
+  }
   function modelOptionLabel(raw: string) {
     const [providerId, ...rest] = raw.split(':')
     const modelId = rest.join(':')
-    const saved = savedModels.find(item => item.provider === providerId && item.modelId === modelId)
-    if (saved) return saved.modelId || raw
-    return modelId || raw
+    const providerName = providerDisplayName(providerId)
+    return `${providerName} · ${modelId || raw}`
   }
   function providerOptionLabel(provider: CustomProvider) {
-    return provider.id
+    return providerDisplayName(provider.id)
   }
-  function resolvedModelValue(raw: string | undefined) {
+  function selectedModelSummary(providerId: string, modelId: string) {
+    if (!providerId || !modelId) return 'Модель не выбрана'
+    return modelOptionLabel(`${providerId}:${modelId}`)
+  }
+  function currentModelValue(role: string) {
+    if (role === '__light__') return lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    return primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
+  }
+  function functionRoleValue(raw: string | undefined) {
     const value = String(raw || '').trim()
-    if (value === '__primary__' || !value) return primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
-    if (value === '__light__') return lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
-    return value
+    if (value === '__light__') return '__light__'
+    if (value === '__primary__' || !value) return '__primary__'
+    if (value === currentModelValue('__light__')) return '__light__'
+    return '__primary__'
   }
   function explicitFunctionModels() {
     const result: Record<string, string> = {}
-    for (const key of aiRoutingKeys) {
-      const value = resolvedModelValue(functionModels[key])
-      if (value) result[key] = value
+    for (const key of procurementAiRoutingKeys) {
+      result[key] = functionRoleValue(functionModels[key])
+    }
+    for (const key of supplierAiRoutingKeys) {
+      result[key] = '__supplier_search__'
     }
     return result
   }
+  function clearSaveStatus(section: string) {
+    setSaveStatus(current => {
+      if (!current[section]) return current
+      const next = { ...current }
+      delete next[section]
+      return next
+    })
+  }
+  function clearSaveStatuses(...sections: string[]) {
+    setSaveStatus(current => {
+      let changed = false
+      const next = { ...current }
+      for (const section of sections) {
+        if (next[section]) {
+          delete next[section]
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }
+  function normalizedSavedModels() {
+    return savedModels
+      .map(model => ({
+        ...model,
+        id: model.id || crypto.randomUUID(),
+        name: '',
+        provider: String(model.provider || '').trim(),
+        modelId: String(model.modelId || '').trim(),
+      }))
+      .filter(model => model.provider && model.modelId)
+  }
+  function updateFunctionModel(key: string, role: string) {
+    setFunctionModels(current => {
+      return { ...current, [key]: role === '__light__' ? '__light__' : '__primary__' }
+    })
+    clearSaveStatus('functions')
+  }
 
   function addProvider() {
-    const id = `custom-provider-${providers.length + 1}`
+    let index = providers.length + 1
+    let id = `custom-provider-${index}`
+    while (providers.some(provider => provider.id === id)) {
+      index += 1
+      id = `custom-provider-${index}`
+    }
     setProviders([...providers, { id, name: 'Custom provider', baseUrl: '', apiKey: '', model: '' }])
+    clearSaveStatus('providers')
   }
   function addModel() {
+    const lastModel = savedModels[savedModels.length - 1]
+    if (lastModel && !lastModel.modelId.trim()) return
     setSavedModels([...savedModels, { id: crypto.randomUUID(), name: '', provider: providers[0]?.id || '', modelId: '' }])
+    clearSaveStatus('models')
   }
-  async function save() {
-    const normalizedProviders = ensureModelProviders(providers, savedModels)
+  function moveProvider(index: number, delta: number) {
+    setProviders(moveArrayItem(providers, index, delta))
+    clearSaveStatus('providers')
+  }
+  function moveModel(index: number, delta: number) {
+    setSavedModels(moveArrayItem(savedModels, index, delta))
+    clearSaveStatus('models')
+  }
+  function removeProvider(index: number) {
+    const provider = providers[index]
+    if (!provider) return
+    const relatedModels = savedModels.filter(model => model.provider === provider.id)
+    const message = relatedModels.length
+      ? `Удалить провайдера «${providerOptionLabel(provider)}» и ${relatedModels.length} связанных моделей?`
+      : `Удалить провайдера «${providerOptionLabel(provider)}»?`
+    if (!window.confirm(message)) return
+    setProviders(providers.filter((_, itemIndex) => itemIndex !== index))
+    setSavedModels(savedModels.filter(model => model.provider !== provider.id))
+    if (primaryProvider === provider.id) {
+      setPrimaryProvider('')
+      setPrimaryModel('')
+    }
+    if (lightProvider === provider.id) {
+      setLightProvider('')
+      setLightModel('')
+    }
+    if (supplierProvider === provider.id) {
+      setSupplierProvider('')
+      setSupplierModel('')
+    }
+    clearSaveStatuses('providers', 'models', 'global', 'supplier')
+  }
+  function removeModel(index: number) {
+    const model = savedModels[index]
+    if (!model) return
+    setSavedModels(savedModels.filter((_, itemIndex) => itemIndex !== index))
+    if (primaryProvider === model.provider && primaryModel === model.modelId) {
+      setPrimaryProvider('')
+      setPrimaryModel('')
+    }
+    if (lightProvider === model.provider && lightModel === model.modelId) {
+      setLightProvider('')
+      setLightModel('')
+    }
+    if (supplierProvider === model.provider && supplierModel === model.modelId) {
+      setSupplierProvider('')
+      setSupplierModel('')
+    }
+    clearSaveStatuses('models', 'global', 'supplier')
+  }
+  async function saveSection(section: string, payload: Partial<SettingsPayload>) {
     await api('/api/settings', {
       method: 'PATCH',
-      body: JSON.stringify({
-        primary_provider: primaryProvider,
-        primary_model: primaryModel,
-        light_provider: lightProvider,
-        light_model: lightModel,
-        custom_ai_providers_json: stringify(normalizedProviders),
-        saved_models_json: stringify(savedModels),
-        ai_function_models_json: stringify(explicitFunctionModels()),
-      }),
+      body: JSON.stringify(payload),
     })
+    setSaveStatus(current => ({ ...current, [section]: 'Сохранено' }))
     await onChange()
   }
-  async function testAi() {
-    const result = await api<{ response: string }>('/api/ai/test', {
-      method: 'POST',
-      body: JSON.stringify({ provider: lightProvider || primaryProvider, model: lightModel || primaryModel }),
+  async function saveFunctionModelSettings() {
+    await saveSection('functions', { ai_function_models_json: stringify(explicitFunctionModels()) })
+  }
+  async function saveGlobalModelSettings() {
+    await saveSection('global', {
+      primary_provider: primaryProvider,
+      primary_model: primaryModel,
+      light_provider: lightProvider,
+      light_model: lightModel,
+      ai_function_models_json: stringify(explicitFunctionModels()),
     })
-    setTestResult(result.response)
+  }
+  async function saveSupplierModelSettings() {
+    await saveSection('supplier', {
+      supplier_ai_provider: supplierProvider,
+      supplier_ai_model: supplierModel,
+      ai_function_models_json: stringify(explicitFunctionModels()),
+    })
+  }
+  async function saveProviderSettings() {
+    const normalizedProviders = providers.filter(provider => provider.id.trim()).map(normalizeProvider)
+    const providerIds = new Set(normalizedProviders.map(provider => provider.id))
+    const nextModels = normalizedSavedModels().filter(model => providerIds.has(model.provider))
+    const modelValues = new Set(nextModels.map(model => `${model.provider}:${model.modelId}`))
+    const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
+    const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    const supplierValue = supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''
+    await saveSection('providers', {
+      custom_ai_providers_json: stringify(normalizedProviders),
+      saved_models_json: stringify(nextModels),
+      primary_provider: primaryValue && modelValues.has(primaryValue) ? primaryProvider : '',
+      primary_model: primaryValue && modelValues.has(primaryValue) ? primaryModel : '',
+      light_provider: lightValue && modelValues.has(lightValue) ? lightProvider : '',
+      light_model: lightValue && modelValues.has(lightValue) ? lightModel : '',
+      supplier_ai_provider: supplierValue && modelValues.has(supplierValue) ? supplierProvider : '',
+      supplier_ai_model: supplierValue && modelValues.has(supplierValue) ? supplierModel : '',
+      ai_function_models_json: stringify(explicitFunctionModels()),
+    })
+  }
+  async function saveModelListSettings() {
+    const normalizedModels = normalizedSavedModels()
+    const modelValues = new Set(normalizedModels.map(model => `${model.provider}:${model.modelId}`))
+    const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
+    const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    const supplierValue = supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''
+    await saveSection('models', {
+      saved_models_json: stringify(normalizedModels),
+      primary_provider: !primaryValue || modelValues.has(primaryValue) ? primaryProvider : '',
+      primary_model: !primaryValue || modelValues.has(primaryValue) ? primaryModel : '',
+      light_provider: !lightValue || modelValues.has(lightValue) ? lightProvider : '',
+      light_model: !lightValue || modelValues.has(lightValue) ? lightModel : '',
+      supplier_ai_provider: !supplierValue || modelValues.has(supplierValue) ? supplierProvider : '',
+      supplier_ai_model: !supplierValue || modelValues.has(supplierValue) ? supplierModel : '',
+      ai_function_models_json: stringify(explicitFunctionModels()),
+    })
+  }
+  async function testAi(slot: string, provider: string, model: string) {
+    setTestResults(current => ({
+      ...current,
+      [slot]: {
+        status: 'running',
+        message: `Проверяю: ${selectedModelSummary(provider, model)}`,
+      },
+    }))
+    try {
+      const result = await api<{ response: string; provider_name?: string; model?: string }>('/api/ai/test', {
+        method: 'POST',
+        body: JSON.stringify({ provider, model }),
+      })
+      setTestResults(current => ({
+        ...current,
+        [slot]: {
+          status: 'success',
+          message: result.response || 'Модель ответила без текста.',
+          providerName: result.provider_name || providerDisplayName(provider),
+          model: result.model || model,
+        },
+      }))
+    } catch (err) {
+      setTestResults(current => ({
+        ...current,
+        [slot]: {
+          status: 'error',
+          message: formatError(err),
+          providerName: providerDisplayName(provider),
+          model,
+        },
+      }))
+    }
+  }
+  function testButton(slot: string, provider: string, model: string) {
+    const running = testResults[slot]?.status === 'running'
+    return (
+      <button
+        className="icon-button small"
+        title="Проверить эту модель"
+        onClick={() => void testAi(slot, provider, model)}
+        disabled={!provider || !model || running}
+      >
+        {running ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+      </button>
+    )
+  }
+  function renderTestResult(slot: string) {
+    const result = testResults[slot]
+    if (!result) return null
+    return (
+      <div className={`test-result ${result.status}`}>
+        {result.status === 'success' && <CheckCircle2 size={16} />}
+        {result.status === 'error' && <XCircle size={16} />}
+        {result.status === 'running' && <Loader2 size={16} className="spin" />}
+        <span>
+          {result.providerName && result.model && <strong>{result.providerName} · {result.model}</strong>}
+          {result.message}
+        </span>
+      </div>
+    )
+  }
+  function sectionSaveStatus(section: string) {
+    return saveStatus[section] ? <span className="save-status">{saveStatus[section]}</span> : null
   }
   return (
-    <section className="stack">
-      <div className="form-panel full-width-panel">
-        <h2>Модели для функций бота</h2>
-        <p className="field-help">В селекторах отображается только modelId.</p>
-        {aiRoutingKeys.map(key => (
+    <section className="ai-settings">
+      <div className="ai-top-grid">
+        <details className="service-panel ai-panel" open>
+          <summary>Анализ документации</summary>
           <ModelSelect
-            key={key}
-            label={functionLabels[key] || key}
-            value={resolvedModelValue(functionModels[key])}
+            label="Основная модель анализа"
+            value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
+            action={testButton('primary', primaryProvider, primaryModel)}
+            status={renderTestResult('primary')}
             onChange={(provider, model) => {
-              setFunctionModels({ ...functionModels, [key]: `${provider}:${model}` })
+              setPrimaryProvider(provider)
+              setPrimaryModel(model)
+              clearSaveStatus('global')
             }}
           />
-        ))}
-      </div>
-      <div className="form-panel">
-        <h2>primary_model / light_model</h2>
-        <ModelSelect label="primary_model" value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''} options={modelOptions} optionLabel={modelOptionLabel} onChange={(provider, model) => { setPrimaryProvider(provider); setPrimaryModel(model) }} />
-        <ModelSelect label="light_model" value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''} options={modelOptions} optionLabel={modelOptionLabel} onChange={(provider, model) => { setLightProvider(provider); setLightModel(model) }} />
-      </div>
-      <div className="form-panel">
-        <h2>Проверка</h2>
-        <p className="field-help">Запрос проверки: light_model, иначе primary_model.</p>
-        <button className="secondary" onClick={() => void testAi()}><BrainCircuit size={16} />Проверить модель</button>
-        {testResult && <span className="test-result">{testResult}</span>}
-      </div>
-      <div className="form-panel full-width-panel">
-        <details className="service-panel">
-          <summary>Провайдеры и modelId</summary>
-          <div className="advanced-section">
-            <h3>AI providers</h3>
-            <button onClick={addProvider}><Plus size={16} />Добавить provider</button>
-            <div className="provider-row-head"><span>provider id</span><span>provider name</span><span>Base URL</span><span>API key</span></div>
-            {providers.map((provider, index) => (
-              <div className="provider-row" key={provider.id}>
-                <input value={provider.id} placeholder="например openrouter" onChange={e => updateArray(providers, setProviders, index, { id: e.target.value })} />
-                <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => updateArray(providers, setProviders, index, { name: e.target.value })} />
-                <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => updateArray(providers, setProviders, index, { baseUrl: e.target.value })} />
-                <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => updateArray(providers, setProviders, index, { apiKey: e.target.value })} />
-              </div>
-            ))}
+          <ModelSelect
+            label="Быстрая модель анализа"
+            value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
+            options={modelOptions}
+            optionLabel={modelOptionLabel}
+            action={testButton('light', lightProvider, lightModel)}
+            status={renderTestResult('light')}
+            onChange={(provider, model) => {
+              setLightProvider(provider)
+              setLightModel(model)
+              clearSaveStatus('global')
+            }}
+          />
+          <div className="section-actions">
+            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить анализ</button>
+            {sectionSaveStatus('global')}
           </div>
-          <div className="advanced-section">
-            <h3>Models</h3>
-            <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
-            <div className="model-row-head"><span>Комментарий</span><span>provider id</span><span>modelId</span></div>
-            {savedModels.map((model, index) => (
-              <div className="model-row" key={model.id}>
-                <input value={model.name} placeholder="необязательно" onChange={e => updateArray(savedModels, setSavedModels, index, { name: e.target.value })} />
-                <select value={model.provider} onChange={e => updateArray(savedModels, setSavedModels, index, { provider: e.target.value })}>
-                  <option value="">provider id</option>
-                  {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-                </select>
-                <input value={model.modelId} placeholder="например gemini-3.1-flash-lite" onChange={e => updateArray(savedModels, setSavedModels, index, { modelId: e.target.value })} />
-              </div>
-            ))}
+        </details>
+        <details className="service-panel ai-panel" open>
+          <summary>Поиск поставщиков</summary>
+          <ModelSelect
+            label="Модель поиска поставщиков"
+            help="Здесь можно выбрать более дешёвую и быструю модель: она применяется ко всем ИИ-этапам поиска поставщиков."
+            value={supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''}
+            options={modelOptions}
+            optionLabel={modelOptionLabel}
+            action={testButton('supplier', supplierProvider, supplierModel)}
+            status={renderTestResult('supplier')}
+            onChange={(provider, model) => {
+              setSupplierProvider(provider)
+              setSupplierModel(model)
+              clearSaveStatus('supplier')
+            }}
+          />
+          <div className="section-actions">
+            <button onClick={() => void saveSupplierModelSettings()}><Save size={16} />Сохранить поиск</button>
+            {sectionSaveStatus('supplier')}
           </div>
         </details>
       </div>
-      <div className="savebar">
-        <button onClick={() => void save()}><CheckCircle2 size={16} />Сохранить ИИ</button>
-      </div>
+      <details className="service-panel ai-panel">
+        <summary>Маршруты анализа документации</summary>
+        <p className="field-help">Для отдельных этапов анализа можно выбрать основную или быструю модель. Поиск поставщиков здесь не дробится.</p>
+          <div className="function-route-list">
+            {procurementAiRoutingKeys.map(key => {
+              const value = functionRoleValue(functionModels[key])
+              return (
+                <label className="function-route-row" key={key}>
+                  <span>{functionLabels[key] || key}</span>
+                  <select value={value} onChange={event => updateFunctionModel(key, event.target.value)}>
+                    <option value="__primary__">{modelRoleLabels.__primary__}</option>
+                    <option value="__light__">{modelRoleLabels.__light__}</option>
+                  </select>
+                </label>
+              )
+            })}
+          </div>
+          <div className="section-actions">
+            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить маршруты</button>
+            {sectionSaveStatus('functions')}
+          </div>
+      </details>
+      <details className="service-panel ai-panel">
+        <summary>Провайдеры ИИ</summary>
+        <div className="advanced-section">
+          <button className="ghost ai-add-button" onClick={addProvider}><Plus size={16} />Добавить провайдера</button>
+          <div className="provider-row-head"><span>Код</span><span>Название</span><span>Адрес API</span><span>Ключ API</span><span></span></div>
+          {providers.map((provider, index) => (
+            <div className="provider-row" key={`${provider.id}-${index}`}>
+              <input value={provider.id} placeholder="например openrouter" onChange={e => { updateArray(providers, setProviders, index, { id: e.target.value }); clearSaveStatus('providers') }} />
+              <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => { updateArray(providers, setProviders, index, { name: e.target.value }); clearSaveStatus('providers') }} />
+              <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => { updateArray(providers, setProviders, index, { baseUrl: e.target.value }); clearSaveStatus('providers') }} />
+              <input type="password" value={provider.apiKey} placeholder="Ключ API" onChange={e => { updateArray(providers, setProviders, index, { apiKey: e.target.value }); clearSaveStatus('providers') }} />
+              <RowActions
+                index={index}
+                count={providers.length}
+                onMoveUp={() => moveProvider(index, -1)}
+                onMoveDown={() => moveProvider(index, 1)}
+                onRemove={() => removeProvider(index)}
+                removeTitle="Удалить провайдера"
+              />
+            </div>
+          ))}
+          <div className="section-actions">
+            <button onClick={() => void saveProviderSettings()}><Save size={16} />Сохранить провайдеров</button>
+            {sectionSaveStatus('providers')}
+          </div>
+        </div>
+      </details>
+      <details className="service-panel ai-panel">
+        <summary>Доступные модели</summary>
+        <div className="advanced-section">
+          <button className="ghost ai-add-button" onClick={addModel}><Plus size={16} />Добавить модель</button>
+          <div className="model-row-head"><span>Провайдер</span><span>Модель</span><span></span></div>
+          {savedModels.map((model, index) => (
+            <div className="model-row" key={model.id}>
+              <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
+                <option value="">Провайдер</option>
+                {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
+              </select>
+              <input value={model.modelId} placeholder="например gpt-5.4" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
+              <RowActions
+                index={index}
+                count={savedModels.length}
+                onMoveUp={() => moveModel(index, -1)}
+                onMoveDown={() => moveModel(index, 1)}
+                onRemove={() => removeModel(index)}
+                removeTitle="Удалить модель"
+              />
+            </div>
+          ))}
+          <div className="section-actions">
+            <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить модели</button>
+            {sectionSaveStatus('models')}
+          </div>
+        </div>
+      </details>
     </section>
+  )
+}
+
+function moveArrayItem<T>(items: T[], index: number, delta: number) {
+  const nextIndex = index + delta
+  if (nextIndex < 0 || nextIndex >= items.length) return items
+  const next = [...items]
+  const [item] = next.splice(index, 1)
+  next.splice(nextIndex, 0, item)
+  return next
+}
+
+function RowActions({
+  index,
+  count,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  removeTitle,
+}: {
+  index: number
+  count: number
+  onMoveUp: () => void
+  onMoveDown: () => void
+  onRemove: () => void
+  removeTitle: string
+}) {
+  return (
+    <div className="row-actions">
+      <button className="icon-button small" title="Поднять выше" onClick={onMoveUp} disabled={index === 0}><ArrowUp size={14} /></button>
+      <button className="icon-button small" title="Опустить ниже" onClick={onMoveDown} disabled={index >= count - 1}><ArrowDown size={14} /></button>
+      <button className="icon-button small danger" title={removeTitle} onClick={onRemove}><Trash2 size={14} /></button>
+    </div>
   )
 }
 
@@ -1558,33 +2548,44 @@ function updateArray<T>(items: T[], setter: (value: T[]) => void, index: number,
 
 function ModelSelect({
   label,
+  help = '',
   value,
   options,
   optionLabel = option => option,
+  action,
+  status,
   onChange,
 }: {
   label: string
+  help?: string
   value: string
   options: string[]
   optionLabel?: (option: string) => string
+  action?: ReactNode
+  status?: ReactNode
   onChange: (provider: string, model: string) => void
 }) {
   return (
-    <label className="field">
+    <div className="field">
       <span>{label}</span>
-      <select value={value} onChange={event => {
-        const raw = event.target.value
-        if (raw.startsWith('__')) {
-          onChange(raw, '')
-          return
-        }
-        const [provider, ...rest] = raw.split(':')
-        onChange(provider || '', rest.join(':') || '')
-      }}>
-        <option value="">Не выбрано</option>
-        {options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}
-      </select>
-    </label>
+      <div className="model-select-row">
+        <select value={value} onChange={event => {
+          const raw = event.target.value
+          if (raw.startsWith('__')) {
+            onChange(raw, '')
+            return
+          }
+          const [provider, ...rest] = raw.split(':')
+          onChange(provider || '', rest.join(':') || '')
+        }}>
+          <option value="">Не выбрано</option>
+          {options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}
+        </select>
+        {action}
+      </div>
+      {help && <small className="field-help">{help}</small>}
+      {status}
+    </div>
   )
 }
 
@@ -1600,8 +2601,8 @@ function NumberField({ label, value, onChange }: { label: string; value: number;
   return <label className="field"><span>{label}</span><input type="number" value={value || 0} onChange={e => onChange(Number(e.target.value))} /></label>
 }
 
-function TextArea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="field"><span>{label}</span><textarea value={value || ''} onChange={e => onChange(e.target.value)} /></label>
+function TextArea({ label, value, onChange, className = '' }: { label: string; value: string; onChange: (value: string) => void; className?: string }) {
+  return <label className={className ? `field ${className}` : 'field'}><span>{label}</span><textarea value={value || ''} onChange={e => onChange(e.target.value)} /></label>
 }
 
 function StatusBadge({ status }: { status: string }) {

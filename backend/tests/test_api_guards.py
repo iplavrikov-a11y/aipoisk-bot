@@ -10,9 +10,27 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 import app.main as main
-from app.main import build_supplier_quality_snapshot, build_system_status, client_to_dict, create_manual_job, job_to_dict, list_jobs, read_job_evidence_payload, settings_to_public_dict, upload_job
-from app.models import Client, Job, SystemSettings, now_utc
-from app.schemas import ManualJobCreate
+from app.main import (
+    build_bot_analytics,
+    build_supplier_quality_snapshot,
+    build_system_status,
+    client_to_dict,
+    create_client,
+    create_client_telegram_account,
+    create_manual_job,
+    delete_client,
+    delete_client_telegram_account,
+    grant_client_billing_units,
+    job_to_dict,
+    list_jobs,
+    public_site_payload,
+    read_job_evidence_payload,
+    settings_to_public_dict,
+    update_client_telegram_account,
+    upload_job,
+)
+from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, now_utc
+from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
 class ApiGuardTests(unittest.TestCase):
@@ -192,6 +210,487 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(len(payload["recent_usage"]), 2)
         self.assertEqual({item["created_by_telegram_id"] for item in payload["recent_usage"]}, {"100", "200"})
 
+    def test_create_client_accepts_pending_username_without_telegram_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            payload = create_client(
+                ClientCreate(name="Customer", telegram_usernames=["@BuyerOne"]),
+                db=db,
+            )
+        finally:
+            db.close()
+
+        self.assertEqual(payload["name"], "Customer")
+        self.assertEqual(payload["telegram_id"], "")
+        self.assertTrue(payload["is_pending"])
+        self.assertEqual(payload["telegram_accounts"][0]["username"], "buyerone")
+        self.assertEqual(payload["telegram_accounts"][0]["telegram_id"], "")
+        self.assertTrue(payload["telegram_accounts"][0]["is_pending"])
+
+    def test_manual_telegram_id_account_still_can_be_added_to_client(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_usernames=["@buyerone"]), db=db)
+            account = create_client_telegram_account(
+                client_payload["id"],
+                ClientTelegramAccountCreate(telegram_id="777", username="@manager"),
+                db=db,
+            )
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "777")
+        self.assertEqual(account["username"], "manager")
+        self.assertFalse(account["is_pending"])
+
+    def test_pending_account_can_be_completed_by_manual_telegram_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_usernames=["@buyerone"]), db=db)
+            account_id = client_payload["telegram_accounts"][0]["id"]
+
+            updated = update_client_telegram_account(
+                client_payload["id"],
+                account_id,
+                ClientTelegramAccountPatch(telegram_id="888", username="@BuyerOne", name="Buyer One"),
+                db=db,
+            )
+            client = db.get(Client, client_payload["id"])
+            client_telegram_id = client.telegram_id if client else ""
+        finally:
+            db.close()
+
+        self.assertEqual(updated["telegram_id"], "888")
+        self.assertEqual(updated["username"], "buyerone")
+        self.assertEqual(updated["name"], "Buyer One")
+        self.assertFalse(updated["is_pending"])
+        self.assertEqual(client_telegram_id, "888")
+
+    def test_manual_telegram_id_patch_rejects_existing_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            create_client(ClientCreate(name="First", telegram_id="111"), db=db)
+            second = create_client(ClientCreate(name="Second", telegram_usernames=["@second"]), db=db)
+            account_id = second["telegram_accounts"][0]["id"]
+
+            with self.assertRaises(HTTPException) as raised:
+                update_client_telegram_account(
+                    second["id"],
+                    account_id,
+                    ClientTelegramAccountPatch(telegram_id="111"),
+                    db=db,
+                )
+        finally:
+            db.close()
+
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_existing_telegram_account_requires_transfer_confirmation(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            target = create_client(ClientCreate(name="Target", telegram_id="111", username="@owner"), db=db)
+
+            with self.assertRaises(HTTPException) as raised:
+                create_client_telegram_account(
+                    target["id"],
+                    ClientTelegramAccountCreate(telegram_id="222", username="@manager"),
+                    db=db,
+                )
+        finally:
+            db.close()
+
+        self.assertEqual(source["telegram_id"], "222")
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Подтвердите перенос", str(raised.exception.detail))
+
+    def test_trial_client_can_be_merged_into_existing_client_by_transferring_account(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Customer", telegram_id="111", username="@owner"), db=db)
+            source = create_client(
+                ClientCreate(name="Trial Manager", telegram_id="222", username="@manager", is_trial=True),
+                db=db,
+            )
+            source_id = source["id"]
+            db.add(Job(id="job-1", client_id=source_id, mode="supplier_search", status="completed", title="ТЗ", created_by_telegram_id="222"))
+            db.add(
+                BillingTransaction(
+                    client_id=source_id,
+                    job_id="job-1",
+                    kind="supplier_search",
+                    operation="grant",
+                    units=1,
+                    note="trial",
+                )
+            )
+            db.commit()
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(
+                    telegram_id="222",
+                    username="@manager",
+                    name="Manager",
+                    transfer_existing=True,
+                ),
+                db=db,
+            )
+            source_after = db.get(Client, source_id)
+            target_client = db.get(Client, target["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            target_account_count = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.client_id == target["id"])
+                .count()
+            )
+            moved_job = db.get(Job, "job-1")
+            moved_job_client_id = moved_job.client_id if moved_job else ""
+            moved_billing = db.query(BillingTransaction).filter(BillingTransaction.job_id == "job-1").first()
+            moved_billing_client_id = moved_billing.client_id if moved_billing else ""
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertEqual(account["username"], "manager")
+        self.assertEqual(account["name"], "Manager")
+        self.assertIsNone(source_after)
+        self.assertEqual(target_primary_id, "111")
+        self.assertEqual(target_account_count, 2)
+        self.assertEqual(moved_job_client_id, target["id"])
+        self.assertEqual(moved_billing_client_id, target["id"])
+
+    def test_transfer_to_pending_client_promotes_moved_telegram_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Customer", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Trial Manager", telegram_id="222", username="@manager", is_trial=True), db=db)
+            source_id = source["id"]
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(
+                    telegram_id="222",
+                    username="@manager",
+                    transfer_existing=True,
+                ),
+                db=db,
+            )
+            source_after = db.get(Client, source_id)
+            target_client = db.get(Client, target["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            target_accounts = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.client_id == target["id"])
+                .all()
+            )
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertIsNone(source_after)
+        self.assertEqual(target_primary_id, "222")
+        self.assertEqual({item.username for item in target_accounts}, {"owner", "manager"})
+
+    def test_transferring_account_from_regular_multi_account_client_keeps_source_client(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Target", telegram_id="111", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            create_client_telegram_account(
+                source["id"],
+                ClientTelegramAccountCreate(telegram_id="333", username="@second"),
+                db=db,
+            )
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager", transfer_existing=True),
+                db=db,
+            )
+            source_client = db.get(Client, source["id"])
+            target_accounts = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == target["id"]).all()
+            source_accounts = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source["id"]).all()
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertIsNotNone(source_client)
+        self.assertTrue(source_client.is_active)
+        self.assertEqual(source_client.telegram_id, "333")
+        self.assertEqual(len(source_accounts), 1)
+        self.assertEqual(source_accounts[0].telegram_id, "333")
+        self.assertEqual({item.telegram_id for item in target_accounts}, {"111", "222"})
+
+    def test_transfer_from_regular_client_to_pending_client_reassigns_both_primaries(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Target", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            create_client_telegram_account(
+                source["id"],
+                ClientTelegramAccountCreate(telegram_id="333", username="@second"),
+                db=db,
+            )
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager", transfer_existing=True),
+                db=db,
+            )
+            target_client = db.get(Client, target["id"])
+            source_client = db.get(Client, source["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            source_primary_id = source_client.telegram_id if source_client else ""
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertEqual(target_primary_id, "222")
+        self.assertEqual(source_primary_id, "333")
+
+    def test_extra_telegram_account_can_be_deleted(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="111"), db=db)
+            extra = create_client_telegram_account(
+                client_payload["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager"),
+                db=db,
+            )
+
+            result = delete_client_telegram_account(client_payload["id"], extra["id"], db=db)
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(result["client"]["telegram_accounts"]), 1)
+        self.assertEqual(result["client"]["telegram_accounts"][0]["telegram_id"], "111")
+
+    def test_deleting_primary_telegram_account_reassigns_client_primary_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="111"), db=db)
+            create_client_telegram_account(
+                client_payload["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager"),
+                db=db,
+            )
+            primary_id = next(
+                item["id"]
+                for item in client_payload["telegram_accounts"]
+                if item["telegram_id"] == "111"
+            )
+
+            result = delete_client_telegram_account(client_payload["id"], primary_id, db=db)
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["client"]["telegram_id"], "222")
+        self.assertEqual(len(result["client"]["telegram_accounts"]), 1)
+
+    def test_last_telegram_account_cannot_be_deleted(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="111"), db=db)
+            account_id = client_payload["telegram_accounts"][0]["id"]
+
+            with self.assertRaises(HTTPException) as raised:
+                delete_client_telegram_account(client_payload["id"], account_id, db=db)
+        finally:
+            db.close()
+
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_manual_billing_grant_accepts_arbitrary_units_without_tariff(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="777"), db=db)
+            result = grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="supplier_search", units=1012, note="manual random amount"),
+                db=db,
+            )
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transaction"]["package_id"], "")
+        self.assertEqual(result["transaction"]["units"], 1012)
+        self.assertEqual(result["client"]["usage"]["supplier_search"]["available"], 1012)
+
+    def test_delete_client_removes_client_without_history(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Draft", telegram_usernames=["@draft"]), db=db)
+            result = delete_client(client_payload["id"], db=db)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(db.query(Client).count(), 0)
+        finally:
+            db.close()
+
+    def test_delete_client_removes_manual_billing_when_no_jobs_exist(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client = Client(id="client-1", telegram_id="100", name="Customer")
+            db.add(client)
+            db.add(BillingTransaction(client_id="client-1", kind="supplier_search", operation="grant", units=1))
+            db.commit()
+
+            result = delete_client("client-1", db=db)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(db.query(Client).count(), 0)
+            self.assertEqual(db.query(BillingTransaction).count(), 0)
+        finally:
+            db.close()
+
+    def test_delete_client_rejects_clients_with_jobs_to_preserve_history(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client = Client(id="client-1", telegram_id="100", name="Customer")
+            db.add(client)
+            db.add(Job(client_id="client-1", mode="supplier_search", title="ТЗ"))
+            db.commit()
+
+            with self.assertRaises(HTTPException) as raised:
+                delete_client("client-1", db=db)
+
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertIn("Отключите клиента", str(raised.exception.detail))
+        finally:
+            db.close()
+
     def test_list_jobs_hides_internal_jobs_by_default(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
@@ -224,6 +723,118 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["supplier_search_ui"]["active_label"], "Резерв DuckDuckGo")
         self.assertTrue(payload["supplier_search_ui"]["has_active_source"])
         self.assertIn("technical_sources", payload["supplier_search_ui"])
+
+    def test_settings_public_payload_includes_contact_site_and_default_payment_text(self) -> None:
+        settings = SystemSettings(
+            id=1,
+            bot_telegram="@tenderlex_bot",
+            contact_website="https://aipoisk.example",
+            payment_instructions="",
+        )
+
+        payload = settings_to_public_dict(settings)
+
+        self.assertEqual(payload["bot_telegram"], "@tenderlex_bot")
+        self.assertEqual(payload["contact_website"], "https://aipoisk.example")
+        self.assertEqual(payload["payment_instructions"], DEFAULT_PAYMENT_INSTRUCTIONS)
+
+    def test_bot_analytics_exposes_funnel_trial_followups_and_payment_readiness(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    payment_provider="yookassa",
+                    yookassa_shop_id="shop-1",
+                    yookassa_secret_key="secret",
+                )
+            )
+            db.add(Client(id="trial-1", telegram_id="100", username="trial", name="Trial User", is_trial=True, monthly_supplier_search_limit=1))
+            db.add(Client(id="paid-1", telegram_id="200", username="paid", name="Paid User", monthly_supplier_search_limit=10))
+            db.add(ClientTelegramAccount(client_id="trial-1", telegram_id="100", username="trial"))
+            db.add(ClientTelegramAccount(client_id="paid-1", telegram_id="200", username="paid"))
+            db.add(Job(id="job-1", client_id="trial-1", mode="supplier_search", status="completed", created_by_telegram_id="100", created_at=now_utc()))
+            db.add(Job(id="job-2", client_id="paid-1", mode="procurement_report", status="failed", created_by_telegram_id="200", created_at=now_utc()))
+            db.add(BillingTransaction(client_id="paid-1", kind="supplier_search", operation="grant", units=10, created_at=now_utc()))
+            db.commit()
+
+            payload = build_bot_analytics(db, period_days=30)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["summary"]["clients_total"], 2)
+        self.assertEqual(payload["summary"]["telegram_accounts"], 2)
+        self.assertEqual(payload["summary"]["period_jobs"], 2)
+        self.assertEqual(payload["funnel"]["trial_started"], 1)
+        self.assertEqual(payload["funnel"]["trial_used_bot"], 1)
+        self.assertEqual(payload["funnel"]["trial_with_grants"], 0)
+        self.assertTrue(payload["billing"]["yookassa_ready"])
+        self.assertEqual(payload["trial_followups"][0]["client_id"], "trial-1")
+        self.assertEqual(payload["top_clients"][0]["jobs_total"], 1)
+
+    def test_public_site_payload_exposes_only_active_tariffs_and_contacts(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    bot_telegram="@tenderlex_bot",
+                    contact_email="snab@example.ru",
+                    contact_telegram="@lexelence",
+                    contact_website="tenderlex.ru",
+                )
+            )
+            db.add(
+                TariffPackage(
+                    kind="supplier_search",
+                    name="10 запросов",
+                    units=10,
+                    price_kopeks=100000,
+                    description="Поиск поставщиков",
+                    is_active=True,
+                )
+            )
+            db.add(
+                TariffPackage(
+                    kind="procurement_report",
+                    name="Скрытый пакет",
+                    units=1,
+                    price_kopeks=10000,
+                    is_active=False,
+                )
+            )
+            db.commit()
+
+            payload = public_site_payload(db)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["site"]["domain"], "https://tenderlex.ru")
+        self.assertEqual(payload["bot"]["telegram"], "@tenderlex_bot")
+        self.assertEqual(payload["bot"]["telegram_url"], "https://t.me/tenderlex_bot")
+        self.assertEqual(payload["contacts"]["email"], "snab@example.ru")
+        self.assertEqual(payload["contacts"]["telegram_url"], "https://t.me/lexelence")
+        self.assertEqual(payload["contacts"]["website_url"], "https://tenderlex.ru")
+        self.assertEqual(len(payload["tariffs"]), 1)
+        self.assertEqual(payload["tariffs"][0]["label"], "Поставщики")
+        self.assertEqual(payload["tariff_groups"]["supplier_search"][0]["name"], "10 запросов")
+        self.assertEqual(payload["tariff_groups"]["procurement_report"], [])
 
     def test_system_status_exposes_resources_queue_and_configured_services(self) -> None:
         from sqlalchemy import create_engine
@@ -261,6 +872,84 @@ class ApiGuardTests(unittest.TestCase):
 
 
 class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_test_returns_selected_provider_and_model(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_call_llm = main.call_llm
+
+        async def fake_call_llm(_settings, _prompt: str, **kwargs):
+            kwargs["metadata"].update(
+                {
+                    "provider_id": "polza",
+                    "provider_name": "Polza",
+                    "model": "x-ai/grok-4.1-fast",
+                    "attempted_models": ["Polza:x-ai/grok-4.1-fast"],
+                }
+            )
+            return "ok"
+
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    custom_ai_providers_json='[{"id":"polza","name":"Polza","baseUrl":"https://api.polza.ai/v1","apiKey":"key"}]',
+                    light_provider="polza",
+                    light_model="x-ai/grok-4.1-fast",
+                )
+            )
+            db.commit()
+            main.call_llm = fake_call_llm
+
+            result = await main.test_ai(
+                AiTestRequest(provider="polza", model="x-ai/grok-4.1-fast"),
+                db=db,
+            )
+        finally:
+            main.call_llm = original_call_llm
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["response"], "ok")
+        self.assertEqual(result["provider_id"], "polza")
+        self.assertEqual(result["provider_name"], "Polza")
+        self.assertEqual(result["model"], "x-ai/grok-4.1-fast")
+
+    async def test_ai_test_surfaces_provider_errors(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_call_llm = main.call_llm
+
+        async def fake_call_llm(*_args, **_kwargs):
+            raise RuntimeError("AI provider requires baseUrl, apiKey and model")
+
+        try:
+            db.add(SystemSettings(id=1, light_provider="polza", light_model="model"))
+            db.commit()
+            main.call_llm = fake_call_llm
+
+            with self.assertRaises(HTTPException) as raised:
+                await main.test_ai(AiTestRequest(provider="polza", model="model"), db=db)
+        finally:
+            main.call_llm = original_call_llm
+            db.close()
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Проверка модели не прошла", str(raised.exception.detail))
+
     async def test_upload_rejects_empty_file_list_before_db_access(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             await upload_job(telegram_id="123", files=[], db=object())
@@ -300,7 +989,14 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
             return Job(id="job-1", client_id="client-1", mode=kwargs["mode"], title=kwargs["title"], target_suppliers=kwargs["target_suppliers"])
 
         try:
-            db.add(Client(id="client-1", telegram_id="123", allowed_procurement_report=True))
+            db.add(
+                Client(
+                    id="client-1",
+                    telegram_id="123",
+                    allowed_procurement_report=True,
+                    monthly_procurement_report_limit=1,
+                )
+            )
             db.commit()
             main.create_job = fake_create_job
             main.enqueue_job = lambda _job_id: None
@@ -320,6 +1016,55 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "job-1")
         self.assertEqual(captured["files"], [])
         self.assertEqual(captured["sources"][0]["value"], "https://etp.example.ru/procedure/123")
+
+    async def test_upload_accepts_report_notice_number_without_files(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_create_job = main.create_job
+        original_enqueue_job = main.enqueue_job
+        captured: dict = {}
+
+        def fake_create_job(*args, **kwargs):
+            captured.update(kwargs)
+            return Job(id="job-1", client_id="client-1", mode=kwargs["mode"], title=kwargs["title"], target_suppliers=kwargs["target_suppliers"])
+
+        try:
+            db.add(
+                Client(
+                    id="client-1",
+                    telegram_id="123",
+                    allowed_procurement_report=True,
+                    monthly_procurement_report_limit=1,
+                )
+            )
+            db.commit()
+            main.create_job = fake_create_job
+            main.enqueue_job = lambda _job_id: None
+
+            result = await upload_job(
+                telegram_id="123",
+                mode="procurement_report",
+                files=[],
+                source_urls="0371100005626000040",
+                db=db,
+            )
+        finally:
+            main.create_job = original_create_job
+            main.enqueue_job = original_enqueue_job
+            db.close()
+
+        self.assertEqual(result["id"], "job-1")
+        self.assertEqual(captured["files"], [])
+        self.assertEqual(captured["title"], "Закупка 0371100005626000040")
+        self.assertEqual(captured["sources"][0]["kind"], "tenderplan_notice")
+        self.assertEqual(captured["sources"][0]["value"], "0371100005626000040")
 
     async def test_upload_supplier_search_multiple_files_creates_separate_jobs(self) -> None:
         from sqlalchemy import create_engine
@@ -356,7 +1101,14 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
             )
 
         try:
-            db.add(Client(id="client-1", telegram_id="123", allowed_supplier_search=True))
+            db.add(
+                Client(
+                    id="client-1",
+                    telegram_id="123",
+                    allowed_supplier_search=True,
+                    monthly_supplier_search_limit=2,
+                )
+            )
             db.commit()
             main.create_job = fake_create_job
             main.enqueue_job = lambda job_id: enqueued.append(job_id)
