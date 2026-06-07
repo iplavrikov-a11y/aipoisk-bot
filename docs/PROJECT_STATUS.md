@@ -76,9 +76,10 @@ Current admin capabilities:
   configured API services without inventing balances;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
-- AI model settings show exact `modelId` values in function selectors, while
-  provider `id`, `Base URL`, `API key`, and model rows live in the advanced
-  provider section.
+- AI model settings show provider name, `provider id`, and exact `modelId` in
+  function/global selectors. The model checker shows running/success/error
+  state in place and preserves the provider's HTTP error text when a selected
+  `modelId` is unavailable.
 
 AI provider defaults currently used by the admin UI:
 
@@ -87,9 +88,9 @@ AI provider defaults currently used by the admin UI:
 - `gemini`: Gemini proxy endpoint from settings;
 - `polza`: `https://api.polza.ai/v1`.
 
-OpenRouter and Polza Base URLs are configured in the live settings, but their
-API keys are not present in saved settings. Existing OpenAI-compatible and
-Gemini keys are preserved.
+OpenRouter, OpenAI-compatible, Gemini, and Polza provider rows are configured in
+the live settings. API keys are runtime secrets stored in settings/DB only and
+must not be copied into git, docs, logs, or customer-facing output.
 
 ## Supplier Search Architecture
 

@@ -29,7 +29,7 @@ from app.main import (
     upload_job,
 )
 from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, now_utc
-from app.schemas import BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
+from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
 class ApiGuardTests(unittest.TestCase):
@@ -829,6 +829,84 @@ class ApiGuardTests(unittest.TestCase):
 
 
 class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_test_returns_selected_provider_and_model(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_call_llm = main.call_llm
+
+        async def fake_call_llm(_settings, _prompt: str, **kwargs):
+            kwargs["metadata"].update(
+                {
+                    "provider_id": "polza",
+                    "provider_name": "Polza",
+                    "model": "x-ai/grok-4.1-fast",
+                    "attempted_models": ["Polza:x-ai/grok-4.1-fast"],
+                }
+            )
+            return "ok"
+
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    custom_ai_providers_json='[{"id":"polza","name":"Polza","baseUrl":"https://api.polza.ai/v1","apiKey":"key"}]',
+                    light_provider="polza",
+                    light_model="x-ai/grok-4.1-fast",
+                )
+            )
+            db.commit()
+            main.call_llm = fake_call_llm
+
+            result = await main.test_ai(
+                AiTestRequest(provider="polza", model="x-ai/grok-4.1-fast"),
+                db=db,
+            )
+        finally:
+            main.call_llm = original_call_llm
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["response"], "ok")
+        self.assertEqual(result["provider_id"], "polza")
+        self.assertEqual(result["provider_name"], "Polza")
+        self.assertEqual(result["model"], "x-ai/grok-4.1-fast")
+
+    async def test_ai_test_surfaces_provider_errors(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_call_llm = main.call_llm
+
+        async def fake_call_llm(*_args, **_kwargs):
+            raise RuntimeError("AI provider requires baseUrl, apiKey and model")
+
+        try:
+            db.add(SystemSettings(id=1, light_provider="polza", light_model="model"))
+            db.commit()
+            main.call_llm = fake_call_llm
+
+            with self.assertRaises(HTTPException) as raised:
+                await main.test_ai(AiTestRequest(provider="polza", model="model"), db=db)
+        finally:
+            main.call_llm = original_call_llm
+            db.close()
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Проверка модели не прошла", str(raised.exception.detail))
+
     async def test_upload_rejects_empty_file_list_before_db_access(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             await upload_job(telegram_id="123", files=[], db=object())

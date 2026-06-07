@@ -464,6 +464,10 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .switch-row input { width: 17px; min-height: 17px; }
 .provider-row, .model-row { display: grid; grid-template-columns: 150px 190px 1fr 1fr; gap: 8px; }
 .model-row { grid-template-columns: 1fr 220px 1fr; }
+.secret-cell { display: grid; gap: 4px; }
+.key-status { font-size: 12px; font-weight: 750; }
+.key-status.ok { color: #047857; }
+.key-status.missing { color: #b91c1c; }
 .provider-row-head, .model-row-head {
   display: grid;
   gap: 8px;
@@ -525,7 +529,22 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .service-panel[open] { background: #fff; }
 .service-panel[open] summary { margin-bottom: 10px; }
 .advanced-section { display: grid; gap: 10px; margin-top: 12px; }
-.test-result { color: #334155; font-weight: 650; }
+.test-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: #334155;
+  font-weight: 650;
+  line-height: 1.45;
+}
+.test-result span { display: grid; gap: 3px; }
+.test-result strong { color: #0f172a; }
+.test-result.success { border-color: #99f6e4; background: #f0fdfa; color: #115e59; }
+.test-result.error { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+.test-result.running { background: #f8fafc; }
 .tariff-form-grid {
   display: grid;
   grid-template-columns: 180px minmax(220px, 1fr) 140px 150px auto;

@@ -172,7 +172,9 @@ async def _post_llm_request(
             headers={"Authorization": f"Bearer {selection.api_key}"},
             json=payload,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            detail = response.text.strip()[:500]
+            raise RuntimeError(f"HTTP {response.status_code}: {detail or response.reason_phrase}")
         data = response.json()
     return str(data["choices"][0]["message"]["content"] or "")
 

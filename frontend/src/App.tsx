@@ -298,6 +298,13 @@ type SavedModel = {
   modelId: string
 }
 
+type AiTestState = {
+  status: 'idle' | 'running' | 'success' | 'error'
+  message: string
+  providerName?: string
+  model?: string
+}
+
 const apiBase = ''
 const aiRoutingKeys = [
   'procurement_document_analysis',
@@ -1803,7 +1810,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   const [primaryModel, setPrimaryModel] = useState(settings.primary_model)
   const [lightProvider, setLightProvider] = useState(settings.light_provider)
   const [lightModel, setLightModel] = useState(settings.light_model)
-  const [testResult, setTestResult] = useState('')
+  const [testResult, setTestResult] = useState<AiTestState>({ status: 'idle', message: '' })
 
   useEffect(() => {
     const parsedModels = parseJson<SavedModel[]>(settings.saved_models_json, [])
@@ -1820,16 +1827,25 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     () => savedModels.filter(model => model.provider && model.modelId).map(model => `${model.provider}:${model.modelId}`),
     [savedModels],
   )
+  const providersById = useMemo(() => new Map(providers.map(provider => [provider.id, provider])), [providers])
   function modelOptionLabel(raw: string) {
     const [providerId, ...rest] = raw.split(':')
     const modelId = rest.join(':')
+    const providerName = providersById.get(providerId)?.name || canonicalProviderName(providerId)
     const saved = savedModels.find(item => item.provider === providerId && item.modelId === modelId)
-    if (saved?.name) return `${saved.name} — ${saved.modelId}`
-    if (saved) return saved.modelId || raw
-    return modelId || raw
+    const displayName = saved?.name && saved.name !== modelId ? ` · ${saved.name}` : ''
+    return `${providerName} · ${modelId || raw}${displayName}`
   }
   function providerOptionLabel(provider: CustomProvider) {
-    return provider.id
+    const name = provider.name || canonicalProviderName(provider.id)
+    return `${name} (${provider.id})`
+  }
+  function selectedModelSummary(providerId: string, modelId: string) {
+    if (!providerId || !modelId) return 'Модель не выбрана'
+    return modelOptionLabel(`${providerId}:${modelId}`)
+  }
+  function providerKeyStatus(providerId: string) {
+    return providersById.get(providerId)?.apiKey?.trim() ? 'ключ указан' : 'ключ не указан'
   }
   function resolvedModelValue(raw: string | undefined) {
     const value = String(raw || '').trim()
@@ -1870,11 +1886,31 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     await onChange()
   }
   async function testAi() {
-    const result = await api<{ response: string }>('/api/ai/test', {
-      method: 'POST',
-      body: JSON.stringify({ provider: lightProvider || primaryProvider, model: lightModel || primaryModel }),
+    const provider = lightProvider || primaryProvider
+    const model = lightModel || primaryModel
+    setTestResult({
+      status: 'running',
+      message: `Проверяю: ${selectedModelSummary(provider, model)}`,
     })
-    setTestResult(result.response)
+    try {
+      const result = await api<{ response: string; provider_name?: string; model?: string }>('/api/ai/test', {
+        method: 'POST',
+        body: JSON.stringify({ provider, model }),
+      })
+      setTestResult({
+        status: 'success',
+        message: result.response || 'Модель ответила без текста.',
+        providerName: result.provider_name || providersById.get(provider)?.name || provider,
+        model: result.model || model,
+      })
+    } catch (err) {
+      setTestResult({
+        status: 'error',
+        message: formatError(err),
+        providerName: providersById.get(provider)?.name || provider,
+        model,
+      })
+    }
   }
   return (
     <section className="stack">
@@ -1896,15 +1932,42 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
         ))}
       </div>
       <div className="form-panel">
-        <h2>primary_model / light_model</h2>
-        <ModelSelect label="primary_model" value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''} options={modelOptions} optionLabel={modelOptionLabel} onChange={(provider, model) => { setPrimaryProvider(provider); setPrimaryModel(model) }} />
-        <ModelSelect label="light_model" value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''} options={modelOptions} optionLabel={modelOptionLabel} onChange={(provider, model) => { setLightProvider(provider); setLightModel(model) }} />
+        <h2>Основная и быстрая модель</h2>
+        <ModelSelect
+          label="Основная модель"
+          help={`Сейчас: ${selectedModelSummary(primaryProvider, primaryModel)} · ${providerKeyStatus(primaryProvider)}`}
+          value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
+          options={modelOptions}
+          optionLabel={modelOptionLabel}
+          onChange={(provider, model) => { setPrimaryProvider(provider); setPrimaryModel(model) }}
+        />
+        <ModelSelect
+          label="Быстрая модель"
+          help={`Сейчас: ${selectedModelSummary(lightProvider, lightModel)} · ${providerKeyStatus(lightProvider)}`}
+          value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
+          options={modelOptions}
+          optionLabel={modelOptionLabel}
+          onChange={(provider, model) => { setLightProvider(provider); setLightModel(model) }}
+        />
       </div>
       <div className="form-panel">
         <h2>Проверка</h2>
-        <p className="field-help">Запрос проверки: light_model, иначе primary_model.</p>
-        <button className="secondary" onClick={() => void testAi()}><BrainCircuit size={16} />Проверить модель</button>
-        {testResult && <span className="test-result">{testResult}</span>}
+        <p className="field-help">Проверяется быстрая модель; если она не выбрана, проверяется основная.</p>
+        <button className="secondary" onClick={() => void testAi()} disabled={testResult.status === 'running'}>
+          {testResult.status === 'running' ? <Loader2 size={16} className="spin" /> : <BrainCircuit size={16} />}
+          {testResult.status === 'running' ? 'Проверяю...' : 'Проверить модель'}
+        </button>
+        {testResult.status !== 'idle' && (
+          <div className={`test-result ${testResult.status}`}>
+            {testResult.status === 'success' && <CheckCircle2 size={16} />}
+            {testResult.status === 'error' && <XCircle size={16} />}
+            {testResult.status === 'running' && <Loader2 size={16} className="spin" />}
+            <span>
+              {testResult.providerName && testResult.model && <strong>{testResult.providerName} · {testResult.model}</strong>}
+              {testResult.message}
+            </span>
+          </div>
+        )}
       </div>
       <div className="form-panel full-width-panel">
         <details className="service-panel">
@@ -1918,17 +1981,22 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
                 <input value={provider.id} placeholder="например openrouter" onChange={e => updateArray(providers, setProviders, index, { id: e.target.value })} />
                 <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => updateArray(providers, setProviders, index, { name: e.target.value })} />
                 <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => updateArray(providers, setProviders, index, { baseUrl: e.target.value })} />
-                <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => updateArray(providers, setProviders, index, { apiKey: e.target.value })} />
+                <div className="secret-cell">
+                  <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => updateArray(providers, setProviders, index, { apiKey: e.target.value })} />
+                  <small className={provider.apiKey?.trim() ? 'key-status ok' : 'key-status missing'}>
+                    {provider.apiKey?.trim() ? 'ключ указан' : 'ключ не указан'}
+                  </small>
+                </div>
               </div>
             ))}
           </div>
           <div className="advanced-section">
             <h3>Models</h3>
             <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
-            <div className="model-row-head"><span>Комментарий</span><span>provider id</span><span>modelId</span></div>
+            <div className="model-row-head"><span>Название в списке</span><span>Провайдер</span><span>modelId</span></div>
             {savedModels.map((model, index) => (
               <div className="model-row" key={model.id}>
-                <input value={model.name} placeholder="необязательно" onChange={e => updateArray(savedModels, setSavedModels, index, { name: e.target.value })} />
+                <input value={model.name} placeholder="например Gemini Flash Lite" onChange={e => updateArray(savedModels, setSavedModels, index, { name: e.target.value })} />
                 <select value={model.provider} onChange={e => updateArray(savedModels, setSavedModels, index, { provider: e.target.value })}>
                   <option value="">provider id</option>
                   {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}

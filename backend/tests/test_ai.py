@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 import app.ai as ai
-from app.ai import model_selection_attempts
+from app.ai import ModelSelection, model_selection_attempts
 
 
 def _settings() -> SimpleNamespace:
@@ -54,6 +54,48 @@ class AiModelFallbackTests(unittest.TestCase):
 
 
 class AiCallFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_post_llm_request_includes_http_error_body(self) -> None:
+        original_client = ai.httpx.AsyncClient
+
+        class FakeResponse:
+            status_code = 400
+            text = '{"error":{"message":"Модель не найдена"}}'
+            reason_phrase = "Bad Request"
+
+            def json(self):
+                return {}
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        ai.httpx.AsyncClient = FakeClient
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Модель не найдена"):
+                await ai._post_llm_request(
+                    ModelSelection(
+                        provider_id="polza",
+                        provider_name="Polza",
+                        model="bad-model",
+                        base_url="https://api.example/v1/chat/completions",
+                        api_key="key",
+                    ),
+                    [{"role": "user", "content": "ok"}],
+                    json_mode=False,
+                    timeout_seconds=1,
+                )
+        finally:
+            ai.httpx.AsyncClient = original_client
+
     async def test_call_llm_records_model_that_answered_after_fallback(self) -> None:
         original_post = ai._post_llm_request
         calls: list[str] = []

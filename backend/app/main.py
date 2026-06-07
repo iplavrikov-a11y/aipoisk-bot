@@ -981,15 +981,30 @@ async def upload_job(
 async def test_ai(data: AiTestRequest, db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
     override = f"{data.provider}:{data.model}" if data.provider and data.model else None
-    text = await call_llm(
-        settings,
-        data.prompt,
-        tier="light",
-        routing_key=data.routing_key,
-        override=override,
-        timeout_seconds=45,
-    )
-    return {"success": True, "response": text[:1000]}
+    metadata: dict = {}
+    try:
+        text = await call_llm(
+            settings,
+            data.prompt,
+            tier="light",
+            routing_key=data.routing_key,
+            override=override,
+            timeout_seconds=45,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Проверка модели не прошла: {exc}",
+        ) from exc
+    return {
+        "success": True,
+        "response": text[:1000],
+        "provider_id": metadata.get("provider_id", data.provider or ""),
+        "provider_name": metadata.get("provider_name", data.provider or ""),
+        "model": metadata.get("model", data.model or ""),
+        "attempted_models": metadata.get("attempted_models", []),
+    }
 
 
 def settings_to_public_dict(settings: SystemSettings) -> dict:
