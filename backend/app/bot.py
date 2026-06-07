@@ -44,12 +44,10 @@ from .repository import client_access_error, get_or_create_settings, get_or_crea
 
 router = Router()
 PENDING_MODES: dict[int, str] = {}
-SCENARIO_SUPPLIERS_SINGLE = "suppliers_single"
-SCENARIO_SUPPLIERS_MULTI = "suppliers_multi"
+SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-BUTTON_SUPPLIERS_SINGLE = "🔎 Одно ТЗ"
-BUTTON_SUPPLIERS_MULTI = "🗂 Несколько ТЗ"
+BUTTON_SUPPLIERS = "🔎 Поставщики по ТЗ"
 BUTTON_REPORT = "📄 Анализ закупки"
 BUTTON_ANALYSIS_AND_SUPPLIERS = "📄🔎 Анализ + поиск"
 BUTTON_CREATE = "🚀 Создать"
@@ -67,7 +65,7 @@ BRAND_NAME = "TenderLex"
 BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, номер извещения, документация и поставщики."
 BOT_DESCRIPTION = (
     "TenderLex помогает работать с закупками: анализирует документацию по номеру извещения, "
-    "ссылке или файлам, ищет поставщиков по ТЗ и выдаёт готовые DOCX/XLSX-файлы в Telegram.\n\n"
+    "ссылке или файлам, ищет поставщиков по ТЗ и выдаёт готовые файлы в Telegram.\n\n"
     "Чтобы начать, откройте бота, нажмите «Start» или «Запустить» и используйте кнопки меню."
 )
 AI_CUSTOMER_NOTE = (
@@ -221,11 +219,6 @@ def _telegram_user_fields(message: Message) -> tuple[str, str, str]:
 
 
 def _trial_restricted_text(scenario: str) -> str:
-    if scenario == SCENARIO_SUPPLIERS_MULTI:
-        return (
-            "⚠️ Массовый поиск недоступен\n\n"
-            "В бесплатном доступе можно отправить одно ТЗ для поиска поставщиков."
-        )
     return (
         "⚠️ Режим недоступен\n\n"
         "В бесплатном доступе анализ и поиск поставщиков запускаются отдельно."
@@ -258,9 +251,9 @@ def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
 
 def _supplier_multi_intro_text() -> str:
     return (
-        "🗂 Несколько ТЗ\n\n"
-        "Каждый файл считается отдельным ТЗ. По каждому ТЗ будет отдельный Excel-файл.\n\n"
-        "1. Отправьте все файлы ТЗ.\n"
+        "🔎 Поставщики по ТЗ\n\n"
+        "Отправьте один или несколько файлов ТЗ. Если файлов несколько, по каждому будет отдельный результат.\n\n"
+        "1. Отправьте ТЗ.\n"
         "2. Проверьте количество добавленных файлов.\n"
         f"3. Нажмите «{BUTTON_RUN_BATCH}»."
     )
@@ -346,8 +339,8 @@ def main_menu() -> ReplyKeyboardMarkup:
 def create_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_SUPPLIERS_SINGLE), KeyboardButton(text=BUTTON_SUPPLIERS_MULTI)],
-            [KeyboardButton(text=BUTTON_REPORT), KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
+            [KeyboardButton(text=BUTTON_SUPPLIERS), KeyboardButton(text=BUTTON_REPORT)],
+            [KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
             [KeyboardButton(text=BUTTON_BACK_MAIN)],
         ],
         resize_keyboard=True,
@@ -821,8 +814,8 @@ def _scenario_for_message(message: Message) -> str:
     if wants_analysis:
         return SCENARIO_REPORT
     if wants_suppliers:
-        return SCENARIO_SUPPLIERS_SINGLE
-    return PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+        return SCENARIO_SUPPLIERS
+    return PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
 
 
 def _start_text() -> str:
@@ -1028,13 +1021,8 @@ async def show_status(message: Message) -> None:
 async def supplier_mode(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_SINGLE
-    await message.answer(
-        "🔎 Одно ТЗ\n\n"
-        "Отправьте один файл ТЗ/ООЗ или текстовое описание объекта закупки.\n"
-        "Результат: Excel-файл с проверенными поставщиками.",
-        reply_markup=main_menu(),
-    )
+    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS
+    await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
 
 
 @router.message(Command("report"))
@@ -1050,7 +1038,7 @@ async def report_mode(message: Message) -> None:
     )
 
 
-@router.message(F.text == BUTTON_SUPPLIERS_SINGLE)
+@router.message(F.text == BUTTON_SUPPLIERS)
 async def supplier_single_button(message: Message) -> None:
     await supplier_mode(message)
 
@@ -1062,10 +1050,9 @@ async def create_button(message: Message) -> None:
     await message.answer(
         "🚀 Создать\n\n"
         "Выберите сценарий:\n"
-        "🔎 Одно ТЗ — поставщики по одному ТЗ/ООЗ.\n"
-        "🗂 Несколько ТЗ — отдельный Excel по каждому ТЗ.\n"
-        "📄 Анализ закупки — DOCX-отчёт по документации.\n"
-        "📄🔎 Анализ + поиск — отчёт и поставщики по найденному ТЗ.",
+        "🔎 Поставщики по ТЗ — один или несколько отдельных поисков.\n"
+        "📄 Анализ закупки — разбор документации.\n"
+        "📄🔎 Анализ + поиск — анализ и поставщики по найденному ТЗ.",
         reply_markup=create_menu(),
     )
 
@@ -1075,16 +1062,6 @@ async def back_main_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
     await message.answer("🏠 Меню", reply_markup=main_menu())
-
-
-@router.message(F.text == BUTTON_SUPPLIERS_MULTI)
-async def supplier_multi_button(message: Message) -> None:
-    if await _reject_if_chat_processing(message):
-        return
-    if await _reject_trial_restricted_scenario(message, SCENARIO_SUPPLIERS_MULTI):
-        return
-    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS_MULTI
-    await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
 
 
 @router.message(F.text == BUTTON_REPORT)
@@ -1102,7 +1079,7 @@ async def analysis_and_suppliers_button(message: Message) -> None:
     await message.answer(
         "📄🔎 Анализ + поиск\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        "Результат: DOCX-анализ и Excel-файл с поставщиками по найденному ТЗ.",
+        "Результат: анализ закупки и отдельный список поставщиков по найденному ТЗ.",
         reply_markup=batch_menu(),
     )
 
@@ -1135,7 +1112,7 @@ async def run_batch_button(message: Message) -> None:
         return
     pending = PENDING_UPLOADS.get(message.chat.id)
     if not pending or _pending_input_count(pending) == 0:
-        scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+        scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
         if _scenario_accepts_source_links(scenario):
             text = (
                 "📎 Материалы не добавлены\n\n"
@@ -1263,7 +1240,8 @@ async def _watch_supplier_multi_outputs(
                 reply_markup=main_menu() if index == total else processing_menu(),
             )
     if status_message is not None:
-        await _edit_or_send_status(status_message, "Массовая обработка ТЗ завершена. Файлы отправлены ниже.")
+        final_text = "Обработка ТЗ завершена. Файл отправлен ниже." if total == 1 else "Обработка ТЗ завершена. Файлы отправлены ниже."
+        await _edit_or_send_status(status_message, final_text)
 
 
 async def _send_job_outputs(
@@ -1426,10 +1404,9 @@ async def help_button(message: Message) -> None:
         "2. Выберите нужный режим.\n"
         "3. Отправьте документы.\n\n"
         "Режимы:\n"
-        f"{BUTTON_SUPPLIERS_SINGLE} — один файл ТЗ или описание объекта закупки.\n"
-        f"{BUTTON_SUPPLIERS_MULTI} — несколько ТЗ, отдельный Excel по каждому.\n"
+        f"{BUTTON_SUPPLIERS} — одно или несколько ТЗ, отдельный результат по каждому.\n"
         f"{BUTTON_REPORT} — номер извещения, документы, архив или ссылка.\n"
-        f"{BUTTON_ANALYSIS_AND_SUPPLIERS} — анализ и Excel с поставщиками по ТЗ.\n\n"
+        f"{BUTTON_ANALYSIS_AND_SUPPLIERS} — анализ и поставщики по ТЗ.\n\n"
         "💳 Генерация списывается только после выдачи результата.\n"
         f"📊 Остатки смотрите в «{BUTTON_ACCESS}».\n\n"
         f"{AI_HELP_NOTE}\n\n"
@@ -1536,8 +1513,6 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
         return
     scenario = _scenario_for_message(message)
     mode = _job_mode_for_scenario(scenario)
-    job_id: str | None = None
-    launch_message: Message | None = None
     db = SessionLocal()
     try:
         telegram_id, username, name = _telegram_user_fields(message)
@@ -1559,61 +1534,25 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             await message.answer(
                 "Не удалось загрузить файл из Telegram.\n"
                 "Отправьте этот файл ещё раз отдельно или загрузите документы одним архивом.",
-                reply_markup=batch_menu() if scenario != SCENARIO_SUPPLIERS_SINGLE else main_menu(),
+                reply_markup=batch_menu(),
             )
             return
         caption_sources = _source_payloads_for_scenario(scenario, str(message.caption or ""))
-        if scenario == SCENARIO_SUPPLIERS_SINGLE:
-            title = Path(filename).stem[:120]
-            job = create_job(
-                db,
-                client_id=client.id,
-                created_by_telegram_id=telegram_id,
-                mode=mode,
-                title=title,
-                target_suppliers=settings.default_supplier_target,
-                files=[(filename, content)],
-                sources=[],
-            )
-            reserve_error = _reserve_created_job(db, client, job)
-            if reserve_error:
-                await message.answer(reserve_error, reply_markup=main_menu())
-                return
-            job_id = str(job.id)
-            PENDING_UPLOADS.pop(message.chat.id, None)
-            PENDING_MODES.pop(message.chat.id, None)
-            BATCH_RUNNING_CHATS.add(message.chat.id)
-            launch_message = await message.answer(
-                _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text()),
-                reply_markup=processing_menu(),
-            )
-        else:
-            job = None
         pending = PENDING_UPLOADS.get(message.chat.id)
-        if job is None and pending and pending.mode != mode:
+        if pending and pending.mode != mode:
             PENDING_UPLOADS.pop(message.chat.id, None)
             pending = None
-        if job is None and not pending:
+        if not pending:
             pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
             PENDING_UPLOADS[message.chat.id] = pending
-        if job is None:
-            if len(pending.files) >= settings.max_files_per_batch:
-                await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
-                return
-            pending.files.append((filename, content))
-            added_sources = _add_pending_sources(pending, caption_sources)
-            await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_menu())
+        if len(pending.files) >= settings.max_files_per_batch:
+            await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
+            return
+        pending.files.append((filename, content))
+        added_sources = _add_pending_sources(pending, caption_sources)
+        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_menu())
     finally:
         db.close()
-    if job_id is not None:
-        try:
-            snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
-            if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-                await _send_partial_confirmation(message, job_id, snapshot)
-            else:
-                await _send_job_outputs(message, job_id, snapshot)
-        finally:
-            BATCH_RUNNING_CHATS.discard(message.chat.id)
 
 
 async def _handle_supplier_text_tz(message: Message) -> bool:
@@ -1622,8 +1561,8 @@ async def _handle_supplier_text_tz(message: Message) -> bool:
 
 
 async def _handle_supplier_text_tz_locked(message: Message) -> bool:
-    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
-    if scenario not in {SCENARIO_SUPPLIERS_SINGLE, SCENARIO_SUPPLIERS_MULTI}:
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
+    if scenario != SCENARIO_SUPPLIERS:
         return False
     text = str(message.text or "").strip()
     if not _looks_like_supplier_text_tz(text):
@@ -1633,8 +1572,6 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         return True
 
     mode = MODE_SUPPLIER_SEARCH
-    job_id: str | None = None
-    launch_message: Message | None = None
     db = SessionLocal()
     try:
         telegram_id, username, name = _telegram_user_fields(message)
@@ -1647,57 +1584,21 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         settings = get_or_create_settings(db)
 
         pending = PENDING_UPLOADS.get(message.chat.id)
-        if scenario == SCENARIO_SUPPLIERS_MULTI:
-            if pending and pending.mode != mode:
-                PENDING_UPLOADS.pop(message.chat.id, None)
-                pending = None
-            if not pending:
-                pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
-                PENDING_UPLOADS[message.chat.id] = pending
-            if len(pending.files) >= settings.max_files_per_batch:
-                await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_menu())
-                return True
-            filename, content, _title = _supplier_text_tz_payload(text, index=len(pending.files) + 1)
-            pending.files.append((filename, content))
-            await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_menu())
+        if pending and pending.mode != mode:
+            PENDING_UPLOADS.pop(message.chat.id, None)
+            pending = None
+        if not pending:
+            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            PENDING_UPLOADS[message.chat.id] = pending
+        if len(pending.files) >= settings.max_files_per_batch:
+            await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_menu())
             return True
-
-        filename, content, title = _supplier_text_tz_payload(text)
-        job = create_job(
-            db,
-            client_id=client.id,
-            created_by_telegram_id=telegram_id,
-            mode=mode,
-            title=title,
-            target_suppliers=settings.default_supplier_target,
-            files=[(filename, content)],
-            sources=[],
-        )
-        reserve_error = _reserve_created_job(db, client, job)
-        if reserve_error:
-            await message.answer(reserve_error, reply_markup=main_menu())
-            return True
-        job_id = str(job.id)
-        PENDING_UPLOADS.pop(message.chat.id, None)
-        PENDING_MODES.pop(message.chat.id, None)
-        BATCH_RUNNING_CHATS.add(message.chat.id)
-        launch_message = await message.answer(
-            _format_launch_progress(_job_snapshot(job), _accepted_single_tz_text(from_text=True)),
-            reply_markup=processing_menu(),
-        )
+        filename, content, _title = _supplier_text_tz_payload(text, index=len(pending.files) + 1)
+        pending.files.append((filename, content))
+        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_menu())
+        return True
     finally:
         db.close()
-
-    if job_id is not None:
-        try:
-            snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
-            if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-                await _send_partial_confirmation(message, job_id, snapshot)
-            else:
-                await _send_job_outputs(message, job_id, snapshot)
-        finally:
-            BATCH_RUNNING_CHATS.discard(message.chat.id)
-    return True
 
 
 async def _handle_source_text(message: Message) -> bool:
@@ -1707,13 +1608,12 @@ async def _handle_source_text(message: Message) -> bool:
     if not sources:
         return False
 
-    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS_SINGLE)
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
     if not _scenario_accepts_source_links(scenario):
         await message.answer(_source_link_rejection_text(), reply_markup=main_menu())
         return True
     mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
-    job_id: str | None = None
     try:
         telegram_id, username, name = _telegram_user_fields(message)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
@@ -1734,10 +1634,6 @@ async def _handle_source_text(message: Message) -> bool:
         await message.answer(_source_added_text(pending), reply_markup=batch_menu())
     finally:
         db.close()
-
-    if job_id:
-        snapshot = await watch_job_progress(message, job_id)
-        await _send_job_outputs(message, job_id, snapshot)
     return True
 
 

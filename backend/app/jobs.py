@@ -587,6 +587,18 @@ def _analysis_report_title(job: Job, subject: str) -> str:
     return f"Анализ документации: {source}" if source else "Анализ документации"
 
 
+def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
+    item = _short_label(subject)
+    if not item:
+        return
+    if job.mode == MODE_PROCUREMENT_REPORT:
+        job.title = f"Анализ закупки: {item}"
+    elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        job.title = f"Анализ + поиск: {item}"
+    elif job.mode == MODE_SUPPLIER_SEARCH:
+        job.title = f"ТЗ: {item}"
+
+
 def _result_stem(job: Job, subject: str) -> str:
     source = _source_title(job)
     item = _short_label(subject)
@@ -632,11 +644,13 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(evidence)
+    source_title = _source_title(job)
     evidence["subject"] = subject
-    evidence["source_title"] = _source_title(job)
+    evidence["source_title"] = source_title
     evidence["sources"] = _job_sources_evidence(job)
     evidence_path = write_evidence(out_dir / "evidence.json", evidence)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if not accepted:
         job.result_path = ""
         release_job_reservation(db, job, note="Резерв возвращён: поставщики не найдены")
@@ -681,6 +695,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_report_text(result.report)
     report_title = _analysis_report_title(job, subject)
+    source_title = _source_title(job)
     docx_path = write_procurement_docx(
         out_dir / f"{_result_stem(job, subject)}_анализ.docx",
         result.report,
@@ -691,7 +706,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         {
             "mode": job.mode,
             "subject": subject,
-            "source_title": _source_title(job),
+            "source_title": source_title,
             "sources": _job_sources_evidence(job),
             "files": _job_files_evidence(job),
             "output_files": [{"kind": "analysis", "path": str(docx_path)}],
@@ -705,6 +720,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     )
     job.result_path = str(docx_path)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if result.warning:
         _set_job(
             db,
@@ -742,10 +758,11 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     stem = _result_stem(job, subject)
     report_title = _analysis_report_title(job, subject)
     docx_path = write_procurement_docx(out_dir / f"{stem}_анализ.docx", report.report, title=report_title)
+    source_title = _source_title(job)
     evidence_payload = {
         "mode": job.mode,
         "subject": subject,
-        "source_title": _source_title(job),
+        "source_title": source_title,
         "sources": _job_sources_evidence(job),
         "files": _job_files_evidence(job),
         "report": {
@@ -781,6 +798,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     zip_path = zip_paths(out_dir / f"{stem}.zip", [Path(item["path"]) for item in output_files])
     job.result_path = str(zip_path)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if not accepted:
         release_job_kind_reservation(
             db,
@@ -826,15 +844,23 @@ def package_job_outputs(job: Job) -> Path | None:
 
 
 def package_job_output_files(job: Job) -> list[Path]:
+    return [Path(item["path"]) for item in package_job_output_items(job)]
+
+
+def package_job_output_items(job: Job) -> list[dict]:
     if job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        paths = _output_files_from_evidence(job)
-        if paths:
-            return paths
+        items = _output_file_items_from_evidence(job)
+        if items:
+            return items
     output = package_job_outputs(job)
-    return [output] if output and output.exists() else []
+    if not output or not output.exists():
+        return []
+    kind = "analysis" if job.mode == MODE_PROCUREMENT_REPORT else "suppliers"
+    label = "Анализ" if kind == "analysis" else "Поставщики"
+    return [{"kind": kind, "label": label, "path": str(output)}]
 
 
-def _output_files_from_evidence(job: Job) -> list[Path]:
+def _output_file_items_from_evidence(job: Job) -> list[dict]:
     evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
     if not evidence_path.exists():
         return []
@@ -846,7 +872,7 @@ def _output_files_from_evidence(job: Job) -> list[Path]:
     if not isinstance(files, list):
         return []
     out_dir = job_dir(job.id).resolve() / "output"
-    paths: list[Path] = []
+    items: list[dict] = []
     for item in files:
         if not isinstance(item, dict):
             continue
@@ -856,8 +882,10 @@ def _output_files_from_evidence(job: Job) -> list[Path]:
         except ValueError:
             continue
         if path.exists():
-            paths.append(path)
-    return paths
+            kind = str(item.get("kind") or "").strip() or path.stem
+            label = str(item.get("label") or "").strip() or {"analysis": "Анализ", "suppliers": "Поставщики"}.get(kind, kind)
+            items.append({"kind": kind, "label": label, "path": str(path)})
+    return items
 
 
 def cleanup_expired_jobs(db: Session, settings=None) -> int:

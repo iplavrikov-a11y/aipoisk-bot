@@ -25,9 +25,8 @@ from app.bot import (
     BUTTON_REPORT,
     BUTTON_RUN_BATCH,
     BUTTON_STATUS,
+    BUTTON_SUPPLIERS,
     BUTTON_TARIFFS,
-    BUTTON_SUPPLIERS_MULTI,
-    BUTTON_SUPPLIERS_SINGLE,
     JobProgressSnapshot,
     PendingBatch,
     _add_pending_sources,
@@ -290,16 +289,15 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(
             rows[:2],
             [
-                [BUTTON_SUPPLIERS_SINGLE, BUTTON_SUPPLIERS_MULTI],
-                [BUTTON_REPORT, BUTTON_ANALYSIS_AND_SUPPLIERS],
+                [BUTTON_SUPPLIERS, BUTTON_REPORT],
+                [BUTTON_ANALYSIS_AND_SUPPLIERS],
             ],
         )
-        self.assertLessEqual(max(len(label) for row in rows for label in row), 18)
+        self.assertLessEqual(max(len(label) for row in rows for label in row), 20)
 
     def test_customer_buttons_use_procurement_language(self) -> None:
         labels = [
-            BUTTON_SUPPLIERS_SINGLE,
-            BUTTON_SUPPLIERS_MULTI,
+            BUTTON_SUPPLIERS,
             BUTTON_REPORT,
             BUTTON_ANALYSIS_AND_SUPPLIERS,
             BUTTON_RUN_BATCH,
@@ -307,10 +305,11 @@ class BotProgressFormattingTests(unittest.TestCase):
         ]
         joined = " ".join(labels)
 
-        self.assertIn("Одно ТЗ", joined)
-        self.assertIn("Несколько ТЗ", joined)
+        self.assertIn("Поставщики по ТЗ", joined)
         self.assertIn("Анализ закупки", joined)
         self.assertIn("Анализ + поиск", joined)
+        self.assertNotIn("Одно ТЗ", joined)
+        self.assertNotIn("Несколько ТЗ", joined)
         self.assertNotIn("Word", joined)
         self.assertNotIn("пач", joined.lower())
 
@@ -319,8 +318,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         rows = [[button.text for button in row] for row in keyboard]
 
         self.assertIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
-        self.assertNotIn([BUTTON_SUPPLIERS_SINGLE], rows)
-        self.assertNotIn([BUTTON_SUPPLIERS_MULTI], rows)
+        self.assertNotIn([BUTTON_SUPPLIERS], rows)
         self.assertNotIn([BUTTON_REPORT], rows)
         self.assertNotIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
         self.assertLessEqual(max(len(label) for row in rows for label in row), 13)
@@ -333,8 +331,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn([BUTTON_PROCESSING_STATUS, BUTTON_STATUS], rows)
         self.assertNotIn(BUTTON_CREATE, labels)
         self.assertNotIn(BUTTON_RUN_BATCH, labels)
-        self.assertNotIn(BUTTON_SUPPLIERS_SINGLE, labels)
-        self.assertNotIn(BUTTON_SUPPLIERS_MULTI, labels)
+        self.assertNotIn(BUTTON_SUPPLIERS, labels)
         self.assertNotIn(BUTTON_REPORT, labels)
         self.assertNotIn(BUTTON_ANALYSIS_AND_SUPPLIERS, labels)
 
@@ -428,8 +425,8 @@ class BotProgressFormattingTests(unittest.TestCase):
     def test_supplier_multi_intro_explains_mass_processing_contract(self) -> None:
         text = _supplier_multi_intro_text()
 
-        self.assertIn("Каждый файл считается отдельным ТЗ", text)
-        self.assertIn("отдельный Excel-файл", text)
+        self.assertIn("один или несколько файлов ТЗ", text)
+        self.assertIn("отдельный результат", text)
         self.assertIn("Проверьте количество", text)
         self.assertIn(BUTTON_RUN_BATCH, text)
 
@@ -469,8 +466,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(_pending_input_count(pending), 1)
 
     def test_source_links_are_only_for_documentation_analysis_modes(self) -> None:
-        self.assertFalse(_scenario_accepts_source_links("suppliers_single"))
-        self.assertFalse(_scenario_accepts_source_links("suppliers_multi"))
+        self.assertFalse(_scenario_accepts_source_links(bot_module.SCENARIO_SUPPLIERS))
         self.assertTrue(_scenario_accepts_source_links("report"))
         self.assertTrue(_scenario_accepts_source_links("analysis_and_suppliers"))
 
@@ -485,7 +481,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         caption = "https://zakupki.gov.ru/epz/order/notice/zk20/view/common-info.html?regNumber=0317400001026000049"
 
         report_sources = _source_payloads_for_scenario("report", caption)
-        supplier_sources = _source_payloads_for_scenario("suppliers_single", caption)
+        supplier_sources = _source_payloads_for_scenario(bot_module.SCENARIO_SUPPLIERS, caption)
 
         self.assertEqual(len(report_sources), 1)
         self.assertEqual(report_sources[0]["value"], caption)
@@ -493,7 +489,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
     def test_notice_number_is_captured_only_for_analysis_modes(self) -> None:
         report_sources = _source_payloads_for_scenario("analysis_and_suppliers", "0371100005626000040")
-        supplier_sources = _source_payloads_for_scenario("suppliers_single", "0371100005626000040")
+        supplier_sources = _source_payloads_for_scenario(bot_module.SCENARIO_SUPPLIERS, "0371100005626000040")
 
         self.assertEqual(len(report_sources), 1)
         self.assertEqual(report_sources[0]["kind"], "tenderplan_notice")
@@ -531,7 +527,7 @@ class BotProgressFormattingTests(unittest.TestCase):
             bot_module.PENDING_MODES.clear()
             bot_module.PENDING_UPLOADS.clear()
             bot_module.BATCH_RUNNING_CHATS.clear()
-            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS_SINGLE
+            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS
             bot_module.SessionLocal = lambda: FakeDb()
             bot_module.get_or_create_trial_client_by_telegram_id = (
                 lambda _db, telegram_id, username="", name="": (SimpleNamespace(id="client-1"), "")
@@ -554,7 +550,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertFalse(pending_exists)
-        self.assertEqual(switched_scenario, bot_module.SCENARIO_SUPPLIERS_SINGLE)
+        self.assertEqual(switched_scenario, bot_module.SCENARIO_SUPPLIERS)
         self.assertIn("нужен файл ТЗ/ООЗ", message.answers[0][0])
 
     def test_add_pending_sources_deduplicates_caption_and_text_links(self) -> None:
@@ -796,7 +792,7 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_supplier_text_tz_creates_single_supplier_job(self) -> None:
+    async def test_supplier_text_tz_is_added_to_unified_supplier_batch(self) -> None:
         text = (
             "Техническое задание\n"
             "Поставка насосов ЦНС 60-330, количество 3 шт. "
@@ -818,18 +814,12 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
                 self.answers.append((value, reply_markup))
                 return self
 
-        created: dict = {}
-        sent_outputs: list[str] = []
         message = FakeMessage()
         originals = {
             "SessionLocal": bot_module.SessionLocal,
             "get_or_create_trial_client_by_telegram_id": bot_module.get_or_create_trial_client_by_telegram_id,
             "client_access_error": bot_module.client_access_error,
             "get_or_create_settings": bot_module.get_or_create_settings,
-            "create_job": bot_module.create_job,
-            "_reserve_created_job": bot_module._reserve_created_job,
-            "watch_job_progress": bot_module.watch_job_progress,
-            "_send_job_outputs": bot_module._send_job_outputs,
         }
         pending_modes = dict(bot_module.PENDING_MODES)
         pending_uploads = dict(bot_module.PENDING_UPLOADS)
@@ -840,36 +830,16 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
             bot_module.PENDING_UPLOADS.clear()
             bot_module.CHAT_UPLOAD_LOCKS.clear()
             bot_module.BATCH_RUNNING_CHATS.clear()
-            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS_SINGLE
+            bot_module.PENDING_MODES[message.chat.id] = bot_module.SCENARIO_SUPPLIERS
             bot_module.SessionLocal = lambda: FakeDb()
             bot_module.get_or_create_trial_client_by_telegram_id = (
                 lambda _db, telegram_id, username="", name="": (SimpleNamespace(id="client-1"), "")
             )
             bot_module.client_access_error = lambda *_args, **_kwargs: ""
-            bot_module.get_or_create_settings = lambda _db: SimpleNamespace(default_supplier_target=3)
-            bot_module.create_job = lambda _db, **kwargs: created.update(kwargs) or SimpleNamespace(
-                id="job-1",
-                mode=kwargs["mode"],
-                status="pending",
-                progress=0,
-                message="Задача создана",
-                error="",
-                created_at=datetime.now(timezone.utc),
-            )
-            bot_module._reserve_created_job = lambda _db, _client, _job: ""
-
-            async def fake_watch_job_progress(_message, job_id: str, **kwargs):
-                self.assertIsNotNone(kwargs.get("status_message"))
-                return None
-
-            async def fake_send_job_outputs(_message, job_id: str, snapshot=None) -> bool:
-                sent_outputs.append(job_id)
-                return True
-
-            bot_module.watch_job_progress = fake_watch_job_progress
-            bot_module._send_job_outputs = fake_send_job_outputs
+            bot_module.get_or_create_settings = lambda _db: SimpleNamespace(max_files_per_batch=20)
 
             handled = await _handle_supplier_text_tz(message)
+            pending = bot_module.PENDING_UPLOADS[message.chat.id]
         finally:
             for name, value in originals.items():
                 setattr(bot_module, name, value)
@@ -883,18 +853,14 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
             bot_module.BATCH_RUNNING_CHATS.update(running_chats)
 
         self.assertTrue(handled)
-        self.assertEqual(created["mode"], MODE_SUPPLIER_SEARCH)
-        self.assertEqual(created["title"], "Техническое задание")
-        self.assertEqual(created["target_suppliers"], 3)
-        self.assertEqual(created["created_by_telegram_id"], "123")
-        self.assertEqual(len(created["files"]), 1)
-        self.assertTrue(created["files"][0][0].endswith(".txt"))
-        self.assertIn("Поставка насосов", created["files"][0][1].decode("utf-8"))
-        self.assertEqual(sent_outputs, ["job-1"])
-        self.assertIn("✅ ТЗ из сообщения принято", message.answers[0][0])
+        self.assertEqual(pending.mode, MODE_SUPPLIER_SEARCH)
+        self.assertEqual(len(pending.files), 1)
+        self.assertTrue(pending.files[0][0].endswith(".txt"))
+        self.assertIn("Поставка насосов", pending.files[0][1].decode("utf-8"))
+        self.assertIn("✅ ТЗ добавлено", message.answers[0][0])
         rows = [[button.text for button in row] for row in message.answers[0][1].keyboard]
         labels = [text for row in rows for text in row]
-        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
+        self.assertIn(BUTTON_RUN_BATCH, labels)
         self.assertNotIn(BUTTON_CREATE, labels)
 
 

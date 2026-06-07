@@ -796,7 +796,6 @@ def format_object_row(row: dict[str, str]) -> str:
         "Описание",
         "Нацрежим",
         "КТРУ",
-        "ОКПД2",
         "Количество",
         "Цена",
         "Стоимость",
@@ -804,13 +803,19 @@ def format_object_row(row: dict[str, str]) -> str:
     parts: list[str] = []
     used: set[str] = set()
     for key in preferred:
+        if _is_okpd_field(key):
+            continue
         if row.get(key):
             parts.append(f"{key}: {row[key]}")
             used.add(key)
     for key, value in row.items():
-        if key not in used and value:
+        if key not in used and value and not _is_okpd_field(key):
             parts.append(f"{key}: {value}")
     return "- " + "; ".join(parts)
+
+
+def _is_okpd_field(key: object) -> bool:
+    return "окпд" in str(key or "").lower() or "okpd" in str(key or "").lower()
 
 
 PROCUREMENT_METHOD_PATTERNS = (

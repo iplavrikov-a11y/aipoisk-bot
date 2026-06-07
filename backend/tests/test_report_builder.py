@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
 
@@ -26,6 +28,39 @@ class ReportBuilderTests(unittest.TestCase):
 
         self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
         self.assertIn("Критичные юридические, финансовые и технические условия", text)
+
+    def test_procurement_docx_removes_okpd_and_formats_tz_columns(self) -> None:
+        from docx import Document
+
+        markdown = """#### Товары и требования (Техническое задание)
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Канат стальной (ОКПД2: 25.93.11.120) | Назначение: применяется в качестве устройств растяжек и вант для кранов; требования к конструкции: ГОСТ 3062-80, конструкция 1x7, диаметр 6,8 мм. | м | 5000 |
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "analysis.docx"
+            write_procurement_docx(path, markdown, title="Анализ закупки")
+
+            doc = Document(path)
+            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+            table_text = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("word/document.xml")
+
+        root = ET.fromstring(xml)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        grid_cols = [
+            int(col.attrib[f"{{{ns['w']}}}w"])
+            for col in root.findall(".//w:tbl[1]/w:tblGrid/w:gridCol", ns)
+        ]
+
+        self.assertNotRegex(f"{text}\n{table_text}", r"(?i)ОКПД|OKPD")
+        self.assertNotIn("25.93.11.120", table_text)
+        self.assertEqual(len(grid_cols), 5)
+        self.assertLess(grid_cols[0], grid_cols[1])
+        self.assertGreater(grid_cols[2], grid_cols[1])
+        self.assertGreater(grid_cols[2], grid_cols[3] * 5)
+        self.assertGreater(grid_cols[2], grid_cols[4] * 5)
 
     def test_supplier_xlsx_is_client_facing_without_technical_search_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

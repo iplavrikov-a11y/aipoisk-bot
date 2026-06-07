@@ -158,7 +158,7 @@ class ApiGuardTests(unittest.TestCase):
 
         payload = job_to_dict(job)
 
-        self.assertEqual(payload["human_title"], "ТЗ насосная станция")
+        self.assertEqual(payload["human_title"], "Анализ + поиск: насосная станция")
         self.assertFalse(payload["is_internal"])
         self.assertEqual(payload["mode_label"], "Анализ + поставщики")
         self.assertEqual(payload["supplier_units"], 1)

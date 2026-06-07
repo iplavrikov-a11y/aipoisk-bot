@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 
 type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
-type Scenario = "suppliers_single" | "suppliers_multi" | "procurement_report" | "analysis_and_suppliers";
+type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
 
 type BalanceCounter = {
   label: string;
@@ -88,6 +88,11 @@ type CustomerJob = {
   file_count: number;
   has_result: boolean;
   can_download: boolean;
+  result_files: Array<{
+    kind: string;
+    label: string;
+    filename: string;
+  }>;
   awaiting_customer_confirmation: boolean;
   error: string;
   created_at: string | null;
@@ -96,16 +101,10 @@ type CustomerJob = {
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
-    id: "suppliers_single",
-    label: "Одно ТЗ",
-    description: "поставщики по одному ТЗ или описанию",
+    id: "supplier_search",
+    label: "Поиск поставщиков",
+    description: "по одному или нескольким ТЗ",
     icon: Search,
-  },
-  {
-    id: "suppliers_multi",
-    label: "Несколько ТЗ",
-    description: "отдельный поиск по каждому ТЗ",
-    icon: Paperclip,
   },
   {
     id: "procurement_report",
@@ -133,25 +132,13 @@ const modeCopy: Record<Scenario, {
   hint: string;
   submit: string;
 }> = {
-  suppliers_single: {
+  supplier_search: {
     mode: "supplier_search",
-    uploadTitle: "Приложите одно ТЗ",
-    uploadText: "Можно перетащить файл сюда или описать позицию ниже.",
-    multipleFiles: false,
-    textLabel: "ТЗ или описание товара",
-    textPlaceholder: "Например: трубы ПНД ПЭ100 SDR17 110 мм, фитинги, доставка на объект",
-    hint: "Для одного ТЗ будет запущен один поиск поставщиков.",
-    submit: "Запустить поиск поставщиков",
-  },
-  suppliers_multi: {
-    mode: "supplier_search",
-    uploadTitle: "Приложите несколько ТЗ",
-    uploadText: "Каждый файл будет обработан отдельно.",
+    uploadTitle: "Приложите одно или несколько ТЗ",
+    uploadText: "Если файлов несколько, по каждому будет отдельный поиск поставщиков.",
     multipleFiles: true,
-    textLabel: "Описание отдельного ТЗ",
-    textPlaceholder: "Например: тротуарная плитка 200x100x60 мм, бордюр, доставка и разгрузка",
-    hint: "Как в боте: по каждому ТЗ будет отдельная задача поиска поставщиков.",
-    submit: "Запустить поиск по нескольким ТЗ",
+    hint: "Один файл даст один результат. Несколько файлов будут обработаны отдельно.",
+    submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
     mode: "procurement_report",
@@ -277,7 +264,7 @@ export function CabinetClient() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [scenario, setScenario] = useState<Scenario>("suppliers_single");
+  const [scenario, setScenario] = useState<Scenario>("supplier_search");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -473,6 +460,22 @@ export function CabinetClient() {
     }
   }
 
+  async function downloadJobFile(job: CustomerJob, file: CustomerJob["result_files"][number]) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/download/${encodeURIComponent(file.kind)}`, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(parseError(await response.text()));
+      downloadBlob(await response.blob(), filenameFromResponse(response, file.filename || `${job.human_title || "result"}`));
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function acceptPartial(job: CustomerJob) {
     if (!csrf) return;
     setBusy(true);
@@ -484,7 +487,8 @@ export function CabinetClient() {
         headers: { "x-csrf-token": csrf },
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
-      downloadBlob(await response.blob(), filenameFromResponse(response, `${job.human_title || "result"}.zip`));
+      await readJson(response);
+      setMessage("Отчёт принят. Результат можно скачать в строке задачи.");
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -721,7 +725,7 @@ export function CabinetClient() {
                 <textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}
-                  rows={scenario === "suppliers_multi" ? 4 : 5}
+                  rows={5}
                   placeholder={selectedCopy.textPlaceholder}
                 />
               </label>
@@ -832,6 +836,13 @@ export function CabinetClient() {
                         Отказаться
                       </button>
                     </>
+                  ) : job.result_files?.length ? (
+                    job.result_files.map((file) => (
+                      <button key={`${job.id}-${file.kind}`} type="button" onClick={() => downloadJobFile(job, file)} disabled={busy}>
+                        <Download size={16} aria-hidden="true" />
+                        {file.label || "Скачать"}
+                      </button>
+                    ))
                   ) : job.can_download ? (
                     <button type="button" onClick={() => downloadJob(job)} disabled={busy}>
                       <Download size={16} aria-hidden="true" />

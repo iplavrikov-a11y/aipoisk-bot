@@ -65,6 +65,15 @@ class ProcurementReportPromptTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, DEFAULT_REPORT_SYSTEM_PROMPT + DEFAULT_VERIFICATION_PROMPT)
 
+    def test_okpd_codes_are_forbidden_in_customer_report_contract(self) -> None:
+        for phrase in (
+            "Не выводи ОКПД",
+            "ОКПД не должен попадать",
+            "отчёт содержит ОКПД",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, DEFAULT_REPORT_SYSTEM_PROMPT + DEFAULT_VERIFICATION_PROMPT)
+
     def test_national_regime_prompt_requires_direct_registry_answer(self) -> None:
         for phrase in (
             "Требуются ли выписки из реестра Минпромторга: **Да/Нет/Не указано**",
@@ -176,6 +185,22 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
 
         self.assertNotIn("сумма оплаты не увеличивается", result)
         self.assertIn("рисков уменьшения цены/оплаты на сумму НДС", result)
+
+    def test_normalizes_okpd_codes_out_of_report_table_and_text(self) -> None:
+        report = """#### Товары и требования (Техническое задание)
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Канат стальной (ОКПД2: 25.93.11.120) | Назначение: для растяжек. Код ОКПД2 25.93.11.120 не нужен клиенту. | м | 5000 |
+
+#### Риски
+- В таблице был указан ОКПД2: 25.93.11.120.
+"""
+
+        result = normalize_procurement_report_guardrails(report, "")
+
+        self.assertIn("Канат стальной", result)
+        self.assertNotRegex(result, r"(?i)ОКПД|OKPD")
+        self.assertNotIn("25.93.11.120", result)
 
 
 class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestCase):

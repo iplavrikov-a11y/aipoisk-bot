@@ -22,7 +22,14 @@ from app.billing import (
 )
 from app.db import Base
 from app.jobs import MODE_SUPPLIER_SEARCH
-from app.main import create_customer_job_api, customer_session_payload, decline_customer_partial_job_api, download_customer_job_api
+from app.main import (
+    create_customer_job_api,
+    customer_job_to_dict,
+    customer_session_payload,
+    decline_customer_partial_job_api,
+    download_customer_job_api,
+    download_customer_job_file_api,
+)
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, Job, SystemSettings, WebPasswordResetRequest
 from app.schemas import WebPasswordResetComplete, WebPasswordResetRequestCreate
@@ -305,6 +312,149 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(charge.units, 1)
         finally:
             db.close()
+
+    def test_customer_combined_job_exposes_and_downloads_separate_result_files(self) -> None:
+        import app.jobs as jobs
+
+        original_job_dir = jobs.job_dir
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=1)
+            db.add(client)
+            db.commit()
+            user = create_web_user(db, email="owner@example.com", password="StrongPass123", name="Owner", client=client)
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                out_dir = jobs.job_dir("job-1") / "output"
+                out_dir.mkdir(parents=True)
+                analysis_path = out_dir / "analysis.docx"
+                suppliers_path = out_dir / "suppliers.xlsx"
+                analysis_path.write_bytes(b"docx")
+                suppliers_path.write_bytes(b"xlsx")
+                evidence_path = out_dir / "evidence.json"
+                evidence_path.write_text(
+                    """
+{
+  "output_files": [
+    {"kind": "analysis", "path": "%s"},
+    {"kind": "suppliers", "path": "%s"}
+  ]
+}
+"""
+                    % (analysis_path, suppliers_path),
+                    encoding="utf-8",
+                )
+                job = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode="analysis_and_suppliers",
+                    status="completed",
+                    result_path=str(out_dir / "archive.zip"),
+                    evidence_path=str(evidence_path),
+                )
+                db.add(job)
+                db.add_all(
+                    [
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=job.id,
+                            kind=KIND_PROCUREMENT_REPORT,
+                            operation=OP_RESERVE,
+                            units=1,
+                        ),
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=job.id,
+                            kind=KIND_SUPPLIER_SEARCH,
+                            operation=OP_RESERVE,
+                            units=1,
+                        ),
+                    ]
+                )
+                db.commit()
+
+                payload = customer_job_to_dict(job)
+                analysis_response = download_customer_job_file_api(
+                    job.id,
+                    "analysis",
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                suppliers_response = download_customer_job_file_api(
+                    job.id,
+                    "suppliers",
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                charges = (
+                    db.query(BillingTransaction)
+                    .filter(BillingTransaction.job_id == job.id)
+                    .filter(BillingTransaction.operation == OP_CHARGE)
+                    .all()
+                )
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(
+            payload["result_files"],
+            [
+                {"kind": "analysis", "label": "Анализ", "filename": "analysis.docx"},
+                {"kind": "suppliers", "label": "Поставщики", "filename": "suppliers.xlsx"},
+            ],
+        )
+        self.assertEqual(analysis_response.filename, "analysis.docx")
+        self.assertEqual(suppliers_response.filename, "suppliers.xlsx")
+        self.assertEqual(sorted((item.kind, item.units) for item in charges), [(KIND_PROCUREMENT_REPORT, 1), (KIND_SUPPLIER_SEARCH, 1)])
+
+    def test_customer_job_title_uses_result_subject_not_raw_filename(self) -> None:
+        import app.jobs as jobs
+
+        original_job_dir = jobs.job_dir
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=1)
+            db.add(client)
+            db.commit()
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                out_dir = jobs.job_dir("job-1") / "output"
+                out_dir.mkdir(parents=True)
+                result_path = out_dir / "Сотовый поликарбонат_поставщики.xlsx"
+                result_path.write_bytes(b"xlsx")
+                evidence_path = out_dir / "evidence.json"
+                evidence_path.write_text(
+                    """
+{
+  "subject": "Сотовый поликарбонат",
+  "output_files": [
+    {"kind": "suppliers", "path": "%s"}
+  ]
+}
+"""
+                    % result_path,
+                    encoding="utf-8",
+                )
+                job = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="completed",
+                    title="07 ТЗ",
+                    result_path=str(result_path),
+                    evidence_path=str(evidence_path),
+                )
+                db.add(job)
+                db.commit()
+
+                payload = customer_job_to_dict(job)
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(payload["human_title"], "ТЗ: Сотовый поликарбонат")
 
     def test_customer_decline_partial_job_releases_reservation(self) -> None:
         db = self.Session()

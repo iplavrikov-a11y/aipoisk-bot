@@ -25,6 +25,7 @@ from app.tenderplan import (
     is_allowed_download_url,
     preferred_tender_id,
     merge_tenderplan_payloads,
+    format_object_row,
     notice223_documents_url,
     normalize_document_name,
     normalize_notice_number,
@@ -119,6 +120,22 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         self.assertIn("Разъяснения/ответы заказчика: 1 записей, 1 файлов", context)
         self.assertIn("- СМП/СОНО: не указано", context)
         self.assertNotIn("- СМП/СОНО: False", context)
+
+    def test_object_row_omits_okpd_codes_from_report_context(self) -> None:
+        row = {
+            "Наименование товара, работы, услуги": "Канат стальной",
+            "ОКПД2": "25.93.11.120",
+            "OKPD": "25.93.11.120",
+            "Количество": "5000 м",
+        }
+
+        text = format_object_row(row)
+
+        self.assertIn("Канат стальной", text)
+        self.assertIn("5000 м", text)
+        self.assertNotIn("ОКПД", text)
+        self.assertNotIn("OKPD", text)
+        self.assertNotIn("25.93.11.120", text)
 
     def test_format_smp_sono_hides_raw_booleans(self) -> None:
         self.assertEqual(format_smp_sono(True), "установлено")

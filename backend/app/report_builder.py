@@ -193,7 +193,7 @@ def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Pa
     disclaimer_run = disclaimer.add_run(PROCUREMENT_REPORT_DISCLAIMER)
     disclaimer_run.italic = True
     disclaimer_run.font.size = Pt(9)
-    lines = str(markdown or "").splitlines()
+    lines = _remove_okpd_codes(str(markdown or "")).splitlines()
     index = 0
     while index < len(lines):
         raw_line = lines[index]
@@ -252,18 +252,55 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
     width = max(len(row) for row in rows)
     table = doc.add_table(rows=len(rows), cols=width)
     table.style = "Table Grid"
+    _apply_table_column_widths(table, _table_column_widths(rows[0], width))
     for row_index, row in enumerate(rows):
         for col_index in range(width):
             cell = table.rows[row_index].cells[col_index]
             cell.text = ""
             paragraph = cell.paragraphs[0]
-            value = row[col_index] if col_index < len(row) else ""
+            value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
             _add_markdown_runs(paragraph, value)
             if row_index == 0:
                 for run in paragraph.runs:
                     run.bold = True
     doc.add_paragraph("")
     return index
+
+
+def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
+    normalized = [_normalize_table_header(header) for header in headers]
+    if normalized[:5] == ["№", "наименование", "характеристики", "ед.изм.", "кол-во"]:
+        return [520, 2300, 5600, 850, 850]
+    return None
+
+
+def _normalize_table_header(value: object) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    normalized = normalized.replace("ед. изм.", "ед.изм.")
+    normalized = normalized.replace("ед изм", "ед.изм.")
+    normalized = normalized.replace("количество", "кол-во")
+    return normalized
+
+
+def _apply_table_column_widths(table, widths: list[int] | None) -> None:
+    if not widths:
+        return
+    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+    from docx.shared import Twips
+
+    table.autofit = False
+    for col_index, width in enumerate(widths):
+        if col_index >= len(table.columns):
+            break
+        table.columns[col_index].width = Twips(width)
+    for row in table.rows:
+        for col_index, cell in enumerate(row.cells):
+            if col_index >= len(widths):
+                continue
+            cell.width = Twips(widths[col_index])
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_after = 0
 
 
 def _add_markdown_runs(paragraph, text: str) -> None:
@@ -278,6 +315,30 @@ def _add_markdown_runs(paragraph, text: str) -> None:
                 paragraph.add_run().add_break()
             run = paragraph.add_run(segment)
             run.bold = bold
+
+
+def _remove_okpd_codes(text: str) -> str:
+    value = str(text or "")
+    okpd_name = r"(?:ОКПД\s*2?|OKPD\s*2?)"
+    value = re.sub(
+        rf"\s*[\(\[]\s*(?:код\s+)?{okpd_name}\s*[:№#Nn\-–—]?\s*[\d.\s/-]+[\)\]]",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        rf"(?:код\s+)?{okpd_name}\s*[:№#Nn\-–—]?\s*\d+(?:\.\d+){{1,6}}\b",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\b\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3}){0,3}\b", "", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\s+([,.;:])", r"\1", value)
+    value = re.sub(r"\(\s*\)", "", value)
+    value = re.sub(r"\[\s*\]", "", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    return value.strip()
 
 
 def write_evidence(path: str | Path, payload: dict) -> Path:

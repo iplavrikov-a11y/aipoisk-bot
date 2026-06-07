@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
@@ -42,10 +43,11 @@ from .jobs import (
     cleanup_expired_jobs,
     create_job,
     enqueue_job,
+    package_job_output_items,
     package_job_outputs,
     recover_interrupted_jobs,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebPasswordResetRequest, WebSession, WebUser, now_utc, parse_json_list
+from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebPasswordResetRequest, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -335,6 +337,16 @@ def customer_job_download_route(
     db: Session = Depends(db_session),
 ):
     return download_customer_job_api(job_id, context=context, db=db)
+
+
+@app.get("/api/customer/jobs/{job_id}/download/{file_kind}")
+def customer_job_file_download_route(
+    job_id: str,
+    file_kind: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    return download_customer_job_file_api(job_id, file_kind, context=context, db=db)
 
 
 @app.post("/api/customer/jobs/{job_id}/accept-partial")
@@ -1670,6 +1682,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
 
 def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
+    result_files = customer_job_result_files(job)
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -1686,8 +1699,9 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "target_suppliers": job.target_suppliers,
         "verified_count": job.verified_count,
         "file_count": job.file_count,
-        "has_result": bool(job.result_path),
-        "can_download": bool(job.result_path) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
+        "has_result": bool(result_files),
+        "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
+        "result_files": result_files,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
         "error": job.error,
         "created_at": job.created_at.isoformat() if job.created_at else None,
@@ -1698,6 +1712,32 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         data["files"] = [file_to_dict(item) for item in job.files]
         data["sources"] = [source_to_dict(item) for item in job.sources]
     return data
+
+
+def customer_job_result_files(job: Job) -> list[dict]:
+    if getattr(job, "status", "") in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED}:
+        return []
+    result: list[dict] = []
+    for item in package_job_output_items(job):
+        path = Path(str(item.get("path") or ""))
+        result.append(
+            {
+                "kind": str(item.get("kind") or path.stem),
+                "label": _customer_result_file_label(str(item.get("kind") or ""), str(item.get("label") or "")),
+                "filename": path.name,
+            }
+        )
+    return result
+
+
+def _customer_result_file_label(kind: str, label: str = "") -> str:
+    if label:
+        return label
+    if kind == "analysis":
+        return "Анализ"
+    if kind == "suppliers":
+        return "Поставщики"
+    return "Файл"
 
 
 async def create_customer_job_api(
@@ -1724,7 +1764,9 @@ async def create_customer_job_api(
     if text_value:
         payload.append(("technical_assignment.txt", text_value.encode("utf-8")))
     if not payload and not sources:
-        raise HTTPException(status_code=400, detail="Добавьте файл, текст ТЗ, номер извещения или ссылку закупки.")
+        if mode == MODE_SUPPLIER_SEARCH:
+            raise HTTPException(status_code=400, detail="Приложите одно или несколько ТЗ.")
+        raise HTTPException(status_code=400, detail="Добавьте документы закупки, номер извещения или ссылку.")
     if len(payload) > int(settings.max_files_per_batch or 20):
         raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
 
@@ -1762,7 +1804,7 @@ async def create_customer_job_api(
                 jobs.append(job)
             return {"batch": True, "count": len(jobs), "jobs": [customer_job_to_dict(job) for job in jobs]}
 
-        title = Path(payload[0][0]).stem[:120] if payload else source_label(sources[0]["value"])[:120]
+        title = _customer_initial_job_title(mode, payload, sources)
         job = create_job(
             db,
             client_id=client.id,
@@ -1800,7 +1842,17 @@ async def _customer_upload_payload(files: list[UploadFile], settings: SystemSett
 def _customer_supplier_job_specs(mode: str, payload: list[tuple[str, bytes]]) -> list[tuple[str, list[tuple[str, bytes]]]]:
     if mode != MODE_SUPPLIER_SEARCH:
         return []
-    return [(Path(filename).stem[:120] or "ТЗ", [(filename, content)]) for filename, content in payload]
+    return [(_clean_customer_job_subject(Path(filename).stem) or "ТЗ", [(filename, content)]) for filename, content in payload]
+
+
+def _customer_initial_job_title(mode: str, payload: list[tuple[str, bytes]], sources: list[dict]) -> str:
+    if payload:
+        title = _clean_customer_job_subject(Path(payload[0][0]).stem)
+        if title:
+            return title[:120]
+    if sources:
+        return source_label(sources[0]["value"])[:120]
+    return mode_label(mode)
 
 
 def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> Job:
@@ -1821,6 +1873,22 @@ def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Sessi
     return FileResponse(output, filename=output.name)
 
 
+def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebAuthContext, db: Session):
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    normalized_kind = str(file_kind or "").strip()
+    output = None
+    for item in package_job_output_items(job):
+        if str(item.get("kind") or "") == normalized_kind:
+            output = Path(str(item.get("path") or ""))
+            break
+    if not output or not output.exists():
+        raise HTTPException(status_code=404, detail="Файл результата не найден.")
+    charge_job_reservation(db, job)
+    return FileResponse(output, filename=output.name)
+
+
 def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
@@ -1832,7 +1900,7 @@ def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db:
     if job.completed_at is None:
         job.completed_at = now_utc()
     db.commit()
-    return download_customer_job_api(job_id, context=context, db=db)
+    return {"success": True, "job": customer_job_to_dict(job)}
 
 
 def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
@@ -1857,13 +1925,80 @@ def human_job_title(job: Job | object) -> str:
     if is_internal_job(job):
         return "Служебная проверка"
     mode = str(getattr(job, "mode", "") or "")
+    subject = _customer_job_subject_from_evidence(job)
+    if subject:
+        return _customer_job_title_for_subject(mode, subject)
     raw = str(getattr(job, "title", "") or "").strip()
     if not raw:
         return mode_label(mode)
-    cleaned = " ".join(raw.replace("_", " ").split())
+    cleaned = _clean_customer_job_subject(raw)
     if not cleaned or _looks_like_hash(cleaned):
         return mode_label(mode)
-    return f"{cleaned[:87]}..." if len(cleaned) > 90 else cleaned
+    return _customer_job_title_for_subject(mode, cleaned)
+
+
+def _customer_job_subject_from_evidence(job: Job | object) -> str:
+    evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
+    payload: dict = {}
+    if evidence_path.exists():
+        try:
+            payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    subject = _clean_customer_job_subject(payload.get("subject") if payload else "")
+    if subject:
+        return subject
+    output_files = payload.get("output_files") if isinstance(payload, dict) else None
+    if isinstance(output_files, list):
+        for item in output_files:
+            if not isinstance(item, dict):
+                continue
+            subject = _customer_subject_from_filename(Path(str(item.get("path") or "")).name)
+            if subject:
+                return subject
+    result_path = str(getattr(job, "result_path", "") or "")
+    return _customer_subject_from_filename(Path(result_path).name)
+
+
+def _customer_subject_from_filename(filename: str) -> str:
+    stem = Path(str(filename or "")).stem
+    stem = re.sub(r"_(?:анализ|поставщики)$", "", stem, flags=re.IGNORECASE)
+    return _clean_customer_job_subject(stem)
+
+
+def _customer_job_title_for_subject(mode: str, subject: str) -> str:
+    value = _ellipsize_customer_title(subject)
+    if mode == MODE_SUPPLIER_SEARCH:
+        return f"ТЗ: {value}"
+    if mode == MODE_PROCUREMENT_REPORT:
+        return f"Анализ закупки: {value}"
+    if mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        return f"Анализ + поиск: {value}"
+    return value
+
+
+def _clean_customer_job_subject(value: object) -> str:
+    cleaned = " ".join(str(value or "").replace("_", " ").split()).strip(" .,:;\"'")
+    cleaned = re.sub(r"\.(?:docx?|xlsx?|pdf|zip|rar|7z|rtf|txt)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"(?i)^техническое\s+задание\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^тз\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^тз(?=[A-ZА-ЯЁ])", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)\bтз\b", " ", cleaned)
+    cleaned = " ".join(cleaned.split()).strip(" .,:;\"'")
+    if not cleaned:
+        return ""
+    if re.fullmatch(r"[\d\W_]+", cleaned):
+        return ""
+    if len(re.sub(r"\W", "", cleaned)) < 3:
+        return ""
+    return cleaned
+
+
+def _ellipsize_customer_title(value: str, limit: int = 90) -> str:
+    cleaned = str(value or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rsplit(" ", 1)[0].rstrip(" .,:;-") + "..."
 
 
 def _looks_like_hash(value: str) -> bool:
