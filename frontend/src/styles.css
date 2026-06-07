@@ -178,7 +178,7 @@ td strong { display: block; font-size: 14px; }
 td small { display: block; color: #64748b; margin-top: 3px; max-width: 360px; overflow-wrap: anywhere; }
 td label { display: flex; align-items: center; gap: 6px; margin: 2px 0; color: #334155; }
 td input[type="checkbox"] { width: 16px; min-height: 16px; }
-.row-actions { display: flex; gap: 8px; align-items: center; }
+.row-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .access-stack { display: grid; gap: 8px; justify-items: start; }
 .small-text { min-height: 30px; padding: 0 10px; font-size: 12px; }
 .client-note { min-height: 34px; padding: 6px 8px; }
@@ -462,8 +462,11 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .field-help { margin: 0; color: #64748b; font-size: 13px; line-height: 1.45; }
 .switch-row { display: flex; align-items: center; gap: 8px; color: #334155; font-weight: 650; }
 .switch-row input { width: 17px; min-height: 17px; }
-.provider-row, .model-row { display: grid; grid-template-columns: 150px 190px 1fr 1fr; gap: 8px; }
-.model-row { grid-template-columns: 260px 1fr; }
+.model-select-row { display: grid; grid-template-columns: minmax(0, 1fr) 36px; gap: 8px; align-items: center; }
+.section-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.save-status { color: #047857; font-size: 13px; font-weight: 750; }
+.provider-row, .model-row { display: grid; grid-template-columns: 150px 190px minmax(220px, 1fr) minmax(220px, 1fr) 104px; gap: 8px; align-items: start; }
+.model-row { grid-template-columns: 260px minmax(260px, 1fr) 104px; }
 .secret-cell { display: grid; gap: 4px; }
 .key-status { font-size: 12px; font-weight: 750; }
 .key-status.ok { color: #047857; }
@@ -476,8 +479,8 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   font-weight: 800;
   text-transform: uppercase;
 }
-.provider-row-head { grid-template-columns: 150px 190px 1fr 1fr; }
-.model-row-head { grid-template-columns: 260px 1fr; }
+.provider-row-head { grid-template-columns: 150px 190px minmax(220px, 1fr) minmax(220px, 1fr) 104px; }
+.model-row-head { grid-template-columns: 260px minmax(260px, 1fr) 104px; }
 .savebar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; }
 .provider-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .provider-chip {

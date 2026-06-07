@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Bot,
   BrainCircuit,
   ChevronDown,
@@ -508,6 +510,11 @@ function canonicalProviderName(providerId: string) {
   return names[normalized] || providerId || 'Custom provider'
 }
 
+function isKnownProviderId(providerId: string) {
+  const normalized = String(providerId || '').trim().toLowerCase()
+  return ['openrouter', 'open-router', 'openai', 'open-ai', 'gemini', 'google', 'polza'].includes(normalized)
+}
+
 function defaultProviderBaseUrl(providerId: string) {
   const normalized = String(providerId || '').trim().toLowerCase()
   const urls: Record<string, string> = {
@@ -551,7 +558,8 @@ function normalizeProvider(provider: CustomProvider): CustomProvider {
 }
 
 function ensureModelProviders(providers: CustomProvider[], models: SavedModel[]) {
-  const orderedIds = ['openrouter', 'open-ai', 'gemini']
+  const hasConfiguredProviders = providers.some(provider => String(provider.id || '').trim())
+  const orderedIds = hasConfiguredProviders ? [] : ['openrouter', 'open-ai', 'gemini']
   for (const model of models) {
     const providerId = String(model.provider || '').trim()
     if (providerId && !orderedIds.includes(providerId)) orderedIds.push(providerId)
@@ -1810,7 +1818,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   const [primaryModel, setPrimaryModel] = useState(settings.primary_model)
   const [lightProvider, setLightProvider] = useState(settings.light_provider)
   const [lightModel, setLightModel] = useState(settings.light_model)
-  const [testResult, setTestResult] = useState<AiTestState>({ status: 'idle', message: '' })
+  const [testResults, setTestResults] = useState<Record<string, AiTestState>>({})
+  const [saveStatus, setSaveStatus] = useState<Record<string, string>>({})
 
   useEffect(() => {
     const parsedModels = parseJson<SavedModel[]>(settings.saved_models_json, [])
@@ -1828,14 +1837,20 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     [savedModels],
   )
   const providersById = useMemo(() => new Map(providers.map(provider => [provider.id, provider])), [providers])
+  function providerDisplayName(providerId: string) {
+    const provider = providersById.get(providerId)
+    return isKnownProviderId(providerId)
+      ? canonicalProviderName(providerId)
+      : (provider?.name || providerId || 'Custom provider')
+  }
   function modelOptionLabel(raw: string) {
     const [providerId, ...rest] = raw.split(':')
     const modelId = rest.join(':')
-    const providerName = providersById.get(providerId)?.name || canonicalProviderName(providerId)
+    const providerName = providerDisplayName(providerId)
     return `${providerName} · ${modelId || raw}`
   }
   function providerOptionLabel(provider: CustomProvider) {
-    const name = provider.name || canonicalProviderName(provider.id)
+    const name = providerDisplayName(provider.id)
     return `${name} (${provider.id})`
   }
   function selectedModelSummary(providerId: string, modelId: string) {
@@ -1859,156 +1874,410 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     }
     return result
   }
+  function clearSaveStatus(section: string) {
+    setSaveStatus(current => {
+      if (!current[section]) return current
+      const next = { ...current }
+      delete next[section]
+      return next
+    })
+  }
+  function clearSaveStatuses(...sections: string[]) {
+    setSaveStatus(current => {
+      let changed = false
+      const next = { ...current }
+      for (const section of sections) {
+        if (next[section]) {
+          delete next[section]
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }
+  function normalizedSavedModels() {
+    return savedModels
+      .map(model => ({
+        ...model,
+        id: model.id || crypto.randomUUID(),
+        name: '',
+        provider: String(model.provider || '').trim(),
+        modelId: String(model.modelId || '').trim(),
+      }))
+      .filter(model => model.provider && model.modelId)
+  }
+  function updateFunctionModel(key: string, provider: string, model: string) {
+    setFunctionModels(current => {
+      const next = { ...current }
+      if (provider && model) {
+        next[key] = `${provider}:${model}`
+      } else {
+        delete next[key]
+      }
+      return next
+    })
+    clearSaveStatus('functions')
+  }
 
   function addProvider() {
-    const id = `custom-provider-${providers.length + 1}`
+    let index = providers.length + 1
+    let id = `custom-provider-${index}`
+    while (providers.some(provider => provider.id === id)) {
+      index += 1
+      id = `custom-provider-${index}`
+    }
     setProviders([...providers, { id, name: 'Custom provider', baseUrl: '', apiKey: '', model: '' }])
+    clearSaveStatus('providers')
   }
   function addModel() {
+    const lastModel = savedModels[savedModels.length - 1]
+    if (lastModel && !lastModel.modelId.trim()) return
     setSavedModels([...savedModels, { id: crypto.randomUUID(), name: '', provider: providers[0]?.id || '', modelId: '' }])
+    clearSaveStatus('models')
   }
-  async function save() {
-    const normalizedProviders = ensureModelProviders(providers, savedModels)
-    const normalizedModels = savedModels.map(model => ({ ...model, name: '' }))
+  function moveProvider(index: number, delta: number) {
+    setProviders(moveArrayItem(providers, index, delta))
+    clearSaveStatus('providers')
+  }
+  function moveModel(index: number, delta: number) {
+    setSavedModels(moveArrayItem(savedModels, index, delta))
+    clearSaveStatus('models')
+  }
+  function removeProvider(index: number) {
+    const provider = providers[index]
+    if (!provider) return
+    const relatedModels = savedModels.filter(model => model.provider === provider.id)
+    const message = relatedModels.length
+      ? `Удалить провайдера «${providerOptionLabel(provider)}» и ${relatedModels.length} связанных modelId?`
+      : `Удалить провайдера «${providerOptionLabel(provider)}»?`
+    if (!window.confirm(message)) return
+    setProviders(providers.filter((_, itemIndex) => itemIndex !== index))
+    setSavedModels(savedModels.filter(model => model.provider !== provider.id))
+    if (primaryProvider === provider.id) {
+      setPrimaryProvider('')
+      setPrimaryModel('')
+    }
+    if (lightProvider === provider.id) {
+      setLightProvider('')
+      setLightModel('')
+    }
+    setFunctionModels(removeFunctionModelsForProvider(functionModels, provider.id))
+    clearSaveStatuses('providers', 'models', 'global', 'functions')
+  }
+  function removeModel(index: number) {
+    const model = savedModels[index]
+    if (!model) return
+    const value = `${model.provider}:${model.modelId}`
+    setSavedModels(savedModels.filter((_, itemIndex) => itemIndex !== index))
+    if (primaryProvider === model.provider && primaryModel === model.modelId) {
+      setPrimaryProvider('')
+      setPrimaryModel('')
+    }
+    if (lightProvider === model.provider && lightModel === model.modelId) {
+      setLightProvider('')
+      setLightModel('')
+    }
+    setFunctionModels(removeFunctionModelValue(functionModels, value))
+    clearSaveStatuses('models', 'global', 'functions')
+  }
+  async function saveSection(section: string, payload: Partial<SettingsPayload>) {
     await api('/api/settings', {
       method: 'PATCH',
-      body: JSON.stringify({
-        primary_provider: primaryProvider,
-        primary_model: primaryModel,
-        light_provider: lightProvider,
-        light_model: lightModel,
-        custom_ai_providers_json: stringify(normalizedProviders),
-        saved_models_json: stringify(normalizedModels),
-        ai_function_models_json: stringify(explicitFunctionModels()),
-      }),
+      body: JSON.stringify(payload),
     })
+    setSaveStatus(current => ({ ...current, [section]: 'Сохранено' }))
     await onChange()
   }
-  async function testAi() {
-    const provider = lightProvider || primaryProvider
-    const model = lightModel || primaryModel
-    setTestResult({
-      status: 'running',
-      message: `Проверяю: ${selectedModelSummary(provider, model)}`,
+  async function saveFunctionModelSettings() {
+    await saveSection('functions', { ai_function_models_json: stringify(explicitFunctionModels()) })
+  }
+  async function saveGlobalModelSettings() {
+    await saveSection('global', {
+      primary_provider: primaryProvider,
+      primary_model: primaryModel,
+      light_provider: lightProvider,
+      light_model: lightModel,
     })
+  }
+  async function saveProviderSettings() {
+    const normalizedProviders = providers.filter(provider => provider.id.trim()).map(normalizeProvider)
+    const providerIds = new Set(normalizedProviders.map(provider => provider.id))
+    const nextModels = normalizedSavedModels().filter(model => providerIds.has(model.provider))
+    const modelValues = new Set(nextModels.map(model => `${model.provider}:${model.modelId}`))
+    const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
+    const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    await saveSection('providers', {
+      custom_ai_providers_json: stringify(normalizedProviders),
+      saved_models_json: stringify(nextModels),
+      primary_provider: primaryValue && modelValues.has(primaryValue) ? primaryProvider : '',
+      primary_model: primaryValue && modelValues.has(primaryValue) ? primaryModel : '',
+      light_provider: lightValue && modelValues.has(lightValue) ? lightProvider : '',
+      light_model: lightValue && modelValues.has(lightValue) ? lightModel : '',
+      ai_function_models_json: stringify(filterFunctionModelValues(explicitFunctionModels(), modelValues)),
+    })
+  }
+  async function saveModelListSettings() {
+    const normalizedModels = normalizedSavedModels()
+    const modelValues = new Set(normalizedModels.map(model => `${model.provider}:${model.modelId}`))
+    const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
+    const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    await saveSection('models', {
+      saved_models_json: stringify(normalizedModels),
+      primary_provider: !primaryValue || modelValues.has(primaryValue) ? primaryProvider : '',
+      primary_model: !primaryValue || modelValues.has(primaryValue) ? primaryModel : '',
+      light_provider: !lightValue || modelValues.has(lightValue) ? lightProvider : '',
+      light_model: !lightValue || modelValues.has(lightValue) ? lightModel : '',
+      ai_function_models_json: stringify(filterFunctionModelValues(explicitFunctionModels(), modelValues)),
+    })
+  }
+  async function testAi(slot: string, provider: string, model: string) {
+    setTestResults(current => ({
+      ...current,
+      [slot]: {
+        status: 'running',
+        message: `Проверяю: ${selectedModelSummary(provider, model)}`,
+      },
+    }))
     try {
       const result = await api<{ response: string; provider_name?: string; model?: string }>('/api/ai/test', {
         method: 'POST',
         body: JSON.stringify({ provider, model }),
       })
-      setTestResult({
-        status: 'success',
-        message: result.response || 'Модель ответила без текста.',
-        providerName: result.provider_name || providersById.get(provider)?.name || provider,
-        model: result.model || model,
-      })
+      setTestResults(current => ({
+        ...current,
+        [slot]: {
+          status: 'success',
+          message: result.response || 'Модель ответила без текста.',
+          providerName: result.provider_name || providerDisplayName(provider),
+          model: result.model || model,
+        },
+      }))
     } catch (err) {
-      setTestResult({
-        status: 'error',
-        message: formatError(err),
-        providerName: providersById.get(provider)?.name || provider,
-        model,
-      })
+      setTestResults(current => ({
+        ...current,
+        [slot]: {
+          status: 'error',
+          message: formatError(err),
+          providerName: providerDisplayName(provider),
+          model,
+        },
+      }))
     }
+  }
+  function testButton(slot: string, provider: string, model: string) {
+    const running = testResults[slot]?.status === 'running'
+    return (
+      <button
+        className="icon-button small"
+        title="Проверить эту модель"
+        onClick={() => void testAi(slot, provider, model)}
+        disabled={!provider || !model || running}
+      >
+        {running ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+      </button>
+    )
+  }
+  function renderTestResult(slot: string) {
+    const result = testResults[slot]
+    if (!result) return null
+    return (
+      <div className={`test-result ${result.status}`}>
+        {result.status === 'success' && <CheckCircle2 size={16} />}
+        {result.status === 'error' && <XCircle size={16} />}
+        {result.status === 'running' && <Loader2 size={16} className="spin" />}
+        <span>
+          {result.providerName && result.model && <strong>{result.providerName} · {result.model}</strong>}
+          {result.message}
+        </span>
+      </div>
+    )
+  }
+  function sectionSaveStatus(section: string) {
+    return saveStatus[section] ? <span className="save-status">{saveStatus[section]}</span> : null
   }
   return (
     <section className="stack">
       <div className="form-panel full-width-panel">
-        <h2>Модели для функций бота</h2>
-        <p className="field-help">Для анализа документов выбирайте сильную модель, для простых поисковых шагов можно ставить быструю.</p>
-        {aiRoutingKeys.map(key => (
+        <details className="service-panel" open>
+          <summary>Модели для функций бота</summary>
+          <p className="field-help">Для анализа документов выбирайте сильную модель, для простых поисковых шагов можно ставить быструю.</p>
+          {aiRoutingKeys.map(key => (
+            <ModelSelect
+              key={key}
+              label={functionLabels[key] || key}
+              help={functionModelHints[key]}
+              value={resolvedModelValue(functionModels[key])}
+              options={modelOptions}
+              optionLabel={modelOptionLabel}
+              onChange={(provider, model) => updateFunctionModel(key, provider, model)}
+            />
+          ))}
+          <div className="section-actions">
+            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить функции</button>
+            {sectionSaveStatus('functions')}
+          </div>
+        </details>
+      </div>
+      <div className="form-panel">
+        <details className="service-panel" open>
+          <summary>Основная и быстрая модель</summary>
           <ModelSelect
-            key={key}
-            label={functionLabels[key] || key}
-            help={functionModelHints[key]}
-            value={resolvedModelValue(functionModels[key])}
+            label="Основная модель"
+            help={`Сейчас: ${selectedModelSummary(primaryProvider, primaryModel)} · ${providerKeyStatus(primaryProvider)}`}
+            value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
+            action={testButton('primary', primaryProvider, primaryModel)}
+            status={renderTestResult('primary')}
             onChange={(provider, model) => {
-              setFunctionModels({ ...functionModels, [key]: `${provider}:${model}` })
+              setPrimaryProvider(provider)
+              setPrimaryModel(model)
+              clearSaveStatus('global')
             }}
           />
-        ))}
-      </div>
-      <div className="form-panel">
-        <h2>Основная и быстрая модель</h2>
-        <ModelSelect
-          label="Основная модель"
-          help={`Сейчас: ${selectedModelSummary(primaryProvider, primaryModel)} · ${providerKeyStatus(primaryProvider)}`}
-          value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
-          options={modelOptions}
-          optionLabel={modelOptionLabel}
-          onChange={(provider, model) => { setPrimaryProvider(provider); setPrimaryModel(model) }}
-        />
-        <ModelSelect
-          label="Быстрая модель"
-          help={`Сейчас: ${selectedModelSummary(lightProvider, lightModel)} · ${providerKeyStatus(lightProvider)}`}
-          value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
-          options={modelOptions}
-          optionLabel={modelOptionLabel}
-          onChange={(provider, model) => { setLightProvider(provider); setLightModel(model) }}
-        />
-      </div>
-      <div className="form-panel">
-        <h2>Проверка</h2>
-        <p className="field-help">Проверяется быстрая модель; если она не выбрана, проверяется основная.</p>
-        <button className="secondary" onClick={() => void testAi()} disabled={testResult.status === 'running'}>
-          {testResult.status === 'running' ? <Loader2 size={16} className="spin" /> : <BrainCircuit size={16} />}
-          {testResult.status === 'running' ? 'Проверяю...' : 'Проверить модель'}
-        </button>
-        {testResult.status !== 'idle' && (
-          <div className={`test-result ${testResult.status}`}>
-            {testResult.status === 'success' && <CheckCircle2 size={16} />}
-            {testResult.status === 'error' && <XCircle size={16} />}
-            {testResult.status === 'running' && <Loader2 size={16} className="spin" />}
-            <span>
-              {testResult.providerName && testResult.model && <strong>{testResult.providerName} · {testResult.model}</strong>}
-              {testResult.message}
-            </span>
+          <ModelSelect
+            label="Быстрая модель"
+            help={`Сейчас: ${selectedModelSummary(lightProvider, lightModel)} · ${providerKeyStatus(lightProvider)}`}
+            value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
+            options={modelOptions}
+            optionLabel={modelOptionLabel}
+            action={testButton('light', lightProvider, lightModel)}
+            status={renderTestResult('light')}
+            onChange={(provider, model) => {
+              setLightProvider(provider)
+              setLightModel(model)
+              clearSaveStatus('global')
+            }}
+          />
+          <div className="section-actions">
+            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить основную/быструю</button>
+            {sectionSaveStatus('global')}
           </div>
-        )}
+        </details>
       </div>
       <div className="form-panel full-width-panel">
         <details className="service-panel">
-          <summary>Провайдеры и modelId</summary>
+          <summary>ИИ-провайдеры</summary>
           <div className="advanced-section">
-            <h3>ИИ-провайдеры</h3>
             <button onClick={addProvider}><Plus size={16} />Добавить провайдера</button>
-            <div className="provider-row-head"><span>ID провайдера</span><span>Название провайдера</span><span>Base URL</span><span>API key</span></div>
+            <div className="provider-row-head"><span>ID провайдера</span><span>Название провайдера</span><span>Base URL</span><span>API key</span><span></span></div>
             {providers.map((provider, index) => (
-              <div className="provider-row" key={provider.id}>
-                <input value={provider.id} placeholder="например openrouter" onChange={e => updateArray(providers, setProviders, index, { id: e.target.value })} />
-                <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => updateArray(providers, setProviders, index, { name: e.target.value })} />
-                <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => updateArray(providers, setProviders, index, { baseUrl: e.target.value })} />
+              <div className="provider-row" key={`${provider.id}-${index}`}>
+                <input value={provider.id} placeholder="например openrouter" onChange={e => { updateArray(providers, setProviders, index, { id: e.target.value }); clearSaveStatus('providers') }} />
+                <input value={provider.name} placeholder={canonicalProviderName(provider.id)} onChange={e => { updateArray(providers, setProviders, index, { name: e.target.value }); clearSaveStatus('providers') }} />
+                <input value={provider.baseUrl} placeholder="https://.../v1" onChange={e => { updateArray(providers, setProviders, index, { baseUrl: e.target.value }); clearSaveStatus('providers') }} />
                 <div className="secret-cell">
-                  <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => updateArray(providers, setProviders, index, { apiKey: e.target.value })} />
+                  <input type="password" value={provider.apiKey} placeholder="API key" onChange={e => { updateArray(providers, setProviders, index, { apiKey: e.target.value }); clearSaveStatus('providers') }} />
                   <small className={provider.apiKey?.trim() ? 'key-status ok' : 'key-status missing'}>
                     {provider.apiKey?.trim() ? 'ключ указан' : 'ключ не указан'}
                   </small>
                 </div>
+                <RowActions
+                  index={index}
+                  count={providers.length}
+                  onMoveUp={() => moveProvider(index, -1)}
+                  onMoveDown={() => moveProvider(index, 1)}
+                  onRemove={() => removeProvider(index)}
+                  removeTitle="Удалить провайдера"
+                />
               </div>
             ))}
-          </div>
-          <div className="advanced-section">
-            <h3>Models</h3>
-            <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
-            <div className="model-row-head"><span>Провайдер</span><span>modelId</span></div>
-            {savedModels.map((model, index) => (
-              <div className="model-row" key={model.id}>
-                <select value={model.provider} onChange={e => updateArray(savedModels, setSavedModels, index, { provider: e.target.value })}>
-                  <option value="">provider id</option>
-                  {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-                </select>
-                <input value={model.modelId} placeholder="например gemini-3.1-flash-lite" onChange={e => updateArray(savedModels, setSavedModels, index, { modelId: e.target.value })} />
-              </div>
-            ))}
+            <div className="section-actions">
+              <button onClick={() => void saveProviderSettings()}><Save size={16} />Сохранить провайдеров</button>
+              {sectionSaveStatus('providers')}
+            </div>
           </div>
         </details>
       </div>
-      <div className="savebar">
-        <button onClick={() => void save()}><CheckCircle2 size={16} />Сохранить ИИ</button>
+      <div className="form-panel full-width-panel">
+        <details className="service-panel">
+          <summary>Список modelId</summary>
+          <div className="advanced-section">
+            <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
+            <div className="model-row-head"><span>Провайдер</span><span>modelId</span><span></span></div>
+            {savedModels.map((model, index) => (
+              <div className="model-row" key={model.id}>
+                <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
+                  <option value="">provider id</option>
+                  {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
+                </select>
+                <input value={model.modelId} placeholder="например gemini-3.1-flash-lite" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
+                <RowActions
+                  index={index}
+                  count={savedModels.length}
+                  onMoveUp={() => moveModel(index, -1)}
+                  onMoveDown={() => moveModel(index, 1)}
+                  onRemove={() => removeModel(index)}
+                  removeTitle="Удалить modelId"
+                />
+              </div>
+            ))}
+            <div className="section-actions">
+              <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить modelId</button>
+              {sectionSaveStatus('models')}
+            </div>
+          </div>
+        </details>
       </div>
     </section>
+  )
+}
+
+function removeFunctionModelsForProvider(functionModels: Record<string, string>, providerId: string) {
+  const result: Record<string, string> = {}
+  const prefix = `${providerId}:`
+  for (const [key, value] of Object.entries(functionModels)) {
+    if (!String(value || '').startsWith(prefix)) result[key] = value
+  }
+  return result
+}
+
+function removeFunctionModelValue(functionModels: Record<string, string>, modelValue: string) {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(functionModels)) {
+    if (value !== modelValue) result[key] = value
+  }
+  return result
+}
+
+function filterFunctionModelValues(functionModels: Record<string, string>, allowedValues: Set<string>) {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(functionModels)) {
+    if (allowedValues.has(value)) result[key] = value
+  }
+  return result
+}
+
+function moveArrayItem<T>(items: T[], index: number, delta: number) {
+  const nextIndex = index + delta
+  if (nextIndex < 0 || nextIndex >= items.length) return items
+  const next = [...items]
+  const [item] = next.splice(index, 1)
+  next.splice(nextIndex, 0, item)
+  return next
+}
+
+function RowActions({
+  index,
+  count,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  removeTitle,
+}: {
+  index: number
+  count: number
+  onMoveUp: () => void
+  onMoveDown: () => void
+  onRemove: () => void
+  removeTitle: string
+}) {
+  return (
+    <div className="row-actions">
+      <button className="icon-button small" title="Поднять выше" onClick={onMoveUp} disabled={index === 0}><ArrowUp size={14} /></button>
+      <button className="icon-button small" title="Опустить ниже" onClick={onMoveDown} disabled={index >= count - 1}><ArrowDown size={14} /></button>
+      <button className="icon-button small danger" title={removeTitle} onClick={onRemove}><Trash2 size={14} /></button>
+    </div>
   )
 }
 
@@ -2022,6 +2291,8 @@ function ModelSelect({
   value,
   options,
   optionLabel = option => option,
+  action,
+  status,
   onChange,
 }: {
   label: string
@@ -2029,25 +2300,31 @@ function ModelSelect({
   value: string
   options: string[]
   optionLabel?: (option: string) => string
+  action?: ReactNode
+  status?: ReactNode
   onChange: (provider: string, model: string) => void
 }) {
   return (
-    <label className="field">
+    <div className="field">
       <span>{label}</span>
-      <select value={value} onChange={event => {
-        const raw = event.target.value
-        if (raw.startsWith('__')) {
-          onChange(raw, '')
-          return
-        }
-        const [provider, ...rest] = raw.split(':')
-        onChange(provider || '', rest.join(':') || '')
-      }}>
-        <option value="">Не выбрано</option>
-        {options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}
-      </select>
+      <div className="model-select-row">
+        <select value={value} onChange={event => {
+          const raw = event.target.value
+          if (raw.startsWith('__')) {
+            onChange(raw, '')
+            return
+          }
+          const [provider, ...rest] = raw.split(':')
+          onChange(provider || '', rest.join(':') || '')
+        }}>
+          <option value="">Не выбрано</option>
+          {options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}
+        </select>
+        {action}
+      </div>
       {help && <small className="field-help">{help}</small>}
-    </label>
+      {status}
+    </div>
   )
 }
 
