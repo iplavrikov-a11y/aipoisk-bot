@@ -60,6 +60,11 @@ Current admin capabilities:
 - the owner can create clients by Telegram username before the real Telegram ID
   is known, edit linked Telegram accounts, grant arbitrary units by function,
   and delete extra Telegram accounts;
+- if a manager first used the bot as a separate trial customer, the owner can
+  move that existing Telegram account into the correct customer card after
+  explicit confirmation. A single-account trial customer is merged with its job
+  and billing history; regular multi-account customers remain in place and keep
+  their remaining Telegram account as primary;
 - customer deletion is allowed only when the customer has no jobs. If there are
   no jobs, related billing rows are removed with the customer. If jobs exist,
   deletion is blocked to preserve report and billing history, and the owner

@@ -28,7 +28,7 @@ from app.main import (
     update_client_telegram_account,
     upload_job,
 )
-from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, Job, SystemSettings, TariffPackage, now_utc
+from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, now_utc
 from app.schemas import BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
@@ -315,6 +315,210 @@ class ApiGuardTests(unittest.TestCase):
             db.close()
 
         self.assertEqual(raised.exception.status_code, 409)
+
+    def test_existing_telegram_account_requires_transfer_confirmation(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            target = create_client(ClientCreate(name="Target", telegram_id="111", username="@owner"), db=db)
+
+            with self.assertRaises(HTTPException) as raised:
+                create_client_telegram_account(
+                    target["id"],
+                    ClientTelegramAccountCreate(telegram_id="222", username="@manager"),
+                    db=db,
+                )
+        finally:
+            db.close()
+
+        self.assertEqual(source["telegram_id"], "222")
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Подтвердите перенос", str(raised.exception.detail))
+
+    def test_trial_client_can_be_merged_into_existing_client_by_transferring_account(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Customer", telegram_id="111", username="@owner"), db=db)
+            source = create_client(
+                ClientCreate(name="Trial Manager", telegram_id="222", username="@manager", is_trial=True),
+                db=db,
+            )
+            source_id = source["id"]
+            db.add(Job(id="job-1", client_id=source_id, mode="supplier_search", status="completed", title="ТЗ", created_by_telegram_id="222"))
+            db.add(
+                BillingTransaction(
+                    client_id=source_id,
+                    job_id="job-1",
+                    kind="supplier_search",
+                    operation="grant",
+                    units=1,
+                    note="trial",
+                )
+            )
+            db.commit()
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(
+                    telegram_id="222",
+                    username="@manager",
+                    name="Manager",
+                    transfer_existing=True,
+                ),
+                db=db,
+            )
+            source_after = db.get(Client, source_id)
+            target_client = db.get(Client, target["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            target_account_count = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.client_id == target["id"])
+                .count()
+            )
+            moved_job = db.get(Job, "job-1")
+            moved_job_client_id = moved_job.client_id if moved_job else ""
+            moved_billing = db.query(BillingTransaction).filter(BillingTransaction.job_id == "job-1").first()
+            moved_billing_client_id = moved_billing.client_id if moved_billing else ""
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertEqual(account["username"], "manager")
+        self.assertEqual(account["name"], "Manager")
+        self.assertIsNone(source_after)
+        self.assertEqual(target_primary_id, "111")
+        self.assertEqual(target_account_count, 2)
+        self.assertEqual(moved_job_client_id, target["id"])
+        self.assertEqual(moved_billing_client_id, target["id"])
+
+    def test_transfer_to_pending_client_promotes_moved_telegram_id(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Customer", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Trial Manager", telegram_id="222", username="@manager", is_trial=True), db=db)
+            source_id = source["id"]
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(
+                    telegram_id="222",
+                    username="@manager",
+                    transfer_existing=True,
+                ),
+                db=db,
+            )
+            source_after = db.get(Client, source_id)
+            target_client = db.get(Client, target["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            target_accounts = (
+                db.query(ClientTelegramAccount)
+                .filter(ClientTelegramAccount.client_id == target["id"])
+                .all()
+            )
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertIsNone(source_after)
+        self.assertEqual(target_primary_id, "222")
+        self.assertEqual({item.username for item in target_accounts}, {"owner", "manager"})
+
+    def test_transferring_account_from_regular_multi_account_client_keeps_source_client(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Target", telegram_id="111", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            create_client_telegram_account(
+                source["id"],
+                ClientTelegramAccountCreate(telegram_id="333", username="@second"),
+                db=db,
+            )
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager", transfer_existing=True),
+                db=db,
+            )
+            source_client = db.get(Client, source["id"])
+            target_accounts = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == target["id"]).all()
+            source_accounts = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source["id"]).all()
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertIsNotNone(source_client)
+        self.assertTrue(source_client.is_active)
+        self.assertEqual(source_client.telegram_id, "333")
+        self.assertEqual(len(source_accounts), 1)
+        self.assertEqual(source_accounts[0].telegram_id, "333")
+        self.assertEqual({item.telegram_id for item in target_accounts}, {"111", "222"})
+
+    def test_transfer_from_regular_client_to_pending_client_reassigns_both_primaries(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Target", username="@owner"), db=db)
+            source = create_client(ClientCreate(name="Source", telegram_id="222", username="@manager"), db=db)
+            create_client_telegram_account(
+                source["id"],
+                ClientTelegramAccountCreate(telegram_id="333", username="@second"),
+                db=db,
+            )
+
+            account = create_client_telegram_account(
+                target["id"],
+                ClientTelegramAccountCreate(telegram_id="222", username="@manager", transfer_existing=True),
+                db=db,
+            )
+            target_client = db.get(Client, target["id"])
+            source_client = db.get(Client, source["id"])
+            target_primary_id = target_client.telegram_id if target_client else ""
+            source_primary_id = source_client.telegram_id if source_client else ""
+        finally:
+            db.close()
+
+        self.assertEqual(account["telegram_id"], "222")
+        self.assertEqual(target_primary_id, "222")
+        self.assertEqual(source_primary_id, "333")
 
     def test_extra_telegram_account_can_be_deleted(self) -> None:
         from sqlalchemy import create_engine

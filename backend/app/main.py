@@ -384,6 +384,138 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     }
 
 
+def _client_display_name(client: Client | None) -> str:
+    if not client:
+        return "без имени"
+    return client.name or (f"@{client.username}" if client.username else "") or client.telegram_id or "без имени"
+
+
+def _transfer_required_message(source_client: Client) -> str:
+    return (
+        "Telegram-аккаунт уже привязан к клиенту "
+        f"«{_client_display_name(source_client)}». Подтвердите перенос, чтобы подключить "
+        "этого менеджера к выбранному клиенту."
+    )
+
+
+def _find_existing_telegram_account(
+    db: Session,
+    *,
+    telegram_id: str = "",
+    username: str = "",
+) -> ClientTelegramAccount | None:
+    by_id = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.telegram_id == telegram_id)
+        .first()
+        if telegram_id
+        else None
+    )
+    by_username = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.username == username)
+        .first()
+        if username
+        else None
+    )
+    if by_id and by_username and by_id.id != by_username.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram ID и username уже привязаны к разным клиентам. Проверьте данные перед переносом.",
+        )
+    return by_id or by_username
+
+
+def _set_client_primary_from_accounts(db: Session, client: Client, *, moved_account_id: str = "") -> None:
+    remaining = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.client_id == client.id)
+        .filter(ClientTelegramAccount.id != moved_account_id)
+        .order_by(ClientTelegramAccount.created_at.desc())
+        .all()
+    )
+    if remaining:
+        primary = remaining[0]
+        client.telegram_id = primary.telegram_id
+        client.username = primary.username
+        return
+    client.telegram_id = new_pending_telegram_id()
+    client.username = ""
+    client.is_active = False
+    note = "Telegram-аккаунты перенесены к другому клиенту"
+    client.notes = f"{client.notes}\n{note}".strip() if client.notes else note
+
+
+def _move_existing_telegram_account(
+    db: Session,
+    *,
+    target_client: Client,
+    account: ClientTelegramAccount,
+    data: ClientTelegramAccountCreate,
+    username: str,
+    telegram_id: str,
+) -> ClientTelegramAccount:
+    source_client = account.client
+    if source_client.id == target_client.id:
+        if telegram_id:
+            account.telegram_id = telegram_id
+        if username:
+            account.username = username
+        if data.name:
+            account.name = data.name
+        account.is_active = data.is_active
+        if data.notes:
+            account.notes = data.notes
+        return account
+
+    source_account_count = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.client_id == source_client.id)
+        .count()
+    )
+    merge_source_client = bool(source_client.is_trial and source_account_count == 1)
+
+    target_needs_primary = (
+        not target_client.telegram_id
+        or is_pending_telegram_id(target_client.telegram_id)
+    )
+    account.client = target_client
+    if telegram_id:
+        account.telegram_id = telegram_id
+    if username:
+        account.username = username
+    if data.name:
+        account.name = data.name
+    account.is_active = data.is_active
+    if data.notes:
+        account.notes = data.notes
+    elif account.notes.startswith("Trial "):
+        account.notes = ""
+
+    if not target_client.username and account.username:
+        target_client.username = account.username
+
+    if merge_source_client:
+        if target_needs_primary:
+            source_client.telegram_id = new_pending_telegram_id()
+        db.query(Job).filter(Job.client_id == source_client.id).update(
+            {Job.client_id: target_client.id},
+            synchronize_session=False,
+        )
+        db.query(BillingTransaction).filter(BillingTransaction.client_id == source_client.id).update(
+            {BillingTransaction.client_id: target_client.id},
+            synchronize_session=False,
+        )
+        db.flush()
+        db.delete(source_client)
+    else:
+        _set_client_primary_from_accounts(db, source_client, moved_account_id=account.id)
+        db.flush()
+    if target_needs_primary:
+        target_client.telegram_id = account.telegram_id
+    return account
+
+
 @app.post("/api/clients/{client_id}/telegram-accounts", dependencies=[Depends(require_admin)])
 def create_client_telegram_account(client_id: str, data: ClientTelegramAccountCreate, db: Session = Depends(db_session)) -> dict:
     client = db.get(Client, client_id)
@@ -395,32 +527,91 @@ def create_client_telegram_account(client_id: str, data: ClientTelegramAccountCr
         raise HTTPException(status_code=400, detail="Telegram username or Telegram ID is required")
     try:
         if telegram_id:
-            existing_account = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
+            existing_account = _find_existing_telegram_account(db, telegram_id=telegram_id, username=username)
             existing_client = db.query(Client).filter(Client.telegram_id == telegram_id).first()
-            if existing_account or (existing_client and existing_client.id != client.id):
-                raise HTTPException(status_code=409, detail="Telegram ID is already linked to a client")
-            account = ClientTelegramAccount(
-                client_id=client.id,
-                telegram_id=telegram_id,
-                username=username,
-                name=data.name,
-                is_active=data.is_active,
-                notes=data.notes,
-            )
-            db.add(account)
-            if is_pending_telegram_id(client.telegram_id):
-                client.telegram_id = telegram_id
-            if not client.username and username:
-                client.username = username
+            if existing_account and existing_account.client_id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_account.client))
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id=telegram_id,
+                )
+            elif existing_client and existing_client.id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_client))
+                existing_account = ensure_client_telegram_account(
+                    db,
+                    existing_client,
+                    telegram_id,
+                    username=existing_client.username,
+                    name=existing_client.name,
+                )
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username or existing_account.username,
+                    telegram_id=telegram_id,
+                )
+            elif existing_account:
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id=telegram_id,
+                )
+            else:
+                account = ClientTelegramAccount(
+                    client_id=client.id,
+                    telegram_id=telegram_id,
+                    username=username,
+                    name=data.name,
+                    is_active=data.is_active,
+                    notes=data.notes,
+                )
+                db.add(account)
+                if is_pending_telegram_id(client.telegram_id):
+                    client.telegram_id = telegram_id
+                if not client.username and username:
+                    client.username = username
         else:
-            account = ensure_pending_client_telegram_account(
-                db,
-                client,
-                username,
-                name=data.name,
-                notes=data.notes,
-            )
-            account.is_active = data.is_active
+            existing_account = _find_existing_telegram_account(db, username=username)
+            if existing_account and existing_account.client_id != client.id:
+                if not data.transfer_existing:
+                    raise HTTPException(status_code=409, detail=_transfer_required_message(existing_account.client))
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id="",
+                )
+            elif existing_account:
+                account = _move_existing_telegram_account(
+                    db,
+                    target_client=client,
+                    account=existing_account,
+                    data=data,
+                    username=username,
+                    telegram_id="",
+                )
+            else:
+                account = ensure_pending_client_telegram_account(
+                    db,
+                    client,
+                    username,
+                    name=data.name,
+                    notes=data.notes,
+                )
+                account.is_active = data.is_active
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()

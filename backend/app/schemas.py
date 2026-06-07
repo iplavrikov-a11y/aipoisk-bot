@@ -86,6 +86,7 @@ class ClientTelegramAccountCreate(BaseModel):
     name: str = ""
     is_active: bool = True
     notes: str = ""
+    transfer_existing: bool = False
 
 
 class ClientTelegramAccountPatch(BaseModel):

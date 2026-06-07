@@ -436,6 +436,41 @@ function formatError(err: unknown) {
   return message || 'Ошибка загрузки'
 }
 
+function normalizeTelegramUsername(value: string) {
+  return String(value || '').trim().replace(/^@+/, '').toLowerCase()
+}
+
+function clientDisplayName(client: Client) {
+  return client.name || (client.username ? `@${client.username}` : '') || client.telegram_id || 'без имени'
+}
+
+function accountDisplayName(account?: TelegramAccount) {
+  if (!account) return 'этот Telegram-аккаунт'
+  return account.name || (account.username ? `@${account.username}` : '') || account.telegram_id || 'этот Telegram-аккаунт'
+}
+
+function findLinkedTelegramAccount(clients: Client[], targetClient: Client, draft: AccountDraft) {
+  const telegramId = draft.telegram_id.trim()
+  const username = normalizeTelegramUsername(draft.username)
+  for (const client of clients) {
+    if (client.id === targetClient.id) continue
+    for (const account of client.telegram_accounts || []) {
+      if (telegramId && account.telegram_id === telegramId) return { client, account }
+      if (username && normalizeTelegramUsername(account.username) === username) return { client, account }
+    }
+    if (telegramId && client.telegram_id === telegramId) return { client, account: undefined }
+  }
+  return null
+}
+
+function transferAccountMessage(sourceClient: Client, targetClient: Client, account?: TelegramAccount) {
+  return [
+    `Telegram-аккаунт ${accountDisplayName(account)} уже привязан к клиенту «${clientDisplayName(sourceClient)}».`,
+    `Перенести его к клиенту «${clientDisplayName(targetClient)}»?`,
+    'Если это отдельный тестовый клиент с одним аккаунтом, его история и списания будут объединены с выбранным клиентом.',
+  ].join('\n\n')
+}
+
 function supplierCountLabel(job: Job) {
   return `${job.verified_count}`
 }
@@ -988,7 +1023,26 @@ function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariff
   }
   async function createAccount(client: Client) {
     const draft = accountForms[client.id] || { telegram_id: '', username: '', name: '' }
-    await api(`/api/clients/${client.id}/telegram-accounts`, { method: 'POST', body: JSON.stringify(draft) })
+    const payload: AccountDraft & { transfer_existing?: boolean } = { ...draft }
+    const linkedAccount = findLinkedTelegramAccount(clients, client, draft)
+    if (linkedAccount) {
+      if (!window.confirm(transferAccountMessage(linkedAccount.client, client, linkedAccount.account))) return
+      payload.transfer_existing = true
+    }
+    const create = (body: AccountDraft & { transfer_existing?: boolean }) => (
+      api(`/api/clients/${client.id}/telegram-accounts`, { method: 'POST', body: JSON.stringify(body) })
+    )
+    try {
+      await create(payload)
+    } catch (err) {
+      const message = formatError(err)
+      if (!payload.transfer_existing && message.includes('Подтвердите перенос')) {
+        if (!window.confirm(`${message}\n\nПеренести аккаунт к клиенту «${clientDisplayName(client)}»?`)) return
+        await create({ ...payload, transfer_existing: true })
+      } else {
+        throw err
+      }
+    }
     setAccountForms({ ...accountForms, [client.id]: { telegram_id: '', username: '', name: '' } })
     await onChange()
   }
@@ -1267,7 +1321,7 @@ function parseTelegramUsernames(value: string) {
   const seen = new Set<string>()
   return value
     .split(/[\s,;]+/)
-    .map(item => item.trim().replace(/^@/, '').toLowerCase())
+    .map(item => normalizeTelegramUsername(item))
     .filter(item => {
       if (!item || seen.has(item)) return false
       seen.add(item)
