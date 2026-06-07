@@ -1832,9 +1832,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     const [providerId, ...rest] = raw.split(':')
     const modelId = rest.join(':')
     const providerName = providersById.get(providerId)?.name || canonicalProviderName(providerId)
-    const saved = savedModels.find(item => item.provider === providerId && item.modelId === modelId)
-    const displayName = saved?.name && saved.name !== modelId ? ` · ${saved.name}` : ''
-    return `${providerName} · ${modelId || raw}${displayName}`
+    return `${providerName} · ${modelId || raw}`
   }
   function providerOptionLabel(provider: CustomProvider) {
     const name = provider.name || canonicalProviderName(provider.id)
@@ -1871,6 +1869,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   }
   async function save() {
     const normalizedProviders = ensureModelProviders(providers, savedModels)
+    const normalizedModels = savedModels.map(model => ({ ...model, name: '' }))
     await api('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify({
@@ -1879,7 +1878,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
         light_provider: lightProvider,
         light_model: lightModel,
         custom_ai_providers_json: stringify(normalizedProviders),
-        saved_models_json: stringify(savedModels),
+        saved_models_json: stringify(normalizedModels),
         ai_function_models_json: stringify(explicitFunctionModels()),
       }),
     })
@@ -1993,10 +1992,9 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
           <div className="advanced-section">
             <h3>Models</h3>
             <button onClick={addModel}><Plus size={16} />Добавить modelId</button>
-            <div className="model-row-head"><span>Название в списке</span><span>Провайдер</span><span>modelId</span></div>
+            <div className="model-row-head"><span>Провайдер</span><span>modelId</span></div>
             {savedModels.map((model, index) => (
               <div className="model-row" key={model.id}>
-                <input value={model.name} placeholder="например Gemini Flash Lite" onChange={e => updateArray(savedModels, setSavedModels, index, { name: e.target.value })} />
                 <select value={model.provider} onChange={e => updateArray(savedModels, setSavedModels, index, { provider: e.target.value })}>
                   <option value="">provider id</option>
                   {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}

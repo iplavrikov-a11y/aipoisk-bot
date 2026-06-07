@@ -463,7 +463,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .switch-row { display: flex; align-items: center; gap: 8px; color: #334155; font-weight: 650; }
 .switch-row input { width: 17px; min-height: 17px; }
 .provider-row, .model-row { display: grid; grid-template-columns: 150px 190px 1fr 1fr; gap: 8px; }
-.model-row { grid-template-columns: 1fr 220px 1fr; }
+.model-row { grid-template-columns: 260px 1fr; }
 .secret-cell { display: grid; gap: 4px; }
 .key-status { font-size: 12px; font-weight: 750; }
 .key-status.ok { color: #047857; }
@@ -477,7 +477,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   text-transform: uppercase;
 }
 .provider-row-head { grid-template-columns: 150px 190px 1fr 1fr; }
-.model-row-head { grid-template-columns: 1fr 220px 1fr; }
+.model-row-head { grid-template-columns: 260px 1fr; }
 .savebar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; }
 .provider-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .provider-chip {

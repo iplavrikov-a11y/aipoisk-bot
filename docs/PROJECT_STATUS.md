@@ -76,8 +76,9 @@ Current admin capabilities:
   configured API services without inventing balances;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
-- AI model settings show provider name, `provider id`, and exact `modelId` in
-  function/global selectors. The model checker shows running/success/error
+- AI model settings show only provider name and exact `modelId` in
+  function/global selectors. Free-form model comments are not shown in selectors
+  or required in the model list. The model checker shows running/success/error
   state in place and preserves the provider's HTTP error text when a selected
   `modelId` is unavailable.
 
