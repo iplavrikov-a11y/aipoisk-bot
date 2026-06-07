@@ -21,6 +21,8 @@ class SettingsPatch(BaseModel):
     primary_model: str | None = None
     light_provider: str | None = None
     light_model: str | None = None
+    supplier_ai_provider: str | None = None
+    supplier_ai_model: str | None = None
     custom_ai_providers_json: str | None = None
     saved_models_json: str | None = None
     ai_function_models_json: str | None = None
@@ -41,6 +43,10 @@ class SettingsPatch(BaseModel):
     contact_telegram: str | None = None
     contact_website: str | None = None
     payment_instructions: str | None = None
+    payment_provider: str | None = None
+    yookassa_shop_id: str | None = None
+    yookassa_secret_key: str | None = None
+    yookassa_return_url: str | None = None
 
 
 class LoginRequest(BaseModel):

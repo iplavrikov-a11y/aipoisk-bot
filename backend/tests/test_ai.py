@@ -14,7 +14,9 @@ def _settings() -> SimpleNamespace:
         primary_model="gemini-3.1-pro-preview",
         light_provider="gemini",
         light_model="gemini-3.1-flash-lite-preview",
-        ai_function_models_json='{"procurement_document_analysis":"gemini:gemini-3.1-pro-preview","supplier_query_generation":"gemini:gemini-3.1-flash-lite"}',
+        supplier_ai_provider="gemini",
+        supplier_ai_model="gemini-3.1-flash-lite",
+        ai_function_models_json='{"procurement_document_analysis":"gemini:gemini-3.1-pro-preview","supplier_query_generation":"gemini:gemini-3.1-pro-preview"}',
     )
 
 
@@ -42,6 +44,15 @@ class AiModelFallbackTests(unittest.TestCase):
             [item.model for item in attempts],
             ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"],
         )
+
+    def test_supplier_routing_uses_supplier_model_not_function_override(self) -> None:
+        selection = ai.get_model_selection(
+            _settings(),
+            tier="primary",
+            routing_key="supplier_query_generation",
+        )
+
+        self.assertEqual(selection.model, "gemini-3.1-flash-lite")
 
     def test_explicit_override_is_tested_without_hidden_fallbacks(self) -> None:
         attempts = model_selection_attempts(

@@ -28,6 +28,8 @@ class AppConfig(BaseSettings):
     default_primary_model: str = ""
     default_light_provider: str = ""
     default_light_model: str = ""
+    default_supplier_ai_provider: str = ""
+    default_supplier_ai_model: str = ""
     default_supplier_search_adapter_base_url: str = ""
     default_supplier_search_adapter_api_key: str = ""
     default_supplier_search_adapter_model: str = ""

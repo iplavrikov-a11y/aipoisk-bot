@@ -74,16 +74,28 @@ Current admin capabilities:
 - service/internal jobs are hidden by default in the jobs list;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
+- statistics show the Telegram-bot business funnel for the last 30 days:
+  clients, Telegram accounts, active users, task volume, trial usage,
+  conversion to manual grants, top customers, and trial users who used the bot
+  but have not received paid/manual grants yet;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
-- AI model settings are compact and split into section-scoped saves. Function
-  routing offers only two roles, `Основная` or `Быстрая`, and stores backend
-  routing tokens instead of exact provider/model pairs. Primary and fast models
-  still show provider name plus exact model identifier and are checked
-  independently from the icon next to each selector. Provider rows and available
-  model rows can be added, deleted, and moved up/down; empty model rows are
-  ignored on save. Free-form model comments and API-key status hints are not
-  shown in selectors.
+- AI model settings are compact and split into section-scoped saves.
+  Documentation analysis has an owner-selected primary model and fast model.
+  Supplier search has one separate owner-selected model for the whole supplier
+  flow, so supplier query generation, profile extraction, reranking,
+  Minprom-registry checks, and candidate verification are not exposed as
+  separate UI groups. Documentation-analysis routing still offers only two
+  roles, `Основная` or `Быстрая`, and stores backend routing tokens instead of
+  exact provider/model pairs. Visible model selectors show provider name plus
+  exact model identifier and are checked independently from the icon next to
+  each selector. Provider rows and available model rows can be added, deleted,
+  and moved up/down; empty model rows are ignored on save. Free-form model
+  comments and API-key status hints are not shown in selectors.
+- Tariff settings keep the current manual payment flow and include a YooKassa
+  settings foundation: provider mode, Shop ID, Secret key, and Return URL. This
+  does not create payment links yet; checkout creation remains a future
+  integration step after the YooKassa account is connected.
 
 AI provider defaults currently used by the admin UI:
 
@@ -390,7 +402,22 @@ without polluting the customer's XLSX report.
 
 ## Verification Snapshot
 
-Latest task evidence: `.agent/tasks/2026-06-04-billing-telegram-ux/`.
+Latest task evidence: current AI-settings/statistics/YooKassa foundation pass
+in git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the
+earlier Telegram UX and admin-button pass.
+
+Fresh checks from the latest AI model separation, bot statistics, and YooKassa
+settings pass:
+
+- Targeted backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests/test_ai.py backend/tests/test_access_limits.py
+  backend/tests/test_api_guards.py -q` -> `54 passed`, `2` warnings.
+- Full backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests -q` -> `233 passed`, `2` warnings, `43` subtests passed.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- `git diff --check` -> OK.
+- Local health endpoint: `curl -fsS http://127.0.0.1:8088/api/health` ->
+  `ok=true`, `domain=https://tenderlex.ru`, `logistics_enabled=false`.
 
 Fresh checks from the latest Telegram keyboard, source-input, and
 procurement-report guardrail pass:

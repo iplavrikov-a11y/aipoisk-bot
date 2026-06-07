@@ -42,6 +42,13 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   and documentation-analysis limits.
 - Flexible admin settings for storage, limits, report behavior, search sources,
   and AI providers.
+- Admin statistics for the Telegram bot funnel: customer count, linked
+  Telegram accounts, active users, task usage, trial follow-up candidates, top
+  customers, and payment-readiness indicators.
+- AI settings separate documentation-analysis models from one cheaper/faster
+  supplier-search model used by the whole supplier-search flow.
+- YooKassa settings foundation is present for future checkout integration, but
+  payments are still handled manually until the cashier account is connected.
 - Public site-card for TenderLex with no blog: feature description, pricing, contact blocks, SEO metadata, and Telegram CTAs.
 - Public site data comes from `GET /api/public/site`; only active tariffs, safe contacts, trial counters, and public copy are exposed.
 - Telegram links are intentionally split: `bot_telegram` is the bot used for "Попробовать бесплатно" and work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.

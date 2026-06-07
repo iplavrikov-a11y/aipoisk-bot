@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 import app.main as main
 from app.main import (
+    build_bot_analytics,
     build_supplier_quality_snapshot,
     build_system_status,
     client_to_dict,
@@ -736,6 +737,48 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["bot_telegram"], "@tenderlex_bot")
         self.assertEqual(payload["contact_website"], "https://aipoisk.example")
         self.assertEqual(payload["payment_instructions"], DEFAULT_PAYMENT_INSTRUCTIONS)
+
+    def test_bot_analytics_exposes_funnel_trial_followups_and_payment_readiness(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    payment_provider="yookassa",
+                    yookassa_shop_id="shop-1",
+                    yookassa_secret_key="secret",
+                )
+            )
+            db.add(Client(id="trial-1", telegram_id="100", username="trial", name="Trial User", is_trial=True, monthly_supplier_search_limit=1))
+            db.add(Client(id="paid-1", telegram_id="200", username="paid", name="Paid User", monthly_supplier_search_limit=10))
+            db.add(ClientTelegramAccount(client_id="trial-1", telegram_id="100", username="trial"))
+            db.add(ClientTelegramAccount(client_id="paid-1", telegram_id="200", username="paid"))
+            db.add(Job(id="job-1", client_id="trial-1", mode="supplier_search", status="completed", created_by_telegram_id="100", created_at=now_utc()))
+            db.add(Job(id="job-2", client_id="paid-1", mode="procurement_report", status="failed", created_by_telegram_id="200", created_at=now_utc()))
+            db.add(BillingTransaction(client_id="paid-1", kind="supplier_search", operation="grant", units=10, created_at=now_utc()))
+            db.commit()
+
+            payload = build_bot_analytics(db, period_days=30)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["summary"]["clients_total"], 2)
+        self.assertEqual(payload["summary"]["telegram_accounts"], 2)
+        self.assertEqual(payload["summary"]["period_jobs"], 2)
+        self.assertEqual(payload["funnel"]["trial_started"], 1)
+        self.assertEqual(payload["funnel"]["trial_used_bot"], 1)
+        self.assertEqual(payload["funnel"]["trial_with_grants"], 0)
+        self.assertTrue(payload["billing"]["yookassa_ready"])
+        self.assertEqual(payload["trial_followups"][0]["client_id"], "trial-1")
+        self.assertEqual(payload["top_clients"][0]["jobs_total"], 1)
 
     def test_public_site_payload_exposes_only_active_tariffs_and_contacts(self) -> None:
         from sqlalchemy import create_engine

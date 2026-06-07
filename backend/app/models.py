@@ -50,6 +50,8 @@ class SystemSettings(Base):
     primary_model: Mapped[str] = mapped_column(String(160), default="")
     light_provider: Mapped[str] = mapped_column(String(80), default="")
     light_model: Mapped[str] = mapped_column(String(160), default="")
+    supplier_ai_provider: Mapped[str] = mapped_column(String(80), default="")
+    supplier_ai_model: Mapped[str] = mapped_column(String(160), default="")
     custom_ai_providers_json: Mapped[str] = mapped_column(Text, default="[]")
     saved_models_json: Mapped[str] = mapped_column(Text, default="[]")
     ai_function_models_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -72,6 +74,10 @@ class SystemSettings(Base):
     contact_telegram: Mapped[str] = mapped_column(String(255), default="")
     contact_website: Mapped[str] = mapped_column(String(255), default="")
     payment_instructions: Mapped[str] = mapped_column(Text, default=DEFAULT_PAYMENT_INSTRUCTIONS)
+    payment_provider: Mapped[str] = mapped_column(String(40), default="manual")
+    yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
+    yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
+    yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -94,6 +100,8 @@ class SystemSettings(Base):
             "primary_model": self.primary_model,
             "light_provider": self.light_provider,
             "light_model": self.light_model,
+            "supplier_ai_provider": self.supplier_ai_provider,
+            "supplier_ai_model": self.supplier_ai_model,
             "custom_ai_providers_json": self.custom_ai_providers_json,
             "saved_models_json": self.saved_models_json,
             "ai_function_models_json": self.ai_function_models_json,
@@ -114,12 +122,17 @@ class SystemSettings(Base):
             "contact_telegram": self.contact_telegram,
             "contact_website": self.contact_website,
             "payment_instructions": self.payment_instructions or DEFAULT_PAYMENT_INSTRUCTIONS,
+            "payment_provider": self.payment_provider or "manual",
+            "yookassa_shop_id": self.yookassa_shop_id,
+            "yookassa_secret_key_set": bool(self.yookassa_secret_key),
+            "yookassa_return_url": self.yookassa_return_url,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
             data["supplier_search_adapter_api_key"] = self.supplier_search_adapter_api_key
             data["yandex_search_api_key"] = self.yandex_search_api_key
             data["google_search_api_key"] = self.google_search_api_key
+            data["yookassa_secret_key"] = self.yookassa_secret_key
         return data
 
     @property

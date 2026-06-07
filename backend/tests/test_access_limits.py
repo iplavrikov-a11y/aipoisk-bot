@@ -25,6 +25,55 @@ class AccessLimitTests(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         self.Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
+    def test_legacy_settings_schema_adds_supplier_ai_and_yookassa_columns(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        original_engine = app_db.engine
+        app_db.engine = engine
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        CREATE TABLE system_settings (
+                            id INTEGER PRIMARY KEY,
+                            light_provider VARCHAR(80) DEFAULT '',
+                            light_model VARCHAR(160) DEFAULT ''
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO system_settings (id, light_provider, light_model)
+                        VALUES (1, 'polza', 'cheap-model')
+                        """
+                    )
+                )
+                connection.execute(text("CREATE TABLE clients (id VARCHAR(32) PRIMARY KEY, monthly_job_limit INTEGER DEFAULT 0)"))
+                connection.execute(text("CREATE TABLE jobs (id VARCHAR(32) PRIMARY KEY)"))
+                connection.execute(text("CREATE TABLE supplier_results (id VARCHAR(32) PRIMARY KEY)"))
+
+            app_db._ensure_schema()
+            inspector = inspect(engine)
+            settings_columns = {column["name"] for column in inspector.get_columns("system_settings")}
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT supplier_ai_provider, supplier_ai_model, payment_provider, yookassa_shop_id, yookassa_secret_key, yookassa_return_url FROM system_settings WHERE id = 1")
+                ).mappings().first()
+        finally:
+            app_db.engine = original_engine
+
+        self.assertIn("supplier_ai_provider", settings_columns)
+        self.assertIn("supplier_ai_model", settings_columns)
+        self.assertIn("payment_provider", settings_columns)
+        self.assertEqual(row["supplier_ai_provider"], "polza")
+        self.assertEqual(row["supplier_ai_model"], "cheap-model")
+        self.assertEqual(row["payment_provider"], "manual")
+        self.assertEqual(row["yookassa_shop_id"], "")
+        self.assertEqual(row["yookassa_secret_key"], "")
+        self.assertEqual(row["yookassa_return_url"], "")
+
     def test_multiple_telegram_accounts_share_customer_supplier_limit(self) -> None:
         db = self.Session()
         try:

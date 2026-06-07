@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import timedelta
 from pathlib import Path
 
 import time
@@ -37,7 +38,7 @@ from .jobs import (
     package_job_outputs,
     recover_interrupted_jobs,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, parse_json_list
+from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, now_utc, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -192,6 +193,12 @@ def supplier_quality_ops(db: Session = Depends(db_session)) -> dict:
     return build_supplier_quality_snapshot(jobs)
 
 
+@app.get("/api/analytics/bot", dependencies=[Depends(require_admin)])
+def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) -> dict:
+    safe_days = min(365, max(1, int(period_days or 30)))
+    return build_bot_analytics(db, period_days=safe_days)
+
+
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
 def get_settings_api(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
@@ -207,6 +214,7 @@ def get_settings_keys(db: Session = Depends(db_session)) -> dict:
         "supplier_search_adapter_api_key": settings.supplier_search_adapter_api_key,
         "yandex_search_api_key": settings.yandex_search_api_key,
         "google_search_api_key": settings.google_search_api_key,
+        "yookassa_secret_key": settings.yookassa_secret_key,
     }
 
 
@@ -1011,6 +1019,240 @@ def settings_to_public_dict(settings: SystemSettings) -> dict:
     data = settings.to_dict(include_secrets=False)
     data["supplier_search_ui"] = supplier_search_ui(settings)
     return data
+
+
+def build_bot_analytics(db: Session, *, period_days: int = 30) -> dict:
+    now = now_utc()
+    cutoff = now - timedelta(days=period_days)
+    settings = get_or_create_settings(db)
+    clients = db.query(Client).all()
+    accounts = db.query(ClientTelegramAccount).all()
+    period_jobs_raw = (
+        db.query(Job)
+        .filter(Job.created_at >= cutoff)
+        .order_by(Job.created_at.desc())
+        .all()
+    )
+    period_jobs = [job for job in period_jobs_raw if not is_internal_job_record(job)]
+    all_jobs = [job for job in db.query(Job).all() if not is_internal_job_record(job)]
+    billing_period = (
+        db.query(BillingTransaction)
+        .filter(BillingTransaction.created_at >= cutoff)
+        .all()
+    )
+    grants_all = db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
+
+    clients_with_jobs = {job.client_id for job in all_jobs if job.client_id}
+    period_clients_with_jobs = {job.client_id for job in period_jobs if job.client_id}
+    clients_with_grants = {item.client_id for item in grants_all if item.client_id}
+    trial_clients = [client for client in clients if client.is_trial]
+    trial_clients_with_jobs = [client for client in trial_clients if client.id in clients_with_jobs]
+    trial_clients_with_grants = [client for client in trial_clients if client.id in clients_with_grants]
+    active_telegram_ids = {
+        str(job.created_by_telegram_id or "").strip()
+        for job in period_jobs
+        if str(job.created_by_telegram_id or "").strip()
+    }
+
+    jobs_by_mode = _count_by(period_jobs, lambda job: str(job.mode or ""))
+    jobs_by_status = _count_by(period_jobs, lambda job: str(job.status or ""))
+    daily = _daily_job_series(period_jobs, now=now, period_days=min(period_days, 45))
+    billing_by_kind = _billing_period_summary(billing_period)
+    top_clients = _analytics_top_clients(db, clients, period_jobs)
+    trial_followups = _analytics_trial_followups(db, trial_clients, all_jobs, clients_with_grants)
+    yookassa_ready = _settings_yookassa_ready(settings)
+
+    return {
+        "period_days": period_days,
+        "generated_at": now.isoformat(),
+        "summary": {
+            "clients_total": len(clients),
+            "active_clients": sum(1 for client in clients if client.is_active),
+            "telegram_accounts": len(accounts),
+            "trial_clients": len(trial_clients),
+            "period_jobs": len(period_jobs),
+            "period_active_users": len(active_telegram_ids),
+            "period_active_clients": len(period_clients_with_jobs),
+            "clients_with_usage": len(clients_with_jobs),
+            "clients_with_grants": len(clients_with_grants),
+        },
+        "funnel": {
+            "trial_started": len(trial_clients),
+            "trial_used_bot": len(trial_clients_with_jobs),
+            "trial_with_grants": len(trial_clients_with_grants),
+            "trial_to_grant_percent": _percent(len(trial_clients_with_grants), len(trial_clients)),
+            "usage_to_grant_percent": _percent(len(clients_with_grants), len(clients_with_jobs)),
+        },
+        "jobs": {
+            "by_mode": _mode_count_items(jobs_by_mode),
+            "by_status": _status_count_items(jobs_by_status),
+            "daily": daily,
+        },
+        "billing": {
+            "period": billing_by_kind,
+            "payment_provider": settings.payment_provider or "manual",
+            "yookassa_ready": yookassa_ready,
+        },
+        "top_clients": top_clients,
+        "trial_followups": trial_followups,
+    }
+
+
+def _count_by(items: list, key_fn) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for item in items:
+        key = key_fn(item) or "unknown"
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
+def _percent(part: int, total: int) -> int:
+    return 0 if total <= 0 else min(100, round(part * 100 / total))
+
+
+def _mode_count_items(counts: dict[str, int]) -> list[dict]:
+    return [
+        {"mode": mode, "label": mode_label(mode), "count": count}
+        for mode, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _status_count_items(counts: dict[str, int]) -> list[dict]:
+    return [
+        {"status": status, "label": human_status_label(status), "count": count}
+        for status, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def human_status_label(status: str) -> str:
+    labels = {
+        "pending": "в очереди",
+        "running": "в работе",
+        "completed": "готово",
+        "partial": "частично",
+        "needs_review": "нужна проверка",
+        "failed": "ошибка",
+        "awaiting_customer_confirmation": "ожидает клиента",
+        "customer_declined": "отклонено",
+        "confirmation_expired": "истёк срок",
+    }
+    return labels.get(str(status or ""), str(status or "") or "неизвестно")
+
+
+def client_display_name(client: Client) -> str:
+    return client.name or (f"@{client.username}" if client.username else "") or client.telegram_id or "без имени"
+
+
+def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
+    start = (now - timedelta(days=period_days - 1)).date()
+    buckets = {
+        (start + timedelta(days=index)).isoformat(): {
+            "date": (start + timedelta(days=index)).isoformat(),
+            "supplier_search": 0,
+            "procurement_report": 0,
+            "analysis_and_suppliers": 0,
+            "total": 0,
+        }
+        for index in range(period_days)
+    }
+    for job in jobs:
+        if not job.created_at:
+            continue
+        key = job.created_at.date().isoformat()
+        if key not in buckets:
+            continue
+        mode = str(job.mode or "")
+        if mode in buckets[key]:
+            buckets[key][mode] += 1
+        buckets[key]["total"] += 1
+    return list(buckets.values())
+
+
+def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict]:
+    rows: dict[str, dict] = {}
+    for item in transactions:
+        kind = str(item.kind or "")
+        row = rows.setdefault(
+            kind,
+            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0},
+        )
+        units = int(item.units or 0)
+        if item.operation == "grant":
+            row["granted"] += units
+        elif item.operation == "reserve":
+            row["reserved"] += units
+        elif item.operation == "charge":
+            row["charged"] += units
+        elif item.operation == "release":
+            row["released"] += units
+    return sorted(rows.values(), key=lambda item: item["label"])
+
+
+def _analytics_top_clients(db: Session, clients: list[Client], period_jobs: list[Job]) -> list[dict]:
+    jobs_by_client: dict[str, list[Job]] = {}
+    for job in period_jobs:
+        if job.client_id:
+            jobs_by_client.setdefault(job.client_id, []).append(job)
+    client_map = {client.id: client for client in clients}
+    rows: list[dict] = []
+    for client_id, jobs in jobs_by_client.items():
+        client = client_map.get(client_id)
+        if not client:
+            continue
+        rows.append(_analytics_client_row(db, client, jobs))
+    return sorted(rows, key=lambda item: (-item["jobs_total"], item["name"]))[:12]
+
+
+def _analytics_trial_followups(
+    db: Session,
+    trial_clients: list[Client],
+    all_jobs: list[Job],
+    clients_with_grants: set[str],
+) -> list[dict]:
+    jobs_by_client: dict[str, list[Job]] = {}
+    for job in all_jobs:
+        if job.client_id:
+            jobs_by_client.setdefault(job.client_id, []).append(job)
+    rows: list[dict] = []
+    for client in trial_clients:
+        jobs = jobs_by_client.get(client.id, [])
+        if not jobs or client.id in clients_with_grants:
+            continue
+        rows.append(_analytics_client_row(db, client, jobs))
+    return sorted(rows, key=lambda item: item["last_job_at"] or "", reverse=True)[:20]
+
+
+def _analytics_client_row(db: Session, client: Client, jobs: list[Job]) -> dict:
+    supplier_jobs = sum(1 for job in jobs if job.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS})
+    report_jobs = sum(1 for job in jobs if job.mode in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS})
+    completed = sum(1 for job in jobs if job.status == "completed")
+    failed = sum(1 for job in jobs if job.status == "failed")
+    last_job_at = max((job.created_at for job in jobs if job.created_at), default=None)
+    balances = client_balance_summary(db, client)
+    return {
+        "client_id": client.id,
+        "name": client_display_name(client),
+        "telegram_id": "" if is_pending_telegram_id(client.telegram_id) else client.telegram_id,
+        "username": client.username,
+        "is_trial": bool(client.is_trial),
+        "is_active": bool(client.is_active),
+        "jobs_total": len(jobs),
+        "supplier_jobs": supplier_jobs,
+        "report_jobs": report_jobs,
+        "completed_jobs": completed,
+        "failed_jobs": failed,
+        "last_job_at": last_job_at.isoformat() if last_job_at else None,
+        "supplier_available": balances["supplier_search"].get("available"),
+        "report_available": balances["procurement_report"].get("available"),
+    }
+
+
+def _settings_yookassa_ready(settings: SystemSettings) -> bool:
+    return bool(
+        str(settings.payment_provider or "").lower() == "yookassa"
+        and str(settings.yookassa_shop_id or "").strip()
+        and str(settings.yookassa_secret_key or "").strip()
+    )
 
 
 def public_site_payload(db: Session) -> dict:

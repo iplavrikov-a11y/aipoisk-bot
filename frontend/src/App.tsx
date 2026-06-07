@@ -31,7 +31,7 @@ import {
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'clients' | 'jobs' | 'quality' | 'billing' | 'settings' | 'ai'
+type View = 'dashboard' | 'analytics' | 'clients' | 'jobs' | 'quality' | 'billing' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -162,6 +162,8 @@ type SettingsPayload = {
   primary_model: string
   light_provider: string
   light_model: string
+  supplier_ai_provider: string
+  supplier_ai_model: string
   custom_ai_providers_json: string
   saved_models_json: string
   ai_function_models_json: string
@@ -182,6 +184,11 @@ type SettingsPayload = {
   contact_telegram: string
   contact_website: string
   payment_instructions: string
+  payment_provider: string
+  yookassa_shop_id: string
+  yookassa_secret_key_set: boolean
+  yookassa_secret_key?: string
+  yookassa_return_url: string
   supplier_search_ui: SupplierSearchUi
 }
 
@@ -212,6 +219,58 @@ type BillingTransaction = {
   note: string
   created_by: string
   created_at: string | null
+}
+
+type BotAnalytics = {
+  period_days: number
+  generated_at: string
+  summary: {
+    clients_total: number
+    active_clients: number
+    telegram_accounts: number
+    trial_clients: number
+    period_jobs: number
+    period_active_users: number
+    period_active_clients: number
+    clients_with_usage: number
+    clients_with_grants: number
+  }
+  funnel: {
+    trial_started: number
+    trial_used_bot: number
+    trial_with_grants: number
+    trial_to_grant_percent: number
+    usage_to_grant_percent: number
+  }
+  jobs: {
+    by_mode: Array<{ mode: string; label: string; count: number }>
+    by_status: Array<{ status: string; label: string; count: number }>
+    daily: Array<{ date: string; supplier_search: number; procurement_report: number; analysis_and_suppliers: number; total: number }>
+  }
+  billing: {
+    period: Array<{ kind: string; label: string; granted: number; reserved: number; charged: number; released: number }>
+    payment_provider: string
+    yookassa_ready: boolean
+  }
+  top_clients: AnalyticsClient[]
+  trial_followups: AnalyticsClient[]
+}
+
+type AnalyticsClient = {
+  client_id: string
+  name: string
+  telegram_id: string
+  username: string
+  is_trial: boolean
+  is_active: boolean
+  jobs_total: number
+  supplier_jobs: number
+  report_jobs: number
+  completed_jobs: number
+  failed_jobs: number
+  last_job_at: string | null
+  supplier_available: number | null
+  report_available: number | null
 }
 
 type SupplierSearchUi = {
@@ -308,12 +367,20 @@ type AiTestState = {
 }
 
 const apiBase = ''
-const aiRoutingKeys = [
+const procurementAiRoutingKeys = [
   'procurement_document_analysis',
   'procurement_report_verification',
   'procurement_key_info_extraction',
   'procurement_search_query_generation',
+  'procurement_report_official_card_repair',
+]
+const supplierAiRoutingKeys = [
+  'minprom_registry_requirement',
+  'minprom_registry_query_generation',
+  'supplier_procurement_profile',
   'supplier_query_generation',
+  'supplier_tz_context_extraction',
+  'supplier_candidate_reranker',
   'supplier_candidate_verifier',
 ]
 
@@ -321,6 +388,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   dashboard: {
     title: 'Сводка',
     description: 'Короткая картина по клиентам, задачам и текущим настройкам сервиса.',
+  },
+  analytics: {
+    title: 'Статистика',
+    description: 'Воронка Telegram-бота, активность клиентов, триал для дожима и готовность оплаты.',
   },
   clients: {
     title: 'Клиенты',
@@ -399,6 +470,7 @@ const functionLabels: Record<string, string> = {
   procurement_report_verification: 'Проверка отчёта анализа',
   procurement_key_info_extraction: 'Извлечение условий закупки',
   procurement_search_query_generation: 'Запросы по закупке',
+  procurement_report_official_card_repair: 'Сверка карточки закупки',
   supplier_query_generation: 'Запросы поставщиков',
   supplier_candidate_verifier: 'Проверка поставщиков',
 }
@@ -679,6 +751,7 @@ export function App() {
   const [quality, setQuality] = useState<SupplierQualitySnapshot | null>(null)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
   const [tariffs, setTariffs] = useState<TariffPackage[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -691,13 +764,14 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, tariffData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true'),
         api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
+        api<BotAnalytics>('/api/analytics/bot?period_days=30'),
         api<TariffPackage[]>('/api/tariffs'),
       ])
       setDashboard(dashboardData)
@@ -706,6 +780,7 @@ export function App() {
       setQuality(qualityData)
       setOpsStatus(opsStatusData)
       setSettings(settingsData)
+      setAnalytics(analyticsData)
       setTariffs(tariffData)
     } catch (err) {
       setError(formatError(err))
@@ -743,6 +818,7 @@ export function App() {
     setQuality(null)
     setOpsStatus(null)
     setSettings(null)
+    setAnalytics(null)
     setTariffs([])
     setUsername('')
     setPassword('')
@@ -773,6 +849,7 @@ export function App() {
 
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
+    { id: 'analytics' as const, label: 'Статистика', icon: Database },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'quality' as const, label: 'Контроль', icon: CheckCircle2 },
@@ -837,6 +914,7 @@ export function App() {
 
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
+        {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'quality' && <QualityView quality={quality} />}
@@ -948,6 +1026,134 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
       </div>
     </section>
   )
+}
+
+function AnalyticsView({ analytics }: { analytics: BotAnalytics | null }) {
+  if (!analytics) return <div className="empty">Статистика пока не загружена.</div>
+  const summary = analytics.summary
+  const funnel = analytics.funnel
+  const maxDaily = Math.max(1, ...analytics.jobs.daily.map(item => item.total))
+  const metrics = [
+    { label: 'Клиентов', value: summary.clients_total, note: `${summary.active_clients} активных`, icon: Users },
+    { label: 'Telegram', value: summary.telegram_accounts, note: `${summary.period_active_users} активных за ${analytics.period_days} дней`, icon: Bot },
+    { label: 'Задач', value: summary.period_jobs, note: `${summary.period_active_clients} клиентов запускали бота`, icon: FileText },
+    { label: 'Триал', value: `${funnel.trial_to_grant_percent}%`, note: `${funnel.trial_with_grants}/${funnel.trial_started} дошли до оплаты`, icon: CreditCard },
+  ]
+  return (
+    <section className="stack">
+      <div className="content-grid">
+        {metrics.map(item => {
+          const Icon = item.icon
+          return (
+            <div className="metric" key={item.label}>
+              <Icon size={20} />
+              <div>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.note}</small>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="analytics-grid">
+        <div className="form-panel">
+          <h2>Воронка</h2>
+          <div className="kv-list">
+            <div><span>Триал создан</span><strong>{funnel.trial_started}</strong></div>
+            <div><span>Триал пользовался ботом</span><strong>{funnel.trial_used_bot}</strong></div>
+            <div><span>Получили начисления</span><strong>{funnel.trial_with_grants}</strong></div>
+            <div><span>Конверсия использования</span><strong>{funnel.usage_to_grant_percent}%</strong></div>
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Задачи по режимам</h2>
+          <div className="kv-list">
+            {analytics.jobs.by_mode.map(item => <div key={item.mode}><span>{item.label}</span><strong>{item.count}</strong></div>)}
+            {!analytics.jobs.by_mode.length && <div className="inline-note">За период задач не было.</div>}
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Статусы задач</h2>
+          <div className="kv-list">
+            {analytics.jobs.by_status.map(item => <div key={item.status}><span>{item.label}</span><strong>{item.count}</strong></div>)}
+            {!analytics.jobs.by_status.length && <div className="inline-note">Статусов за период нет.</div>}
+          </div>
+        </div>
+        <div className="form-panel">
+          <h2>Оплата</h2>
+          <div className="kv-list">
+            <div><span>Текущий режим</span><strong>{paymentProviderLabel(analytics.billing.payment_provider)}</strong></div>
+            <div><span>YooKassa</span><strong>{analytics.billing.yookassa_ready ? 'готова' : 'не готова'}</strong></div>
+          </div>
+          <div className="billing-mini-list">
+            {analytics.billing.period.map(item => (
+              <div key={item.kind}>
+                <strong>{item.label}</strong>
+                <span>начислено {item.granted} · списано {item.charged} · резерв {item.reserved}</span>
+              </div>
+            ))}
+            {!analytics.billing.period.length && <span className="inline-note">Начислений за период нет.</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="form-panel full-width-panel">
+        <h2>Динамика запусков</h2>
+        <div className="daily-bars">
+          {analytics.jobs.daily.map(item => (
+            <div className="daily-bar" key={item.date} title={`${item.date}: ${item.total}`}>
+              <span style={{ height: `${Math.max(6, Math.round(item.total * 100 / maxDaily))}%` }} />
+              <small>{new Date(item.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <AnalyticsClientList
+        title="Триал для дожима"
+        empty="Нет триальных клиентов с использованием без начислений."
+        clients={analytics.trial_followups}
+      />
+      <AnalyticsClientList
+        title="Топ клиентов за период"
+        empty="За период нет активных клиентов."
+        clients={analytics.top_clients}
+      />
+    </section>
+  )
+}
+
+function AnalyticsClientList({ title, empty, clients }: { title: string; empty: string; clients: AnalyticsClient[] }) {
+  return (
+    <div className="form-panel full-width-panel">
+      <h2>{title}</h2>
+      <div className="analytics-client-list">
+        {clients.map(client => (
+          <div className="analytics-client-row" key={client.client_id}>
+            <div>
+              <strong>{client.name}</strong>
+              <small>{client.username ? `@${client.username}` : client.telegram_id || 'Telegram не указан'} · последний запуск {formatDate(client.last_job_at)}</small>
+            </div>
+            <span>{client.jobs_total} задач</span>
+            <span>поставщики {client.supplier_jobs}</span>
+            <span>анализ {client.report_jobs}</span>
+            <span>{analyticsBalance(client)}</span>
+          </div>
+        ))}
+        {!clients.length && <div className="empty inline-empty">{empty}</div>}
+      </div>
+    </div>
+  )
+}
+
+function analyticsBalance(client: AnalyticsClient) {
+  return `баланс: ${client.supplier_available ?? 'без лимита'} / ${client.report_available ?? 'без лимита'}`
+}
+
+function paymentProviderLabel(provider: string) {
+  return provider === 'yookassa' ? 'YooKassa' : 'ручная оплата'
 }
 
 function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
@@ -1389,6 +1595,15 @@ function rublesToKopeks(rubles: number) {
   return Math.max(0, Math.round(Number(rubles || 0) * 100))
 }
 
+function fallbackDownloadName(job: Job, extension: string) {
+  const base = String(job.human_title || job.title || humanMode(job.mode) || 'TenderLex')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90)
+  return `${base || 'TenderLex'}.${extension}`
+}
+
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
   const [evidence, setEvidence] = useState<{ job: Job; payload: unknown } | null>(null)
   const [showInternalJobs, setShowInternalJobs] = useState(false)
@@ -1435,7 +1650,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
     const fallbackExt = job.mode === 'analysis_and_suppliers' ? 'zip' : job.mode === 'procurement_report' ? 'docx' : 'xlsx'
     link.href = url
-    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || `aipoisk-${job.id.slice(0, 8)}.${fallbackExt}`
+    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || fallbackDownloadName(job, fallbackExt)
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -1592,6 +1807,12 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
     contact_website: settings.contact_website || '',
     payment_instructions: settings.payment_instructions || '',
   })
+  const [paymentDraft, setPaymentDraft] = useState({
+    payment_provider: settings.payment_provider || 'manual',
+    yookassa_shop_id: settings.yookassa_shop_id || '',
+    yookassa_return_url: settings.yookassa_return_url || '',
+  })
+  const [yookassaSecret, setYookassaSecret] = useState('')
 
   useEffect(() => {
     setContactDraft({
@@ -1601,7 +1822,17 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
       contact_website: settings.contact_website || '',
       payment_instructions: settings.payment_instructions || '',
     })
+    setPaymentDraft({
+      payment_provider: settings.payment_provider || 'manual',
+      yookassa_shop_id: settings.yookassa_shop_id || '',
+      yookassa_return_url: settings.yookassa_return_url || '',
+    })
   }, [settings])
+  useEffect(() => {
+    void api<{ yookassa_secret_key?: string }>('/api/settings/keys')
+      .then(data => setYookassaSecret(data.yookassa_secret_key || ''))
+      .catch(() => setYookassaSecret(''))
+  }, [])
 
   async function createTariff() {
     await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
@@ -1618,6 +1849,16 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
   }
   async function saveContacts() {
     await api('/api/settings', { method: 'PATCH', body: JSON.stringify(contactDraft) })
+    await onChange()
+  }
+  async function savePaymentSettings() {
+    const payload: Partial<SettingsPayload> = {
+      ...paymentDraft,
+    }
+    if (yookassaSecret.trim() || !settings.yookassa_secret_key_set) {
+      payload.yookassa_secret_key = yookassaSecret
+    }
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(payload) })
     await onChange()
   }
   const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
@@ -1656,6 +1897,24 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
         <TextArea className="payment-textarea" label="Инструкция оплаты в боте" value={contactDraft.payment_instructions} onChange={value => setContactDraft({ ...contactDraft, payment_instructions: value })} />
         <p className="field-help">Пока YooKassa не подключена, бот показывает эту инструкцию, email, Telegram и сайт. Реквизиты не подставляются автоматически.</p>
         <button onClick={() => void saveContacts()}><CheckCircle2 size={16} />Сохранить контакты</button>
+      </div>
+
+      <div className="form-panel full-width-panel">
+        <h2>YooKassa</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Режим оплаты</span>
+            <select value={paymentDraft.payment_provider} onChange={e => setPaymentDraft({ ...paymentDraft, payment_provider: e.target.value })}>
+              <option value="manual">Ручная оплата</option>
+              <option value="yookassa">YooKassa</option>
+            </select>
+          </label>
+          <TextField label="Shop ID" value={paymentDraft.yookassa_shop_id} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_shop_id: value })} />
+          <TextField label="Return URL" value={paymentDraft.yookassa_return_url} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_return_url: value })} />
+          <SecretField label="Secret key" value={yookassaSecret} onChange={setYookassaSecret} />
+        </div>
+        <p className="field-help">Это заготовка настроек кассы. Приём платежей включим отдельным шагом после подключения YooKassa.</p>
+        <button onClick={() => void savePaymentSettings()}><Save size={16} />Сохранить оплату</button>
       </div>
     </section>
   )
@@ -1814,6 +2073,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   const [primaryModel, setPrimaryModel] = useState(settings.primary_model)
   const [lightProvider, setLightProvider] = useState(settings.light_provider)
   const [lightModel, setLightModel] = useState(settings.light_model)
+  const [supplierProvider, setSupplierProvider] = useState(settings.supplier_ai_provider || settings.light_provider)
+  const [supplierModel, setSupplierModel] = useState(settings.supplier_ai_model || settings.light_model)
   const [testResults, setTestResults] = useState<Record<string, AiTestState>>({})
   const [saveStatus, setSaveStatus] = useState<Record<string, string>>({})
 
@@ -1826,6 +2087,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     setPrimaryModel(settings.primary_model)
     setLightProvider(settings.light_provider)
     setLightModel(settings.light_model)
+    setSupplierProvider(settings.supplier_ai_provider || settings.light_provider)
+    setSupplierModel(settings.supplier_ai_model || settings.light_model)
   }, [settings])
 
   const modelOptions = useMemo(
@@ -1865,8 +2128,11 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   }
   function explicitFunctionModels() {
     const result: Record<string, string> = {}
-    for (const key of aiRoutingKeys) {
+    for (const key of procurementAiRoutingKeys) {
       result[key] = functionRoleValue(functionModels[key])
+    }
+    for (const key of supplierAiRoutingKeys) {
+      result[key] = '__supplier_search__'
     }
     return result
   }
@@ -1951,7 +2217,11 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       setLightProvider('')
       setLightModel('')
     }
-    clearSaveStatuses('providers', 'models', 'global')
+    if (supplierProvider === provider.id) {
+      setSupplierProvider('')
+      setSupplierModel('')
+    }
+    clearSaveStatuses('providers', 'models', 'global', 'supplier')
   }
   function removeModel(index: number) {
     const model = savedModels[index]
@@ -1965,7 +2235,11 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       setLightProvider('')
       setLightModel('')
     }
-    clearSaveStatuses('models', 'global')
+    if (supplierProvider === model.provider && supplierModel === model.modelId) {
+      setSupplierProvider('')
+      setSupplierModel('')
+    }
+    clearSaveStatuses('models', 'global', 'supplier')
   }
   async function saveSection(section: string, payload: Partial<SettingsPayload>) {
     await api('/api/settings', {
@@ -1984,6 +2258,14 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       primary_model: primaryModel,
       light_provider: lightProvider,
       light_model: lightModel,
+      ai_function_models_json: stringify(explicitFunctionModels()),
+    })
+  }
+  async function saveSupplierModelSettings() {
+    await saveSection('supplier', {
+      supplier_ai_provider: supplierProvider,
+      supplier_ai_model: supplierModel,
+      ai_function_models_json: stringify(explicitFunctionModels()),
     })
   }
   async function saveProviderSettings() {
@@ -1993,6 +2275,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     const modelValues = new Set(nextModels.map(model => `${model.provider}:${model.modelId}`))
     const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
     const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    const supplierValue = supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''
     await saveSection('providers', {
       custom_ai_providers_json: stringify(normalizedProviders),
       saved_models_json: stringify(nextModels),
@@ -2000,6 +2283,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       primary_model: primaryValue && modelValues.has(primaryValue) ? primaryModel : '',
       light_provider: lightValue && modelValues.has(lightValue) ? lightProvider : '',
       light_model: lightValue && modelValues.has(lightValue) ? lightModel : '',
+      supplier_ai_provider: supplierValue && modelValues.has(supplierValue) ? supplierProvider : '',
+      supplier_ai_model: supplierValue && modelValues.has(supplierValue) ? supplierModel : '',
       ai_function_models_json: stringify(explicitFunctionModels()),
     })
   }
@@ -2008,12 +2293,15 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     const modelValues = new Set(normalizedModels.map(model => `${model.provider}:${model.modelId}`))
     const primaryValue = primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''
     const lightValue = lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''
+    const supplierValue = supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''
     await saveSection('models', {
       saved_models_json: stringify(normalizedModels),
       primary_provider: !primaryValue || modelValues.has(primaryValue) ? primaryProvider : '',
       primary_model: !primaryValue || modelValues.has(primaryValue) ? primaryModel : '',
       light_provider: !lightValue || modelValues.has(lightValue) ? lightProvider : '',
       light_model: !lightValue || modelValues.has(lightValue) ? lightModel : '',
+      supplier_ai_provider: !supplierValue || modelValues.has(supplierValue) ? supplierProvider : '',
+      supplier_ai_model: !supplierValue || modelValues.has(supplierValue) ? supplierModel : '',
       ai_function_models_json: stringify(explicitFunctionModels()),
     })
   }
@@ -2086,9 +2374,9 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     <section className="ai-settings">
       <div className="ai-top-grid">
         <details className="service-panel ai-panel" open>
-          <summary>Основная и быстрая модель</summary>
+          <summary>Анализ документации</summary>
           <ModelSelect
-            label="Основная"
+            label="Основная модель анализа"
             value={primaryProvider && primaryModel ? `${primaryProvider}:${primaryModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
@@ -2101,7 +2389,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
             }}
           />
           <ModelSelect
-            label="Быстрая"
+            label="Быстрая модель анализа"
             value={lightProvider && lightModel ? `${lightProvider}:${lightModel}` : ''}
             options={modelOptions}
             optionLabel={modelOptionLabel}
@@ -2114,14 +2402,37 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
             }}
           />
           <div className="section-actions">
-            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить модели</button>
+            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить анализ</button>
             {sectionSaveStatus('global')}
           </div>
         </details>
         <details className="service-panel ai-panel" open>
-          <summary>Модели для функций бота</summary>
+          <summary>Поиск поставщиков</summary>
+          <ModelSelect
+            label="Модель поиска поставщиков"
+            help="Здесь можно выбрать более дешёвую и быструю модель: она применяется ко всем ИИ-этапам поиска поставщиков."
+            value={supplierProvider && supplierModel ? `${supplierProvider}:${supplierModel}` : ''}
+            options={modelOptions}
+            optionLabel={modelOptionLabel}
+            action={testButton('supplier', supplierProvider, supplierModel)}
+            status={renderTestResult('supplier')}
+            onChange={(provider, model) => {
+              setSupplierProvider(provider)
+              setSupplierModel(model)
+              clearSaveStatus('supplier')
+            }}
+          />
+          <div className="section-actions">
+            <button onClick={() => void saveSupplierModelSettings()}><Save size={16} />Сохранить поиск</button>
+            {sectionSaveStatus('supplier')}
+          </div>
+        </details>
+      </div>
+      <details className="service-panel ai-panel">
+        <summary>Маршруты анализа документации</summary>
+        <p className="field-help">Для отдельных этапов анализа можно выбрать основную или быструю модель. Поиск поставщиков здесь не дробится.</p>
           <div className="function-route-list">
-            {aiRoutingKeys.map(key => {
+            {procurementAiRoutingKeys.map(key => {
               const value = functionRoleValue(functionModels[key])
               return (
                 <label className="function-route-row" key={key}>
@@ -2135,11 +2446,10 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
             })}
           </div>
           <div className="section-actions">
-            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить функции</button>
+            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить маршруты</button>
             {sectionSaveStatus('functions')}
           </div>
-        </details>
-      </div>
+      </details>
       <details className="service-panel ai-panel">
         <summary>Провайдеры ИИ</summary>
         <div className="advanced-section">

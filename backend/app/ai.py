@@ -10,6 +10,16 @@ from .models import SystemSettings, parse_json_dict, parse_json_list
 
 AI_ROUTING_FALLBACK_PRIMARY = "__primary__"
 AI_ROUTING_FALLBACK_LIGHT = "__light__"
+AI_ROUTING_SUPPLIER_SEARCH = "__supplier_search__"
+SUPPLIER_SEARCH_ROUTING_KEYS = {
+    "minprom_registry_requirement",
+    "minprom_registry_query_generation",
+    "supplier_procurement_profile",
+    "supplier_query_generation",
+    "supplier_tz_context_extraction",
+    "supplier_candidate_reranker",
+    "supplier_candidate_verifier",
+}
 DEFAULT_MODEL_FALLBACKS: dict[str, tuple[str, ...]] = {
     "gemini-3.1-pro-preview": ("gemini-3-pro-preview", "gemini-2.5-flash"),
     "gemini-3-pro-preview": ("gemini-3.1-pro-preview", "gemini-2.5-flash"),
@@ -70,6 +80,8 @@ def resolve_model(settings: SystemSettings, provider_id: str, tier: str) -> str:
         return settings.primary_model
     if provider_id == settings.light_provider and tier == "light":
         return settings.light_model
+    if provider_id == getattr(settings, "supplier_ai_provider", "") and tier == "supplier_search":
+        return getattr(settings, "supplier_ai_model", "")
     return ""
 
 
@@ -84,9 +96,24 @@ def get_model_selection(
     selected_tier = tier
     selected_provider = settings.primary_provider if tier == "primary" else settings.light_provider
     selected_model = settings.primary_model if tier == "primary" else settings.light_model
+    if tier == "supplier_search":
+        selected_provider = str(getattr(settings, "supplier_ai_provider", "") or settings.light_provider or "").strip()
+        selected_model = str(getattr(settings, "supplier_ai_model", "") or settings.light_model or "").strip()
 
-    value = str(override or "").strip() or resolve_function_override(settings, routing_key)
-    if value == AI_ROUTING_FALLBACK_PRIMARY:
+    explicit_override = str(override or "").strip()
+    if routing_key in SUPPLIER_SEARCH_ROUTING_KEYS and not explicit_override:
+        value = AI_ROUTING_SUPPLIER_SEARCH
+    else:
+        value = explicit_override or resolve_function_override(settings, routing_key)
+    if routing_key in SUPPLIER_SEARCH_ROUTING_KEYS and value == AI_ROUTING_SUPPLIER_SEARCH:
+        selected_tier = "supplier_search"
+        selected_provider = str(getattr(settings, "supplier_ai_provider", "") or settings.light_provider or "").strip()
+        selected_model = str(getattr(settings, "supplier_ai_model", "") or settings.light_model or "").strip()
+    elif value == AI_ROUTING_SUPPLIER_SEARCH:
+        selected_tier = "supplier_search"
+        selected_provider = str(getattr(settings, "supplier_ai_provider", "") or settings.light_provider or "").strip()
+        selected_model = str(getattr(settings, "supplier_ai_model", "") or settings.light_model or "").strip()
+    elif value == AI_ROUTING_FALLBACK_PRIMARY:
         selected_tier = "primary"
         selected_provider = settings.primary_provider
         selected_model = settings.primary_model

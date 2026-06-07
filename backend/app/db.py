@@ -62,6 +62,12 @@ def _ensure_schema() -> None:
         "contact_telegram": "VARCHAR(255) DEFAULT ''",
         "contact_website": "VARCHAR(255) DEFAULT ''",
         "payment_instructions": "TEXT DEFAULT ''",
+        "payment_provider": "VARCHAR(40) DEFAULT 'manual'",
+        "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
+        "yookassa_secret_key": "TEXT DEFAULT ''",
+        "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
+        "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
+        "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
     }
     clients_existing = _existing_columns(inspector, "clients")
     client_additions = {
@@ -103,6 +109,23 @@ def _ensure_schema() -> None:
                     WHERE supplier_search_provider_order IS NULL
                        OR TRIM(supplier_search_provider_order) = ''
                        OR supplier_search_provider_order = 'tavily,ddgs'
+                    """
+                )
+            )
+        if (
+            "supplier_ai_provider" not in system_settings_existing
+            and "supplier_ai_model" not in system_settings_existing
+            and "light_provider" in system_settings_existing
+            and "light_model" in system_settings_existing
+        ):
+            connection.execute(
+                text(
+                    """
+                    UPDATE system_settings
+                    SET supplier_ai_provider = COALESCE(light_provider, ''),
+                        supplier_ai_model = COALESCE(light_model, '')
+                    WHERE (supplier_ai_provider IS NULL OR TRIM(supplier_ai_provider) = '')
+                      AND (supplier_ai_model IS NULL OR TRIM(supplier_ai_model) = '')
                     """
                 )
             )

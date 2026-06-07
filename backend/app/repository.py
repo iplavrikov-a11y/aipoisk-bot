@@ -50,6 +50,8 @@ def get_or_create_settings(db: Session) -> SystemSettings:
         primary_model=config.default_primary_model,
         light_provider=config.default_light_provider,
         light_model=config.default_light_model,
+        supplier_ai_provider=config.default_supplier_ai_provider or config.default_light_provider,
+        supplier_ai_model=config.default_supplier_ai_model or config.default_light_model,
         supplier_search_adapter_base_url=config.default_supplier_search_adapter_base_url,
         supplier_search_adapter_api_key=config.default_supplier_search_adapter_api_key,
         supplier_search_adapter_model=config.default_supplier_search_adapter_model,
