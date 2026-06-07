@@ -464,6 +464,7 @@ def validate_report_against_official_card(report: str, facts: dict[str, str]) ->
 def normalize_procurement_report_guardrails(report: str, document_text: str) -> str:
     value = normalize_official_card_report_fields(report, document_text)
     value = normalize_customer_boolean_artifacts(value)
+    value = normalize_source_conflict_wording(value)
     value = normalize_logistics_estimate(value, document_text)
     value = normalize_product_freshness_wording(value)
     value = normalize_national_regime_conditions(value, document_text)
@@ -488,6 +489,30 @@ def normalize_customer_boolean_artifacts(report: str) -> str:
     value = re.sub(r"(?i)\s*\(\s*(?:false|true)\s*\)", "", value)
     value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])false(?![A-Za-zА-Яа-я])", "нет", value)
     value = re.sub(r"(?i)(?<![A-Za-zА-Яа-я])true(?![A-Za-zА-Яа-я])", "да", value)
+    return value
+
+
+def normalize_source_conflict_wording(report: str) -> str:
+    value = str(report or "")
+    value = re.sub(
+        r"(?i)Расхождение\s+сроков:\s*В\s+извещении\s+указано\s+время\s+подведения\s+итогов",
+        "Расхождение в дате подведения итогов: В файле извещения указано время подведения итогов",
+        value,
+    )
+    value = re.sub(
+        r"(?i)в\s+структурированных\s+данных\s+площадки\s*[—-]\s*([^.\n]+)\.\s*"
+        r"Необходимо\s+ориентироваться\s+на\s+более\s+ранний\s+срок\.",
+        (
+            r"в структурированной карточке источника — \1. "
+            "В отчёте использовано явное время из извещения; перед подачей заявки проверьте карточку закупки и площадку."
+        ),
+        value,
+    )
+    value = re.sub(
+        r"(?i)в\s+структурированных\s+данных\s+площадки\s*[—-]\s*",
+        "в структурированной карточке источника — ",
+        value,
+    )
     return value
 
 

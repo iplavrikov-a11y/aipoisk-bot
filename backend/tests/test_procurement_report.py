@@ -346,12 +346,20 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 #### Критичные требования к товару
 - Дата производства: Не ранее 2025 г. Товар должен быть новым.
 - Сертификаты: **паспорт** ().
+
+#### Риски
+1. Расхождение сроков: В извещении указано время подведения итогов до 07:00 МСК 09.06.2026, а в структурированных данных площадки — 20:59 МСК. Необходимо ориентироваться на более ранний срок.
 """
 
         result = normalize_procurement_report_guardrails(report, source_text)
 
         self.assertIn("- Способ закупки: Запрос котировок в электронной форме", result)
         self.assertIn("- Дата рассмотрения/подведения итогов: 09.06.2026 07:00 МСК", result)
+        self.assertIn("Расхождение в дате подведения итогов", result)
+        self.assertIn("в структурированной карточке источника — 20:59 МСК", result)
+        self.assertIn("использовано явное время из извещения", result)
+        self.assertNotIn("структурированных данных площадки", result)
+        self.assertNotIn("ориентироваться на более ранний срок", result)
         self.assertIn("ориентировочно", result.lower())
         self.assertIn("~2 800 кг", result)
         self.assertNotIn("ДАННЫХ НЕДОСТАТОЧНО", result)
