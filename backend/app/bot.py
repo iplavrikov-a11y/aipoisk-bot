@@ -17,6 +17,7 @@ from .billing import (
     BillingError,
     balance_counter,
     charge_job_reservation,
+    client_uses_trial_access,
     client_balance_summary,
     expire_stale_confirmations,
     job_has_unsettled_reservation,
@@ -239,7 +240,7 @@ async def _reject_trial_restricted_scenario(message: Message, scenario: str) -> 
         if account_error:
             await message.answer(account_error, reply_markup=main_menu())
             return True
-        if client and client.is_trial:
+        if client and client_uses_trial_access(db, client):
             await message.answer(_trial_restricted_text(scenario), reply_markup=main_menu())
             return True
     finally:
@@ -869,7 +870,7 @@ def _cabinet_text(db, client: Client, settings) -> str:
         "📊 Мой кабинет",
         "",
         f"Статус: {'включён' if client.is_active else 'выключен'}",
-        f"Тип: {'бесплатный доступ' if client.is_trial else 'клиент'}",
+        f"Тип: {'бесплатный доступ' if client_uses_trial_access(db, client) else 'клиент'}",
         "",
         "Баланс генераций:",
         _balance_line(balances["supplier_search"]),

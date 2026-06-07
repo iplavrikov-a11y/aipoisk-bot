@@ -22,6 +22,7 @@ from .billing import (
     billing_kind_label,
     charge_job_reservation,
     client_balance_summary,
+    client_uses_trial_access,
     expire_stale_confirmations,
     grant_package_units,
     release_job_reservation,
@@ -769,7 +770,7 @@ def _move_existing_telegram_account(
         .filter(ClientTelegramAccount.client_id == source_client.id)
         .count()
     )
-    merge_source_client = bool(source_client.is_trial and source_account_count == 1)
+    merge_source_client = bool(client_uses_trial_access(db, source_client) and source_account_count == 1)
 
     target_needs_primary = (
         not target_client.telegram_id
@@ -1522,7 +1523,7 @@ def _analytics_client_row(db: Session, client: Client, jobs: list[Job]) -> dict:
         "name": client_display_name(client),
         "telegram_id": "" if is_pending_telegram_id(client.telegram_id) else client.telegram_id,
         "username": client.username,
-        "is_trial": bool(client.is_trial),
+        "is_trial": client_uses_trial_access(db, client) if db else bool(client.is_trial),
         "is_active": bool(client.is_active),
         "jobs_total": len(jobs),
         "supplier_jobs": supplier_jobs,
@@ -1622,7 +1623,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "authenticated": authenticated,
         "csrf_token": csrf_token,
         "csrf_header": CSRF_HEADER,
-        "user": customer_user_to_dict(user),
+        "user": customer_user_to_dict(db, user),
         "balance": client_usage_summary(db, user.client),
         "limits": {
             "max_upload_mb": int(settings.max_upload_mb or 50),
@@ -1653,7 +1654,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     }
 
 
-def customer_user_to_dict(user: WebUser) -> dict:
+def customer_user_to_dict(db: Session, user: WebUser) -> dict:
     return {
         "id": user.id,
         "email": user.email,
@@ -1661,7 +1662,7 @@ def customer_user_to_dict(user: WebUser) -> dict:
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
         "client_id": user.client_id,
-        "is_trial": bool(user.client.is_trial) if user.client else False,
+        "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
     }

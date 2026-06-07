@@ -169,6 +169,22 @@ def _has_billing_transactions(db: Session, client_id: str, kind: str) -> bool:
     )
 
 
+def client_has_paid_grants(db: Session, client: Client | None) -> bool:
+    if not client:
+        return False
+    return bool(
+        db.query(BillingTransaction.id)
+        .filter(BillingTransaction.client_id == client.id)
+        .filter(BillingTransaction.operation == OP_GRANT)
+        .filter(func.lower(func.coalesce(BillingTransaction.created_by, "")).notin_(["", "system"]))
+        .first()
+    )
+
+
+def client_uses_trial_access(db: Session, client: Client | None) -> bool:
+    return bool(client and client.is_trial and not client_has_paid_grants(db, client))
+
+
 def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -> str:
     for kind, count in units.items():
         if count <= 0:

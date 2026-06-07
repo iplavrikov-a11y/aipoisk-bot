@@ -6,7 +6,7 @@ import re
 from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
-from .billing import access_error_for_units, requested_billing_units
+from .billing import access_error_for_units, client_uses_trial_access, requested_billing_units
 from .config import config
 from .models import DEFAULT_PAYMENT_INSTRUCTIONS, Client, ClientTelegramAccount, Job, SystemSettings, new_id, now_utc
 
@@ -399,9 +399,10 @@ def client_access_error(
     if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         return "Неизвестный режим обработки."
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
-    if client.is_trial and mode == MODE_ANALYSIS_AND_SUPPLIERS:
+    uses_trial_access = client_uses_trial_access(db, client)
+    if uses_trial_access and mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return "В бесплатном доступе режим «Анализ + поставщики» недоступен. Запустите анализ и поиск поставщиков отдельно."
-    if client.is_trial and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:
+    if uses_trial_access and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:
         return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ за один запуск."
 
     return access_error_for_units(

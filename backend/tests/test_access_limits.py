@@ -7,9 +7,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
 
 import app.db as app_db
+from app.billing import KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH, OP_GRANT
 from app.db import Base
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
-from app.models import Client, ClientTelegramAccount, Job, SystemSettings
+from app.models import BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings
 from app.repository import (
     client_access_error,
     ensure_pending_client_telegram_account,
@@ -251,6 +252,46 @@ class AccessLimitTests(unittest.TestCase):
             self.assertIn("Анализ + поставщики", combined_error)
             self.assertIn("массовая обработка", mass_error)
             self.assertEqual(single_error, "")
+        finally:
+            db.close()
+
+    def test_existing_paid_grants_lift_trial_mode_restrictions(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="trial-paid",
+                telegram_id="555",
+                is_trial=True,
+                monthly_supplier_search_limit=1,
+                monthly_procurement_report_limit=1,
+                allowed_procurement_report=True,
+            )
+            db.add(client)
+            db.add_all(
+                [
+                    BillingTransaction(
+                        client_id=client.id,
+                        kind=KIND_SUPPLIER_SEARCH,
+                        operation=OP_GRANT,
+                        units=2,
+                        created_by="admin",
+                    ),
+                    BillingTransaction(
+                        client_id=client.id,
+                        kind=KIND_PROCUREMENT_REPORT,
+                        operation=OP_GRANT,
+                        units=1,
+                        created_by="admin",
+                    ),
+                ]
+            )
+            db.commit()
+
+            combined_error = client_access_error(db, client, MODE_ANALYSIS_AND_SUPPLIERS)
+            mass_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=2)
+
+            self.assertEqual(combined_error, "")
+            self.assertEqual(mass_error, "")
         finally:
             db.close()
 

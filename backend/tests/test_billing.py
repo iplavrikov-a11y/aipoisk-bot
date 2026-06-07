@@ -14,6 +14,7 @@ from app.billing import (
     balance_counter,
     charge_job_reservation,
     client_balance_summary,
+    client_uses_trial_access,
     expire_stale_confirmations,
     grant_package_units,
     job_has_unsettled_reservation,
@@ -51,6 +52,21 @@ class BillingLedgerTests(unittest.TestCase):
             self.assertEqual(charged["available"], 2)
             self.assertEqual(charged["reserved"], 0)
             self.assertEqual(charged["spent"], 1)
+        finally:
+            db.close()
+
+    def test_manual_grant_lifts_trial_access_for_paid_client(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="trial-1", telegram_id="100", is_trial=True)
+            db.add(client)
+            db.commit()
+
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=1, created_by="admin")
+            db.refresh(client)
+
+            self.assertTrue(client.is_trial)
+            self.assertFalse(client_uses_trial_access(db, client))
         finally:
             db.close()
 

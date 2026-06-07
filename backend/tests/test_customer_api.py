@@ -11,7 +11,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.billing import (
+    KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
+    OP_GRANT,
     OP_RESERVE,
     OP_CHARGE,
     OP_RELEASE,
@@ -20,7 +22,7 @@ from app.billing import (
 )
 from app.db import Base
 from app.jobs import MODE_SUPPLIER_SEARCH
-from app.main import create_customer_job_api, decline_customer_partial_job_api, download_customer_job_api
+from app.main import create_customer_job_api, customer_session_payload, decline_customer_partial_job_api, download_customer_job_api
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, Job, SystemSettings, WebPasswordResetRequest
 from app.schemas import WebPasswordResetComplete, WebPasswordResetRequestCreate
@@ -89,6 +91,53 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(session.token_hash, token)
             self.assertEqual(session.csrf_token, csrf_token)
             self.assertEqual(get_web_session_by_token(db, token).id, session.id)
+        finally:
+            db.close()
+
+    def test_customer_session_hides_trial_label_when_paid_grants_exist(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                is_trial=True,
+                monthly_supplier_search_limit=1,
+                monthly_procurement_report_limit=1,
+            )
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-paid@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+            )
+            db.add_all(
+                [
+                    BillingTransaction(
+                        client_id=client.id,
+                        kind=KIND_SUPPLIER_SEARCH,
+                        operation=OP_GRANT,
+                        units=499,
+                        created_by="admin",
+                    ),
+                    BillingTransaction(
+                        client_id=client.id,
+                        kind=KIND_PROCUREMENT_REPORT,
+                        operation=OP_GRANT,
+                        units=499,
+                        created_by="admin",
+                    ),
+                ]
+            )
+            db.commit()
+
+            payload = customer_session_payload(db, user)
+
+            self.assertFalse(payload["user"]["is_trial"])
+            self.assertEqual(payload["balance"]["supplier_search"]["available"], 499)
+            self.assertEqual(payload["balance"]["procurement_report"]["available"], 499)
         finally:
             db.close()
 
