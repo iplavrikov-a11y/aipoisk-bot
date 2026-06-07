@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-06
+Date: 2026-06-07
 
 ## Current Production State
 
@@ -298,6 +298,14 @@ Hard contract:
   customer, ИНН/КПП, platform, and legal regime when present;
 - the report must not normalize `Иной способ` into another procedure and must
   not add time to a results date when the official source contains only a date;
+- same-day differences only in the hour of results review / подведение итогов
+  are not customer-critical and should not be shown as a separate risk. The
+  report should still use the explicit notice/document value for the visible
+  card field;
+- the report must keep customer-facing warnings for genuinely critical timing
+  conflicts: different calendar dates, bid-submission deadline conflicts,
+  auction/trading start conflicts, and any other discrepancy that can affect
+  whether the customer can submit or participate on time;
 - if the AI draft conflicts with official card facts, the system asks AI to
   repair the report and validates the repaired report again;
 - if validation still finds issues after repair, the report should carry a
@@ -374,12 +382,16 @@ without polluting the customer's XLSX report.
 
 Latest task evidence: `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 
-Fresh checks from the latest Telegram keyboard and source-input pass:
+Fresh checks from the latest Telegram keyboard, source-input, and
+procurement-report guardrail pass:
 
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
-  backend/tests -q` -> `221 passed`, `2` warnings, `43` subtests passed.
+  backend/tests -q` -> `222 passed`, `2` warnings, `43` subtests passed.
 - Targeted Telegram tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
   pytest backend/tests/test_bot_progress.py -q` -> `38 passed`.
+- Targeted procurement-report tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend
+  pytest backend/tests/test_procurement_report.py -q` -> `22 passed`, `43`
+  subtests passed.
 - Production `aipoisk-api.service`, `aipoisk-worker.service`, and
   `aipoisk-bot.service` were active after restart; local health returned
   `ok=true`.
@@ -387,6 +399,10 @@ Fresh checks from the latest Telegram keyboard and source-input pass:
   text, no internal source-provider name in source-input status, no raw `False`
   booleans in customer-facing output, and processing keyboards hide new start
   actions while a job is active.
+- Procurement-report guardrails covered by tests: same-day differences only in
+  the hour of results review are removed from `Риски`, while different dates
+  remain visible and source-card timestamps are not incorrectly attributed to
+  an electronic trading platform.
 
 Earlier billing, Telegram, and admin-button pass:
 

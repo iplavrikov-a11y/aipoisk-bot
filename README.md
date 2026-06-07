@@ -50,6 +50,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - ATI/logistics disabled by default.
 - Document parsing for TXT/CSV/HTML/DOCX/XLSX/XLS/PDF/DOC/RTF/ODT/PPTX/images with OCR, plus ZIP/RAR/7Z archives when system tools are available.
 - Procurement Word reports use the EmailAgent-style AI report structure when an AI provider is configured; otherwise a downloadable fallback draft is marked for review.
+- Procurement Word reports suppress noncritical same-day differences in the
+  hour of results review, but keep customer-facing warnings for different
+  dates, bid-submission deadlines, auction/trading starts, and other critical
+  timing conflicts.
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
 
 ## Telegram customer UX
