@@ -49,9 +49,11 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   supplier-search model used by the whole supplier-search flow.
 - YooKassa settings foundation is present for future checkout integration, but
   payments are still handled manually until the cashier account is connected.
-- Public site-card for TenderLex with no blog: feature description, pricing, contact blocks, SEO metadata, and Telegram CTAs.
+- Public TenderLex site with no blog: SEO landing page, pricing, contact blocks, Telegram CTAs, and authenticated customer cabinet at `/cabinet`.
+- Website cabinet users are separate from Telegram users. Web clients sign in by email/password and appear in admin data as `web:<id>`; Telegram payments/access stay tied to Telegram accounts.
+- Website cabinet exposes the same customer work scenarios as the bot: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 - Public site data comes from `GET /api/public/site`; only active tariffs, safe contacts, trial counters, and public copy are exposed.
-- Telegram links are intentionally split: `bot_telegram` is the bot used for "Попробовать бесплатно" and work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.
+- Telegram links are intentionally split: `bot_telegram` is the bot used for Telegram work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.
 - OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints,
   OpenRouter, Gemini, and Polza.
 - ATI/logistics disabled by default.
@@ -86,7 +88,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 ## Current status
 
 - Current production status and the remaining commercial hardening backlog are documented in `docs/PROJECT_STATUS.md`.
-- TenderLex public-site architecture and deploy notes are documented in `docs/TENDERLEX_SITE.md`.
+- TenderLex site/cabinet architecture and deploy notes are documented in `docs/TENDERLEX_SITE.md`.
+- Website cabinet operations, manual top-up, password recovery, and product smoke checks are documented in `docs/TENDERLEX_WEB_CABINET_RUNBOOK.md`.
 - Latest billing, Telegram UX, admin client deletion, tariff/payment, and button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 

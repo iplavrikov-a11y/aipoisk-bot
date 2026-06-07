@@ -19,6 +19,7 @@ class AppConfig(BaseSettings):
     admin_username: str = "admin"
     admin_password: str = ""
     admin_session_hours: int = 24
+    customer_session_hours: int = 168
     bot_token: str = ""
     owner_telegram_id: str = ""
     default_custom_ai_providers_json: str = "[]"

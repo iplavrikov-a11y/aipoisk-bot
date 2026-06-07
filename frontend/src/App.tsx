@@ -47,6 +47,7 @@ type Client = {
   id: string
   telegram_id: string
   is_pending: boolean
+  source: 'telegram' | 'web' | string
   name: string
   username: string
   is_active: boolean
@@ -60,6 +61,7 @@ type Client = {
   monthly_file_limit: number
   notes: string
   telegram_accounts: TelegramAccount[]
+  web_users: WebUser[]
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
   recent_billing: BillingTransaction[]
@@ -106,6 +108,32 @@ type TelegramAccount = {
   is_active: boolean
   is_pending: boolean
   notes: string
+}
+
+type WebUser = {
+  id: string
+  client_id: string
+  email: string
+  name: string
+  is_active: boolean
+  is_email_verified: boolean
+  created_at: string | null
+  last_login_at: string | null
+}
+
+type PasswordResetRequest = {
+  id: string
+  user_id: string
+  client_id: string
+  client_name: string
+  email: string
+  status: string
+  admin_note: string
+  requested_ip: string
+  created_at: string | null
+  resolved_at: string | null
+  resolved_by: string
+  last_login_at: string | null
 }
 
 type AccountDraft = {
@@ -395,7 +423,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   clients: {
     title: 'Клиенты',
-    description: 'Клиенты, менеджеры в Telegram, баланс генераций и ручные начисления.',
+    description: 'Клиенты из Telegram и сайта, баланс генераций и ручные начисления.',
   },
   jobs: {
     title: 'Задачи',
@@ -518,6 +546,7 @@ function normalizeTelegramUsername(value: string) {
 }
 
 function clientDisplayName(client: Client) {
+  if (client.web_users?.[0]?.email) return client.web_users[0].email
   return client.name || (client.username ? `@${client.username}` : '') || client.telegram_id || 'без имени'
 }
 
@@ -753,6 +782,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
   const [tariffs, setTariffs] = useState<TariffPackage[]>([])
+  const [passwordResets, setPasswordResets] = useState<PasswordResetRequest[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -764,7 +794,7 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true'),
@@ -773,6 +803,7 @@ export function App() {
         api<SettingsPayload>('/api/settings'),
         api<BotAnalytics>('/api/analytics/bot?period_days=30'),
         api<TariffPackage[]>('/api/tariffs'),
+        api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
@@ -782,6 +813,7 @@ export function App() {
       setSettings(settingsData)
       setAnalytics(analyticsData)
       setTariffs(tariffData)
+      setPasswordResets(passwordResetData)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -820,6 +852,7 @@ export function App() {
     setSettings(null)
     setAnalytics(null)
     setTariffs([])
+    setPasswordResets([])
     setUsername('')
     setPassword('')
   }
@@ -915,7 +948,7 @@ export function App() {
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
         {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
-        {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} onChange={loadAll} />}
+        {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'quality' && <QualityView quality={quality} />}
         {isReady && view === 'billing' && settings && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
@@ -1212,12 +1245,24 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   )
 }
 
-function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
+function ClientsView({
+  clients,
+  tariffs,
+  passwordResets,
+  onChange,
+}: {
+  clients: Client[]
+  tariffs: TariffPackage[]
+  passwordResets: PasswordResetRequest[]
+  onChange: () => Promise<void>
+}) {
   const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
   const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
+  const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
   const activeTariffs = tariffs.filter(item => item.is_active)
   async function createClient() {
     const usernames = parseTelegramUsernames(form.telegram_usernames)
@@ -1329,16 +1374,59 @@ function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariff
     setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
     await onChange()
   }
+  async function completePasswordReset(item: PasswordResetRequest) {
+    const result = await api<{ temporary_password: string }>(`/api/web-password-resets/${item.id}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({ note: resetNotes[item.id] || '' }),
+    })
+    setTemporaryPasswords({ ...temporaryPasswords, [item.id]: result.temporary_password })
+  }
+  async function ignorePasswordReset(item: PasswordResetRequest) {
+    await api(`/api/web-password-resets/${item.id}/ignore`, {
+      method: 'POST',
+      body: JSON.stringify({ note: resetNotes[item.id] || '' }),
+    })
+    const nextPasswords = { ...temporaryPasswords }
+    delete nextPasswords[item.id]
+    setTemporaryPasswords(nextPasswords)
+    await onChange()
+  }
   function patchClientNote(client: Client, value: string) {
     if (value !== client.notes) void patchClient(client, { notes: value })
   }
   return (
     <section className="stack">
+      {passwordResets.length > 0 && (
+        <div className="form-panel full-width-panel password-reset-panel">
+          <h2>Восстановление доступа</h2>
+          <p className="field-help">Клиент оставил заявку на вход в кабинет. Сбросьте пароль и передайте временный пароль клиенту через Telegram или email.</p>
+          <div className="password-reset-list">
+            {passwordResets.map(item => (
+              <article className="password-reset-row" key={item.id}>
+                <div>
+                  <strong>{item.email}</strong>
+                  <small>заявка {formatDate(item.created_at)} · последний вход {formatDate(item.last_login_at)}</small>
+                  {temporaryPasswords[item.id] && <code>Временный пароль: {temporaryPasswords[item.id]}</code>}
+                </div>
+                <input
+                  placeholder="Комментарий для истории"
+                  value={resetNotes[item.id] || ''}
+                  onChange={event => setResetNotes({ ...resetNotes, [item.id]: event.target.value })}
+                />
+                <div className="password-reset-actions">
+                  <button onClick={() => void completePasswordReset(item)}><KeyRound size={15} />Сбросить пароль</button>
+                  <button className="ghost small-text" onClick={() => void ignorePasswordReset(item)}>Закрыть</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="client-create-panel">
         <div className="client-create-head">
           <div>
             <h2>Добавить клиента</h2>
-            <p>Создайте клиента и привяжите один или несколько Telegram-аккаунтов.</p>
+            <p>Создайте Telegram-клиента вручную или управляйте web-клиентами, которые зарегистрировались на сайте.</p>
           </div>
         </div>
         <div className="client-create-grid">
@@ -1368,6 +1456,7 @@ function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariff
         {clients.map(client => {
           const draft = accountDraft(client)
           const accounts = client.telegram_accounts?.length ? client.telegram_accounts : []
+          const webUsers = client.web_users?.length ? client.web_users : []
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
           const connectedCount = accounts.filter(account => !account.is_pending).length
@@ -1390,6 +1479,8 @@ function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariff
                   </div>
                 </div>
                 <div className="client-summary-pills">
+                  <span>{client.source === 'web' ? 'Сайт' : 'Telegram'}</span>
+                  {webUsers[0]?.email && <span>{webUsers[0].email}</span>}
                   <span>Подключено: {connectedCount}</span>
                   {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
                   <span>Поставщики: {client.usage ? usageSummaryText(client.usage.supplier_search) : 'нет данных'}</span>
@@ -1407,6 +1498,26 @@ function ClientsView({ clients, tariffs, onChange }: { clients: Client[]; tariff
               </div>
 
               {expanded && <div className="client-card-grid">
+                {webUsers.length > 0 && (
+                  <div className="client-section client-web-section">
+                    <div className="section-head">
+                      <h3>Пользователь сайта</h3>
+                      <span>{webUsers.length}</span>
+                    </div>
+                    <div className="web-user-list">
+                      {webUsers.map(user => (
+                        <div className="web-user-row" key={user.id}>
+                          <div>
+                            <strong>{user.email}</strong>
+                            <small>{user.name || 'без имени'} · вход {formatDate(user.last_login_at)}</small>
+                          </div>
+                          <StatusBadge status={user.is_active ? 'active' : 'disabled'} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="client-section client-telegram-section">
                   <div className="section-head">
                     <h3>Telegram-аккаунты</h3>
@@ -1547,6 +1658,9 @@ function parseTelegramUsernames(value: string) {
 }
 
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
+  if (client.web_users?.[0]?.email) {
+    return `Сайт: ${client.web_users[0].email}`
+  }
   const usernames = accounts.filter(account => account.username).map(account => `@${account.username}`).slice(0, 3)
   const connected = accounts.filter(account => !account.is_pending)
   const pending = accounts.filter(account => account.is_pending)

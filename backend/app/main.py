@@ -15,13 +15,19 @@ from sqlalchemy.orm import Session
 
 from .ai import call_llm
 from .billing import (
+    BillingError,
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CUSTOMER_DECLINED,
     VALID_BILLING_KINDS,
     billing_kind_label,
+    charge_job_reservation,
     client_balance_summary,
     expire_stale_confirmations,
     grant_package_units,
+    release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
+    reserve_job_units,
     tariff_to_dict,
     transaction_to_dict,
 )
@@ -38,7 +44,7 @@ from .jobs import (
     package_job_outputs,
     recover_interrupted_jobs,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, now_utc, parse_json_list
+from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebPasswordResetRequest, WebSession, WebUser, now_utc, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -67,6 +73,10 @@ from .schemas import (
     SettingsPatch,
     TariffPackageCreate,
     TariffPackagePatch,
+    WebLoginRequest,
+    WebPasswordResetComplete,
+    WebPasswordResetRequestCreate,
+    WebRegisterRequest,
 )
 from .security import (
     ADMIN_COOKIE,
@@ -76,10 +86,27 @@ from .security import (
     require_admin,
     verify_admin_session,
 )
+from .web_auth import (
+    CSRF_HEADER,
+    WebAuthContext,
+    authenticate_web_user,
+    clear_customer_session_cookie,
+    create_web_session,
+    create_web_user,
+    generate_temporary_password,
+    hash_password,
+    optional_web_context,
+    require_customer_csrf,
+    require_web_context,
+    revoke_web_session,
+    set_customer_session_cookie,
+    validate_email,
+)
 from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -120,6 +147,215 @@ def health(db: Session = Depends(db_session)) -> dict:
 @app.get("/api/public/site")
 def public_site_api(db: Session = Depends(db_session)) -> dict:
     return public_site_payload(db)
+
+
+def _customer_auth_key(request: Request, email: str) -> str:
+    client_ip = request.client.host if request.client else "unknown"
+    return f"{client_ip}:{str(email or '').strip().lower()[:255]}"
+
+
+def _check_customer_auth_rate(request: Request, email: str) -> str:
+    key = _customer_auth_key(request, email)
+    now = time.time()
+    attempts = [item for item in CUSTOMER_AUTH_ATTEMPTS.get(key, []) if now - item < 600]
+    CUSTOMER_AUTH_ATTEMPTS[key] = attempts
+    if len(attempts) >= 8:
+        raise HTTPException(status_code=429, detail="Слишком много попыток входа. Подождите несколько минут.")
+    return key
+
+
+def _record_customer_auth_failure(key: str) -> None:
+    CUSTOMER_AUTH_ATTEMPTS[key] = [*CUSTOMER_AUTH_ATTEMPTS.get(key, []), time.time()]
+
+
+@app.post("/api/customer/auth/register")
+def customer_register_api(
+    data: WebRegisterRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    key = _check_customer_auth_rate(request, data.email)
+    try:
+        user = create_web_user(db, email=data.email, password=data.password, name=data.name)
+    except ValueError as exc:
+        _record_customer_auth_failure(key)
+        detail = str(exc)
+        status_code = 409 if "уже зарегистрирован" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, token)
+    CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
+    return customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.post("/api/customer/auth/login")
+def customer_login_api(
+    data: WebLoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    key = _check_customer_auth_rate(request, data.email)
+    user = authenticate_web_user(db, data.email, data.password)
+    if not user:
+        _record_customer_auth_failure(key)
+        raise HTTPException(status_code=401, detail="Неверный email или пароль.")
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, token)
+    CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
+    return customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.post("/api/customer/auth/password-reset/request")
+def customer_password_reset_request_api(
+    data: WebPasswordResetRequestCreate,
+    request: Request,
+    db: Session = Depends(db_session),
+) -> dict:
+    key = _check_customer_auth_rate(request, data.email)
+    _record_customer_auth_failure(key)
+    try:
+        email = validate_email(data.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user = db.query(WebUser).filter(WebUser.email == email, WebUser.is_active.is_(True)).first()
+    if user:
+        recent_cutoff = now_utc() - timedelta(minutes=15)
+        recent = (
+            db.query(WebPasswordResetRequest.id)
+            .filter(WebPasswordResetRequest.user_id == user.id)
+            .filter(WebPasswordResetRequest.status == "open")
+            .filter(WebPasswordResetRequest.created_at >= recent_cutoff)
+            .first()
+        )
+        if not recent:
+            db.add(
+                WebPasswordResetRequest(
+                    user_id=user.id,
+                    email=email,
+                    requested_ip=str(getattr(request.client, "host", "") or "")[:80],
+                    user_agent=str(request.headers.get("user-agent", ""))[:1000],
+                )
+            )
+            db.commit()
+    return {
+        "success": True,
+        "message": "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты.",
+    }
+
+
+@app.post("/api/customer/auth/logout")
+def customer_logout_api(
+    request: Request,
+    response: Response,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    revoke_web_session(db, context.session)
+    clear_customer_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/customer/auth/session")
+def customer_session_api(
+    context: WebAuthContext | None = Depends(optional_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    if not context:
+        return {"authenticated": False}
+    csrf_token = context.session.csrf_token if context.session else ""
+    return customer_session_payload(db, context.user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.get("/api/customer/me")
+def customer_me_api(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    csrf_token = context.session.csrf_token if context.session else ""
+    return customer_session_payload(db, context.user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.get("/api/customer/jobs")
+def customer_jobs_api(
+    limit: int = 50,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> list[dict]:
+    safe_limit = max(1, min(200, int(limit or 50)))
+    jobs = (
+        commercial_jobs_query(db, context.user.client)
+        .order_by(Job.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+    return [customer_job_to_dict(job) for job in jobs]
+
+
+@app.post("/api/customer/jobs")
+async def customer_create_job_route(
+    request: Request,
+    mode: str = Form(default=MODE_SUPPLIER_SEARCH),
+    text: str = Form(default=""),
+    source_urls: str = Form(default=""),
+    target_suppliers: int = Form(default=0),
+    files: list[UploadFile] = File(default=[]),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    return await create_customer_job_api(
+        mode=mode,
+        text=text,
+        source_urls=source_urls,
+        target_suppliers=target_suppliers,
+        files=files,
+        context=context,
+        db=db,
+    )
+
+
+@app.get("/api/customer/jobs/{job_id}")
+def customer_job_detail_api(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    return customer_job_to_dict(job, include_files=True)
+
+
+@app.get("/api/customer/jobs/{job_id}/download")
+def customer_job_download_route(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    return download_customer_job_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/accept-partial")
+def customer_accept_partial_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    require_customer_csrf(request, context)
+    return accept_customer_partial_job_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/decline-partial")
+def customer_decline_partial_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    return decline_customer_partial_job_api(job_id, context=context, db=db)
 
 
 @app.post("/api/auth/login")
@@ -390,6 +626,58 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         "transaction": transaction_to_dict(transaction),
         "client": client_to_dict(client, db=db),
     }
+
+
+@app.get("/api/web-password-resets", dependencies=[Depends(require_admin)])
+def list_web_password_resets(status: str = "open", db: Session = Depends(db_session)) -> list[dict]:
+    query = db.query(WebPasswordResetRequest)
+    if status and status != "all":
+        query = query.filter(WebPasswordResetRequest.status == status)
+    requests = query.order_by(WebPasswordResetRequest.created_at.desc()).limit(100).all()
+    return [web_password_reset_to_dict(item) for item in requests]
+
+
+@app.post("/api/web-password-resets/{request_id}/complete", dependencies=[Depends(require_admin)])
+def complete_web_password_reset(request_id: str, data: WebPasswordResetComplete, db: Session = Depends(db_session)) -> dict:
+    reset_request = db.get(WebPasswordResetRequest, request_id)
+    if not reset_request:
+        raise HTTPException(status_code=404, detail="Password reset request not found")
+    user = reset_request.user
+    if not user or not user.is_active:
+        raise HTTPException(status_code=409, detail="Пользователь не найден или отключён.")
+    temporary_password = str(data.password or "").strip() or generate_temporary_password()
+    try:
+        user.password_hash = hash_password(temporary_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.query(WebSession).filter(WebSession.user_id == user.id, WebSession.revoked_at.is_(None)).update(
+        {WebSession.revoked_at: now_utc()},
+        synchronize_session=False,
+    )
+    reset_request.status = "completed"
+    reset_request.admin_note = data.note
+    reset_request.resolved_by = "admin"
+    reset_request.resolved_at = now_utc()
+    db.commit()
+    return {
+        "success": True,
+        "temporary_password": temporary_password,
+        "request": web_password_reset_to_dict(reset_request),
+        "client": client_to_dict(user.client, db=db),
+    }
+
+
+@app.post("/api/web-password-resets/{request_id}/ignore", dependencies=[Depends(require_admin)])
+def ignore_web_password_reset(request_id: str, data: WebPasswordResetComplete, db: Session = Depends(db_session)) -> dict:
+    reset_request = db.get(WebPasswordResetRequest, request_id)
+    if not reset_request:
+        raise HTTPException(status_code=404, detail="Password reset request not found")
+    reset_request.status = "ignored"
+    reset_request.admin_note = data.note
+    reset_request.resolved_by = "admin"
+    reset_request.resolved_at = now_utc()
+    db.commit()
+    return {"success": True, "request": web_password_reset_to_dict(reset_request)}
 
 
 def _client_display_name(client: Client | None) -> str:
@@ -1262,11 +1550,11 @@ def public_site_payload(db: Session) -> dict:
         "site": {
             "name": "TenderLex",
             "domain": "https://tenderlex.ru",
-            "headline": "Анализ закупок и поиск поставщиков в одном Telegram-боте",
+            "headline": "Анализ закупок и поиск поставщиков на сайте и в Telegram",
             "description": (
                 "TenderLex анализирует закупочную документацию, помогает увидеть риски и собирает "
                 "поставщиков с email, телефонами, сайтами, страницами контактов и комментариями. "
-                "Новые пользователи могут попробовать оба сценария в Telegram."
+                "Новые пользователи могут попробовать оба сценария на сайте или в Telegram."
             ),
         },
         "bot": {
@@ -1326,6 +1614,238 @@ def website_public_url(value: str) -> str:
     if website.startswith("http://") or website.startswith("https://"):
         return website
     return f"https://{website}"
+
+
+def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = "", authenticated: bool = True) -> dict:
+    settings = get_or_create_settings(db)
+    return {
+        "authenticated": authenticated,
+        "csrf_token": csrf_token,
+        "csrf_header": CSRF_HEADER,
+        "user": customer_user_to_dict(user),
+        "balance": client_usage_summary(db, user.client),
+        "limits": {
+            "max_upload_mb": int(settings.max_upload_mb or 50),
+            "max_files_per_batch": int(settings.max_files_per_batch or 20),
+            "default_supplier_target": int(settings.default_supplier_target or 15),
+        },
+        "trial": {
+            "enabled": bool(settings.trial_enabled),
+            "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
+            "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
+            "file_limit": max(0, int(settings.trial_file_limit or 0)),
+        },
+        "tariffs": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)],
+        "tariff_groups": {
+            "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
+            "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
+        },
+        "contacts": {
+            "email": settings.contact_email,
+            "telegram": settings.contact_telegram,
+            "telegram_url": telegram_public_url(settings.contact_telegram),
+        },
+        "payment": {
+            "provider": settings.payment_provider or "manual",
+            "instructions": settings.payment_instructions or "",
+            "yookassa_ready": _settings_yookassa_ready(settings),
+        },
+    }
+
+
+def customer_user_to_dict(user: WebUser) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "is_active": bool(user.is_active),
+        "is_email_verified": bool(user.is_email_verified),
+        "client_id": user.client_id,
+        "is_trial": bool(user.client.is_trial) if user.client else False,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }
+
+
+def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
+    supplier_units, report_units = requested_function_units(job.mode)
+    data = {
+        "id": job.id,
+        "client_id": job.client_id,
+        "mode": job.mode,
+        "mode_label": mode_label(job.mode),
+        "status": job.status,
+        "status_label": human_status_label(job.status),
+        "progress": job.progress,
+        "message": job.message,
+        "title": job.title,
+        "human_title": human_job_title(job),
+        "supplier_units": supplier_units,
+        "procurement_report_units": report_units,
+        "target_suppliers": job.target_suppliers,
+        "verified_count": job.verified_count,
+        "file_count": job.file_count,
+        "has_result": bool(job.result_path),
+        "can_download": bool(job.result_path) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
+        "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+        "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+    if include_files:
+        data["files"] = [file_to_dict(item) for item in job.files]
+        data["sources"] = [source_to_dict(item) for item in job.sources]
+    return data
+
+
+async def create_customer_job_api(
+    *,
+    mode: str,
+    text: str = "",
+    source_urls: str = "",
+    target_suppliers: int = 0,
+    files: list[UploadFile] | None = None,
+    context: WebAuthContext,
+    db: Session,
+) -> dict:
+    if mode not in VALID_JOB_MODES:
+        raise HTTPException(status_code=400, detail="Неизвестный режим обработки.")
+    settings = get_or_create_settings(db)
+    sources = source_payloads_from_text(source_urls)
+    if sources and mode == MODE_SUPPLIER_SEARCH:
+        raise HTTPException(
+            status_code=400,
+            detail="Для поиска поставщиков отправьте файл или текст ТЗ. Номер извещения и ссылку используйте в анализе закупки.",
+        )
+    payload = await _customer_upload_payload(files or [], settings)
+    text_value = str(text or "").strip()
+    if text_value:
+        payload.append(("technical_assignment.txt", text_value.encode("utf-8")))
+    if not payload and not sources:
+        raise HTTPException(status_code=400, detail="Добавьте файл, текст ТЗ, номер извещения или ссылку закупки.")
+    if len(payload) > int(settings.max_files_per_batch or 20):
+        raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
+
+    client = context.user.client
+    target = int(target_suppliers or 0)
+    safe_target = max(1, min(100, target if target > 0 else int(settings.default_supplier_target or 15)))
+    supplier_specs = _customer_supplier_job_specs(mode, payload)
+    supplier_search_count = len(supplier_specs) if supplier_specs else 1
+    access_error = client_access_error(
+        db,
+        client,
+        mode,
+        incoming_file_count=len(payload),
+        supplier_search_count=supplier_search_count,
+    )
+    if access_error:
+        raise HTTPException(status_code=403, detail=access_error)
+
+    try:
+        if supplier_specs and len(supplier_specs) > 1:
+            jobs: list[Job] = []
+            for title, job_files in supplier_specs:
+                job = create_job(
+                    db,
+                    client_id=client.id,
+                    created_by_telegram_id=f"web:{context.user.id}",
+                    mode=MODE_SUPPLIER_SEARCH,
+                    title=title,
+                    target_suppliers=safe_target,
+                    files=job_files,
+                    sources=[],
+                )
+                reserve_job_units(db, client, job)
+                enqueue_job(job.id)
+                jobs.append(job)
+            return {"batch": True, "count": len(jobs), "jobs": [customer_job_to_dict(job) for job in jobs]}
+
+        title = Path(payload[0][0]).stem[:120] if payload else source_label(sources[0]["value"])[:120]
+        job = create_job(
+            db,
+            client_id=client.id,
+            created_by_telegram_id=f"web:{context.user.id}",
+            mode=mode,
+            title=title,
+            target_suppliers=safe_target,
+            files=payload,
+            sources=sources,
+        )
+        reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
+        enqueue_job(job.id)
+    except BillingError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
+
+
+async def _customer_upload_payload(files: list[UploadFile], settings: SystemSettings) -> list[tuple[str, bytes]]:
+    if len(files) > int(settings.max_files_per_batch or 20):
+        raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
+    payload: list[tuple[str, bytes]] = []
+    max_bytes = int(settings.max_upload_mb or 50) * 1024 * 1024
+    for file in files:
+        content = await file.read()
+        if len(content) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"{file.filename or 'Файл'} слишком большой.")
+        if not content:
+            continue
+        payload.append((file.filename or "upload", content))
+    return payload
+
+
+def _customer_supplier_job_specs(mode: str, payload: list[tuple[str, bytes]]) -> list[tuple[str, list[tuple[str, bytes]]]]:
+    if mode != MODE_SUPPLIER_SEARCH:
+        return []
+    return [(Path(filename).stem[:120] or "ТЗ", [(filename, content)]) for filename, content in payload]
+
+
+def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> Job:
+    job = db.get(Job, job_id)
+    if not job or job.client_id != context.user.client_id:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    return job
+
+
+def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    output = package_job_outputs(job)
+    if not output or not output.exists():
+        raise HTTPException(status_code=404, detail="Файл результата не найден.")
+    charge_job_reservation(db, job)
+    return FileResponse(output, filename=output.name)
+
+
+def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session):
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
+    job.status = "partial"
+    job.message = "Клиент принял неполный отчёт"
+    job.error = ""
+    job.updated_at = now_utc()
+    if job.completed_at is None:
+        job.completed_at = now_utc()
+    db.commit()
+    return download_customer_job_api(job_id, context=context, db=db)
+
+
+def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
+    release_job_reservation(db, job, note="Резерв возвращён: клиент сайта отказался от неполного отчёта")
+    job.status = STATUS_CUSTOMER_DECLINED
+    job.message = "Клиент отказался от неполного отчёта"
+    job.error = ""
+    job.completed_at = now_utc()
+    job.updated_at = now_utc()
+    db.commit()
+    return {"success": True, "job": customer_job_to_dict(job)}
 
 
 def is_internal_job(job: Job | object) -> bool:
@@ -1657,6 +2177,8 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "monthly_file_limit": client.monthly_file_limit,
         "notes": client.notes,
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
+        "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],
+        "source": "web" if client.web_users else "telegram",
         "usage": client_usage_summary(db, client) if db else None,
         "recent_usage": client_recent_usage(db, client) if db else [],
         "recent_billing": recent_billing_transactions(db, client) if db else [],
@@ -1678,6 +2200,38 @@ def telegram_account_to_dict(account: ClientTelegramAccount) -> dict:
         "notes": account.notes,
         "created_at": account.created_at.isoformat() if account.created_at else None,
         "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+    }
+
+
+def web_user_to_admin_dict(user: WebUser) -> dict:
+    return {
+        "id": user.id,
+        "client_id": user.client_id,
+        "email": user.email,
+        "name": user.name,
+        "is_active": bool(user.is_active),
+        "is_email_verified": bool(user.is_email_verified),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }
+
+
+def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
+    user = item.user
+    client = user.client if user else None
+    return {
+        "id": item.id,
+        "user_id": item.user_id,
+        "client_id": user.client_id if user else "",
+        "client_name": client.name if client else "",
+        "email": item.email,
+        "status": item.status,
+        "admin_note": item.admin_note,
+        "requested_ip": item.requested_ip,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
+        "resolved_by": item.resolved_by,
+        "last_login_at": user.last_login_at.isoformat() if user and user.last_login_at else None,
     }
 
 

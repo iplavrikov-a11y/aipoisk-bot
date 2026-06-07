@@ -4,10 +4,11 @@
 
 - Backend: FastAPI in `backend/app`, SQLite data under `data/`, admin API guarded by admin session/token.
 - Existing admin panel: React/Vite in `frontend/`.
-- Public business-card website: Next.js in `site/`, served for `tenderlex.ru`.
-- The public website is a landing/site-card only. Do not add a blog unless the user explicitly changes that scope.
+- Public TenderLex website and customer cabinet: Next.js in `site/`, served for `tenderlex.ru`.
+- The public website scope is landing page plus authenticated customer cabinet. Do not add a blog or public admin panel unless the user explicitly changes that scope.
 - Customer-facing product name is `TenderLex` for the Telegram bot, public site, reports, filenames, and admin-visible branding. `AI Poisk`/`aipoisk-bot` is only a repository/service identifier and must not appear in customer-facing copy.
 - Tenderplan/API procurement access is an internal data source. Do not expose the Tenderplan name in customer-facing Telegram messages, DOCX/XLSX titles, output filenames, report text, or customer-visible errors. Name output files and report headings by the procurement subject/product when it is available.
+- Public website and cabinet copy must speak in client-result language: what the user can do and what decision/result they get. Do not sell with file-format labels like DOCX/XLSX, technical account details like "web balance" or "protected session", or exact free-run counters. If examples are needed, use professional procurement scenarios close to real work, not random artificial company names.
 
 ## Public Site Contract
 

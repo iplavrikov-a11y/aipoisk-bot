@@ -10,6 +10,8 @@ Date: 2026-06-07
 - Telegram worker: `aipoisk-bot.service`.
 - Durable job worker: `aipoisk-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
+- Public TenderLex site: Next.js landing page and web cabinet served by
+  `tenderlex-site.service` on `127.0.0.1:3093`.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
 
@@ -28,6 +30,11 @@ Commercial limits are customer-level, not Telegram-account-level. One customer
 can have several Telegram manager accounts; all linked accounts spend the same
 customer limits.
 
+Website cabinet users are intentionally separate from Telegram users. Web users
+sign in by email/password, appear in admin flows by website email, and are
+identified in job metadata as `web:<id>`. Telegram access remains tied to
+Telegram accounts unless the owner explicitly changes the account model.
+
 There are exactly two commercial counters:
 
 - supplier reports;
@@ -45,6 +52,9 @@ Free-period customers can be enabled from admin settings. Trial access has
 separate supplier and documentation-analysis limits. Trial customers cannot use
 mass supplier processing or `📄🔎 Анализ + поиск`; they must run analysis and
 supplier search separately when both functions are available.
+
+Until YooKassa checkout is implemented, website cabinet access is granted
+manually from the admin customer card after external payment or approval.
 
 ## Admin Console
 
@@ -378,6 +388,16 @@ without polluting the customer's XLSX report.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
 - Telegram has four customer-facing scenarios: `🔎 Одно ТЗ`,
   `🗂 Несколько ТЗ`, `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
+- Website cabinet mirrors those scenarios without Telegram-only emoji:
+  `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
+- Website `Одно ТЗ` starts one supplier-search job from one uploaded file or
+  one text description.
+- Website `Несколько ТЗ` sends several ТЗ files to the same supplier-search
+  backend mode, where each file becomes a separate independent supplier-search
+  job.
+- Website `Анализ закупки` and `Анализ + поиск` accept notice numbers, links,
+  files, and archives. The customer does not choose supplier count and does not
+  fill extra invented "what to check" fields; those are intentionally absent.
 - Single-ТЗ supplier search starts after one uploaded ТЗ/ООЗ file;
   it can also start from one plain text ТЗ/ООЗ message.
 - Multi-ТЗ supplier search collects several ТЗ/ООЗ files and/or accepted plain
@@ -401,6 +421,23 @@ without polluting the customer's XLSX report.
   contracts changed.
 
 ## Verification Snapshot
+
+Fresh checks from the website cabinet parity and landing-copy pass:
+
+- Site typecheck: `cd site && npm run typecheck` -> OK.
+- Site production build: `cd site && npm run build` -> OK.
+- Local Playwright smoke against `127.0.0.1:3094` covered cabinet
+  registration, four function cards, `Несколько ТЗ`, absence of invented
+  analysis fields, and desktop/mobile screenshots.
+- Local Playwright smoke against `127.0.0.1:3094` covered the landing page and
+  checked that old repetitive/material-format copy was not visible.
+- Production service `tenderlex-site.service` was restarted and active on
+  `127.0.0.1:3093`.
+- Live domain checks returned HTTP 200 for `https://tenderlex.ru/` and
+  `https://tenderlex.ru/cabinet`.
+- Live Playwright smoke signed into a website QA account, confirmed all four
+  cabinet functions, and confirmed no invented analysis fields or file-format
+  marketing labels were visible.
 
 Latest task evidence: current AI-settings/statistics/YooKassa foundation pass
 in git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the

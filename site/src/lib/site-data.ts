@@ -51,7 +51,7 @@ const fallbackTariffs: PublicTariff[] = [
     units: 1,
     price_kopeks: 10000,
     price_rub: 100,
-    description: "Разовый поиск email, телефонов, сайтов и комментариев по релевантности поставщиков.",
+    description: "Разовый подбор релевантных компаний и контактов для запроса КП.",
     sort_order: 100,
   },
   {
@@ -62,7 +62,7 @@ const fallbackTariffs: PublicTariff[] = [
     units: 10,
     price_kopeks: 100000,
     price_rub: 1000,
-    description: "Пакет для регулярных запросов КП: поставщики, email, телефоны и страницы контактов.",
+    description: "Пакет для регулярного подбора поставщиков под разные товары и ТЗ.",
     sort_order: 100,
   },
   {
@@ -115,9 +115,9 @@ const fallbackData: PublicSitePayload = {
   site: {
     name: "TenderLex",
     domain: "https://tenderlex.ru",
-    headline: "Анализ закупок и поиск поставщиков в одном Telegram-боте",
+    headline: "Анализ закупок и подбор поставщиков на сайте и в Telegram",
     description:
-      "TenderLex помогает разобрать закупочную документацию, собрать поставщиков с контактами и попробовать оба сценария в Telegram.",
+      "TenderLex помогает разобрать закупочную документацию, увидеть риски и подобрать поставщиков для запроса КП на сайте или в Telegram.",
   },
   contacts: {
     email: "snab@dealpartner.ru",
@@ -177,7 +177,7 @@ export function tariffDescription(tariff: PublicTariff) {
     return tariff.description;
   }
   if (tariff.kind === "procurement_report") {
-    return "ИИ-анализ закупочной документации с тендерным листом, рисками и ключевыми условиями.";
+    return "Анализ закупочной документации: требования, условия, риски и вопросы заказчику.";
   }
-  return "Поиск и проверка поставщиков, email, телефонов, сайтов, страниц контактов и соответствия закупочной задаче.";
+  return "Подбор релевантных компаний и контактов для запроса КП под вашу закупочную задачу.";
 }

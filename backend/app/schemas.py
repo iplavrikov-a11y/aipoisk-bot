@@ -54,6 +54,26 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class WebRegisterRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=8, max_length=256)
+    name: str = ""
+
+
+class WebLoginRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=1, max_length=256)
+
+
+class WebPasswordResetRequestCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
+class WebPasswordResetComplete(BaseModel):
+    password: str = Field(default="", max_length=256)
+    note: str = ""
+
+
 class ClientCreate(BaseModel):
     telegram_id: str = ""
     name: str = ""
