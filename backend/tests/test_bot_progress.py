@@ -425,9 +425,9 @@ class BotProgressFormattingTests(unittest.TestCase):
     def test_supplier_multi_intro_explains_mass_processing_contract(self) -> None:
         text = _supplier_multi_intro_text()
 
-        self.assertIn("один или несколько файлов ТЗ", text)
-        self.assertIn("отдельный результат", text)
-        self.assertIn("Проверьте количество", text)
+        self.assertIn("ТЗ файлом или текстом", text)
+        self.assertIn("отдельный поиск поставщиков", text)
+        self.assertIn("Проверьте количество добавленных ТЗ", text)
         self.assertIn(BUTTON_RUN_BATCH, text)
 
     def test_supplier_multi_added_text_explains_next_step(self) -> None:

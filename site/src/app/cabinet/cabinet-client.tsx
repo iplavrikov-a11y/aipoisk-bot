@@ -107,7 +107,7 @@ const scenarioOptions: Array<{ id: Scenario; label: string; description: string;
   {
     id: "supplier_search",
     label: "Поиск поставщиков",
-    description: "по одному или нескольким ТЗ",
+    description: "ТЗ файлом или текстом",
     icon: Search,
   },
   {
@@ -119,7 +119,7 @@ const scenarioOptions: Array<{ id: Scenario; label: string; description: string;
   {
     id: "analysis_and_suppliers",
     label: "Анализ + поиск",
-    description: "анализ и поставщики по ТЗ",
+    description: "анализ закупки и поставщики",
     icon: Receipt,
   },
 ];
@@ -138,10 +138,12 @@ const modeCopy: Record<Scenario, {
 }> = {
   supplier_search: {
     mode: "supplier_search",
-    uploadTitle: "Приложите одно или несколько ТЗ",
-    uploadText: "Если файлов несколько, по каждому будет отдельный поиск поставщиков.",
+    uploadTitle: "Загрузите одно или несколько ТЗ",
+    uploadText: "Каждое ТЗ даст отдельный поиск поставщиков.",
     multipleFiles: true,
-    hint: "Один файл даст один результат. Несколько файлов будут обработаны отдельно.",
+    textLabel: "Или вставьте ТЗ текстом",
+    textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса КП.",
+    hint: "Можно загрузить файлы или вставить одно ТЗ текстом. Если материалов несколько, каждый будет обработан отдельной задачей.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
