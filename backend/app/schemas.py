@@ -134,6 +134,10 @@ class ClientTelegramAccountPatch(BaseModel):
     notes: str | None = None
 
 
+class ClientMergeRequest(BaseModel):
+    source_client_id: str = Field(min_length=1, max_length=64)
+
+
 class AiTestRequest(BaseModel):
     provider: str | None = None
     model: str | None = None

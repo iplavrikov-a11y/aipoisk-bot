@@ -1018,7 +1018,8 @@ select {
   z-index: 40;
   display: grid;
   min-height: 68px;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto;
+  justify-content: space-between;
   align-items: center;
   gap: 24px;
   padding-inline: max(24px, calc((100vw - 1240px) / 2));
@@ -1515,9 +1516,9 @@ select {
 
 .balance-row strong {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--ink);
-  font-size: 19px;
+  font-size: 28px;
   font-weight: 950;
   line-height: 1.1;
 }

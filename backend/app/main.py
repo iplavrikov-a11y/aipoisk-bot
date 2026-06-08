@@ -69,6 +69,7 @@ from .repository import (
 from .schemas import (
     AiTestRequest,
     ClientCreate,
+    ClientMergeRequest,
     ClientPatch,
     ClientTelegramAccountCreate,
     ClientTelegramAccountPatch,
@@ -740,21 +741,70 @@ def update_client(client_id: str, data: ClientPatch, db: Session = Depends(db_se
     return client_to_dict(client, db=db)
 
 
+def _force_delete_client(db: Session, client: Client) -> None:
+    jobs = db.query(Job).filter(Job.client_id == client.id).all()
+    job_ids = [job.id for job in jobs]
+    if job_ids:
+        db.query(BillingTransaction).filter(BillingTransaction.job_id.in_(job_ids)).delete(synchronize_session=False)
+    db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).delete(synchronize_session=False)
+    for job in jobs:
+        shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
+        db.delete(job)
+    db.delete(client)
+
+
 @app.delete("/api/clients/{client_id}", dependencies=[Depends(require_admin)])
 def delete_client(client_id: str, db: Session = Depends(db_session)) -> dict:
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
-    has_jobs = bool(db.query(Job.id).filter(Job.client_id == client.id).first())
-    if has_jobs:
-        raise HTTPException(
-            status_code=409,
-            detail="У клиента уже есть задачи. Чтобы не потерять историю отчётов и списаний, удаление заблокировано. Отключите клиента кнопкой «Отключить».",
-        )
-    db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).delete(synchronize_session=False)
-    db.delete(client)
+    _force_delete_client(db, client)
     db.commit()
     return {"success": True}
+
+
+@app.post("/api/clients/{client_id}/merge", dependencies=[Depends(require_admin)])
+def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends(db_session)) -> dict:
+    target = db.get(Client, client_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target client not found")
+    source = db.get(Client, data.source_client_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source client not found")
+    if source.id == target.id:
+        raise HTTPException(status_code=400, detail="Choose another client to merge")
+    if target.web_users and source.web_users:
+        raise HTTPException(status_code=409, detail="У целевого и исходного клиента уже есть web-кабинеты. Оставьте один web-кабинет и повторите объединение.")
+
+    target_needs_primary = not target.telegram_id or is_pending_telegram_id(target.telegram_id)
+    source_primary_id = "" if is_pending_telegram_id(source.telegram_id) else source.telegram_id
+    if target_needs_primary and source_primary_id:
+        source.telegram_id = new_pending_telegram_id()
+        target.telegram_id = source_primary_id
+    if not target.username and source.username:
+        target.username = source.username
+    if not target.name and source.name:
+        target.name = source.name
+    target.is_active = bool(target.is_active or source.is_active)
+    target.allowed_supplier_search = bool(target.allowed_supplier_search or source.allowed_supplier_search)
+    target.allowed_procurement_report = bool(target.allowed_procurement_report or source.allowed_procurement_report)
+    target.monthly_job_limit = max(int(target.monthly_job_limit or 0), int(source.monthly_job_limit or 0))
+    target.monthly_supplier_search_limit = max(int(target.monthly_supplier_search_limit or 0), int(source.monthly_supplier_search_limit or 0))
+    target.monthly_procurement_report_limit = max(int(target.monthly_procurement_report_limit or 0), int(source.monthly_procurement_report_limit or 0))
+    target.monthly_file_limit = max(int(target.monthly_file_limit or 0), int(source.monthly_file_limit or 0))
+    target.supplier_target_min = max(int(target.supplier_target_min or 0), int(source.supplier_target_min or 0))
+    merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
+    target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
+
+    db.query(Job).filter(Job.client_id == source.id).update({Job.client_id: target.id}, synchronize_session=False)
+    db.query(BillingTransaction).filter(BillingTransaction.client_id == source.id).update({BillingTransaction.client_id: target.id}, synchronize_session=False)
+    db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source.id).update({ClientTelegramAccount.client_id: target.id}, synchronize_session=False)
+    db.query(WebUser).filter(WebUser.client_id == source.id).update({WebUser.client_id: target.id}, synchronize_session=False)
+    db.flush()
+    db.delete(source)
+    db.commit()
+    db.refresh(target)
+    return {"success": True, "client": client_to_dict(target, db=db)}
 
 
 @app.post("/api/clients/{client_id}/billing/grants", dependencies=[Depends(require_admin)])
@@ -1166,19 +1216,17 @@ def delete_client_telegram_account(
     )
     if not account:
         raise HTTPException(status_code=404, detail="Telegram account not found")
-    remaining_accounts = [
-        item
-        for item in client.telegram_accounts
-        if item.id != account.id
-    ]
-    if not remaining_accounts:
-        raise HTTPException(status_code=409, detail="Client must have at least one Telegram account")
+    remaining_accounts = [item for item in client.telegram_accounts if item.id != account.id]
     db.delete(account)
-    primary = sorted(remaining_accounts, key=lambda item: item.created_at, reverse=True)[0]
-    if client.telegram_id == account.telegram_id or not client.telegram_id:
-        client.telegram_id = primary.telegram_id
-    if client.username == account.username or not client.username:
-        client.username = primary.username
+    if remaining_accounts:
+        primary = sorted(remaining_accounts, key=lambda item: item.created_at, reverse=True)[0]
+        if client.telegram_id == account.telegram_id or not client.telegram_id:
+            client.telegram_id = primary.telegram_id
+        if client.username == account.username or not client.username:
+            client.username = primary.username
+    else:
+        client.telegram_id = new_pending_telegram_id()
+        client.username = ""
     db.commit()
     return {"success": True, "client": client_to_dict(client, db=db)}
 

@@ -23,14 +23,16 @@ from app.main import (
     grant_client_billing_units,
     job_to_dict,
     list_jobs,
+    merge_client,
     public_site_payload,
     read_job_evidence_payload,
     settings_to_public_dict,
     update_client_telegram_account,
     upload_job,
 )
-from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, now_utc
-from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
+from app.billing import client_balance_summary
+from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, WebUser, now_utc
+from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientMergeRequest, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
 class ApiGuardTests(unittest.TestCase):
@@ -237,6 +239,89 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["telegram_accounts"][0]["telegram_id"], "")
         self.assertTrue(payload["telegram_accounts"][0]["is_pending"])
 
+    def test_delete_client_removes_jobs_billing_and_accounts_without_telegram_requirement(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client = Client(id="client-1", telegram_id="web:client-1", name="Web Client")
+            db.add(client)
+            db.add(WebUser(id="web-1", client_id="client-1", email="buyer@example.com", password_hash="hash"))
+            db.add(Job(id="job-1", client_id="client-1", mode="supplier_search", title="ТЗ"))
+            db.add(BillingTransaction(client_id="client-1", job_id="job-1", kind="supplier_search", operation="grant", units=10))
+            db.commit()
+
+            result = delete_client("client-1", db=db)
+
+            client_count = db.query(Client).count()
+            user_count = db.query(WebUser).count()
+            job_count = db.query(Job).count()
+            billing_count = db.query(BillingTransaction).count()
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(client_count, 0)
+        self.assertEqual(user_count, 0)
+        self.assertEqual(job_count, 0)
+        self.assertEqual(billing_count, 0)
+
+    def test_merge_client_moves_web_login_jobs_billing_and_telegram_accounts(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            target = create_client(ClientCreate(name="Тимошенко", telegram_id="1743101322", username="@bookwap"), db=db)
+            db.add(BillingTransaction(client_id=target["id"], kind="procurement_report", operation="grant", units=2))
+            source = Client(
+                id="web-client",
+                telegram_id="web:web-client",
+                name="Marina",
+                monthly_job_limit=12,
+                monthly_supplier_search_limit=50,
+                monthly_procurement_report_limit=3,
+                allowed_procurement_report=True,
+            )
+            db.add(source)
+            db.add(WebUser(id="web-1", client_id="web-client", email="m.timoshenko@bm-corp.ru", password_hash="hash", is_email_verified=True))
+            db.add(Job(id="job-1", client_id="web-client", mode="procurement_report", title="Анализ"))
+            db.add(BillingTransaction(client_id="web-client", job_id="job-1", kind="procurement_report", operation="grant", units=3))
+            db.commit()
+
+            result = merge_client(target["id"], ClientMergeRequest(source_client_id="web-client"), db=db)
+            merged = db.get(Client, target["id"])
+            web_user = db.query(WebUser).filter(WebUser.email == "m.timoshenko@bm-corp.ru").one()
+            moved_job = db.get(Job, "job-1")
+            moved_billing = db.query(BillingTransaction).filter(BillingTransaction.job_id == "job-1").one()
+            balance = client_balance_summary(db, merged)
+            source_after = db.get(Client, "web-client")
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertIsNone(source_after)
+        self.assertEqual(web_user.client_id, target["id"])
+        self.assertEqual(moved_job.client_id, target["id"])
+        self.assertEqual(moved_billing.client_id, target["id"])
+        self.assertEqual(balance["procurement_report"]["available"], 5)
+        self.assertEqual(merged.telegram_id, "1743101322")
+        self.assertEqual(merged.monthly_job_limit, 12)
+        self.assertEqual(merged.monthly_supplier_search_limit, 50)
+        self.assertEqual(merged.monthly_procurement_report_limit, 3)
+        self.assertTrue(merged.allowed_procurement_report)
+
     def test_manual_telegram_id_account_still_can_be_added_to_client(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
@@ -260,6 +345,31 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(account["telegram_id"], "777")
         self.assertEqual(account["username"], "manager")
         self.assertFalse(account["is_pending"])
+
+    def test_delete_last_telegram_account_leaves_client_editable(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="777", username="@manager"), db=db)
+            account_id = client_payload["telegram_accounts"][0]["id"]
+
+            result = delete_client_telegram_account(client_payload["id"], account_id, db=db)
+            client = db.get(Client, client_payload["id"])
+            accounts_count = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == client_payload["id"]).count()
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(accounts_count, 0)
+        self.assertTrue(client.telegram_id.startswith("pending:"))
+        self.assertEqual(client.username, "")
 
     def test_pending_account_can_be_completed_by_manual_telegram_id(self) -> None:
         from sqlalchemy import create_engine
@@ -580,7 +690,7 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(result["client"]["telegram_id"], "222")
         self.assertEqual(len(result["client"]["telegram_accounts"]), 1)
 
-    def test_last_telegram_account_cannot_be_deleted(self) -> None:
+    def test_last_telegram_account_can_be_deleted_and_keeps_client_editable(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
@@ -594,12 +704,16 @@ class ApiGuardTests(unittest.TestCase):
             client_payload = create_client(ClientCreate(name="Customer", telegram_id="111"), db=db)
             account_id = client_payload["telegram_accounts"][0]["id"]
 
-            with self.assertRaises(HTTPException) as raised:
-                delete_client_telegram_account(client_payload["id"], account_id, db=db)
+            result = delete_client_telegram_account(client_payload["id"], account_id, db=db)
+            client = db.get(Client, client_payload["id"])
+            accounts_count = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == client_payload["id"]).count()
         finally:
             db.close()
 
-        self.assertEqual(raised.exception.status_code, 409)
+        self.assertTrue(result["success"])
+        self.assertEqual(accounts_count, 0)
+        self.assertTrue(client.telegram_id.startswith("pending:"))
+        self.assertEqual(client.username, "")
 
     def test_manual_billing_grant_accepts_arbitrary_units_without_tariff(self) -> None:
         from sqlalchemy import create_engine
@@ -669,7 +783,7 @@ class ApiGuardTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_delete_client_rejects_clients_with_jobs_to_preserve_history(self) -> None:
+    def test_delete_client_removes_clients_with_jobs(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
@@ -685,13 +799,15 @@ class ApiGuardTests(unittest.TestCase):
             db.add(Job(client_id="client-1", mode="supplier_search", title="ТЗ"))
             db.commit()
 
-            with self.assertRaises(HTTPException) as raised:
-                delete_client("client-1", db=db)
-
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertIn("Отключите клиента", str(raised.exception.detail))
+            result = delete_client("client-1", db=db)
+            client_count = db.query(Client).count()
+            job_count = db.query(Job).count()
         finally:
             db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(client_count, 0)
+        self.assertEqual(job_count, 0)
 
     def test_list_jobs_hides_internal_jobs_by_default(self) -> None:
         from sqlalchemy import create_engine

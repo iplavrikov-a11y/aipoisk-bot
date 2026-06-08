@@ -197,19 +197,15 @@ function balanceValue(counter?: BalanceCounter) {
 }
 
 function accessValue(counter?: BalanceCounter) {
-  const value = balanceValue(counter);
-  if (value === "без лимита") return value;
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return value;
-  return `${numeric} ${pluralizeRu(numeric, ["запуск", "запуска", "запусков"])}`;
+  return balanceValue(counter);
 }
 
 function tariffDisplayName(tariff: Tariff) {
   if (tariff.kind === "procurement_report") {
-    return `${tariff.units} ${pluralizeRu(tariff.units, ["запуск", "запуска", "запусков"])} анализа закупки`;
+    return `${tariff.units} ${pluralizeRu(tariff.units, ["анализ закупки", "анализа закупки", "анализов закупки"])}`;
   }
   if (tariff.kind === "supplier_search") {
-    return `${tariff.units} ${pluralizeRu(tariff.units, ["запуск", "запуска", "запусков"])} поиска поставщиков`;
+    return `${tariff.units} ${pluralizeRu(tariff.units, ["поиск поставщиков", "поиска поставщиков", "поисков поставщиков"])}`;
   }
   return tariff.name;
 }
@@ -732,12 +728,6 @@ export function CabinetClient() {
           <Image src="/tenderlex-logo.png" alt="" width={32} height={32} priority />
           <span>TenderLex</span>
         </a>
-        <nav aria-label="Кабинет">
-          <a href="#create">Создать</a>
-          <a href="#jobs">Задачи</a>
-          <a href="#balance">Баланс</a>
-          <a href="#help">Помощь</a>
-        </nav>
         <div className="account-chip">
           <span>{session?.user?.email}</span>
           <button type="button" onClick={logout} disabled={busy} aria-label="Выйти">
@@ -912,7 +902,7 @@ export function CabinetClient() {
               <h2>Пополнить доступ</h2>
               <span>через менеджера</span>
             </div>
-            <p className="payment-copy">Выберите подходящий пакет и напишите нам email кабинета. После подтверждения мы начислим запуски.</p>
+            <p className="payment-copy">Выберите подходящий пакет и напишите нам email кабинета. После подтверждения мы начислим доступ.</p>
             <TariffList title="Поиск поставщиков" tariffs={session?.tariff_groups?.supplier_search || []} />
             <TariffList title="Анализ закупки" tariffs={session?.tariff_groups?.procurement_report || []} />
             <div className="contact-actions">

@@ -393,6 +393,29 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   white-space: nowrap;
 }
 .compact-switches { display: flex; flex-wrap: wrap; gap: 10px 14px; }
+.merge-client-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.merge-client-panel select {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.merge-client-panel button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+.merge-client-panel .field-help {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 .balance-compact-list { display: grid; gap: 6px; }
 .balance-line {
   display: grid;

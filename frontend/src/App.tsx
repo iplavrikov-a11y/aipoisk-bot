@@ -1262,6 +1262,7 @@ function ClientsView({
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
   const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
+  const [mergeForms, setMergeForms] = useState<Record<string, string>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
@@ -1287,8 +1288,20 @@ function ClientsView({
   }
   async function deleteClient(client: Client) {
     const label = client.name || client.username || client.telegram_id || 'этого клиента'
-    if (!window.confirm(`Удалить клиента «${label}»? Это действие нельзя отменить.`)) return
+    if (!window.confirm(`Полностью удалить клиента «${label}» вместе с задачами, балансом и привязками? Это действие нельзя отменить.`)) return
     await api(`/api/clients/${client.id}`, { method: 'DELETE' })
+    await onChange()
+  }
+  async function mergeClientIntoTarget(target: Client) {
+    const sourceId = mergeForms[target.id] || ''
+    const source = clients.find(item => item.id === sourceId)
+    if (!source) return
+    if (!window.confirm(`Объединить клиента «${clientDisplayName(source)}» с клиентом «${clientDisplayName(target)}»?\n\nВсе задачи, баланс, Telegram-аккаунты и web-кабинет исходного клиента будут перенесены к целевому клиенту. Исходный клиент будет удалён.`)) return
+    await api(`/api/clients/${target.id}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ source_client_id: source.id }),
+    })
+    setMergeForms({ ...mergeForms, [target.id]: '' })
     await onChange()
   }
   async function createAccount(client: Client) {
@@ -1500,9 +1513,6 @@ function ClientsView({
                 </div>
                 <div className="client-state">
                   <StatusBadge status={client.is_active ? 'active' : 'disabled'} />
-                  <button className="ghost small-text" onClick={() => void patchClient(client, { is_active: !client.is_active })}>
-                    {client.is_active ? 'Отключить' : 'Включить'}
-                  </button>
                   <button className="danger small-text" onClick={() => void deleteClient(client)}>
                     <Trash2 size={14} />Удалить
                   </button>
@@ -1559,9 +1569,6 @@ function ClientsView({
                           </label>
                           <div className="account-edit-actions">
                             <StatusBadge status={account.is_pending ? 'account_pending' : account.is_active ? 'active' : 'disabled'} />
-                            <button className="ghost small-text" onClick={() => void patchAccount(client, account, { is_active: !account.is_active })}>
-                              {account.is_active ? 'Откл.' : 'Вкл.'}
-                            </button>
                             <button className="small-text" onClick={() => void saveAccount(client, account)}>
                               <Save size={14} />Сохранить
                             </button>
@@ -1622,6 +1629,29 @@ function ClientsView({
                 </div>
 
                 <div className="client-section client-settings-section">
+                  <h3>Объединение клиентов</h3>
+                  <div className="merge-client-panel">
+                    <label className="mini-field">
+                      <span>Кого присоединить</span>
+                      <select
+                        value={mergeForms[client.id] || ''}
+                        onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
+                      >
+                        <option value="">Выберите клиента</option>
+                        {clients.filter(item => item.id !== client.id).map(item => (
+                          <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className="small-text"
+                      onClick={() => void mergeClientIntoTarget(client)}
+                      disabled={!mergeForms[client.id]}
+                    >
+                      <Users size={14} />Объединить
+                    </button>
+                    <small className="field-help">Текущий клиент останется основным. К нему перейдут аккаунты, задачи и баланс выбранного клиента.</small>
+                  </div>
                   <h3>Функции</h3>
                   <div className="compact-switches">
                     <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поставщики</label>
