@@ -408,6 +408,17 @@ without polluting the customer's XLSX report.
   the DOCX analysis, then uses a separate AI step to extract the ТЗ/ООЗ/product
   specification context for supplier search. Supplier discovery does not search
   against the noisy full documentation bundle.
+- Supplier discovery classifies the extracted context for Minpromtorg/GISP
+  requirements before ordinary supplier query generation. It searches the GISP
+  registry only when the context indicates an active prohibition or another
+  mandatory registry/extract requirement. Restrictions, preferences,
+  non-application, and generic mentions are treated as not requiring registry
+  lookup. The final `evidence.json` records the `minprom_registry` decision,
+  registry queries, entries count, status, and any registry-search error.
+- In `📄🔎 Анализ + поиск`, the supplier-context extraction step must preserve
+  Minpromtorg/GISP/registry-record requirements from the procurement
+  documentation so the later supplier-discovery step can make that decision on
+  the same basis as standalone supplier search.
 - Telegram bot edits a live progress message while the job runs: queue, AI analysis
   of the technical assignment, query generation, website search, AI candidate
   filtering, site/contact verification, and completion.

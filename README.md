@@ -64,6 +64,11 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   dates, bid-submission deadlines, auction/trading starts, and other critical
   timing conflicts.
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
+- Supplier search automatically checks whether the procurement context requires
+  a Minpromtorg/GISP registry extract. It searches the registry only when the
+  documents indicate an active prohibition or another mandatory registry
+  requirement; restrictions, preferences, non-application, or generic mentions
+  do not trigger registry lookup.
 
 ## Telegram customer UX
 

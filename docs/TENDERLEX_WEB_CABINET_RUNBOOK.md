@@ -89,6 +89,12 @@ Use this checklist after deploy:
 14. Start a supplier search from text or a test file.
 15. Start a procurement analysis from a notice number, link, or document.
 16. Confirm tasks appear in `Задачи`, progress updates, and finished results can be downloaded.
+17. For a procurement where the published documents indicate an active
+    prohibition, confirm the analysis says the Minpromtorg registry extract is
+    required and `evidence.json` has `supplier_search.minprom_registry.required`
+    set to `true`. If the registry search returns no entries, the supplier
+    result must say to request registry confirmation instead of claiming that a
+    supplier already satisfies the registry requirement.
 
 ## Legal Pages
 
