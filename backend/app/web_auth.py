@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_lib
 import hmac
+import logging
 import re
 import secrets
 import smtplib
@@ -10,7 +12,9 @@ import string
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import formataddr
 
+import httpx
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -25,6 +29,7 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 600_000
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 WEB_DEFAULT_FILE_LIMIT = 10
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -192,30 +197,95 @@ def email_verification_url(token: str, *, public_base_url: str = "") -> str:
     return f"{base_url}/api/customer/auth/verify-email/confirm?token={token}"
 
 
-def send_email_verification(user: WebUser, token: str, *, public_base_url: str = "") -> bool:
+def _verification_sender_name() -> str:
+    return str(config.email_from_name or "TenderLex").strip() or "TenderLex"
+
+
+def _verification_sender_email() -> str:
+    return str(config.email_from_email or config.smtp_from or config.smtp_username or "").strip()
+
+
+def _verification_email_text(link: str) -> str:
+    return "\n".join(
+        [
+            "Здравствуйте.",
+            "",
+            "Подтвердите email для личного кабинета TenderLex:",
+            link,
+            "",
+            "После подтверждения можно запускать задачи на сайте.",
+            "Если вы не создавали кабинет, просто не открывайте эту ссылку.",
+        ]
+    )
+
+
+def _verification_email_html(link: str) -> str:
+    safe_link = html_lib.escape(link, quote=True)
+    return f"""<!doctype html>
+<html>
+  <body style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+    <p>Здравствуйте.</p>
+    <p>Подтвердите email для личного кабинета TenderLex.</p>
+    <p>
+      <a href="{safe_link}" style="display: inline-block; padding: 10px 16px; background: #111827; color: #ffffff; text-decoration: none; border-radius: 6px;">
+        Подтвердить email
+      </a>
+    </p>
+    <p>Если кнопка не открылась, скопируйте ссылку в браузер:<br>{safe_link}</p>
+    <p>Если вы не создавали кабинет, просто не открывайте эту ссылку.</p>
+  </body>
+</html>"""
+
+
+def _send_email_verification_via_relay(user: WebUser, subject: str, html_body: str) -> bool:
+    relay_url = str(config.email_relay_url or "").strip()
+    relay_api_key = str(config.email_relay_api_key or "").strip()
+    sender_email = _verification_sender_email()
+    if not relay_url or not relay_api_key or not sender_email:
+        return False
+
+    payload = {
+        "to": user.email,
+        "subject": subject,
+        "html": html_body,
+        "from_name": _verification_sender_name(),
+        "from_email": sender_email,
+        "attachments": [],
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                f"{relay_url.rstrip('/')}/send",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {relay_api_key}",
+                },
+                json=payload,
+            )
+        if response.status_code != 200:
+            logger.warning("email_verification_relay_http_error", extra={"status_code": response.status_code})
+            return False
+        result = response.json()
+    except Exception as exc:
+        logger.warning("email_verification_relay_failed", extra={"error": str(exc)})
+        return False
+    if not isinstance(result, dict):
+        return False
+    return bool(result.get("success"))
+
+
+def _send_email_verification_via_smtp(user: WebUser, subject: str, text_body: str, html_body: str) -> bool:
     host = str(config.smtp_host or "").strip()
-    sender = str(config.smtp_from or config.smtp_username or "").strip()
-    if not host or not sender:
+    sender_email = str(config.smtp_from or config.smtp_username or config.email_from_email or "").strip()
+    if not host or not sender_email:
         return False
 
     message = EmailMessage()
-    message["Subject"] = "Подтверждение email TenderLex"
-    message["From"] = sender
+    message["Subject"] = subject
+    message["From"] = formataddr((_verification_sender_name(), sender_email))
     message["To"] = user.email
-    link = email_verification_url(token, public_base_url=public_base_url)
-    message.set_content(
-        "\n".join(
-            [
-                "Здравствуйте.",
-                "",
-                "Подтвердите email для личного кабинета TenderLex:",
-                link,
-                "",
-                "После подтверждения можно запускать задачи на сайте.",
-                "Если вы не создавали кабинет, просто не открывайте эту ссылку.",
-            ]
-        )
-    )
+    message.set_content(text_body)
+    message.add_alternative(html_body, subtype="html")
 
     port = int(config.smtp_port or (465 if config.smtp_use_ssl else 587))
     timeout = max(1, int(config.smtp_timeout_seconds or 15))
@@ -223,13 +293,27 @@ def send_email_verification(user: WebUser, token: str, *, public_base_url: str =
         smtp_factory = smtplib.SMTP_SSL
     else:
         smtp_factory = smtplib.SMTP
-    with smtp_factory(host, port, timeout=timeout) as smtp:
-        if not config.smtp_use_ssl and config.smtp_use_tls:
-            smtp.starttls()
-        if config.smtp_username:
-            smtp.login(config.smtp_username, config.smtp_password)
-        smtp.send_message(message)
+    try:
+        with smtp_factory(host, port, timeout=timeout) as smtp:
+            if not config.smtp_use_ssl and config.smtp_use_tls:
+                smtp.starttls()
+            if config.smtp_username:
+                smtp.login(config.smtp_username, config.smtp_password)
+            smtp.send_message(message)
+    except Exception as exc:
+        logger.warning("email_verification_smtp_failed", extra={"error": str(exc)})
+        return False
     return True
+
+
+def send_email_verification(user: WebUser, token: str, *, public_base_url: str = "") -> bool:
+    link = email_verification_url(token, public_base_url=public_base_url)
+    subject = "Подтверждение email TenderLex"
+    text_body = _verification_email_text(link)
+    html_body = _verification_email_html(link)
+    if _send_email_verification_via_relay(user, subject, html_body):
+        return True
+    return _send_email_verification_via_smtp(user, subject, text_body, html_body)
 
 
 def _as_aware_utc(value: datetime) -> datetime:

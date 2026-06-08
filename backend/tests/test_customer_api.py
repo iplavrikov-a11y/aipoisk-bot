@@ -5,6 +5,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import HTTPException, Response, UploadFile
 from sqlalchemy import create_engine
@@ -183,6 +184,110 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(user.is_email_verified)
             self.assertIsNone(open_token)
             self.assertTrue(token)
+        finally:
+            db.close()
+
+    def test_send_email_verification_uses_email_relay(self) -> None:
+        from app import web_auth
+
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="relay-buyer@example.com", password="StrongPass123", name="Buyer")
+            captured: dict = {}
+
+            class FakeResponse:
+                status_code = 200
+
+                def json(self) -> dict:
+                    return {"success": True}
+
+            class FakeClient:
+                def __init__(self, timeout: float) -> None:
+                    captured["timeout"] = timeout
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+                def post(self, url: str, *, headers: dict, json: dict):
+                    captured["url"] = url
+                    captured["headers"] = headers
+                    captured["json"] = json
+                    return FakeResponse()
+
+            with (
+                patch.object(web_auth.config, "email_relay_url", "http://relay.example"),
+                patch.object(web_auth.config, "email_relay_api_key", "relay-key"),
+                patch.object(web_auth.config, "email_from_name", "TenderLex"),
+                patch.object(web_auth.config, "email_from_email", "noreply@example.com"),
+                patch.object(web_auth.httpx, "Client", FakeClient),
+            ):
+                sent = web_auth.send_email_verification(user, "verify-token", public_base_url="https://tenderlex.ru")
+
+            self.assertTrue(sent)
+            self.assertEqual(captured["url"], "http://relay.example/send")
+            self.assertEqual(captured["headers"]["Authorization"], "Bearer relay-key")
+            self.assertEqual(captured["json"]["to"], "relay-buyer@example.com")
+            self.assertEqual(captured["json"]["from_name"], "TenderLex")
+            self.assertEqual(captured["json"]["from_email"], "noreply@example.com")
+            self.assertEqual(captured["json"]["attachments"], [])
+            self.assertIn("Подтвердите email", captured["json"]["html"])
+            self.assertIn("verify-token", captured["json"]["html"])
+        finally:
+            db.close()
+
+    def test_send_email_verification_keeps_smtp_fallback(self) -> None:
+        from app import web_auth
+
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="smtp-buyer@example.com", password="StrongPass123", name="Buyer")
+            captured: dict = {}
+
+            class FakeSmtp:
+                def __init__(self, host: str, port: int, timeout: int) -> None:
+                    captured["smtp"] = {"host": host, "port": port, "timeout": timeout}
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+                def starttls(self) -> None:
+                    captured["starttls"] = True
+
+                def login(self, username: str, password: str) -> None:
+                    captured["login"] = {"username": username, "password": password}
+
+                def send_message(self, message) -> None:
+                    captured["message"] = message
+
+            with (
+                patch.object(web_auth.config, "email_relay_url", ""),
+                patch.object(web_auth.config, "email_relay_api_key", ""),
+                patch.object(web_auth.config, "email_from_name", "TenderLex"),
+                patch.object(web_auth.config, "email_from_email", ""),
+                patch.object(web_auth.config, "smtp_host", "smtp.example"),
+                patch.object(web_auth.config, "smtp_port", 587),
+                patch.object(web_auth.config, "smtp_username", "smtp-user"),
+                patch.object(web_auth.config, "smtp_password", "smtp-password"),
+                patch.object(web_auth.config, "smtp_from", "noreply@example.com"),
+                patch.object(web_auth.config, "smtp_use_tls", True),
+                patch.object(web_auth.config, "smtp_use_ssl", False),
+                patch.object(web_auth.config, "smtp_timeout_seconds", 15),
+                patch.object(web_auth.smtplib, "SMTP", FakeSmtp),
+            ):
+                sent = web_auth.send_email_verification(user, "verify-token", public_base_url="https://tenderlex.ru")
+
+            self.assertTrue(sent)
+            self.assertEqual(captured["smtp"], {"host": "smtp.example", "port": 587, "timeout": 15})
+            self.assertTrue(captured["starttls"])
+            self.assertEqual(captured["login"], {"username": "smtp-user", "password": "smtp-password"})
+            self.assertEqual(captured["message"]["To"], "smtp-buyer@example.com")
+            self.assertIn("TenderLex", captured["message"]["Subject"])
         finally:
             db.close()
 

@@ -58,6 +58,10 @@ class AppConfig(BaseSettings):
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 15
+    email_relay_url: str = ""
+    email_relay_api_key: str = ""
+    email_from_name: str = "TenderLex"
+    email_from_email: str = ""
     customer_email_verification_hours: int = 24
 
     @property
