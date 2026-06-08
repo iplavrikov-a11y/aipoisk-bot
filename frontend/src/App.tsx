@@ -938,7 +938,6 @@ export function App() {
             <p>{viewCopy[view].description}</p>
           </div>
           <div className="top-actions">
-            <span className="session-label">Вход выполнен</span>
             <button className="login-button" onClick={() => void loadAll()} disabled={loading}>
               {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
               Обновить
@@ -1651,11 +1650,6 @@ function ClientsView({
                       <Users size={14} />Объединить
                     </button>
                     <small className="field-help">Текущий клиент останется основным. К нему перейдут аккаунты, задачи и баланс выбранного клиента.</small>
-                  </div>
-                  <h3>Функции</h3>
-                  <div className="compact-switches">
-                    <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поставщики</label>
-                    <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
                   </div>
                   <label className="mini-field">
                     <span>Мин. поставщиков по ТЗ</span>

@@ -395,15 +395,6 @@ def client_access_error(
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
     if not client.is_active:
         return "Доступ отключён. Свяжитесь с администратором."
-    if mode == MODE_PROCUREMENT_REPORT and not client.allowed_procurement_report:
-        return "Функция анализа документации пока не включена для вашего доступа."
-    if mode == MODE_SUPPLIER_SEARCH and not client.allowed_supplier_search:
-        return "Функция поиска поставщиков не включена для вашего доступа."
-    if mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        if not client.allowed_procurement_report:
-            return "Функция анализа документации пока не включена для вашего доступа."
-        if not client.allowed_supplier_search:
-            return "Функция поиска поставщиков не включена для вашего доступа."
     if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         return "Неизвестный режим обработки."
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)

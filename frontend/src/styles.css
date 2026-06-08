@@ -28,15 +28,6 @@ button { border: 0; cursor: pointer; }
 .topbar p { margin: 8px 0 0; color: #64748b; max-width: 780px; }
 .top-actions { display: flex; align-items: center; gap: 10px; }
 .login-button { white-space: nowrap; }
-.session-label {
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 650;
-}
-
 input, select, textarea {
   width: 100%;
   min-height: 38px;
@@ -392,7 +383,6 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   font-weight: 750;
   white-space: nowrap;
 }
-.compact-switches { display: flex; flex-wrap: wrap; gap: 10px 14px; }
 .merge-client-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

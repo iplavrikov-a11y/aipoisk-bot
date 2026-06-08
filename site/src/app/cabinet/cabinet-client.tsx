@@ -410,7 +410,7 @@ export function CabinetClient() {
       setSession(payload);
       setPassword("");
       setWebsite("");
-      setMessage(payload.message || (authMode === "register" ? "Кабинет создан. Подтвердите email, чтобы запускать задачи." : "Вход выполнен."));
+      setMessage(authMode === "register" ? (payload.message || "Кабинет создан. Подтвердите email, чтобы запускать задачи.") : "");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

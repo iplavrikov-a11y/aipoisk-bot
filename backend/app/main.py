@@ -115,6 +115,10 @@ from .web_auth import (
 )
 from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
 
+ANALYTICS_EXCLUDED_WEB_EMAILS = {"79210629909@ya.ru"}
+ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES = {"lexelence", "lexs"}
+ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
+
 app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
@@ -1534,22 +1538,28 @@ def build_bot_analytics(db: Session, *, period_days: int = 30) -> dict:
     now = now_utc()
     cutoff = now - timedelta(days=period_days)
     settings = get_or_create_settings(db)
-    clients = db.query(Client).all()
-    accounts = db.query(ClientTelegramAccount).all()
+    all_clients = db.query(Client).all()
+    excluded_client_ids = _analytics_excluded_client_ids(all_clients)
+    clients = [client for client in all_clients if client.id not in excluded_client_ids]
+    accounts = [account for account in db.query(ClientTelegramAccount).all() if account.client_id not in excluded_client_ids]
     period_jobs_raw = (
         db.query(Job)
         .filter(Job.created_at >= cutoff)
         .order_by(Job.created_at.desc())
         .all()
     )
-    period_jobs = [job for job in period_jobs_raw if not is_internal_job_record(job)]
-    all_jobs = [job for job in db.query(Job).all() if not is_internal_job_record(job)]
-    billing_period = (
-        db.query(BillingTransaction)
-        .filter(BillingTransaction.created_at >= cutoff)
-        .all()
-    )
-    grants_all = db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
+    period_jobs = [job for job in period_jobs_raw if not is_internal_job_record(job) and job.client_id not in excluded_client_ids]
+    all_jobs = [job for job in db.query(Job).all() if not is_internal_job_record(job) and job.client_id not in excluded_client_ids]
+    billing_period = [
+        item
+        for item in db.query(BillingTransaction).filter(BillingTransaction.created_at >= cutoff).all()
+        if item.client_id not in excluded_client_ids
+    ]
+    grants_all = [
+        item
+        for item in db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
+        if item.client_id not in excluded_client_ids
+    ]
 
     clients_with_jobs = {job.client_id for job in all_jobs if job.client_id}
     period_clients_with_jobs = {job.client_id for job in period_jobs if job.client_id}
@@ -1695,6 +1705,29 @@ def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict
         elif item.operation == "release":
             row["released"] += units
     return sorted(rows.values(), key=lambda item: item["label"])
+
+
+def _analytics_excluded_client_ids(clients: list[Client]) -> set[str]:
+    excluded_ids: set[str] = set()
+    for client in clients:
+        if _analytics_client_is_excluded(client):
+            excluded_ids.add(client.id)
+    return excluded_ids
+
+
+def _analytics_client_is_excluded(client: Client) -> bool:
+    telegram_id = str(client.telegram_id or "").strip()
+    username = normalize_telegram_username(client.username)
+    web_emails = {str(user.email or "").strip().lower() for user in getattr(client, "web_users", []) or []}
+    telegram_usernames = {normalize_telegram_username(account.username) for account in getattr(client, "telegram_accounts", []) or []}
+    telegram_ids = {str(account.telegram_id or "").strip() for account in getattr(client, "telegram_accounts", []) or []}
+    return bool(
+        web_emails & ANALYTICS_EXCLUDED_WEB_EMAILS
+        or username in ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES
+        or telegram_id in ANALYTICS_EXCLUDED_TELEGRAM_IDS
+        or telegram_usernames & ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES
+        or telegram_ids & ANALYTICS_EXCLUDED_TELEGRAM_IDS
+    )
 
 
 def _analytics_top_clients(db: Session, clients: list[Client], period_jobs: list[Job]) -> list[dict]:

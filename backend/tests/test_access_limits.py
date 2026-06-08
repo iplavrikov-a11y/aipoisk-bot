@@ -125,6 +125,30 @@ class AccessLimitTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_balance_enables_functions_without_manual_function_flags(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                allowed_supplier_search=False,
+                allowed_procurement_report=False,
+                monthly_supplier_search_limit=2,
+                monthly_procurement_report_limit=1,
+            )
+            db.add(client)
+            db.commit()
+
+            supplier_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH)
+            report_error = client_access_error(db, client, MODE_PROCUREMENT_REPORT)
+            combined_error = client_access_error(db, client, MODE_ANALYSIS_AND_SUPPLIERS)
+        finally:
+            db.close()
+
+        self.assertEqual(supplier_error, "")
+        self.assertEqual(report_error, "")
+        self.assertEqual(combined_error, "")
+
     def test_mass_supplier_request_checks_each_tz_against_supplier_limit(self) -> None:
         db = self.Session()
         try:
