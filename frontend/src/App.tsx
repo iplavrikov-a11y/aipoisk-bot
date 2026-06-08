@@ -457,6 +457,7 @@ const statusLabels: Record<string, string> = {
   active: 'включён',
   disabled: 'выключен',
   trial: 'бесплатный период',
+  email_unverified: 'почта не подтверждена',
   account_pending: 'ожидает ID',
   pending: 'в очереди',
   running: 'в работе',
@@ -1374,6 +1375,10 @@ function ClientsView({
     setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
     await onChange()
   }
+  async function verifyWebUserEmail(client: Client, user: WebUser) {
+    await api(`/api/clients/${client.id}/web-users/${user.id}/verify-email`, { method: 'POST' })
+    await onChange()
+  }
   async function completePasswordReset(item: PasswordResetRequest) {
     const result = await api<{ temporary_password: string }>(`/api/web-password-resets/${item.id}/complete`, {
       method: 'POST',
@@ -1511,7 +1516,12 @@ function ClientsView({
                             <strong>{user.email}</strong>
                             <small>{user.name || 'без имени'} · вход {formatDate(user.last_login_at)}</small>
                           </div>
-                          <StatusBadge status={user.is_active ? 'active' : 'disabled'} />
+                          <div className="account-actions">
+                            <StatusBadge status={user.is_active ? (user.is_email_verified ? 'active' : 'email_unverified') : 'disabled'} />
+                            {!user.is_email_verified && (
+                              <button className="ghost small-text" onClick={() => void verifyWebUserEmail(client, user)}>Подтвердить</button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>

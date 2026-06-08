@@ -48,6 +48,7 @@ type SessionPayload = {
     email: string;
     name: string;
     is_trial: boolean;
+    is_email_verified: boolean;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -72,6 +73,8 @@ type SessionPayload = {
     instructions: string;
     yookassa_ready: boolean;
   };
+  verification_email_sent?: boolean;
+  message?: string;
 };
 
 type CustomerJob = {
@@ -264,6 +267,7 @@ export function CabinetClient() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [website, setWebsite] = useState("");
   const [scenario, setScenario] = useState<Scenario>("supplier_search");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
@@ -282,6 +286,7 @@ export function CabinetClient() {
   const acceptsSources = Boolean(selectedCopy.sourceLabel);
   const acceptsText = Boolean(selectedCopy.textLabel);
   const maxFiles = session?.limits?.max_files_per_batch || 20;
+  const emailVerified = session?.user?.is_email_verified !== false;
   const activeJobs = useMemo(
     () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation"].includes(job.status)).length,
     [jobs],
@@ -348,6 +353,15 @@ export function CabinetClient() {
 
   useEffect(() => {
     loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    const params = new URLSearchParams(window.location.search);
+    const verified = params.get("email_verified");
+    if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
+    if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
+    if (verified) {
+      params.delete("email_verified");
+      const nextQuery = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
+    }
   }, []);
 
   useEffect(() => {
@@ -378,12 +392,13 @@ export function CabinetClient() {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({ email, password, name, website: authMode === "register" ? website : "" }),
       });
       const payload = await readJson<SessionPayload>(response);
       setSession(payload);
       setPassword("");
-      setMessage(authMode === "register" ? "Кабинет создан. Для запуска задач пополните доступ через менеджера." : "Вход выполнен.");
+      setWebsite("");
+      setMessage(payload.message || (authMode === "register" ? "Кабинет создан. Подтвердите email, чтобы запускать задачи." : "Вход выполнен."));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -411,9 +426,33 @@ export function CabinetClient() {
     }
   }
 
+  async function resendVerification() {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/customer/auth/verify-email/request", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      });
+      const payload = await readJson<{ message?: string }>(response);
+      setMessage(payload.message || "Письмо отправлено. Проверьте почту.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!csrf) return;
+    if (!emailVerified) {
+      setError("Подтвердите email, чтобы запускать задачи.");
+      return;
+    }
     setBusy(true);
     setError("");
     setMessage("");
@@ -575,6 +614,12 @@ export function CabinetClient() {
                 <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
               </label>
             ) : null}
+            {authMode === "register" ? (
+              <label className="bot-trap" aria-hidden="true">
+                Сайт
+                <input value={website} onChange={(event) => setWebsite(event.target.value)} tabIndex={-1} autoComplete="off" />
+              </label>
+            ) : null}
             <label>
               Email
               <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required />
@@ -641,6 +686,20 @@ export function CabinetClient() {
           {error ? <XCircle size={18} aria-hidden="true" /> : <CheckCircle2 size={18} aria-hidden="true" />}
           {error || message}
         </div>
+      ) : null}
+
+      {!emailVerified ? (
+        <section className="email-verify-banner">
+          <Mail size={18} aria-hidden="true" />
+          <div>
+            <strong>Подтвердите email</strong>
+            <span>После подтверждения можно запускать задачи на сайте.</span>
+          </div>
+          <button type="button" onClick={resendVerification} disabled={busy}>
+            {busy ? <Loader2 size={16} aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}
+            Отправить письмо
+          </button>
+        </section>
       ) : null}
 
       <section className="cabinet-top">
@@ -733,9 +792,10 @@ export function CabinetClient() {
           </div>
 
           <p className="task-hint">{selectedCopy.hint}</p>
+          {!emailVerified ? <p className="task-hint">Подтвердите email, чтобы запускать задачи.</p> : null}
 
           <div className="submit-row submit-row-compact">
-            <button className="primary-action" type="submit" disabled={busy}>
+            <button className="primary-action" type="submit" disabled={busy || !emailVerified}>
               {busy ? <Loader2 size={18} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}
               {selectedCopy.submit}
             </button>

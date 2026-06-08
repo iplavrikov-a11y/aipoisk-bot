@@ -79,6 +79,10 @@ def _ensure_schema() -> None:
     job_additions = {
         "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
     }
+    web_users_existing = _existing_columns(inspector, "web_users")
+    web_user_additions = {
+        "is_email_verified": "BOOLEAN DEFAULT 1",
+    }
     supplier_results_existing = _existing_columns(inspector, "supplier_results")
     supplier_results_additions = {
         "match_level": "VARCHAR(40) DEFAULT ''",
@@ -141,6 +145,9 @@ def _ensure_schema() -> None:
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
+        for column, definition in web_user_additions.items():
+            if web_users_existing and column not in web_users_existing:
+                connection.execute(text(f"ALTER TABLE web_users ADD COLUMN {column} {definition}"))
         for column, definition in supplier_results_additions.items():
             if column not in supplier_results_existing:
                 connection.execute(text(f"ALTER TABLE supplier_results ADD COLUMN {column} {definition}"))

@@ -1091,6 +1091,7 @@ select {
 .cabinet-grid,
 .jobs-panel,
 .cabinet-toast,
+.email-verify-banner,
 .auth-layout {
   width: min(1240px, calc(100% - 48px));
   margin-inline: auto;
@@ -1763,6 +1764,57 @@ select {
   color: #9c2f20;
 }
 
+.email-verify-banner {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border: 1px solid #f2d58f;
+  border-radius: var(--radius);
+  background: #fff8e8;
+  color: #6f4d00;
+}
+
+.email-verify-banner strong,
+.email-verify-banner span {
+  display: block;
+}
+
+.email-verify-banner strong {
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.email-verify-banner span {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.email-verify-banner button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid #ddb14f;
+  border-radius: 6px;
+  background: var(--paper);
+  color: #6f4d00;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.email-verify-banner button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .auth-shell {
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(246, 248, 247, 0.92)),
@@ -1825,6 +1877,15 @@ select {
 .auth-panel {
   display: grid;
   gap: 14px;
+}
+
+.bot-trap {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .auth-panel-title h2 {
@@ -2568,6 +2629,7 @@ select {
   .cabinet-grid,
   .jobs-panel,
   .cabinet-toast,
+  .email-verify-banner,
   .auth-layout {
     width: min(100% - 28px, 1240px);
   }
@@ -2589,6 +2651,7 @@ select {
 
   .scenario-grid,
   .task-fields,
+  .email-verify-banner,
   .submit-row {
     grid-template-columns: 1fr;
   }

@@ -11,7 +11,7 @@ import time
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .ai import call_llm
@@ -47,7 +47,7 @@ from .jobs import (
     package_job_outputs,
     recover_interrupted_jobs,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebPasswordResetRequest, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
+from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -77,6 +77,7 @@ from .schemas import (
     TariffPackageCreate,
     TariffPackagePatch,
     WebLoginRequest,
+    WebEmailVerificationConfirm,
     WebPasswordResetComplete,
     WebPasswordResetRequestCreate,
     WebRegisterRequest,
@@ -94,22 +95,27 @@ from .web_auth import (
     WebAuthContext,
     authenticate_web_user,
     clear_customer_session_cookie,
+    create_email_verification_token,
     create_web_session,
     create_web_user,
     generate_temporary_password,
     hash_password,
+    send_email_verification,
     optional_web_context,
     require_customer_csrf,
     require_web_context,
     revoke_web_session,
     set_customer_session_cookie,
     validate_email,
+    verify_email_token,
 )
 from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
+CUSTOMER_REGISTRATION_HOUR_LIMIT = 3
+CUSTOMER_REGISTRATION_DAY_LIMIT = 8
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -152,8 +158,14 @@ def public_site_api(db: Session = Depends(db_session)) -> dict:
     return public_site_payload(db)
 
 
+def _customer_request_ip(request: Request) -> str:
+    forwarded = str(request.headers.get("x-forwarded-for", "") or "").split(",", 1)[0].strip()
+    client_ip = forwarded or (request.client.host if request.client else "unknown")
+    return client_ip[:80]
+
+
 def _customer_auth_key(request: Request, email: str) -> str:
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _customer_request_ip(request)
     return f"{client_ip}:{str(email or '').strip().lower()[:255]}"
 
 
@@ -171,6 +183,49 @@ def _record_customer_auth_failure(key: str) -> None:
     CUSTOMER_AUTH_ATTEMPTS[key] = [*CUSTOMER_AUTH_ATTEMPTS.get(key, []), time.time()]
 
 
+def _record_customer_registration_attempt(db: Session, request: Request, email: str, status: str) -> None:
+    db.add(
+        WebRegistrationAttempt(
+            email=str(email or "").strip().lower()[:255],
+            ip_address=_customer_request_ip(request),
+            status=status[:40],
+            user_agent=str(request.headers.get("user-agent", ""))[:1000],
+        )
+    )
+    db.commit()
+
+
+def _check_customer_registration_rate(db: Session, request: Request, email: str) -> None:
+    ip_address = _customer_request_ip(request)
+    now = now_utc()
+    hour_cutoff = now - timedelta(hours=1)
+    day_cutoff = now - timedelta(days=1)
+    hour_count = (
+        db.query(WebRegistrationAttempt.id)
+        .filter(WebRegistrationAttempt.ip_address == ip_address)
+        .filter(WebRegistrationAttempt.created_at >= hour_cutoff)
+        .count()
+    )
+    day_count = (
+        db.query(WebRegistrationAttempt.id)
+        .filter(WebRegistrationAttempt.ip_address == ip_address)
+        .filter(WebRegistrationAttempt.created_at >= day_cutoff)
+        .count()
+    )
+    if hour_count >= CUSTOMER_REGISTRATION_HOUR_LIMIT or day_count >= CUSTOMER_REGISTRATION_DAY_LIMIT:
+        _record_customer_registration_attempt(db, request, email, "rate_limited")
+        raise HTTPException(status_code=429, detail="Слишком много регистраций. Попробуйте позже или напишите нам.")
+
+
+def _send_customer_verification_email(db: Session, user: WebUser, request: Request) -> bool:
+    settings = get_or_create_settings(db)
+    token, _record = create_email_verification_token(db, user, request=request)
+    try:
+        return send_email_verification(user, token, public_base_url=settings.public_base_url)
+    except Exception:
+        return False
+
+
 @app.post("/api/customer/auth/register")
 def customer_register_api(
     data: WebRegisterRequest,
@@ -178,18 +233,32 @@ def customer_register_api(
     response: Response,
     db: Session = Depends(db_session),
 ) -> dict:
+    if str(data.website or "").strip():
+        _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
+        raise HTTPException(status_code=400, detail="Не удалось создать кабинет.")
+    _check_customer_registration_rate(db, request, data.email)
     key = _check_customer_auth_rate(request, data.email)
     try:
-        user = create_web_user(db, email=data.email, password=data.password, name=data.name)
+        user = create_web_user(db, email=data.email, password=data.password, name=data.name, email_verified=False)
     except ValueError as exc:
+        _record_customer_registration_attempt(db, request, data.email, "failed")
         _record_customer_auth_failure(key)
         detail = str(exc)
         status_code = 409 if "уже зарегистрирован" in detail else 400
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    _record_customer_registration_attempt(db, request, user.email, "created")
+    email_sent = _send_customer_verification_email(db, user, request)
     token, csrf_token, session = create_web_session(db, user, request=request)
     set_customer_session_cookie(response, token)
     CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
-    return customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+    payload = customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+    payload["verification_email_sent"] = email_sent
+    payload["message"] = (
+        "Кабинет создан. Подтвердите email, чтобы запускать задачи."
+        if email_sent
+        else "Кабинет создан. Для подтверждения email напишите нам через контакты на сайте."
+    )
+    return payload
 
 
 @app.post("/api/customer/auth/login")
@@ -246,6 +315,47 @@ def customer_password_reset_request_api(
         "success": True,
         "message": "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты.",
     }
+
+
+@app.post("/api/customer/auth/verify-email/request")
+def customer_email_verification_request_api(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    if context.user.is_email_verified:
+        return {"success": True, "message": "Email уже подтверждён."}
+    key = _check_customer_auth_rate(request, context.user.email)
+    _record_customer_auth_failure(key)
+    email_sent = _send_customer_verification_email(db, context.user, request)
+    return {
+        "success": True,
+        "verification_email_sent": email_sent,
+        "message": (
+            "Письмо отправлено. Проверьте почту."
+            if email_sent
+            else "Для подтверждения email напишите нам через контакты на сайте."
+        ),
+    }
+
+
+@app.get("/api/customer/auth/verify-email/confirm")
+def customer_email_verification_confirm_link(token: str, db: Session = Depends(db_session)):
+    try:
+        verify_email_token(db, token)
+        return RedirectResponse("/cabinet?email_verified=1", status_code=303)
+    except ValueError:
+        return RedirectResponse("/cabinet?email_verified=0", status_code=303)
+
+
+@app.post("/api/customer/auth/verify-email/confirm")
+def customer_email_verification_confirm_api(data: WebEmailVerificationConfirm, db: Session = Depends(db_session)) -> dict:
+    try:
+        user = verify_email_token(db, data.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "user": customer_user_to_dict(db, user)}
 
 
 @app.post("/api/customer/auth/logout")
@@ -639,6 +749,20 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         "transaction": transaction_to_dict(transaction),
         "client": client_to_dict(client, db=db),
     }
+
+
+@app.post("/api/clients/{client_id}/web-users/{user_id}/verify-email", dependencies=[Depends(require_admin)])
+def admin_verify_web_user_email(client_id: str, user_id: str, db: Session = Depends(db_session)) -> dict:
+    user = db.get(WebUser, user_id)
+    if not user or user.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Web user not found")
+    user.is_email_verified = True
+    db.query(WebEmailVerificationToken).filter(
+        WebEmailVerificationToken.user_id == user.id,
+        WebEmailVerificationToken.used_at.is_(None),
+    ).update({WebEmailVerificationToken.used_at: now_utc()}, synchronize_session=False)
+    db.commit()
+    return {"success": True, "client": client_to_dict(user.client, db=db)}
 
 
 @app.get("/api/web-password-resets", dependencies=[Depends(require_admin)])
@@ -1752,6 +1876,8 @@ async def create_customer_job_api(
 ) -> dict:
     if mode not in VALID_JOB_MODES:
         raise HTTPException(status_code=400, detail="Неизвестный режим обработки.")
+    if not context.user.is_email_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     settings = get_or_create_settings(db)
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:

@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Response, UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -23,7 +23,9 @@ from app.billing import (
 from app.db import Base
 from app.jobs import MODE_SUPPLIER_SEARCH
 from app.main import (
+    admin_verify_web_user_email,
     create_customer_job_api,
+    customer_register_api,
     customer_job_to_dict,
     customer_session_payload,
     decline_customer_partial_job_api,
@@ -31,14 +33,16 @@ from app.main import (
     download_customer_job_file_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
-from app.models import BillingTransaction, Client, Job, SystemSettings, WebPasswordResetRequest
-from app.schemas import WebPasswordResetComplete, WebPasswordResetRequestCreate
+from app.models import BillingTransaction, Client, Job, SystemSettings, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
+from app.schemas import WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
 from app.web_auth import (
     WebAuthContext,
     authenticate_web_user,
+    create_email_verification_token,
     create_web_session,
     create_web_user,
     get_web_session_by_token,
+    verify_email_token,
 )
 
 
@@ -56,7 +60,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         Base.metadata.create_all(bind=engine)
         self.Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-    def test_create_web_user_creates_separate_client_without_automatic_trial(self) -> None:
+    def test_create_web_user_creates_separate_client_with_protected_trial(self) -> None:
         db = self.Session()
         try:
             db.add(
@@ -76,13 +80,14 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(user.email, "buyer@example.com")
             self.assertTrue(user.client.telegram_id.startswith("web:"))
-            self.assertFalse(user.client.is_trial)
-            self.assertEqual(user.client.monthly_supplier_search_limit, 0)
-            self.assertEqual(user.client.monthly_procurement_report_limit, 0)
-            self.assertEqual(user.client.monthly_file_limit, 10)
+            self.assertTrue(user.client.is_trial)
+            self.assertEqual(user.client.monthly_supplier_search_limit, 2)
+            self.assertEqual(user.client.monthly_procurement_report_limit, 1)
+            self.assertEqual(user.client.monthly_file_limit, 5)
             self.assertTrue(user.client.allowed_procurement_report)
+            self.assertFalse(user.is_email_verified)
             self.assertEqual(user.client.telegram_accounts, [])
-            self.assertIn("Manual grants required", user.client.notes)
+            self.assertIn("Email verification required", user.client.notes)
             self.assertNotIn("StrongPass123", user.password_hash)
             self.assertEqual(authenticated.id, user.id)
             self.assertIsNone(wrong_password)
@@ -103,7 +108,85 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
-    async def test_new_web_user_without_manual_grants_cannot_start_paid_job(self) -> None:
+    def test_registration_honeypot_blocks_bot_without_creating_user(self) -> None:
+        db = self.Session()
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                customer_register_api(
+                    WebRegisterRequest(
+                        email="bot@example.com",
+                        password="StrongPass123",
+                        name="Bot",
+                        website="https://spam.example",
+                    ),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertEqual(db.query(WebUser).count(), 0)
+            self.assertEqual(db.query(WebRegistrationAttempt).filter(WebRegistrationAttempt.status == "bot_blocked").count(), 1)
+        finally:
+            db.close()
+
+    def test_registration_rate_limit_counts_same_ip(self) -> None:
+        db = self.Session()
+        try:
+            for index in range(3):
+                payload = customer_register_api(
+                    WebRegisterRequest(
+                        email=f"buyer-{index}@example.com",
+                        password="StrongPass123",
+                        name="Buyer",
+                    ),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+                self.assertTrue(payload["authenticated"])
+
+            with self.assertRaises(HTTPException) as raised:
+                customer_register_api(
+                    WebRegisterRequest(
+                        email="buyer-limited@example.com",
+                        password="StrongPass123",
+                        name="Buyer",
+                    ),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+
+            self.assertEqual(raised.exception.status_code, 429)
+            self.assertEqual(db.query(WebUser).count(), 3)
+            self.assertEqual(db.query(WebRegistrationAttempt).filter(WebRegistrationAttempt.status == "rate_limited").count(), 1)
+        finally:
+            db.close()
+
+    def test_admin_can_manually_verify_web_user_email(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="buyer@example.com", password="StrongPass123", name="Buyer")
+            token, _record = create_email_verification_token(db, user, request=fake_request())
+
+            payload = admin_verify_web_user_email(user.client_id, user.id, db)
+            db.refresh(user)
+            open_token = (
+                db.query(WebEmailVerificationToken)
+                .filter(WebEmailVerificationToken.token_hash.isnot(None))
+                .filter(WebEmailVerificationToken.used_at.is_(None))
+                .first()
+            )
+
+            self.assertTrue(payload["success"])
+            self.assertTrue(user.is_email_verified)
+            self.assertIsNone(open_token)
+            self.assertTrue(token)
+        finally:
+            db.close()
+
+    async def test_new_web_trial_user_must_verify_email_before_starting_job(self) -> None:
         db = self.Session()
         try:
             db.add(
@@ -130,8 +213,41 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(raised.exception.status_code, 403)
-            self.assertIn("Недостаточно генераций", str(raised.exception.detail))
+            self.assertIn("Подтвердите email", str(raised.exception.detail))
             self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 0)
+        finally:
+            db.close()
+
+    async def test_verified_web_trial_user_can_start_trial_job(self) -> None:
+        db = self.Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    trial_enabled=True,
+                    trial_supplier_search_limit=1,
+                    trial_procurement_report_limit=1,
+                    trial_file_limit=5,
+                )
+            )
+            db.commit()
+            user = create_web_user(db, email="buyer@example.com", password="StrongPass123", name="Buyer")
+            token, _record = create_email_verification_token(db, user, request=fake_request())
+            verified = verify_email_token(db, token)
+
+            payload = await create_customer_job_api(
+                mode=MODE_SUPPLIER_SEARCH,
+                text="Нужно найти поставщиков сухих строительных смесей",
+                source_urls="",
+                target_suppliers=0,
+                files=[],
+                context=WebAuthContext(user=verified, session=None),
+                db=db,
+            )
+
+            self.assertFalse(payload["batch"])
+            self.assertTrue(verified.is_email_verified)
+            self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 1)
         finally:
             db.close()
 
@@ -153,6 +269,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 password="StrongPass123",
                 name="Buyer",
                 client=client,
+                email_verified=True,
             )
             db.add_all(
                 [
@@ -235,6 +352,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 password="StrongPass123",
                 name="Buyer",
                 client=client,
+                email_verified=True,
             )
             context = WebAuthContext(user=user, session=None)
 
@@ -277,6 +395,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 password="StrongPass123",
                 name="Buyer",
                 client=client,
+                email_verified=True,
             )
             context = WebAuthContext(user=user, session=None)
             files = [

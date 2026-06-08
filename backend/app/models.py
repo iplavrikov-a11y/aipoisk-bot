@@ -200,7 +200,7 @@ class WebUser(Base):
     password_hash: Mapped[str] = mapped_column(Text, default="")
     name: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_email_verified: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -208,6 +208,10 @@ class WebUser(Base):
     client: Mapped[Client] = relationship(back_populates="web_users")
     sessions: Mapped[list["WebSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     password_reset_requests: Mapped[list["WebPasswordResetRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    email_verification_tokens: Mapped[list["WebEmailVerificationToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -246,6 +250,33 @@ class WebPasswordResetRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebEmailVerificationToken(Base):
+    __tablename__ = "web_email_verification_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="email_verification_tokens")
+
+
+class WebRegistrationAttempt(Base):
+    __tablename__ = "web_registration_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class Job(Base):

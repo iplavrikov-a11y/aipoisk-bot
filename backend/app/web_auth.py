@@ -5,16 +5,19 @@ import hashlib
 import hmac
 import re
 import secrets
+import smtplib
 import string
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from .config import config
 from .db import db_session
-from .models import Client, WebSession, WebUser, new_id, now_utc
+from .models import Client, WebEmailVerificationToken, WebSession, WebUser, new_id, now_utc
+from .repository import get_or_create_settings
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
 CSRF_HEADER = "x-csrf-token"
@@ -79,25 +82,35 @@ def create_web_user(
     password: str,
     name: str = "",
     client: Client | None = None,
+    email_verified: bool = False,
 ) -> WebUser:
     normalized_email = validate_email(email)
     if db.query(WebUser.id).filter(WebUser.email == normalized_email).first():
         raise ValueError("Пользователь с таким email уже зарегистрирован.")
     display_name = str(name or normalized_email).strip()[:255]
     if client is None:
+        settings = get_or_create_settings(db)
+        trial_enabled = bool(settings.trial_enabled)
+        supplier_limit = max(0, int(settings.trial_supplier_search_limit or 0)) if trial_enabled else 0
+        report_limit = max(0, int(settings.trial_procurement_report_limit or 0)) if trial_enabled else 0
+        file_limit = max(0, int(settings.trial_file_limit or WEB_DEFAULT_FILE_LIMIT)) if trial_enabled else WEB_DEFAULT_FILE_LIMIT
         client = Client(
             telegram_id=f"web:{new_id()}",
             name=display_name,
             username="",
             is_active=True,
-            is_trial=False,
+            is_trial=trial_enabled,
             allowed_supplier_search=True,
             allowed_procurement_report=True,
-            monthly_job_limit=0,
-            monthly_supplier_search_limit=0,
-            monthly_procurement_report_limit=0,
-            monthly_file_limit=WEB_DEFAULT_FILE_LIMIT,
-            notes=f"Website account: {normalized_email}. Manual grants required.",
+            monthly_job_limit=supplier_limit + report_limit,
+            monthly_supplier_search_limit=supplier_limit,
+            monthly_procurement_report_limit=report_limit,
+            monthly_file_limit=file_limit,
+            notes=(
+                f"Website trial account: {normalized_email}. Email verification required."
+                if trial_enabled
+                else f"Website account: {normalized_email}. Manual grants required."
+            ),
         )
         db.add(client)
         db.flush()
@@ -107,7 +120,7 @@ def create_web_user(
         password_hash=hash_password(password),
         name=display_name,
         is_active=True,
-        is_email_verified=True,
+        is_email_verified=bool(email_verified),
     )
     db.add(user)
     db.commit()
@@ -129,6 +142,94 @@ def authenticate_web_user(db: Session, email: str, password: str) -> WebUser | N
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def create_email_verification_token(
+    db: Session,
+    user: WebUser,
+    *,
+    request: Request | object | None = None,
+) -> tuple[str, WebEmailVerificationToken]:
+    token = secrets.token_urlsafe(48)
+    headers = getattr(request, "headers", {}) or {}
+    client = getattr(request, "client", None)
+    db.query(WebEmailVerificationToken).filter(
+        WebEmailVerificationToken.user_id == user.id,
+        WebEmailVerificationToken.used_at.is_(None),
+    ).update({WebEmailVerificationToken.used_at: now_utc()}, synchronize_session=False)
+    record = WebEmailVerificationToken(
+        user_id=user.id,
+        email=user.email,
+        token_hash=_token_hash(token),
+        requested_ip=str(getattr(client, "host", "") or "")[:80],
+        user_agent=str(headers.get("user-agent", ""))[:1000] if hasattr(headers, "get") else "",
+        expires_at=now_utc() + timedelta(hours=max(1, int(config.customer_email_verification_hours or 24))),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return token, record
+
+
+def verify_email_token(db: Session, token: str) -> WebUser:
+    record = db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.token_hash == _token_hash(token)).first()
+    if not record or record.used_at is not None:
+        raise ValueError("Ссылка подтверждения недействительна.")
+    if _as_aware_utc(record.expires_at) < now_utc():
+        raise ValueError("Срок действия ссылки истёк. Отправьте письмо ещё раз.")
+    user = record.user
+    if not user or not user.is_active:
+        raise ValueError("Пользователь не найден или отключён.")
+    user.is_email_verified = True
+    record.used_at = now_utc()
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def email_verification_url(token: str, *, public_base_url: str = "") -> str:
+    base_url = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return f"{base_url}/api/customer/auth/verify-email/confirm?token={token}"
+
+
+def send_email_verification(user: WebUser, token: str, *, public_base_url: str = "") -> bool:
+    host = str(config.smtp_host or "").strip()
+    sender = str(config.smtp_from or config.smtp_username or "").strip()
+    if not host or not sender:
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "Подтверждение email TenderLex"
+    message["From"] = sender
+    message["To"] = user.email
+    link = email_verification_url(token, public_base_url=public_base_url)
+    message.set_content(
+        "\n".join(
+            [
+                "Здравствуйте.",
+                "",
+                "Подтвердите email для личного кабинета TenderLex:",
+                link,
+                "",
+                "После подтверждения можно запускать задачи на сайте.",
+                "Если вы не создавали кабинет, просто не открывайте эту ссылку.",
+            ]
+        )
+    )
+
+    port = int(config.smtp_port or (465 if config.smtp_use_ssl else 587))
+    timeout = max(1, int(config.smtp_timeout_seconds or 15))
+    if config.smtp_use_ssl:
+        smtp_factory = smtplib.SMTP_SSL
+    else:
+        smtp_factory = smtplib.SMTP
+    with smtp_factory(host, port, timeout=timeout) as smtp:
+        if not config.smtp_use_ssl and config.smtp_use_tls:
+            smtp.starttls()
+        if config.smtp_username:
+            smtp.login(config.smtp_username, config.smtp_password)
+        smtp.send_message(message)
+    return True
 
 
 def _as_aware_utc(value: datetime) -> datetime:

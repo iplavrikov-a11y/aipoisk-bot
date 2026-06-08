@@ -50,6 +50,15 @@ class AppConfig(BaseSettings):
     tenderplan_download_retries: int = 2
     tenderplan_max_documents: int = 60
     tenderplan_max_document_mb: int = 80
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_timeout_seconds: int = 15
+    customer_email_verification_hours: int = 24
 
     @property
     def storage_path(self) -> Path:
