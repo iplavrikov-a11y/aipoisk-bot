@@ -1135,8 +1135,8 @@ select {
 
 .cabinet-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.38fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   align-items: start;
 }
 
@@ -1159,12 +1159,61 @@ select {
 
 .side-rail {
   display: grid;
-  gap: 18px;
+  order: -1;
+  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
 }
 
 .balance-panel,
 .payment-panel {
-  padding: 18px;
+  padding: 16px;
+}
+
+.balance-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+  align-content: start;
+}
+
+.balance-panel .panel-title {
+  grid-column: 1 / -1;
+}
+
+.payment-panel {
+  display: grid;
+  grid-template-columns: minmax(290px, 0.7fr) repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "payment-title supplier-tariffs report-tariffs"
+    "payment-copy supplier-tariffs report-tariffs"
+    "payment-actions supplier-tariffs report-tariffs";
+  gap: 10px 18px;
+  align-content: start;
+}
+
+.payment-panel .panel-title {
+  grid-area: payment-title;
+}
+
+.payment-copy {
+  grid-area: payment-copy;
+}
+
+.payment-panel .mini-tariffs:nth-of-type(2) {
+  grid-area: supplier-tariffs;
+}
+
+.payment-panel .mini-tariffs:nth-of-type(3) {
+  grid-area: report-tariffs;
+}
+
+.contact-actions {
+  grid-area: payment-actions;
+}
+
+.payment-panel .mini-tariffs {
+  align-self: start;
 }
 
 .panel-title {
@@ -1173,6 +1222,10 @@ select {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.side-rail .panel-title {
+  margin-bottom: 8px;
 }
 
 .panel-title h2 {
@@ -1435,7 +1488,7 @@ select {
   grid-template-columns: 34px 1fr;
   gap: 10px;
   align-items: center;
-  padding: 12px 0;
+  padding: 10px 0 4px;
   border-top: 1px solid var(--line);
 }
 
@@ -1454,25 +1507,25 @@ select {
 
 .balance-row strong {
   display: block;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 950;
   line-height: 1.1;
 }
 
 .mini-tariffs {
   display: grid;
-  gap: 8px;
-  padding-block: 12px;
+  gap: 6px;
+  padding-block: 8px;
   border-top: 1px solid var(--line);
 }
 
 .payment-copy {
-  margin: 0 0 12px;
+  margin: 0;
   color: var(--ink-soft);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.42;
 }
 
 .mini-tariffs div {
@@ -1499,7 +1552,8 @@ select {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding-top: 12px;
+  align-self: end;
+  padding-top: 8px;
   border-top: 1px solid var(--line);
 }
 
@@ -1531,7 +1585,7 @@ select {
 .jobs-head,
 .job-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.1fr) minmax(130px, 0.7fr) minmax(150px, 0.7fr) minmax(170px, 0.9fr) minmax(140px, 0.55fr);
+  grid-template-columns: minmax(190px, 1.05fr) minmax(120px, 0.58fr) minmax(120px, 0.5fr) minmax(150px, 0.82fr) minmax(238px, 0.78fr);
   gap: 12px;
   align-items: center;
 }
@@ -1633,16 +1687,36 @@ select {
 
 .job-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .job-actions button {
-  width: auto;
-  padding: 7px 9px;
+  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 11px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.job-actions button:only-child {
+  flex: 0 0 auto;
+  min-width: 118px;
+}
+
+.job-actions button svg {
+  flex: 0 0 auto;
 }
 
 .muted-action {
@@ -2460,6 +2534,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .side-rail {
+    grid-template-columns: 1fr;
+  }
+
   .auth-benefits {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2508,15 +2586,41 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .balance-panel,
+  .payment-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-panel {
+    grid-template-areas: none;
+  }
+
+  .payment-panel .panel-title,
+  .payment-copy,
+  .contact-actions,
+  .payment-panel .mini-tariffs,
+  .payment-panel .mini-tariffs:nth-of-type(2),
+  .payment-panel .mini-tariffs:nth-of-type(3) {
+    grid-area: auto;
+    grid-column: auto;
+    grid-row: auto;
+  }
+
   .work-panel,
   .jobs-panel,
   .auth-panel {
     padding: 16px;
   }
 
+  .job-actions {
+    gap: 7px;
+  }
+
   .job-actions button {
-    flex: 1 1 130px;
+    flex: 1 1 0;
     justify-content: center;
+    padding-inline: 8px;
+    font-size: 11px;
   }
 
   .auth-benefits {
