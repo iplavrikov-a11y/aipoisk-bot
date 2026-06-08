@@ -15,13 +15,13 @@ from sqlalchemy.orm import Session
 from .config import config
 from .db import db_session
 from .models import Client, WebSession, WebUser, new_id, now_utc
-from .repository import get_or_create_settings
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
 CSRF_HEADER = "x-csrf-token"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 600_000
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+WEB_DEFAULT_FILE_LIMIT = 10
 
 
 @dataclass
@@ -83,7 +83,6 @@ def create_web_user(
     normalized_email = validate_email(email)
     if db.query(WebUser.id).filter(WebUser.email == normalized_email).first():
         raise ValueError("Пользователь с таким email уже зарегистрирован.")
-    settings = get_or_create_settings(db)
     display_name = str(name or normalized_email).strip()[:255]
     if client is None:
         client = Client(
@@ -91,14 +90,14 @@ def create_web_user(
             name=display_name,
             username="",
             is_active=True,
-            is_trial=bool(settings.trial_enabled),
+            is_trial=False,
             allowed_supplier_search=True,
             allowed_procurement_report=True,
-            monthly_job_limit=max(0, int(settings.trial_supplier_search_limit or 0) + int(settings.trial_procurement_report_limit or 0)),
-            monthly_supplier_search_limit=max(0, int(settings.trial_supplier_search_limit or 0)),
-            monthly_procurement_report_limit=max(0, int(settings.trial_procurement_report_limit or 0)),
-            monthly_file_limit=max(0, int(settings.trial_file_limit or 0)),
-            notes=f"Website account: {normalized_email}",
+            monthly_job_limit=0,
+            monthly_supplier_search_limit=0,
+            monthly_procurement_report_limit=0,
+            monthly_file_limit=WEB_DEFAULT_FILE_LIMIT,
+            notes=f"Website account: {normalized_email}. Manual grants required.",
         )
         db.add(client)
         db.flush()

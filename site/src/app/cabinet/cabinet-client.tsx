@@ -383,7 +383,7 @@ export function CabinetClient() {
       const payload = await readJson<SessionPayload>(response);
       setSession(payload);
       setPassword("");
-      setMessage(authMode === "register" ? "Кабинет создан." : "Вход выполнен.");
+      setMessage(authMode === "register" ? "Кабинет создан. Для запуска задач пополните доступ через менеджера." : "Вход выполнен.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

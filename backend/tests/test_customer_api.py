@@ -56,7 +56,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         Base.metadata.create_all(bind=engine)
         self.Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-    def test_create_web_user_creates_separate_client_and_hashes_password(self) -> None:
+    def test_create_web_user_creates_separate_client_without_automatic_trial(self) -> None:
         db = self.Session()
         try:
             db.add(
@@ -76,11 +76,13 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(user.email, "buyer@example.com")
             self.assertTrue(user.client.telegram_id.startswith("web:"))
-            self.assertEqual(user.client.monthly_supplier_search_limit, 2)
-            self.assertEqual(user.client.monthly_procurement_report_limit, 1)
-            self.assertEqual(user.client.monthly_file_limit, 5)
+            self.assertFalse(user.client.is_trial)
+            self.assertEqual(user.client.monthly_supplier_search_limit, 0)
+            self.assertEqual(user.client.monthly_procurement_report_limit, 0)
+            self.assertEqual(user.client.monthly_file_limit, 10)
             self.assertTrue(user.client.allowed_procurement_report)
             self.assertEqual(user.client.telegram_accounts, [])
+            self.assertIn("Manual grants required", user.client.notes)
             self.assertNotIn("StrongPass123", user.password_hash)
             self.assertEqual(authenticated.id, user.id)
             self.assertIsNone(wrong_password)
@@ -98,6 +100,38 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(session.token_hash, token)
             self.assertEqual(session.csrf_token, csrf_token)
             self.assertEqual(get_web_session_by_token(db, token).id, session.id)
+        finally:
+            db.close()
+
+    async def test_new_web_user_without_manual_grants_cannot_start_paid_job(self) -> None:
+        db = self.Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    trial_enabled=True,
+                    trial_supplier_search_limit=1,
+                    trial_procurement_report_limit=1,
+                    trial_file_limit=5,
+                )
+            )
+            db.commit()
+            user = create_web_user(db, email="buyer@example.com", password="StrongPass123", name="Buyer")
+
+            with self.assertRaises(HTTPException) as raised:
+                await create_customer_job_api(
+                    mode=MODE_SUPPLIER_SEARCH,
+                    text="Нужно найти поставщиков сотового поликарбоната",
+                    source_urls="",
+                    target_suppliers=0,
+                    files=[],
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+
+            self.assertEqual(raised.exception.status_code, 403)
+            self.assertIn("Недостаточно генераций", str(raised.exception.detail))
+            self.assertEqual(db.query(Job).filter(Job.client_id == user.client_id).count(), 0)
         finally:
             db.close()
 
