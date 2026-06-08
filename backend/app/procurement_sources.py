@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import unescape
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -29,6 +29,7 @@ class SourceFetchResult:
     status: str = "failed"
     error: str = ""
     extracted_chars: int = 0
+    downloaded_files: list = field(default_factory=list)
 
 
 def extract_source_urls(text: str) -> list[str]:
@@ -92,6 +93,20 @@ def source_payloads_from_text(text: str) -> list[dict]:
     return payloads
 
 
+def official_notice_number_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if host != "zakupki.gov.ru" and not host.endswith(".zakupki.gov.ru"):
+        return ""
+    query = parse_qs(parsed.query)
+    for key in ("regNumber", "purchaseNoticeNumber", "reestrNumber", "purchaseNumber"):
+        for value in query.get(key) or []:
+            number = str(value or "").strip()
+            if NOTICE_NUMBER_RE.fullmatch(number):
+                return number
+    return ""
+
+
 def source_label(value: str) -> str:
     raw = str(value or "").strip()
     if raw.isdigit() and len(raw) in {11, 19}:
@@ -151,11 +166,28 @@ async def fetch_source_context(kind: str, url: str) -> SourceFetchResult:
             status=result.status,
             error=result.error,
             extracted_chars=len(result.context),
+            downloaded_files=result.downloaded_files,
         )
 
     normalized_url = normalize_source_url(url)
     if not normalized_url:
         return SourceFetchResult(ok=False, source_url=url, status="invalid_url", error="Некорректная ссылка")
+
+    official_notice_number = official_notice_number_from_url(normalized_url) if kind == SOURCE_KIND_OFFICIAL else ""
+    if official_notice_number:
+        from .tenderplan import fetch_tenderplan_source_sync
+
+        result = await asyncio.to_thread(fetch_tenderplan_source_sync, official_notice_number)
+        if result.ok and result.context:
+            return SourceFetchResult(
+                ok=True,
+                context=result.context,
+                source_url=result.notice_number or official_notice_number,
+                status=result.status or "ok",
+                error=result.error,
+                extracted_chars=len(result.context),
+                downloaded_files=result.downloaded_files,
+            )
 
     pages: list[dict] = []
     candidates = candidate_source_urls(normalized_url, kind)
@@ -229,7 +261,7 @@ def candidate_source_urls(url: str, kind: str) -> list[str]:
         urls.append(url.replace("common-info.html", "lot-list.html"))
         urls.append(url.replace("common-info.html", "documents.html"))
     query = parse_qs(parsed.query)
-    reg_number = (query.get("regNumber") or [""])[0]
+    reg_number = official_notice_number_from_url(url) or (query.get("regNumber") or [""])[0]
     if reg_number and reg_number.isdigit():
         urls.extend(
             [

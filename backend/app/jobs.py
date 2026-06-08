@@ -319,6 +319,9 @@ def _process_job_sync(job_id: str) -> None:
                     context_path = _persist_source_context(job, index, source.kind, result.context)
                     source.context_path = str(context_path)
                     source_blocks.append(result.context)
+                if result.downloaded_files:
+                    _store_tenderplan_downloaded_files(db, job, result.downloaded_files)
+                    db.expire(job, ["files"])
             db.commit()
 
         document_options = parse_json_dict(settings.document_settings_json)

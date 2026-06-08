@@ -25,8 +25,10 @@ from app.jobs import (
     package_job_output_files,
     should_requeue_stale_job,
 )
-from app.models import Job, SupplierResult, now_utc
+from app.models import Job, JobFile, SupplierResult, now_utc
 from app.procurement_report import ReportGenerationResult
+from app.procurement_sources import SOURCE_KIND_OFFICIAL, SourceFetchResult
+from app.tenderplan import TenderplanDownloadedFile
 
 
 class JobRecoveryTests(unittest.TestCase):
@@ -103,6 +105,90 @@ class JobRecoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(job.title, "Поставка насосного оборудования")
+
+    def test_process_job_stores_downloaded_files_from_official_source_fallback(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_session = jobs.SessionLocal
+        original_job_dir = jobs.job_dir
+        original_settings = jobs.get_or_create_settings
+        original_fetch = jobs.fetch_source_context_sync
+        original_extract_text = jobs.document_parser.extract_text
+        original_process_report = jobs._process_procurement_report
+
+        def fake_fetch(_kind: str, _value: str) -> SourceFetchResult:
+            return SourceFetchResult(
+                ok=True,
+                status="ok",
+                context="Карточка закупки:\n- Наименование: Поставка сотового поликарбоната\n",
+                source_url="0168300005126000012",
+                extracted_chars=100,
+                downloaded_files=[
+                    TenderplanDownloadedFile(
+                        filename="Техническое задание.docx",
+                        content=b"docx",
+                        category="documentation",
+                        source_url="https://zakupki.gov.ru/file.docx",
+                        size=4,
+                    )
+                ],
+            )
+
+        def fake_extract_text(path: str, _options: dict) -> tuple[str, str]:
+            self.assertTrue(Path(path).exists())
+            return "Техническое задание: сотовый поликарбонат, 120 листов", "ok"
+
+        def fake_process_report(db_arg, job_arg: Job, _settings, context: str) -> None:
+            self.assertIn("Поставка сотового поликарбоната", context)
+            self.assertIn("Техническое задание: сотовый поликарбонат", context)
+            job_arg.status = "completed"
+            job_arg.progress = 100
+            job_arg.message = "Готово"
+            job_arg.completed_at = now_utc()
+            db_arg.commit()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs.SessionLocal = Session
+            jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+            jobs.get_or_create_settings = lambda _db: SimpleNamespace(document_settings_json="{}")
+            jobs.fetch_source_context_sync = fake_fetch
+            jobs.document_parser.extract_text = fake_extract_text
+            jobs._process_procurement_report = fake_process_report
+            try:
+                job = jobs.create_job(
+                    db,
+                    client_id=None,
+                    mode="procurement_report",
+                    title="ЕИС / zakupki.gov.ru",
+                    target_suppliers=25,
+                    files=[],
+                    sources=[
+                        {
+                            "kind": SOURCE_KIND_OFFICIAL,
+                            "value": "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0168300005126000012",
+                        }
+                    ],
+                )
+                job_id = job.id
+
+                jobs._process_job_sync(job_id)
+                db.expire_all()
+                stored_files = db.query(JobFile).filter(JobFile.job_id == job_id).all()
+                refreshed = db.get(Job, job_id)
+            finally:
+                jobs.SessionLocal = original_session
+                jobs.job_dir = original_job_dir
+                jobs.get_or_create_settings = original_settings
+                jobs.fetch_source_context_sync = original_fetch
+                jobs.document_parser.extract_text = original_extract_text
+                jobs._process_procurement_report = original_process_report
+                db.close()
+
+        self.assertEqual(refreshed.status, "completed")
+        self.assertEqual(len(stored_files), 1)
+        self.assertEqual(stored_files[0].original_filename, "Техническое задание.docx")
 
     def test_result_stem_keeps_cyrillic_output_filename_under_filesystem_limit(self) -> None:
         long_title = "Техническое задание " + "канат стальной оцинкованный " * 12

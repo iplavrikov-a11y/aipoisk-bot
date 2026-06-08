@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.db as app_db
 import app.jobs as jobs
+import app.tenderplan as tenderplan
 from app.db import Base
 from app.jobs import create_job
 from app.models import JobSource
@@ -21,10 +22,13 @@ from app.procurement_sources import (
     classify_source_url,
     extract_notice_numbers,
     extract_source_urls,
+    fetch_source_context_sync,
+    official_notice_number_from_url,
     official_followup_urls_from_pages,
     source_label,
     source_payloads_from_text,
 )
+from app.tenderplan import TenderplanDownloadedFile, TenderplanFetchResult
 
 
 class ProcurementSourceTests(unittest.TestCase):
@@ -88,6 +92,57 @@ class ProcurementSourceTests(unittest.TestCase):
             ],
         )
         self.assertEqual(source_label("32615728276"), "Закупка 32615728276")
+
+    def test_official_notice_number_from_url_accepts_eis_query_variants(self) -> None:
+        self.assertEqual(
+            official_notice_number_from_url("https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0168300005126000012"),
+            "0168300005126000012",
+        )
+        self.assertEqual(
+            official_notice_number_from_url("https://zakupki.gov.ru/epz/order/notice/notice223/documents.html?purchaseNoticeNumber=32616035046"),
+            "32616035046",
+        )
+        self.assertEqual(
+            official_notice_number_from_url("https://zakupki.gov.ru/epz/pricereq/card/common-info.html?reestrNumber=0372200127526000030"),
+            "0372200127526000030",
+        )
+        self.assertEqual(official_notice_number_from_url("https://etp.example.ru/procedure/0168300005126000012"), "")
+
+    def test_official_eis_fetch_uses_notice_number_source_first(self) -> None:
+        original_fetch = tenderplan.fetch_tenderplan_source_sync
+        calls: list[str] = []
+
+        def fake_fetch(notice_number: str) -> TenderplanFetchResult:
+            calls.append(notice_number)
+            return TenderplanFetchResult(
+                ok=True,
+                status="ok",
+                context="Карточка закупки:\n- Наименование: Поставка сотового поликарбоната\n",
+                notice_number=notice_number,
+                downloaded_files=[
+                    TenderplanDownloadedFile(
+                        filename="Техническое задание.docx",
+                        content=b"docx",
+                        category="documentation",
+                        source_url="https://zakupki.gov.ru/file.docx",
+                        size=4,
+                    )
+                ],
+            )
+
+        try:
+            tenderplan.fetch_tenderplan_source_sync = fake_fetch
+            result = fetch_source_context_sync(
+                SOURCE_KIND_OFFICIAL,
+                "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0168300005126000012",
+            )
+        finally:
+            tenderplan.fetch_tenderplan_source_sync = original_fetch
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls, ["0168300005126000012"])
+        self.assertIn("Поставка сотового поликарбоната", result.context)
+        self.assertEqual(result.downloaded_files[0].filename, "Техническое задание.docx")
 
     def test_eis_candidate_urls_prioritize_original_notice_kind_pages(self) -> None:
         urls = candidate_source_urls(
