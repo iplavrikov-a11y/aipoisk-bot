@@ -223,6 +223,27 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
             },
         )
 
+    def test_blank_official_results_date_does_not_capture_next_heading(self) -> None:
+        source_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (32616050737) ===
+Карточка закупки:
+- Способ осуществления закупки: Иной способ
+
+Сроки Tenderplan (МСК):
+- Дата и время окончания срока подачи заявок (МСК): 04.06.2026 10:00 МСК
+- Дата подведения итогов (МСК):
+
+Национальный режим и преимущества:
+- Нет структурированных данных о нацрежиме в карточке
+"""
+
+        self.assertEqual(
+            extract_official_card_facts(source_text),
+            {
+                "procurement_method": "Иной способ",
+                "submission_deadline": "04.06.2026 10:00 МСК",
+            },
+        )
+
     def test_official_source_prompt_requires_literal_card_fields(self) -> None:
         for phrase in (
             "копируй карточечные поля буквально",
@@ -280,6 +301,100 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
             procurement_report.get_model_selection = original_get_model_selection
 
         self.assertEqual(calls, ["procurement_document_analysis", "procurement_report_verification"])
+
+    async def test_report_generation_injects_official_deadline_before_card_validation(self) -> None:
+        original_call_llm = procurement_report.call_llm
+        original_get_model_selection = procurement_report.get_model_selection
+        calls: list[str] = []
+        raw_report = """#### Общая информация
+- Способ закупки: Электронный аукцион
+- Дата рассмотрения/подведения итогов: 11.06.2026 13:00 МСК
+
+### Товары и требования (Техническое задание)
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Товар | По ТЗ | шт | 1 |
+"""
+
+        async def fake_call_llm(*_args, **kwargs) -> str:
+            calls.append(str(kwargs.get("routing_key") or ""))
+            if kwargs.get("json_mode"):
+                return '{"ok": true, "issues": [], "corrected_report": ""}'
+            return raw_report
+
+        procurement_report.call_llm = fake_call_llm
+        procurement_report.get_model_selection = lambda *_args, **_kwargs: SimpleNamespace(
+            provider_name="TestAI",
+            model="model",
+        )
+        try:
+            settings = SimpleNamespace(
+                has_active_ai_provider=True,
+                prompt_settings_json="{}",
+                report_settings_json='{"verify_report": true}',
+            )
+            source_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (0371100005626000040) ===
+Карточка закупки:
+- Способ осуществления закупки: Электронный аукцион
+
+Сроки закупки (МСК):
+- Дата и время окончания срока подачи заявок (МСК): 10.06.2026 10:00 МСК
+- Дата подведения итогов (МСК): 11.06.2026 13:00 МСК
+"""
+
+            result = await generate_procurement_report(settings, source_text)
+        finally:
+            procurement_report.call_llm = original_call_llm
+            procurement_report.get_model_selection = original_get_model_selection
+
+        self.assertIn("- Крайний срок подачи заявок: 10.06.2026 10:00 МСК", result.report)
+        self.assertEqual(calls, ["procurement_document_analysis", "procurement_report_verification"])
+
+    async def test_report_verification_retries_empty_ai_response_once(self) -> None:
+        original_call_llm = procurement_report.call_llm
+        original_get_model_selection = procurement_report.get_model_selection
+        calls: list[str] = []
+
+        async def fake_call_llm(*_args, **kwargs) -> str:
+            routing_key = str(kwargs.get("routing_key") or "")
+            calls.append(routing_key)
+            if routing_key == "procurement_report_verification":
+                return "" if calls.count(routing_key) == 1 else '{"ok": true, "issues": [], "corrected_report": ""}'
+            return """#### Общая информация
+- Способ закупки: Электронный аукцион
+
+### Товары и требования (Техническое задание)
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Товар | По ТЗ | шт | 1 |
+"""
+
+        procurement_report.call_llm = fake_call_llm
+        procurement_report.get_model_selection = lambda *_args, **_kwargs: SimpleNamespace(
+            provider_name="TestAI",
+            model="model",
+        )
+        try:
+            settings = SimpleNamespace(
+                has_active_ai_provider=True,
+                prompt_settings_json="{}",
+                report_settings_json='{"verify_report": true}',
+            )
+
+            result = await generate_procurement_report(settings, "Текст закупки")
+        finally:
+            procurement_report.call_llm = original_call_llm
+            procurement_report.get_model_selection = original_get_model_selection
+
+        self.assertTrue(result.ai_used)
+        self.assertEqual(
+            calls,
+            [
+                "procurement_document_analysis",
+                "procurement_report_verification",
+                "procurement_report_verification",
+            ],
+        )
 
     def test_clean_markdown_report_does_not_build_non_ai_fallback(self) -> None:
         self.assertEqual(clean_markdown_report(""), "")
@@ -354,6 +469,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
     def test_guardrails_repair_method_results_logistics_and_freshness(self) -> None:
         source_text = """=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ (32616063169) ===
 - Способ осуществления закупки: 22
+- Дата и время окончания срока подачи заявок (МСК): 09.06.2026 06:00 МСК
 - Дата подведения итогов (МСК): 09.06.2026 20:59 МСК
 Способ закупки: запрос котировок в электронной форме.
 Место и дата рассмотрения, оценки и подведения итогов запроса котировок | «09» июня 2026 года до 07:00 (время московское).
@@ -362,6 +478,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 """
         report = """#### Общая информация
 - Способ закупки: 22
+- Крайний срок подачи заявок: Не найдено
 - Дата рассмотрения/подведения итогов: 09.06.2026 20:59 МСК
 
 #### Логистика (Оценка)
@@ -380,6 +497,7 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
         result = normalize_procurement_report_guardrails(report, source_text)
 
         self.assertIn("- Способ закупки: Запрос котировок в электронной форме", result)
+        self.assertIn("- Крайний срок подачи заявок: 09.06.2026 06:00 МСК", result)
         self.assertIn("- Дата рассмотрения/подведения итогов: 09.06.2026 07:00 МСК", result)
         self.assertNotIn("Расхождение сроков", result)
         self.assertNotIn("Расхождение в дате подведения итогов", result)

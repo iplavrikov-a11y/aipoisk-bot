@@ -299,9 +299,12 @@ async def generate_procurement_report(settings: SystemSettings, document_text: s
             issues = verification.get("issues") or ["AI verification rejected the report"]
             raise ProcurementReportAIRequiredError(f"AI report verification failed: {issues}")
     official_facts = extract_official_card_facts(document_text)
+    if official_facts:
+        report = normalize_official_card_report_fields(report, document_text)
     official_issues = validate_report_against_official_card(report, official_facts)
     if official_issues:
         report = await repair_report_official_card_fields(settings, report, document_text, official_issues, report_settings)
+        report = normalize_official_card_report_fields(report, document_text)
         official_issues = validate_report_against_official_card(report, official_facts)
         if official_issues:
             raise ProcurementReportAIRequiredError(f"Official source card validation failed: {official_issues}")
@@ -333,20 +336,26 @@ async def verify_report(
 ) -> dict:
     prompt = str(report_settings.get("verification_prompt") or DEFAULT_VERIFICATION_PROMPT)
     user_prompt = f"ИСХОДНЫЕ ДОКУМЕНТЫ:\n{document_text[:250000]}\n\nОТЧЕТ:\n{report[:120000]}"
-    try:
-        raw = await call_llm(
-            settings,
-            user_prompt,
-            system_prompt=prompt,
-            tier="primary",
-            routing_key="procurement_report_verification",
-            json_mode=True,
-            timeout_seconds=float(report_settings.get("verification_timeout_seconds") or 180),
-        )
-        parsed = parse_json_object(raw)
-        return parsed if parsed else {"ok": False, "issues": ["empty_verification_response"]}
-    except Exception as exc:
-        return {"ok": False, "issues": [f"verification_failed: {exc}"]}
+    attempts = max(1, int(report_settings.get("verification_attempts") or 2))
+    last_issue = "empty_verification_response"
+    for _attempt in range(attempts):
+        try:
+            raw = await call_llm(
+                settings,
+                user_prompt,
+                system_prompt=prompt,
+                tier="primary",
+                routing_key="procurement_report_verification",
+                json_mode=True,
+                timeout_seconds=float(report_settings.get("verification_timeout_seconds") or 180),
+            )
+            parsed = parse_json_object(raw)
+            if parsed:
+                return parsed
+            last_issue = "empty_verification_response"
+        except Exception as exc:
+            last_issue = f"verification_failed: {exc}"
+    return {"ok": False, "issues": [last_issue]}
 
 
 async def repair_report_official_card_fields(
@@ -599,6 +608,14 @@ def normalize_official_card_report_fields(report: str, document_text: str) -> st
     method = facts.get("procurement_method")
     if method and not _is_numeric_procurement_method(method):
         value = _replace_report_field(value, REPORT_FIELD_ALIASES["procurement_method"], "Способ закупки", method)
+    submission_deadline = facts.get("submission_deadline")
+    if submission_deadline:
+        value = _replace_report_field(
+            value,
+            REPORT_FIELD_ALIASES["submission_deadline"],
+            "Крайний срок подачи заявок",
+            submission_deadline,
+        )
     results_date = facts.get("results_date")
     if results_date:
         value = _replace_report_field(
@@ -997,7 +1014,7 @@ def _extract_following_line(text: str, label: str) -> str:
 
 
 def _extract_labeled_value(text: str, label: str) -> str:
-    inline = re.compile(rf"(?m)^\s*[-*]?\s*{re.escape(label)}\s*:\s*([^\n]+)")
+    inline = re.compile(rf"(?m)^\s*[-*]?[ \t]*{re.escape(label)}[ \t]*:[ \t]*([^\n]*)")
     match = inline.search(text)
     if match:
         return _clean_inline_text(match.group(1))
@@ -1007,7 +1024,7 @@ def _extract_labeled_value(text: str, label: str) -> str:
 def _extract_labeled_values(text: str, labels: tuple[str, ...]) -> list[str]:
     values: list[str] = []
     for label in labels:
-        inline = re.compile(rf"(?m)^\s*[-*]?\s*{re.escape(label)}\s*:\s*([^\n]+)")
+        inline = re.compile(rf"(?m)^\s*[-*]?[ \t]*{re.escape(label)}[ \t]*:[ \t]*([^\n]*)")
         for match in inline.finditer(text):
             value = _clean_inline_text(match.group(1))
             if value:
