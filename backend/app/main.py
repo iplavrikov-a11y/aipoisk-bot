@@ -6,6 +6,7 @@ import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import time
 
@@ -77,6 +78,7 @@ from .schemas import (
     SettingsPatch,
     TariffPackageCreate,
     TariffPackagePatch,
+    WebEmailChangeRequest,
     WebLoginRequest,
     WebEmailVerificationConfirm,
     WebPasswordResetComplete,
@@ -342,12 +344,8 @@ def customer_email_verification_request_api(
 
 
 @app.get("/api/customer/auth/verify-email/confirm")
-def customer_email_verification_confirm_link(token: str, db: Session = Depends(db_session)):
-    try:
-        verify_email_token(db, token)
-        return RedirectResponse("/cabinet?email_verified=1", status_code=303)
-    except ValueError:
-        return RedirectResponse("/cabinet?email_verified=0", status_code=303)
+def customer_email_verification_confirm_link(token: str):
+    return RedirectResponse(f"/cabinet?email_verify_token={quote(token, safe='')}", status_code=303)
 
 
 @app.post("/api/customer/auth/verify-email/confirm")
@@ -357,6 +355,43 @@ def customer_email_verification_confirm_api(data: WebEmailVerificationConfirm, d
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"success": True, "user": customer_user_to_dict(db, user)}
+
+
+@app.patch("/api/customer/auth/email")
+def customer_email_change_api(
+    data: WebEmailChangeRequest,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    new_email = validate_email(data.email)
+    current_email = context.user.email
+    if new_email != current_email:
+        existing = (
+            db.query(WebUser.id)
+            .filter(WebUser.email == new_email)
+            .filter(WebUser.id != context.user.id)
+            .first()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Пользователь с таким email уже зарегистрирован.")
+        context.user.email = new_email
+        context.user.is_email_verified = False
+        db.commit()
+        db.refresh(context.user)
+
+    key = _check_customer_auth_rate(request, context.user.email)
+    _record_customer_auth_failure(key)
+    email_sent = _send_customer_verification_email(db, context.user, request)
+    payload = customer_session_payload(db, context.user, csrf_token=context.session.csrf_token if context.session else "", authenticated=True)
+    payload["verification_email_sent"] = email_sent
+    payload["message"] = (
+        "Email обновлён. Проверьте новое письмо для подтверждения."
+        if email_sent
+        else "Email обновлён. Не удалось отправить письмо, попробуйте ещё раз."
+    )
+    return payload
 
 
 @app.post("/api/customer/auth/logout")

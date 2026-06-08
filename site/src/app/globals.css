@@ -1794,7 +1794,15 @@ select {
   line-height: 1.35;
 }
 
-.email-verify-banner button {
+.email-verify-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.email-verify-banner button,
+.email-change-form button {
   display: inline-flex;
   min-height: 36px;
   align-items: center;
@@ -1810,9 +1818,37 @@ select {
   font-weight: 900;
 }
 
-.email-verify-banner button:disabled {
+.email-verify-banner button:disabled,
+.email-change-form button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.email-change-form {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.email-change-form label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.email-change-form input {
+  min-height: 38px;
+  border: 1px solid #e1c06b;
+  border-radius: 6px;
+  background: #fffdf7;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  padding: 8px 10px;
 }
 
 .auth-shell {
@@ -2653,6 +2689,20 @@ select {
   .task-fields,
   .email-verify-banner,
   .submit-row {
+    grid-template-columns: 1fr;
+  }
+
+  .email-verify-actions {
+    justify-content: stretch;
+  }
+
+  .email-verify-actions button,
+  .email-change-form button {
+    width: 100%;
+  }
+
+  .email-change-form {
+    grid-column: 1;
     grid-template-columns: 1fr;
   }
 

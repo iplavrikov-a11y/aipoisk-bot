@@ -158,10 +158,6 @@ def create_email_verification_token(
     token = secrets.token_urlsafe(48)
     headers = getattr(request, "headers", {}) or {}
     client = getattr(request, "client", None)
-    db.query(WebEmailVerificationToken).filter(
-        WebEmailVerificationToken.user_id == user.id,
-        WebEmailVerificationToken.used_at.is_(None),
-    ).update({WebEmailVerificationToken.used_at: now_utc()}, synchronize_session=False)
     record = WebEmailVerificationToken(
         user_id=user.id,
         email=user.email,
@@ -185,8 +181,15 @@ def verify_email_token(db: Session, token: str) -> WebUser:
     user = record.user
     if not user or not user.is_active:
         raise ValueError("Пользователь не найден или отключён.")
+    if normalize_email(record.email) != normalize_email(user.email):
+        raise ValueError("Ссылка подтверждения недействительна.")
     user.is_email_verified = True
-    record.used_at = now_utc()
+    verified_at = now_utc()
+    db.query(WebEmailVerificationToken).filter(
+        WebEmailVerificationToken.user_id == user.id,
+        WebEmailVerificationToken.email == record.email,
+        WebEmailVerificationToken.used_at.is_(None),
+    ).update({WebEmailVerificationToken.used_at: verified_at}, synchronize_session=False)
     db.commit()
     db.refresh(user)
     return user
@@ -223,16 +226,21 @@ def _verification_email_html(link: str) -> str:
     safe_link = html_lib.escape(link, quote=True)
     return f"""<!doctype html>
 <html>
-  <body style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+  <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; line-height: 1.5; color: #172321; background: #f6f8f7;">
+    <div style="max-width: 560px; margin: 0 auto; padding: 28px 20px;">
+      <div style="background: #ffffff; border: 1px solid #dce7e5; border-radius: 10px; padding: 24px;">
+        <div style="font-size: 18px; font-weight: 700; color: #075f68; margin-bottom: 18px;">TenderLex</div>
     <p>Здравствуйте.</p>
     <p>Подтвердите email для личного кабинета TenderLex.</p>
-    <p>
-      <a href="{safe_link}" style="display: inline-block; padding: 10px 16px; background: #111827; color: #ffffff; text-decoration: none; border-radius: 6px;">
+        <p style="margin: 22px 0;">
+      <a href="{safe_link}" style="display: inline-block; padding: 12px 18px; background: #075f68; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700;">
         Подтвердить email
       </a>
     </p>
-    <p>Если кнопка не открылась, скопируйте ссылку в браузер:<br>{safe_link}</p>
-    <p>Если вы не создавали кабинет, просто не открывайте эту ссылку.</p>
+        <p style="font-size: 14px; color: #4f625f;">Если кнопка не открылась, скопируйте ссылку в браузер:<br><a href="{safe_link}" style="color: #075f68;">{safe_link}</a></p>
+        <p style="font-size: 14px; color: #4f625f;">Если вы не создавали кабинет, просто не открывайте эту ссылку.</p>
+      </div>
+    </div>
   </body>
 </html>"""
 

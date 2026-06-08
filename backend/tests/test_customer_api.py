@@ -25,6 +25,7 @@ from app.db import Base
 from app.jobs import MODE_SUPPLIER_SEARCH
 from app.main import (
     admin_verify_web_user_email,
+    customer_email_change_api,
     create_customer_job_api,
     customer_register_api,
     customer_job_to_dict,
@@ -35,8 +36,9 @@ from app.main import (
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, Job, SystemSettings, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
-from app.schemas import WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
+from app.schemas import WebEmailChangeRequest, WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
 from app.web_auth import (
+    CSRF_HEADER,
     WebAuthContext,
     authenticate_web_user,
     create_email_verification_token,
@@ -47,10 +49,14 @@ from app.web_auth import (
 )
 
 
-def fake_request() -> SimpleNamespace:
+def fake_request(*, method: str = "POST", csrf_token: str = "") -> SimpleNamespace:
+    headers = {"user-agent": "tests"}
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
     return SimpleNamespace(
+        method=method,
         client=SimpleNamespace(host="127.0.0.1"),
-        headers={"user-agent": "tests"},
+        headers=headers,
         cookies={},
     )
 
@@ -184,6 +190,71 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(user.is_email_verified)
             self.assertIsNone(open_token)
             self.assertTrue(token)
+        finally:
+            db.close()
+
+    def test_resending_verification_keeps_previous_fresh_link_valid(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="buyer@example.com", password="StrongPass123", name="Buyer")
+            first_token, first_record = create_email_verification_token(db, user, request=fake_request())
+            second_token, second_record = create_email_verification_token(db, user, request=fake_request())
+            db.refresh(first_record)
+            self.assertIsNone(first_record.used_at)
+
+            verified = verify_email_token(db, first_token)
+            db.refresh(first_record)
+            db.refresh(second_record)
+
+            self.assertTrue(verified.is_email_verified)
+            self.assertIsNotNone(first_record.used_at)
+            self.assertIsNotNone(second_record.used_at)
+            with self.assertRaises(ValueError):
+                verify_email_token(db, second_token)
+        finally:
+            db.close()
+
+    def test_verification_link_for_old_email_does_not_confirm_changed_email(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="old@example.com", password="StrongPass123", name="Buyer")
+            token, _record = create_email_verification_token(db, user, request=fake_request())
+            user.email = "new@example.com"
+            db.commit()
+
+            with self.assertRaises(ValueError):
+                verify_email_token(db, token)
+        finally:
+            db.close()
+
+    def test_customer_can_change_unverified_email_and_send_new_verification(self) -> None:
+        db = self.Session()
+        try:
+            user = create_web_user(db, email="wrong@example.com", password="StrongPass123", name="Buyer")
+            _session_token, csrf_token, session = create_web_session(db, user, request=fake_request())
+
+            with patch("app.main.send_email_verification", return_value=True):
+                payload = customer_email_change_api(
+                    WebEmailChangeRequest(email="Correct@Example.com"),
+                    fake_request(method="PATCH", csrf_token=csrf_token),
+                    WebAuthContext(user=user, session=session),
+                    db,
+                )
+
+            db.refresh(user)
+            open_tokens = (
+                db.query(WebEmailVerificationToken)
+                .filter(WebEmailVerificationToken.user_id == user.id)
+                .filter(WebEmailVerificationToken.email == "correct@example.com")
+                .filter(WebEmailVerificationToken.used_at.is_(None))
+                .count()
+            )
+
+            self.assertEqual(user.email, "correct@example.com")
+            self.assertFalse(user.is_email_verified)
+            self.assertTrue(payload["verification_email_sent"])
+            self.assertEqual(payload["user"]["email"], "correct@example.com")
+            self.assertEqual(open_tokens, 1)
         finally:
             db.close()
 

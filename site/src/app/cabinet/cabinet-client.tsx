@@ -14,6 +14,7 @@ import {
   Mail,
   MessageCircle,
   Paperclip,
+  Pencil,
   Receipt,
   Search,
   XCircle,
@@ -268,6 +269,8 @@ export function CabinetClient() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
+  const [emailDraft, setEmailDraft] = useState("");
+  const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("supplier_search");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
@@ -355,14 +358,25 @@ export function CabinetClient() {
     loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
     const verified = params.get("email_verified");
+    const verifyToken = params.get("email_verify_token");
     if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
     if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
+    if (verifyToken) {
+      confirmEmailToken(verifyToken).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      params.delete("email_verify_token");
+    }
     if (verified) {
       params.delete("email_verified");
+    }
+    if (verified || verifyToken) {
       const nextQuery = params.toString();
       window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
     }
   }, []);
+
+  useEffect(() => {
+    if (session?.user?.email && !emailEditOpen) setEmailDraft(session.user.email);
+  }, [emailEditOpen, session?.user?.email]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -439,6 +453,55 @@ export function CabinetClient() {
       });
       const payload = await readJson<{ message?: string }>(response);
       setMessage(payload.message || "Письмо отправлено. Проверьте почту.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmEmailToken(token: string) {
+    if (!token) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/customer/auth/verify-email/confirm", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const payload = await readJson<{ user?: SessionPayload["user"] }>(response);
+      if (payload.user) {
+        setSession((current) => (current ? { ...current, user: payload.user } : current));
+      }
+      setMessage("Email подтверждён. Теперь можно запускать задачи.");
+      await loadSession();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeAccountEmail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/customer/auth/email", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ email: emailDraft }),
+      });
+      const payload = await readJson<SessionPayload>(response);
+      setSession(payload);
+      setEmailEditOpen(false);
+      setMessage(payload.message || "Email обновлён. Проверьте письмо для подтверждения.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -695,10 +758,28 @@ export function CabinetClient() {
             <strong>Подтвердите email</strong>
             <span>После подтверждения можно запускать задачи на сайте.</span>
           </div>
-          <button type="button" onClick={resendVerification} disabled={busy}>
-            {busy ? <Loader2 size={16} aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}
-            Отправить письмо
-          </button>
+          <div className="email-verify-actions">
+            <button type="button" onClick={resendVerification} disabled={busy}>
+              {busy ? <Loader2 size={16} aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}
+              Отправить письмо
+            </button>
+            <button type="button" onClick={() => setEmailEditOpen((value) => !value)} disabled={busy}>
+              <Pencil size={16} aria-hidden="true" />
+              Исправить email
+            </button>
+          </div>
+          {emailEditOpen ? (
+            <form className="email-change-form" onSubmit={changeAccountEmail}>
+              <label>
+                Новый email
+                <input value={emailDraft} onChange={(event) => setEmailDraft(event.target.value)} type="email" autoComplete="email" required />
+              </label>
+              <button type="submit" disabled={busy}>
+                {busy ? <Loader2 size={16} aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}
+                Сохранить и отправить письмо
+              </button>
+            </form>
+          ) : null}
         </section>
       ) : null}
 

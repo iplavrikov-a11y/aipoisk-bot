@@ -74,6 +74,10 @@ class WebEmailVerificationConfirm(BaseModel):
     token: str = Field(min_length=20, max_length=512)
 
 
+class WebEmailChangeRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
 class WebPasswordResetComplete(BaseModel):
     password: str = Field(default="", max_length=256)
     note: str = ""
