@@ -93,6 +93,7 @@ class ClientCreate(BaseModel):
     monthly_supplier_search_limit: int = Field(default=0, ge=0)
     monthly_procurement_report_limit: int = Field(default=0, ge=0)
     monthly_file_limit: int = Field(default=300, ge=0)
+    supplier_target_min: int = Field(default=0, ge=0, le=100)
     notes: str = ""
 
 
@@ -108,6 +109,7 @@ class ClientPatch(BaseModel):
     monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
     monthly_procurement_report_limit: int | None = Field(default=None, ge=0)
     monthly_file_limit: int | None = Field(default=None, ge=0)
+    supplier_target_min: int | None = Field(default=None, ge=0, le=100)
     notes: str | None = None
 
 

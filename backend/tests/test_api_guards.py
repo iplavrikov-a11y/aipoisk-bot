@@ -190,6 +190,7 @@ class ApiGuardTests(unittest.TestCase):
                 name="Customer",
                 monthly_supplier_search_limit=3,
                 monthly_procurement_report_limit=2,
+                supplier_target_min=35,
                 allowed_procurement_report=True,
             )
             db.add(client)
@@ -204,6 +205,7 @@ class ApiGuardTests(unittest.TestCase):
             db.close()
 
         self.assertEqual(payload["usage"]["supplier_search"]["used"], 2)
+        self.assertEqual(payload["supplier_target_min"], 35)
         self.assertEqual(payload["usage"]["supplier_search"]["remaining"], 1)
         self.assertEqual(payload["usage"]["procurement_report"]["used"], 1)
         self.assertEqual(payload["usage"]["procurement_report"]["remaining"], 1)
@@ -1107,6 +1109,7 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
                     telegram_id="123",
                     allowed_supplier_search=True,
                     monthly_supplier_search_limit=2,
+                    supplier_target_min=33,
                 )
             )
             db.commit()
@@ -1134,8 +1137,10 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(captured), 2)
         self.assertEqual(captured[0]["title"], "ТЗ насос")
         self.assertEqual(captured[0]["files"], [("ТЗ насос.docx", b"pump")])
+        self.assertEqual(captured[0]["target_suppliers"], 33)
         self.assertEqual(captured[1]["title"], "ТЗ вентиляция")
         self.assertEqual(captured[1]["files"], [("ТЗ вентиляция.docx", b"vent")])
+        self.assertEqual(captured[1]["target_suppliers"], 33)
         self.assertEqual(captured[0]["sources"], [])
 
 

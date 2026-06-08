@@ -74,6 +74,7 @@ def _ensure_schema() -> None:
         "is_trial": "BOOLEAN DEFAULT 0",
         "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
         "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
+        "supplier_target_min": "INTEGER DEFAULT 0",
     }
     jobs_existing = _existing_columns(inspector, "jobs")
     job_additions = {

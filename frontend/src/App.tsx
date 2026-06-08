@@ -59,6 +59,7 @@ type Client = {
   monthly_supplier_search_limit: number
   monthly_procurement_report_limit: number
   monthly_file_limit: number
+  supplier_target_min: number
   notes: string
   telegram_accounts: TelegramAccount[]
   web_users: WebUser[]
@@ -1052,7 +1053,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
         <h2>Текущая конфигурация</h2>
         <div className="settings-summary">
           <span>Домен: {settings?.public_base_url || 'не задан'}</span>
-          <span>Минимум поставщиков: {settings?.default_supplier_target || 15}</span>
+          <span>Минимум поставщиков: {settings?.default_supplier_target || 25}</span>
           <span>Логистика: {settings?.logistics_enabled ? 'включена' : 'отключена'}</span>
           <span>Частичные отчёты: {settings?.allow_partial_supplier_reports ? 'разрешены' : 'запрещены'}</span>
           <span>Бесплатный период: {settings?.trial_enabled ? 'включён' : 'выключен'}</span>
@@ -1277,6 +1278,12 @@ function ClientsView({
   async function patchClient(client: Client, patch: Partial<Client>) {
     await api(`/api/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
+  }
+  function patchClientSupplierTarget(client: Client, input: HTMLInputElement) {
+    const value = Math.floor(Number(input.value))
+    const nextValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
+    input.value = String(nextValue)
+    if (nextValue !== (client.supplier_target_min || 0)) void patchClient(client, { supplier_target_min: nextValue })
   }
   async function deleteClient(client: Client) {
     const label = client.name || client.username || client.telegram_id || 'этого клиента'
@@ -1620,6 +1627,18 @@ function ClientsView({
                     <label><input type="checkbox" checked={client.allowed_supplier_search} onChange={e => void patchClient(client, { allowed_supplier_search: e.target.checked })} /> Поставщики</label>
                     <label><input type="checkbox" checked={client.allowed_procurement_report} onChange={e => void patchClient(client, { allowed_procurement_report: e.target.checked })} /> Анализ документации</label>
                   </div>
+                  <label className="mini-field">
+                    <span>Мин. поставщиков по ТЗ</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      defaultValue={client.supplier_target_min || 0}
+                      onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
+                    />
+                  </label>
+                  <small className="field-help">0 — брать значение из общих настроек.</small>
                   <input
                     className="client-note"
                     placeholder="Заметка по клиенту"

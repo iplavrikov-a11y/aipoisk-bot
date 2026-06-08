@@ -63,6 +63,7 @@ from .repository import (
     normalize_telegram_username,
     requested_function_units,
     seed_owner_client,
+    supplier_target_for_client,
 )
 from .schemas import (
     AiTestRequest,
@@ -1387,7 +1388,7 @@ async def upload_job(
                 created_by_telegram_id=telegram_id,
                 mode=mode,
                 title=Path(filename).stem,
-                target_suppliers=settings.default_supplier_target,
+                target_suppliers=supplier_target_for_client(settings, client),
                 files=[(filename, content)],
                 sources=[],
             )
@@ -1402,7 +1403,7 @@ async def upload_job(
         created_by_telegram_id=telegram_id,
         mode=mode,
         title=title,
-        target_suppliers=settings.default_supplier_target,
+        target_suppliers=supplier_target_for_client(settings, client),
         files=payload,
         sources=sources,
     )
@@ -1764,7 +1765,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "limits": {
             "max_upload_mb": int(settings.max_upload_mb or 50),
             "max_files_per_batch": int(settings.max_files_per_batch or 20),
-            "default_supplier_target": int(settings.default_supplier_target or 15),
+            "default_supplier_target": supplier_target_for_client(settings, user.client),
         },
         "trial": {
             "enabled": bool(settings.trial_enabled),
@@ -1897,8 +1898,7 @@ async def create_customer_job_api(
         raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
 
     client = context.user.client
-    target = int(target_suppliers or 0)
-    safe_target = max(1, min(100, target if target > 0 else int(settings.default_supplier_target or 15)))
+    safe_target = supplier_target_for_client(settings, client)
     supplier_specs = _customer_supplier_job_specs(mode, payload)
     supplier_search_count = len(supplier_specs) if supplier_specs else 1
     access_error = client_access_error(
@@ -2437,6 +2437,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,
         "monthly_file_limit": client.monthly_file_limit,
+        "supplier_target_min": client.supplier_target_min,
         "notes": client.notes,
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
         "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],

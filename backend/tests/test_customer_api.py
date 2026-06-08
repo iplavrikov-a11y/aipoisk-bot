@@ -487,6 +487,41 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    async def test_customer_supplier_job_uses_client_supplier_target_override(self) -> None:
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1, default_supplier_target=25))
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                monthly_supplier_search_limit=3,
+                supplier_target_min=40,
+            )
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+
+            payload = await create_customer_job_api(
+                mode=MODE_SUPPLIER_SEARCH,
+                text="Нужно найти поставщиков кабельных лотков для строительного объекта",
+                source_urls="",
+                target_suppliers=3,
+                files=[],
+                context=WebAuthContext(user=user, session=None),
+                db=db,
+            )
+
+            self.assertEqual(payload["job"]["target_suppliers"], 40)
+        finally:
+            db.close()
+
     async def test_customer_supplier_batch_creates_one_job_per_file(self) -> None:
         db = self.Session()
         try:

@@ -40,7 +40,7 @@ from .jobs import (
 )
 from .models import DEFAULT_PAYMENT_INSTRUCTIONS, Client, Job, now_utc
 from .procurement_sources import source_label, source_payloads_from_text
-from .repository import client_access_error, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client
+from .repository import client_access_error, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
 
 router = Router()
 PENDING_MODES: dict[int, str] = {}
@@ -1146,6 +1146,7 @@ async def run_batch_button(message: Message) -> None:
             return
         assert client is not None
         settings = get_or_create_settings(db)
+        target_suppliers = supplier_target_for_client(settings, client)
         if supplier_job_specs:
             for title, files in supplier_job_specs:
                 created = create_job(
@@ -1154,7 +1155,7 @@ async def run_batch_button(message: Message) -> None:
                     created_by_telegram_id=pending.telegram_id,
                     mode=MODE_SUPPLIER_SEARCH,
                     title=title,
-                    target_suppliers=settings.default_supplier_target,
+                    target_suppliers=target_suppliers,
                     files=files,
                     sources=[],
                 )
@@ -1172,7 +1173,7 @@ async def run_batch_button(message: Message) -> None:
                 created_by_telegram_id=pending.telegram_id,
                 mode=pending.mode,
                 title=title,
-                target_suppliers=settings.default_supplier_target,
+                target_suppliers=target_suppliers,
                 files=pending.files,
                 sources=pending.sources,
             )

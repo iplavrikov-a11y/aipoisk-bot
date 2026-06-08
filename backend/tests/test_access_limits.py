@@ -17,6 +17,7 @@ from app.repository import (
     get_client_by_telegram_id,
     get_or_create_trial_client_by_telegram_id,
     is_pending_telegram_id,
+    supplier_target_for_client,
 )
 
 
@@ -168,6 +169,16 @@ class AccessLimitTests(unittest.TestCase):
             self.assertEqual(client.telegram_accounts[0].telegram_id, "555")
         finally:
             db.close()
+
+    def test_supplier_target_uses_client_override_or_settings_default(self) -> None:
+        settings = SystemSettings(default_supplier_target=25)
+        regular_client = Client(telegram_id="100")
+        vip_client = Client(telegram_id="200", supplier_target_min=40)
+        excessive_client = Client(telegram_id="300", supplier_target_min=150)
+
+        self.assertEqual(supplier_target_for_client(settings, regular_client), 25)
+        self.assertEqual(supplier_target_for_client(settings, vip_client), 40)
+        self.assertEqual(supplier_target_for_client(settings, excessive_client), 100)
 
     def test_pending_username_account_resolves_on_first_bot_contact(self) -> None:
         db = self.Session()
@@ -368,13 +379,15 @@ class AccessLimitTests(unittest.TestCase):
             self.assertIn("is_trial", client_columns)
             self.assertIn("monthly_supplier_search_limit", client_columns)
             self.assertIn("monthly_procurement_report_limit", client_columns)
+            self.assertIn("supplier_target_min", client_columns)
             with engine.connect() as connection:
                 row = connection.execute(
                     text(
                         """
                         SELECT
                             monthly_supplier_search_limit,
-                            monthly_procurement_report_limit
+                            monthly_procurement_report_limit,
+                            supplier_target_min
                         FROM clients
                         WHERE id = 'client-1'
                         """
@@ -383,6 +396,7 @@ class AccessLimitTests(unittest.TestCase):
                 account_count = connection.execute(text("SELECT count(*) FROM client_telegram_accounts WHERE telegram_id = '123'")).scalar_one()
             self.assertEqual(row.monthly_supplier_search_limit, 7)
             self.assertEqual(row.monthly_procurement_report_limit, 7)
+            self.assertEqual(row.supplier_target_min, 0)
             self.assertEqual(account_count, 1)
         finally:
             app_db.engine = original_engine
