@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -8,8 +9,8 @@ import socket
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, or_
+from sqlalchemy.orm import Session, aliased
 
 from . import document_parser
 from .billing import (
@@ -55,6 +56,7 @@ MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
 RESULT_STEM_MAX_BYTES = 220
+logger = logging.getLogger(__name__)
 
 
 def job_dir(job_id: str) -> Path:
@@ -175,45 +177,56 @@ def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNN
 def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STALE_RUNNING_AFTER) -> str | None:
     now = now_utc()
     stale_cutoff = now - stale_after
+    eligible_status_filter = or_(
+        Job.status == "pending",
+        and_(Job.status == "running", Job.updated_at < stale_cutoff),
+    )
+    fair_client_filter = _client_has_no_active_running_job_filter(stale_cutoff)
     jobs = (
         db.query(Job)
-        .filter(
-            or_(
-                Job.status == "pending",
-                and_(Job.status == "running", Job.updated_at < stale_cutoff),
-            )
-        )
+        .filter(eligible_status_filter)
+        .filter(fair_client_filter)
         .order_by(Job.created_at.asc())
-        .limit(20)
+        .limit(100)
         .all()
     )
     for job in jobs:
         if job.status == "pending" or should_requeue_stale_job(job.status, job.updated_at, now, stale_after):
-            rows = (
-                db.query(Job)
-                .filter(Job.id == job.id)
-                .filter(
-                    or_(
-                        Job.status == "pending",
-                        and_(Job.status == "running", Job.updated_at < stale_cutoff),
-                    )
-                )
-                .update(
-                    {
-                        Job.status: "running",
-                        Job.progress: 0,
-                        Job.message: "Задача взята в обработку",
-                        Job.error: "",
-                        Job.updated_at: now,
-                    },
-                    synchronize_session=False,
-                )
+            claim_query = db.query(Job).filter(Job.id == job.id).filter(
+                eligible_status_filter,
+                fair_client_filter,
+            )
+            rows = claim_query.update(
+                {
+                    Job.status: "running",
+                    Job.progress: 0,
+                    Job.message: "Задача взята в обработку",
+                    Job.error: "",
+                    Job.updated_at: now,
+                },
+                synchronize_session=False,
             )
             if rows:
                 db.commit()
                 return job.id
             db.rollback()
     return None
+
+
+def _active_client_job_exists(stale_cutoff: datetime):
+    active_job = aliased(Job)
+    return exists().where(
+        and_(
+            active_job.client_id == Job.client_id,
+            active_job.id != Job.id,
+            active_job.status == "running",
+            or_(active_job.updated_at.is_(None), active_job.updated_at >= stale_cutoff),
+        )
+    )
+
+
+def _client_has_no_active_running_job_filter(stale_cutoff: datetime):
+    return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
 
 
 async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 3.0) -> Job | None:
@@ -234,18 +247,62 @@ async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, p
         await asyncio.sleep(poll_interval)
 
 
-async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS) -> None:
+def _normalized_worker_concurrency(value: int | str | None) -> int:
+    try:
+        parsed = int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, parsed)
+
+
+def _claim_job_for_worker(worker_id: str) -> str | None:
+    db = SessionLocal()
+    try:
+        expire_stale_confirmations(db)
+        return claim_next_job(db, worker_id=worker_id)
+    finally:
+        db.close()
+
+
+def _fill_worker_slots(running_tasks: set[asyncio.Task[None]], *, worker_id: str, concurrency: int) -> int:
+    claimed = 0
+    while len(running_tasks) < concurrency:
+        job_id = _claim_job_for_worker(worker_id)
+        if not job_id:
+            break
+        running_tasks.add(asyncio.create_task(process_job(job_id)))
+        claimed += 1
+    return claimed
+
+
+def _consume_finished_worker_tasks(tasks: set[asyncio.Task[None]]) -> None:
+    for task in tasks:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Worker task failed")
+
+
+async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, concurrency: int | None = None) -> None:
     init_worker_database()
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    worker_concurrency = _normalized_worker_concurrency(concurrency if concurrency is not None else config.worker_concurrency)
+    running_tasks: set[asyncio.Task[None]] = set()
     while True:
-        db = SessionLocal()
-        try:
-            expire_stale_confirmations(db)
-            job_id = claim_next_job(db, worker_id=worker_id)
-        finally:
-            db.close()
-        if job_id:
-            await process_job(job_id)
+        finished = {task for task in running_tasks if task.done()}
+        if finished:
+            running_tasks.difference_update(finished)
+            _consume_finished_worker_tasks(finished)
+
+        claimed = _fill_worker_slots(running_tasks, worker_id=worker_id, concurrency=worker_concurrency)
+        if running_tasks:
+            timeout = 0 if claimed else poll_interval
+            done, _pending = await asyncio.wait(running_tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if done:
+                running_tasks.difference_update(done)
+                _consume_finished_worker_tasks(done)
             continue
         await asyncio.sleep(poll_interval)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import config
@@ -23,11 +23,34 @@ def _database_url() -> str:
     return url
 
 
+DATABASE_URL = _database_url()
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _sqlite_connect_args(database_url: str) -> dict:
+    if not database_url.startswith("sqlite"):
+        return {}
+    return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+
+
+def _configure_sqlite_connection(dbapi_connection) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 engine = create_engine(
-    _database_url(),
-    connect_args={"check_same_thread": False} if _database_url().startswith("sqlite") else {},
+    DATABASE_URL,
+    connect_args=_sqlite_connect_args(DATABASE_URL),
     pool_pre_ping=True,
 )
+
+if DATABASE_URL.startswith("sqlite"):
+    event.listen(engine, "connect", lambda dbapi_connection, _connection_record: _configure_sqlite_connection(dbapi_connection))
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

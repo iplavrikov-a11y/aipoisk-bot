@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-07
+Date: 2026-06-09
 
 ## Current Production State
 
@@ -18,9 +18,13 @@ Date: 2026-06-07
 Current runtime note:
 
 - the queue is durable and DB-backed;
-- one `aipoisk-worker` process is currently running, so large real bursts are
-  queued safely but processed at single-worker throughput unless workers are
-  scaled;
+- one `aipoisk-worker` process is currently running with
+  `AIPOISK_WORKER_CONCURRENCY=2`, so two jobs can be processed in parallel;
+- queue claiming is fair by customer: if a customer already has an active
+  running job, that customer's next pending jobs do not block jobs from other
+  customers;
+- SQLite runtime connections use WAL mode and a 30-second busy timeout to make
+  the current DB-backed queue safer under modest concurrent worker load;
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
 
@@ -386,6 +390,11 @@ without polluting the customer's XLSX report.
 
 - API and Telegram bot only create durable DB-backed pending jobs.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
+- The worker supports in-process concurrency through
+  `AIPOISK_WORKER_CONCURRENCY`; production is intentionally set to `2` first,
+  not higher, until real AI/search and memory pressure are observed.
+- Claiming keeps one active non-stale job per customer at a time, while still
+  allowing different customers and anonymous/system jobs to be claimed.
 - Telegram has four customer-facing scenarios: `🔎 Одно ТЗ`,
   `🗂 Несколько ТЗ`, `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Website cabinet mirrors those scenarios without Telegram-only emoji:
@@ -430,6 +439,9 @@ without polluting the customer's XLSX report.
 - Telegram routing-only code changes require restarting `aipoisk-bot.service`.
   The API and durable worker can keep running unless their code or settings
   contracts changed.
+- Worker queue code or `AIPOISK_WORKER_CONCURRENCY` changes require restarting
+  `aipoisk-worker.service`; the API, bot, and site do not need a restart for
+  those changes.
 
 ## Verification Snapshot
 
@@ -532,6 +544,11 @@ Load-test boundary:
 - it deliberately does not call live AI/search APIs or spend provider balances;
 - real production throughput still requires worker scaling and external
   provider rate-limit planning.
+- Queue fairness/concurrency pass, 2026-06-09:
+  `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests -q` ->
+  `280 passed`, `46` subtests passed, `2` existing FastAPI deprecation
+  warnings. Live worker was active after restart, and backend SQLite connection
+  reported `journal_mode=wal`, `busy_timeout=30000`, `synchronous=1`.
 - Local health endpoint: HTTP 200.
 - API, bot, and worker services: active after restart.
 - Live DB has `job_sources`.
@@ -606,10 +623,9 @@ data, and internal vendor diagnostics that should not be public.
 The main architectural gaps addressed in this pass are implemented. Residual
 risks are narrower:
 
-- DB-backed queue handled the safe 1000-job simulation without duplicate
-  claims, but the current live deployment still has one worker process.
-  Production bursts need worker scaling and external AI/search rate-limit
-  planning.
+- DB-backed queue now runs with two in-process worker slots and per-customer
+  fair claiming, but higher production throughput still needs gradual scaling
+  and external AI/search rate-limit planning based on real workload.
 - Browser rendering improves contact extraction, but anti-bot sites and unusual
   SPA flows can still require more specialized handling.
 - Procurement source pages can also be blocked by anti-bot controls; the system

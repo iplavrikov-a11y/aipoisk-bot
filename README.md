@@ -11,6 +11,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands).
 - Backend: `aipoisk-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `aipoisk-bot.service`.
+- Durable queue worker: `aipoisk-worker.service`; current production
+  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Nginx redirects HTTP to HTTPS, serves `aipoisk.lexelence.ru` from `/root/projects/aipoisk-bot/frontend/dist`, and proxies `/api/` to `127.0.0.1:8088`.
 - TenderLex deploy files are in `deploy/nginx/tenderlex.ru.conf`, `deploy/nginx/tenderlex.ru.http-only.conf`, and `deploy/systemd/tenderlex-site.service`.
@@ -127,7 +129,7 @@ npm install
 npm run dev
 ```
 
-Bot worker:
+Telegram bot worker:
 
 ```bash
 cd backend
@@ -135,9 +137,20 @@ cd backend
 python -m app.bot
 ```
 
+Durable queue worker:
+
+```bash
+cd backend
+. .venv/bin/activate
+AIPOISK_WORKER_CONCURRENCY=1 python -m app.worker
+```
+
 Production bot code changes require restarting only `aipoisk-bot.service`;
 the durable queue worker and FastAPI backend do not need a restart for
 Telegram routing-only changes.
+
+Queue worker code or `AIPOISK_WORKER_CONCURRENCY` changes require restarting
+only `aipoisk-worker.service`.
 
 The admin panel runs with:
 

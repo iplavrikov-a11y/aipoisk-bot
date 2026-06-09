@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import tempfile
 from datetime import timedelta
@@ -16,6 +17,8 @@ from app.jobs import (
     MODE_SUPPLIER_SEARCH,
     VALID_JOB_MODES,
     _analysis_report_title,
+    _fill_worker_slots,
+    _normalized_worker_concurrency,
     _result_stem,
     _process_analysis_and_suppliers,
     _supplier_count_message,
@@ -318,6 +321,193 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertIsNone(extra_claim)
         finally:
             db.close()
+
+    def test_claim_next_job_skips_client_that_already_has_active_job(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        now = now_utc()
+        try:
+            active_a = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="active-a",
+                created_at=now - timedelta(minutes=20),
+                updated_at=now,
+            )
+            pending_a = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="pending",
+                title="pending-a",
+                created_at=now - timedelta(minutes=10),
+            )
+            pending_b = Job(
+                client_id="client-b",
+                mode="supplier_search",
+                status="pending",
+                title="pending-b",
+                created_at=now - timedelta(minutes=5),
+            )
+            db.add_all([active_a, pending_a, pending_b])
+            db.commit()
+            pending_b_id = pending_b.id
+
+            claimed = claim_next_job(db, worker_id="test-worker")
+            db.refresh(pending_a)
+            db.refresh(pending_b)
+
+            self.assertEqual(claimed, pending_b_id)
+            self.assertEqual(pending_a.status, "pending")
+            self.assertEqual(pending_b.status, "running")
+        finally:
+            db.close()
+
+    def test_claim_next_job_reaches_other_clients_after_large_blocked_prefix(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        now = now_utc()
+        try:
+            active_a = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="active-a",
+                created_at=now - timedelta(minutes=200),
+                updated_at=now,
+            )
+            blocked_a = [
+                Job(
+                    client_id="client-a",
+                    mode="supplier_search",
+                    status="pending",
+                    title=f"blocked-a-{index}",
+                    created_at=now - timedelta(minutes=150 - index),
+                )
+                for index in range(120)
+            ]
+            pending_b = Job(
+                client_id="client-b",
+                mode="supplier_search",
+                status="pending",
+                title="pending-b",
+                created_at=now,
+            )
+            db.add(active_a)
+            db.add_all(blocked_a)
+            db.add(pending_b)
+            db.commit()
+            pending_b_id = pending_b.id
+
+            claimed = claim_next_job(db, worker_id="test-worker")
+            db.refresh(pending_b)
+
+            self.assertEqual(claimed, pending_b_id)
+            self.assertEqual(pending_b.status, "running")
+        finally:
+            db.close()
+
+    def test_claim_next_job_reclaims_stale_running_job_for_same_client(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        now = now_utc()
+        try:
+            stale_running = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="stale-a",
+                created_at=now - timedelta(minutes=60),
+                updated_at=now - timedelta(minutes=31),
+            )
+            pending_a = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="pending",
+                title="pending-a",
+                created_at=now - timedelta(minutes=10),
+            )
+            db.add_all([stale_running, pending_a])
+            db.commit()
+            stale_id = stale_running.id
+
+            claimed = claim_next_job(db, worker_id="test-worker", stale_after=timedelta(minutes=30))
+            db.refresh(stale_running)
+
+            self.assertEqual(claimed, stale_id)
+            self.assertEqual(stale_running.status, "running")
+            self.assertEqual(stale_running.message, "Задача взята в обработку")
+        finally:
+            db.close()
+
+    def test_claim_next_job_keeps_anonymous_jobs_claimable_fifo(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        now = now_utc()
+        try:
+            first = Job(client_id=None, mode="supplier_search", status="pending", title="first", created_at=now - timedelta(minutes=2))
+            second = Job(client_id=None, mode="supplier_search", status="pending", title="second", created_at=now - timedelta(minutes=1))
+            db.add_all([first, second])
+            db.commit()
+            first_id = first.id
+
+            claimed = claim_next_job(db, worker_id="test-worker")
+            db.refresh(first)
+            db.refresh(second)
+
+            self.assertEqual(claimed, first_id)
+            self.assertEqual(first.status, "running")
+            self.assertEqual(second.status, "pending")
+        finally:
+            db.close()
+
+    def test_worker_concurrency_normalization_keeps_safe_default(self) -> None:
+        self.assertEqual(_normalized_worker_concurrency(None), 1)
+        self.assertEqual(_normalized_worker_concurrency("bad"), 1)
+        self.assertEqual(_normalized_worker_concurrency(0), 1)
+        self.assertEqual(_normalized_worker_concurrency(2), 2)
+
+    def test_fill_worker_slots_starts_only_configured_number_of_jobs(self) -> None:
+        async def run() -> None:
+            original_claim = jobs._claim_job_for_worker
+            original_process = jobs.process_job
+            claimed_jobs = iter(["job-1", "job-2", "job-3"])
+            started: list[str] = []
+            release = asyncio.Event()
+
+            def fake_claim(_worker_id: str) -> str | None:
+                return next(claimed_jobs, None)
+
+            async def fake_process(job_id: str) -> None:
+                started.append(job_id)
+                await release.wait()
+
+            jobs._claim_job_for_worker = fake_claim
+            jobs.process_job = fake_process
+            try:
+                running_tasks: set[asyncio.Task[None]] = set()
+                claimed = _fill_worker_slots(running_tasks, worker_id="test-worker", concurrency=2)
+                await asyncio.sleep(0)
+
+                self.assertEqual(claimed, 2)
+                self.assertEqual(started, ["job-1", "job-2"])
+                self.assertEqual(len(running_tasks), 2)
+            finally:
+                release.set()
+                if running_tasks:
+                    await asyncio.gather(*running_tasks)
+                jobs._claim_job_for_worker = original_claim
+                jobs.process_job = original_process
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

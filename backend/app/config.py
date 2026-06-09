@@ -63,6 +63,7 @@ class AppConfig(BaseSettings):
     email_from_name: str = "TenderLex"
     email_from_email: str = ""
     customer_email_verification_hours: int = 24
+    worker_concurrency: int = 1
 
     @property
     def storage_path(self) -> Path:
