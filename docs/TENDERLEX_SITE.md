@@ -6,6 +6,7 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 ## Scope
 
 - SEO landing page plus customer cabinet.
+- Dedicated scenario pages for procurement-document analysis, supplier search, and Minpromtorg-related registry context.
 - No blog, no CMS, no public admin panel.
 - Contacts and active tariffs come from the existing FastAPI backend through `GET /api/public/site`.
 - The first screen must sell two equal product scenarios: procurement-document analysis and supplier/contact search.
@@ -23,6 +24,17 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - `bot.telegram_url` is used for the Telegram work CTA such as "Попробовать в Telegram".
 - `contacts.telegram_url` is used for owner/contact and purchase CTAs such as "Выбрать пакет".
 - Current production values are `@tenderlex_bot` for bot use and `@lexelence` for owner contact.
+
+## SEO And Verification
+
+- `site/src/app/layout.tsx` owns the public metadata, canonical URLs, Open Graph tags, and optional verification/analytics wiring.
+- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component.
+- `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster.
+- `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property.
+- `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
+- `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
+- `robots.txt` allows public pages and keeps `/cabinet` out of indexing.
+- Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site can pick them up without touching backend or bot services.
 
 ## Customer API Contract
 
@@ -82,6 +94,8 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Production smoke: `curl -fsS http://127.0.0.1:8088/api/public/site | jq '{bot, contacts, trial}'`
 - Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram'`
 - Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX'` should return no matches.
+- SEO smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/sitemap.xml | rg 'analiz-zakupochnoi-dokumentacii|poisk-postavshchikov-po-tz|reestr-minpromtorga-v-zakupkah'`
+- Verification smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/yandex_b3b74a829ce4a7c6.html`
 
 ## Production Wiring
 
@@ -99,6 +113,7 @@ Production assumptions:
 - `www.tenderlex.ru` redirects to `https://tenderlex.ru`.
 - `npm run build` copies `.next/static` and `public/` into the standalone bundle before `npm run start`.
 - Public `443` on this server is routed through the existing nginx stream layout to HTTPS vhosts listening on `4443`.
+- The live site service can be updated with `systemctl restart tenderlex-site.service` after site-only SEO/content changes; backend and bot services do not need a restart for those changes.
 
 Manual server activation, after build:
 

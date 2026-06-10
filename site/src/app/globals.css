@@ -864,6 +864,63 @@ select {
   background: #fbfcfc;
 }
 
+.scenario-section {
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.scenario-link-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 38px;
+}
+
+.scenario-link-card {
+  display: grid;
+  min-height: 210px;
+  align-content: start;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfc;
+  color: var(--ink);
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.scenario-link-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 14px 34px rgba(18, 43, 41, 0.08);
+  transform: translateY(-1px);
+}
+
+.scenario-link-card > span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.scenario-link-card h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.scenario-link-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.scenario-link-card svg {
+  margin-top: 8px;
+  color: var(--accent);
+}
+
 .usecase-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2423,6 +2480,7 @@ select {
   .feature-grid,
   .process-grid,
   .usecase-grid,
+  .scenario-link-grid,
   .pricing-grid,
   .trial-counters {
     grid-template-columns: 1fr;

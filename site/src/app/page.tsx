@@ -80,6 +80,24 @@ const useCases = [
   },
 ];
 
+const scenarioPages = [
+  {
+    href: "/analiz-zakupochnoi-dokumentacii",
+    title: "Анализ закупочной документации",
+    text: "Что проверяется, какие риски видны заранее и какой результат получает команда.",
+  },
+  {
+    href: "/poisk-postavshchikov-po-tz",
+    title: "Поиск поставщиков по ТЗ",
+    text: "Как сервис находит производителей, дилеров и профильные компании для запроса КП.",
+  },
+  {
+    href: "/reestr-minpromtorga-v-zakupkah",
+    title: "Минпромторг в закупках",
+    text: "Как определяется, нужны ли выписки и реестровые записи, если в закупке есть нацрежим.",
+  },
+];
+
 const trustItems = [
   {
     icon: ShieldCheck,
@@ -227,6 +245,25 @@ export default async function Home() {
         </div>
       </section>
 
+      <section id="scenarios" className="section scenario-section">
+        <div className="container">
+          <SectionHeader
+            title="Отдельные сценарии"
+            text="Если нужен короткий вход в тему, у каждого сценария есть своя страница: что делает сервис, что проверяет и какой результат вы получаете."
+          />
+          <div className="scenario-link-grid">
+            {scenarioPages.map((item) => (
+              <a key={item.href} className="scenario-link-card" href={item.href}>
+                <span>Подробнее</span>
+                <h3>{item.title}</h3>
+                <p>{item.text}</p>
+                <ArrowRight size={18} aria-hidden="true" />
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section className="section result-section">
         <div className="container result-layout">
           <div>
@@ -336,6 +373,7 @@ function Header({ contactUrl, ctaLabel }: { contactUrl: string; ctaLabel: string
         <nav aria-label="Основная навигация">
           <a href="#features">Возможности</a>
           <a href="#process">Процесс</a>
+          <a href="#scenarios">Сценарии</a>
           <a href="#tariffs">Тарифы</a>
           <a href="#contacts">Контакты</a>
         </nav>
@@ -580,8 +618,12 @@ function Footer({ email, telegramUrl, telegram }: { email: string; telegramUrl: 
         <nav aria-label="Навигация в подвале">
           <a href="#features">Возможности</a>
           <a href="#process">Процесс</a>
+          <a href="#scenarios">Сценарии</a>
           <a href="#tariffs">Тарифы</a>
           <a href="#contacts">Контакты</a>
+          <a href="/analiz-zakupochnoi-dokumentacii">Анализ документации</a>
+          <a href="/poisk-postavshchikov-po-tz">Поиск поставщиков</a>
+          <a href="/reestr-minpromtorga-v-zakupkah">Минпромторг</a>
           <a href="/terms">Условия</a>
           <a href="/privacy">Конфиденциальность</a>
         </nav>

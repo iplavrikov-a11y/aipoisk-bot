@@ -12,6 +12,24 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
+      url: `${siteUrl}/analiz-zakupochnoi-dokumentacii`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.8,
+    },
+    {
+      url: `${siteUrl}/poisk-postavshchikov-po-tz`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.8,
+    },
+    {
+      url: `${siteUrl}/reestr-minpromtorga-v-zakupkah`,
+      lastModified: updated,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
       url: `${siteUrl}/terms`,
       lastModified: updated,
       changeFrequency: "monthly",

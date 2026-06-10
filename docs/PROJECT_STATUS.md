@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-09
+Date: 2026-06-10
 
 ## Current Production State
 
@@ -12,6 +12,9 @@ Date: 2026-06-09
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Public site SEO is now wired with dedicated scenario pages, canonical
+  metadata, sitemap entries, Yandex Webmaster verification, and Yandex
+  Metrika env wiring.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
 

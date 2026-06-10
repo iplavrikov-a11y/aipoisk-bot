@@ -3,6 +3,23 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Согласие на обработку персональных данных",
   description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
+  alternates: {
+    canonical: "/personal-data",
+  },
+  openGraph: {
+    type: "website",
+    url: "/personal-data",
+    title: "Согласие на обработку персональных данных | TenderLex",
+    description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
+    siteName: "TenderLex",
+    images: ["/tenderlex-product-preview.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Согласие на обработку персональных данных | TenderLex",
+    description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
+    images: ["/tenderlex-product-preview.png"],
+  },
 };
 
 export default function PersonalDataPage() {

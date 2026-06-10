@@ -3,6 +3,23 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Условия использования",
   description: "Правила работы с TenderLex на сайте и в личном кабинете.",
+  alternates: {
+    canonical: "/terms",
+  },
+  openGraph: {
+    type: "website",
+    url: "/terms",
+    title: "Условия использования | TenderLex",
+    description: "Правила работы с TenderLex на сайте и в личном кабинете.",
+    siteName: "TenderLex",
+    images: ["/tenderlex-product-preview.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Условия использования | TenderLex",
+    description: "Правила работы с TenderLex на сайте и в личном кабинете.",
+    images: ["/tenderlex-product-preview.png"],
+  },
 };
 
 export default function TermsPage() {

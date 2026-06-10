@@ -3,6 +3,23 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Политика конфиденциальности",
   description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
+  alternates: {
+    canonical: "/privacy",
+  },
+  openGraph: {
+    type: "website",
+    url: "/privacy",
+    title: "Политика конфиденциальности | TenderLex",
+    description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
+    siteName: "TenderLex",
+    images: ["/tenderlex-product-preview.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Политика конфиденциальности | TenderLex",
+    description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
+    images: ["/tenderlex-product-preview.png"],
+  },
 };
 
 export default function PrivacyPage() {
