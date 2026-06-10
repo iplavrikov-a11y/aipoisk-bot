@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import unescape
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -13,8 +13,10 @@ from bs4 import BeautifulSoup
 
 SOURCE_KIND_OFFICIAL = "official_eis"
 SOURCE_KIND_PROCUREMENT_URL = "procurement_url"
+SOURCE_KIND_TENDERPLAN_NOTICE = "tenderplan_notice"
 
 URL_RE = re.compile(r"https?://[^\s<>)\"']+", re.I)
+NOTICE_NUMBER_RE = re.compile(r"(?<!\d)(\d{11}|\d{19})(?!\d)")
 TRAILING_URL_CHARS = ".,;:!?)]}»”\"'"
 OFFICIAL_FOLLOWUP_LIMIT = 4
 
@@ -27,6 +29,7 @@ class SourceFetchResult:
     status: str = "failed"
     error: str = ""
     extracted_chars: int = 0
+    downloaded_files: list = field(default_factory=list)
 
 
 def extract_source_urls(text: str) -> list[str]:
@@ -39,6 +42,18 @@ def extract_source_urls(text: str) -> list[str]:
         seen.add(url)
         urls.append(url)
     return urls
+
+
+def extract_notice_numbers(text: str) -> list[str]:
+    without_urls = URL_RE.sub(" ", str(text or ""))
+    numbers: list[str] = []
+    seen: set[str] = set()
+    for match in NOTICE_NUMBER_RE.findall(without_urls):
+        if len(match) == 36 or match in seen:
+            continue
+        seen.add(match)
+        numbers.append(match)
+    return numbers
 
 
 def normalize_source_url(value: str) -> str:
@@ -59,7 +74,7 @@ def classify_source_url(url: str) -> str:
 
 
 def source_payloads_from_text(text: str) -> list[dict]:
-    return [
+    payloads = [
         {
             "kind": classify_source_url(url),
             "label": source_label(url),
@@ -67,11 +82,37 @@ def source_payloads_from_text(text: str) -> list[dict]:
         }
         for url in extract_source_urls(text)
     ]
+    payloads.extend(
+        {
+            "kind": SOURCE_KIND_TENDERPLAN_NOTICE,
+            "label": source_label(number),
+            "value": number,
+        }
+        for number in extract_notice_numbers(text)
+    )
+    return payloads
 
 
-def source_label(url: str) -> str:
-    host = (urlparse(str(url or "")).hostname or "").lower().removeprefix("www.")
-    if classify_source_url(url) == SOURCE_KIND_OFFICIAL:
+def official_notice_number_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if host != "zakupki.gov.ru" and not host.endswith(".zakupki.gov.ru"):
+        return ""
+    query = parse_qs(parsed.query)
+    for key in ("regNumber", "purchaseNoticeNumber", "reestrNumber", "purchaseNumber"):
+        for value in query.get(key) or []:
+            number = str(value or "").strip()
+            if NOTICE_NUMBER_RE.fullmatch(number):
+                return number
+    return ""
+
+
+def source_label(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.isdigit() and len(raw) in {11, 19}:
+        return f"Закупка {raw}"
+    host = (urlparse(raw).hostname or "").lower().removeprefix("www.")
+    if classify_source_url(raw) == SOURCE_KIND_OFFICIAL:
         return "ЕИС / zakupki.gov.ru"
     return host or "площадка закупки"
 
@@ -80,7 +121,16 @@ def build_source_context_block(*, kind: str, url: str, text: str) -> str:
     clean_text = str(text or "").strip()
     if not clean_text:
         return ""
-    if kind == SOURCE_KIND_OFFICIAL:
+    if kind == SOURCE_KIND_TENDERPLAN_NOTICE:
+        title = f"=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ ПО НОМЕРУ ИЗВЕЩЕНИЯ ({url}) ==="
+        instruction = (
+            "Это структурированные данные по номеру извещения: карточка, сроки, "
+            "нацрежим, документы и разъяснения из ЕИС. Используй эти данные как "
+            "основной источник критичных полей карточки закупки; даты ниже считай московским временем, "
+            "если источник явно не говорит иное. Разъяснения и ответы заказчика имеют приоритет над "
+            "исходной редакцией ТЗ."
+        )
+    elif kind == SOURCE_KIND_OFFICIAL:
         title = f"=== ОФИЦИАЛЬНЫЙ ИСТОЧНИК ЗАКУПКИ: ЕИС ({url}) ==="
         instruction = (
             "Это официальный источник закупки. Эти данные имеют прямой приоритет для номера "
@@ -105,9 +155,39 @@ def build_source_context_block(*, kind: str, url: str, text: str) -> str:
 
 
 async def fetch_source_context(kind: str, url: str) -> SourceFetchResult:
+    if kind == SOURCE_KIND_TENDERPLAN_NOTICE:
+        from .tenderplan import fetch_tenderplan_source_sync
+
+        result = await asyncio.to_thread(fetch_tenderplan_source_sync, url)
+        return SourceFetchResult(
+            ok=result.ok,
+            context=result.context,
+            source_url=result.notice_number or url,
+            status=result.status,
+            error=result.error,
+            extracted_chars=len(result.context),
+            downloaded_files=result.downloaded_files,
+        )
+
     normalized_url = normalize_source_url(url)
     if not normalized_url:
         return SourceFetchResult(ok=False, source_url=url, status="invalid_url", error="Некорректная ссылка")
+
+    official_notice_number = official_notice_number_from_url(normalized_url) if kind == SOURCE_KIND_OFFICIAL else ""
+    if official_notice_number:
+        from .tenderplan import fetch_tenderplan_source_sync
+
+        result = await asyncio.to_thread(fetch_tenderplan_source_sync, official_notice_number)
+        if result.ok and result.context:
+            return SourceFetchResult(
+                ok=True,
+                context=result.context,
+                source_url=result.notice_number or official_notice_number,
+                status=result.status or "ok",
+                error=result.error,
+                extracted_chars=len(result.context),
+                downloaded_files=result.downloaded_files,
+            )
 
     pages: list[dict] = []
     candidates = candidate_source_urls(normalized_url, kind)
@@ -181,7 +261,7 @@ def candidate_source_urls(url: str, kind: str) -> list[str]:
         urls.append(url.replace("common-info.html", "lot-list.html"))
         urls.append(url.replace("common-info.html", "documents.html"))
     query = parse_qs(parsed.query)
-    reg_number = (query.get("regNumber") or [""])[0]
+    reg_number = official_notice_number_from_url(url) or (query.get("regNumber") or [""])[0]
     if reg_number and reg_number.isdigit():
         urls.extend(
             [

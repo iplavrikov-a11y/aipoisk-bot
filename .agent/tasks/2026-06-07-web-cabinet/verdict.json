@@ -1,0 +1,6 @@
+{
+  "task": "2026-06-07-web-cabinet",
+  "status": "complete",
+  "verified_at": "2026-06-07T19:07:31Z",
+  "summary": "Implemented and deployed the website cabinet, replaced technical customer-facing copy with task-oriented UX, added manual password recovery through admin, legal pages, operations runbook, fixed production web-session timezone handling, and verified with backend tests, frontend builds, production HTTP/Playwright smoke, and a temporary live registration/session/reset flow that was cleaned up."
+}

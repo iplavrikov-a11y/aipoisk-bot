@@ -81,7 +81,7 @@ class SupplierEvalSuiteTests(unittest.IsolatedAsyncioTestCase):
                 )
             raise AssertionError(f"unexpected routing key {routing_key}")
 
-        async def fake_discover(_settings, queries: list[str], max_results: int):
+        async def fake_discover(_settings, queries: list[str], max_results: int, **kwargs):
             query = queries[0]
             case = next(item for item in cases if item["item_name"] in query)
             return (

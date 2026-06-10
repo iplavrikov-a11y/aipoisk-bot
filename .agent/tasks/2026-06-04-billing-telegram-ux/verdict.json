@@ -1,0 +1,147 @@
+{
+  "status": "passed",
+  "checked_at": "2026-06-04",
+  "verified": {
+    "compileall": "passed",
+    "targeted_backend_tests": "Telegram-account delete follow-up: 26 passed, 2 warnings; Client balance/admin UX cleanup: 57 passed, 2 warnings; Client username/manual-ID/delete update: 29 passed, 2 warnings; Incident recovery: 29 passed for tests/test_billing.py and tests/test_bot_progress.py; Final Telegram UX polish: 24 passed; previous billing/API guard check: 35 passed, 2 warnings",
+    "full_backend_tests": "Admin button/delete-client follow-up: 169 passed, 2 warnings",
+    "frontend_build": "passed: latest admin button/delete-client follow-up build completed successfully",
+    "diff_check": "passed",
+    "production_services": "passed: aipoisk-api, aipoisk-bot, aipoisk-worker, and nginx active",
+    "production_health": "passed: localhost and HTTPS health returned ok=true",
+    "production_frontend": "passed: HTTPS root serves current JS/CSS assets with 200 responses",
+    "production_schema": "passed: tariff/billing tables plus contact_email/contact_telegram/contact_website/payment_instructions settings fields exist; integrity ok",
+    "production_admin_smoke": "passed: HTTPS login, protected reads, website/default payment settings, tariff create/price_rub patch/delete cleanup",
+    "production_logs": "passed: no traceback/exception/failed/critical/error matches after restart",
+    "production_telegram_bot_restart": "passed: aipoisk-bot.service restarted and remained active",
+    "telegram_detached_instance_incident": "fixed: job_id is captured before DB session close in single-file and batch launch flows; latest affected supplier job was completed and its xlsx was delivered, then reserved unit was charged",
+    "telegram_recovery_delivery": "passed: Last Tasks can deliver completed jobs with unsettled reservations and charge only after successful file delivery",
+    "post_incident_logs": "passed: no traceback/exception/failed/critical/error/DetachedInstanceError matches after 2026-06-04 09:37:33 UTC restart",
+    "client_username_manual_id_update": "passed: admin can create clients by name + Telegram usernames, keep manual Telegram ID entry, and hide pending internal IDs from the UI",
+    "client_delete_update": "passed: admin UI has a Delete action; API deletes clients with no jobs even when billing rows exist, removes those billing rows, and rejects clients with jobs to preserve report/billing history",
+    "client_username_resolution": "passed: bot /start resolves a pending username entry to the real Telegram ID on first user contact",
+    "client_balance_admin_ux_cleanup": "passed: admin can grant arbitrary units by function without creating a tariff; packages are optional templates; Telegram ID/name/username rows are editable; client card hides access date/trial noise and collapses balance history by default",
+    "telegram_account_delete_update": "passed: admin UI has a compact delete icon for each Telegram account; API deletes extra accounts, rejects deleting the last account, and reassigns primary Telegram ID when needed",
+    "non_expiring_access_rule": "passed: access_until is ignored for commercial access and Telegram cabinet no longer displays an access-expiration line",
+    "playwright_clients_visual_smoke": {
+      "ok": true,
+      "desktopOk": true,
+      "mobileOk": true,
+      "screenshots": {
+        "desktop": "/tmp/aipoisk-clients-desktop.png",
+        "mobile": "/tmp/aipoisk-clients-mobile.png"
+      },
+      "desktop": {
+        "hasClientNameFirst": true,
+        "hasTelegramUsernames": true,
+        "hasManualId": true,
+        "hasCompactHeading": true,
+        "hasDeleteButton": true,
+        "hasAccountDeleteButton": true,
+        "hasManualGrant": true,
+        "hasGrantType": true,
+        "hasGrantUnits": true,
+        "hasGrantTemplate": true,
+        "hasEditableTelegramId": true,
+        "hasSaveAccountButton": true,
+        "historyCollapsed": true,
+        "hasAccessDateCopy": false,
+        "hasTrialCopyInClientCard": false,
+        "hasPendingCopy": false,
+        "hasOldFirstManagerId": false,
+        "hasTelegramTextarea": false,
+        "panelHeight": 184,
+        "submitWidth": 132,
+        "horizontalOverflow": false
+      },
+      "mobile": {
+        "hasClientNameFirst": true,
+        "hasTelegramUsernames": true,
+        "hasManualId": true,
+        "hasCompactHeading": true,
+        "hasDeleteButton": true,
+        "hasAccountDeleteButton": true,
+        "hasManualGrant": true,
+        "hasGrantType": true,
+        "hasGrantUnits": true,
+        "hasGrantTemplate": true,
+        "hasEditableTelegramId": true,
+        "hasSaveAccountButton": true,
+        "historyCollapsed": true,
+        "hasAccessDateCopy": false,
+        "hasTrialCopyInClientCard": false,
+        "hasPendingCopy": false,
+        "hasOldFirstManagerId": false,
+        "hasTelegramTextarea": false,
+        "panelHeight": 431,
+        "submitWidth": 320,
+        "horizontalOverflow": false
+      }
+    },
+    "production_clients_api_smoke": "passed: authenticated /api/clients returned 2 clients and includes is_pending on client/account payloads",
+    "production_client_delete_smoke": "passed: temporary pending client was created and deleted; client count returned from 2 to 2",
+    "production_admin_button_smoke": "passed: Playwright live admin check covered 32 button/navigation actions on https://aipoisk.lexelence.ru with 0 failed API responses, 0 console errors, and 0 page errors",
+    "production_old_test_client_cleanup": "passed: old Тестовый клиент / Telegram ID 123456789 was deleted through the admin UI and confirmed absent from the DB",
+    "production_telegram_account_delete_smoke": "passed: temporary client with two Telegram accounts was created; extra Telegram account was deleted via API; one account remained; temporary client was deleted",
+    "telegram_bot_api_commands": "passed: getMyCommands returned [] after restart/profile refresh; hidden handlers remain as fallback but no /status or /id command list is exposed",
+    "telegram_ux_visual_snapshot": {
+      "ok": true,
+      "screenshots": {
+        "mobile": "/tmp/aipoisk-telegram-mobile.png",
+        "desktop": "/tmp/aipoisk-telegram-desktop.png"
+      },
+      "mobile": {
+        "horizontalOverflow": false,
+        "overflowingButtons": [],
+        "hasManualCommandPrompt": false,
+        "hasIdMainButton": false,
+        "hasDuplicatePaymentHeading": false,
+        "hasZeroEta": false,
+        "hasStartButton": true
+      },
+      "desktop": {
+        "horizontalOverflow": false,
+        "overflowingButtons": [],
+        "hasManualCommandPrompt": false,
+        "hasIdMainButton": false,
+        "hasDuplicatePaymentHeading": false,
+        "hasZeroEta": false,
+        "hasStartButton": true
+      }
+    },
+    "playwright_tariff_visual_smoke": {
+      "ok": true,
+      "createdPriceKopeks": 150000,
+      "hasKopeksLabel": false,
+      "hasTariffOrderLabel": false,
+      "desktopOverflow": [],
+      "mobileOverflow": [],
+      "consoleErrors": []
+    },
+    "playwright_production_tariff_contact_smoke": {
+      "ok": true,
+      "contactEmail": "snab@dealpartner.ru",
+      "contactTelegram": "@lexelence",
+      "contactWebsite": "tenderlex.ru",
+      "hasDescriptionLabel": false,
+      "hasOldDescriptionText": false,
+      "hasPriceLabel": true,
+      "hasKopeksText": false,
+      "hasTariffOrderLabel": false,
+      "desktopOverflow": [],
+      "mobileOverflow": [],
+      "consoleErrors": []
+    },
+    "telegram_contact_text": "passed: bot text includes @lexelence, snab@dealpartner.ru, and tenderlex.ru",
+    "playwright_visual_audit": {
+      "desktopBillingOverflow": false,
+      "desktopClientGrantOverflow": false,
+      "mobileBillingOverflow": false,
+      "mobileClientGrantOverflow": false
+    }
+  },
+  "known_gaps": [
+    "YooKassa payment creation, webhook confirmation, and automatic paid package grants are not implemented in this phase.",
+    "The visual Telegram audit used generated Telegram-like screenshots from real bot functions, not screenshots from a real Telegram mobile/desktop client session."
+  ]
+}

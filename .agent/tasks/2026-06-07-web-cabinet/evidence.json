@@ -1,0 +1,130 @@
+{
+  "task": "2026-06-07-web-cabinet",
+  "checks": [
+    {
+      "name": "backend customer api targeted",
+      "command": "PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_customer_api.py -q",
+      "result": "7 passed"
+    },
+    {
+      "name": "backend guards/access/customer",
+      "command": "PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_api_guards.py backend/tests/test_access_limits.py backend/tests/test_customer_api.py -q",
+      "result": "54 passed"
+    },
+    {
+      "name": "backend full test suite",
+      "command": "PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests -q",
+      "result": "240 passed, 43 subtests passed"
+    },
+    {
+      "name": "site typecheck",
+      "command": "cd site && npm run typecheck",
+      "result": "passed"
+    },
+    {
+      "name": "site build",
+      "command": "cd site && npm run build",
+      "result": "passed"
+    },
+    {
+      "name": "admin build",
+      "command": "cd frontend && npm run build",
+      "result": "passed"
+    },
+    {
+      "name": "playwright smoke",
+      "command": "TARGET_URL=http://127.0.0.1:3094 node run.js /tmp/playwright-test-tenderlex-cabinet.js",
+      "result": "passed"
+    },
+    {
+      "name": "customer session env example",
+      "command": "rg -n \"AIPOISK_CUSTOMER_SESSION_HOURS\" .env.example",
+      "result": "AIPOISK_CUSTOMER_SESSION_HOURS=168"
+    },
+    {
+      "name": "production service restart",
+      "command": "systemctl restart aipoisk-api.service aipoisk-worker.service tenderlex-site.service",
+      "result": "exited 0"
+    },
+    {
+      "name": "production service status",
+      "command": "systemctl --no-pager --full status aipoisk-api.service aipoisk-worker.service tenderlex-site.service",
+      "result": "aipoisk-api, aipoisk-worker, tenderlex-site active since 2026-06-07 17:03:56 UTC"
+    },
+    {
+      "name": "local backend health",
+      "command": "curl -fsS http://127.0.0.1:8088/api/health",
+      "result": "{\"ok\":true,\"domain\":\"https://tenderlex.ru\",\"logistics_enabled\":false}"
+    },
+    {
+      "name": "local customer session endpoint",
+      "command": "curl -i -s http://127.0.0.1:8088/api/customer/auth/session",
+      "result": "HTTP/1.1 200 OK; {\"authenticated\":false}"
+    },
+    {
+      "name": "public customer session endpoint",
+      "command": "curl -i -s https://tenderlex.ru/api/customer/auth/session",
+      "result": "HTTP/2 200; {\"authenticated\":false}"
+    },
+    {
+      "name": "public robots private paths",
+      "command": "curl -fsS https://tenderlex.ru/robots.txt | rg 'Disallow: /cabinet|Disallow: /api/'",
+      "result": "Disallow: /api/; Disallow: /cabinet"
+    },
+    {
+      "name": "public landing CTA",
+      "command": "curl -fsS https://tenderlex.ru/ | tr '<' '\\n' | rg 'Личный кабинет|Попробовать на сайте|Открыть Telegram'",
+      "result": "landing includes web cabinet and Telegram CTAs"
+    },
+    {
+      "name": "public cabinet noindex",
+      "command": "curl -fsS https://tenderlex.ru/cabinet | tr '<' '\\n' | rg 'Личный кабинет TenderLex|noindex, nofollow|отдельный web-баланс'",
+      "result": "cabinet includes H1, noindex, and separate web-balance copy"
+    },
+    {
+      "name": "production playwright desktop smoke",
+      "command": "node playwright smoke against https://tenderlex.ru/",
+      "result": "home H1, cabinet H1, cabinet CTA, login, registration, email visible; no console errors"
+    },
+    {
+      "name": "production playwright mobile smoke",
+      "command": "node playwright smoke against https://tenderlex.ru/cabinet",
+      "result": "mobile cabinet H1, login, email visible; no console errors"
+    },
+    {
+      "name": "cabinet copy cleanup",
+      "command": "curl -fsS https://tenderlex.ru/cabinet | tr '<' '\\n' | rg 'Работайте с закупками прямо на сайте|Разобрать закупку|Найти поставщиков|Не помню пароль'",
+      "result": "new user-facing cabinet copy present; old technical copy removed"
+    },
+    {
+      "name": "password reset api",
+      "command": "curl -i -s -X POST https://tenderlex.ru/api/customer/auth/password-reset/request",
+      "result": "HTTP/2 200; neutral success message"
+    },
+    {
+      "name": "legal pages",
+      "command": "curl checks for /terms, /privacy, /personal-data and sitemap",
+      "result": "legal pages return expected H1 text; sitemap includes all legal pages"
+    },
+    {
+      "name": "session timezone fix",
+      "command": "PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_customer_api.py -q",
+      "result": "get_web_session_by_token handles SQLite naive datetimes; 7 passed"
+    },
+    {
+      "name": "production web registration smoke",
+      "command": "temporary smoke-web-* registration/session/jobs/reset request, then guarded cleanup",
+      "result": "registration authenticated, session matched, jobs returned [], reset request succeeded, smoke users remaining: 0"
+    },
+    {
+      "name": "operations runbook",
+      "command": "docs/TENDERLEX_WEB_CABINET_RUNBOOK.md",
+      "result": "manual top-up, password recovery, live scenario, legal pages, YooKassa prep, deploy checklist documented"
+    },
+    {
+      "name": "final status",
+      "command": "systemctl is-active aipoisk-api.service aipoisk-worker.service tenderlex-site.service && curl -fsS http://127.0.0.1:8088/api/health",
+      "result": "all services active; health ok"
+    }
+  ]
+}

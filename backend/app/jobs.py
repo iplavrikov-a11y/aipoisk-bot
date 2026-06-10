@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import re
 import shutil
@@ -8,15 +10,25 @@ import socket
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, or_
+from sqlalchemy.orm import Session, aliased
 
 from . import document_parser
+from .billing import (
+    KIND_SUPPLIER_SEARCH,
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CONFIRMATION_EXPIRED,
+    STATUS_CUSTOMER_DECLINED,
+    release_job_kind_reservation,
+    release_job_reservation,
+    expire_stale_confirmations,
+)
 from .config import config
 from .db import SessionLocal
 from .models import Job, JobFile, JobSource, SupplierResult, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
+    SOURCE_KIND_TENDERPLAN_NOTICE,
     classify_source_url,
     fetch_source_context_sync,
     source_label,
@@ -26,9 +38,18 @@ from .procurement_report import generate_procurement_report
 from .repository import get_or_create_settings
 from .report_builder import write_evidence, write_procurement_docx, write_supplier_xlsx, zip_paths
 from .supplier_search import discover_suppliers, extract_supplier_search_context
+from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
 
 _RUNNING: set[str] = set()
-TERMINAL_JOB_STATUSES = {"completed", "partial", "needs_review", "failed"}
+TERMINAL_JOB_STATUSES = {
+    "completed",
+    "partial",
+    "needs_review",
+    "failed",
+    STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CUSTOMER_DECLINED,
+    STATUS_CONFIRMATION_EXPIRED,
+}
 STALE_RUNNING_AFTER = timedelta(minutes=30)
 WORKER_POLL_INTERVAL_SECONDS = 2.0
 MODE_SUPPLIER_SEARCH = "supplier_search"
@@ -36,6 +57,8 @@ MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
 RESULT_STEM_MAX_BYTES = 220
+SUPPLIER_EXCLUSIONS_FILENAME = "excluded_suppliers.json"
+logger = logging.getLogger(__name__)
 
 
 def job_dir(job_id: str) -> Path:
@@ -53,6 +76,12 @@ def create_job(
     files: list[tuple[str, bytes]],
     sources: list[dict] | None = None,
 ) -> Job:
+    normalized_sources = _normalized_job_sources(sources or [])
+    if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
+        raise ValueError(
+            "Режим поиска поставщиков принимает только файл или текст ТЗ. "
+            "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
+        )
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
@@ -76,7 +105,7 @@ def create_job(
         stored_path.parent.mkdir(parents=True, exist_ok=True)
         stored_path.write_bytes(content)
         db.add(JobFile(job_id=job.id, original_filename=filename, stored_path=str(stored_path)))
-    for source in _normalized_job_sources(sources or []):
+    for source in normalized_sources:
         db.add(
             JobSource(
                 job_id=job.id,
@@ -108,6 +137,29 @@ def enqueue_job(job_id: str) -> None:
     # Jobs are durable queue items: API and bot only persist pending jobs.
     # app.worker is responsible for claiming and processing them.
     return None
+
+
+def write_supplier_exclusions(job: Job, *, previous_job_id: str, suppliers: list[dict]) -> Path:
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / SUPPLIER_EXCLUSIONS_FILENAME
+    payload = {
+        "previous_job_id": previous_job_id,
+        "suppliers": [item for item in suppliers if isinstance(item, dict)],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_supplier_exclusions(job: Job) -> list[dict]:
+    path = job_dir(job.id) / "input" / SUPPLIER_EXCLUSIONS_FILENAME
+    if not path.exists():
+        return []
+    payload = parse_json_dict(path.read_text(encoding="utf-8"))
+    suppliers = payload.get("suppliers")
+    if not isinstance(suppliers, list):
+        return []
+    return [item for item in suppliers if isinstance(item, dict)]
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -150,45 +202,56 @@ def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNN
 def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STALE_RUNNING_AFTER) -> str | None:
     now = now_utc()
     stale_cutoff = now - stale_after
+    eligible_status_filter = or_(
+        Job.status == "pending",
+        and_(Job.status == "running", Job.updated_at < stale_cutoff),
+    )
+    fair_client_filter = _client_has_no_active_running_job_filter(stale_cutoff)
     jobs = (
         db.query(Job)
-        .filter(
-            or_(
-                Job.status == "pending",
-                and_(Job.status == "running", Job.updated_at < stale_cutoff),
-            )
-        )
+        .filter(eligible_status_filter)
+        .filter(fair_client_filter)
         .order_by(Job.created_at.asc())
-        .limit(20)
+        .limit(100)
         .all()
     )
     for job in jobs:
         if job.status == "pending" or should_requeue_stale_job(job.status, job.updated_at, now, stale_after):
-            rows = (
-                db.query(Job)
-                .filter(Job.id == job.id)
-                .filter(
-                    or_(
-                        Job.status == "pending",
-                        and_(Job.status == "running", Job.updated_at < stale_cutoff),
-                    )
-                )
-                .update(
-                    {
-                        Job.status: "running",
-                        Job.progress: 0,
-                        Job.message: "Задача взята в обработку",
-                        Job.error: "",
-                        Job.updated_at: now,
-                    },
-                    synchronize_session=False,
-                )
+            claim_query = db.query(Job).filter(Job.id == job.id).filter(
+                eligible_status_filter,
+                fair_client_filter,
+            )
+            rows = claim_query.update(
+                {
+                    Job.status: "running",
+                    Job.progress: 0,
+                    Job.message: "Задача взята в обработку",
+                    Job.error: "",
+                    Job.updated_at: now,
+                },
+                synchronize_session=False,
             )
             if rows:
                 db.commit()
                 return job.id
             db.rollback()
     return None
+
+
+def _active_client_job_exists(stale_cutoff: datetime):
+    active_job = aliased(Job)
+    return exists().where(
+        and_(
+            active_job.client_id == Job.client_id,
+            active_job.id != Job.id,
+            active_job.status == "running",
+            or_(active_job.updated_at.is_(None), active_job.updated_at >= stale_cutoff),
+        )
+    )
+
+
+def _client_has_no_active_running_job_filter(stale_cutoff: datetime):
+    return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
 
 
 async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 3.0) -> Job | None:
@@ -209,17 +272,62 @@ async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, p
         await asyncio.sleep(poll_interval)
 
 
-async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS) -> None:
+def _normalized_worker_concurrency(value: int | str | None) -> int:
+    try:
+        parsed = int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, parsed)
+
+
+def _claim_job_for_worker(worker_id: str) -> str | None:
+    db = SessionLocal()
+    try:
+        expire_stale_confirmations(db)
+        return claim_next_job(db, worker_id=worker_id)
+    finally:
+        db.close()
+
+
+def _fill_worker_slots(running_tasks: set[asyncio.Task[None]], *, worker_id: str, concurrency: int) -> int:
+    claimed = 0
+    while len(running_tasks) < concurrency:
+        job_id = _claim_job_for_worker(worker_id)
+        if not job_id:
+            break
+        running_tasks.add(asyncio.create_task(process_job(job_id)))
+        claimed += 1
+    return claimed
+
+
+def _consume_finished_worker_tasks(tasks: set[asyncio.Task[None]]) -> None:
+    for task in tasks:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Worker task failed")
+
+
+async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, concurrency: int | None = None) -> None:
     init_worker_database()
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    worker_concurrency = _normalized_worker_concurrency(concurrency if concurrency is not None else config.worker_concurrency)
+    running_tasks: set[asyncio.Task[None]] = set()
     while True:
-        db = SessionLocal()
-        try:
-            job_id = claim_next_job(db, worker_id=worker_id)
-        finally:
-            db.close()
-        if job_id:
-            await process_job(job_id)
+        finished = {task for task in running_tasks if task.done()}
+        if finished:
+            running_tasks.difference_update(finished)
+            _consume_finished_worker_tasks(finished)
+
+        claimed = _fill_worker_slots(running_tasks, worker_id=worker_id, concurrency=worker_concurrency)
+        if running_tasks:
+            timeout = 0 if claimed else poll_interval
+            done, _pending = await asyncio.wait(running_tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if done:
+                running_tasks.difference_update(done)
+                _consume_finished_worker_tasks(done)
             continue
         await asyncio.sleep(poll_interval)
 
@@ -268,18 +376,34 @@ def _process_job_sync(job_id: str) -> None:
         source_count = len(job.sources)
         for index, source in enumerate(job.sources, start=1):
             stage = "extract_sources"
-            _set_job(db, job, status="running", progress=3 + int(5 * (index - 1) / max(1, source_count)), message=f"Читаю ссылку закупки: {index}/{source_count}")
-            result = fetch_source_context_sync(source.kind, source.value)
-            source.parse_status = result.status
-            source.extracted_chars = result.extracted_chars
-            source.error = result.error
-            if result.context:
-                source_dir = job_dir(job.id) / "input" / "sources"
-                source_dir.mkdir(parents=True, exist_ok=True)
-                context_path = source_dir / f"{index:02d}_{source.kind}.txt"
-                context_path.write_text(result.context, encoding="utf-8")
-                source.context_path = str(context_path)
-                source_blocks.append(result.context)
+            label = "номер извещения" if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE else "ссылку закупки"
+            _set_job(db, job, status="running", progress=3 + int(5 * (index - 1) / max(1, source_count)), message=f"Читаю {label}: {index}/{source_count}")
+            if source.kind == SOURCE_KIND_TENDERPLAN_NOTICE:
+                result = fetch_tenderplan_source_sync(source.value)
+                source.parse_status = result.status
+                source.extracted_chars = len(result.context)
+                source.error = result.error
+                if result.context:
+                    _update_job_title_from_source_context(job, result.context)
+                    context_path = _persist_source_context(job, index, source.kind, result.context)
+                    source.context_path = str(context_path)
+                    source_blocks.append(result.context)
+                if result.downloaded_files:
+                    _store_tenderplan_downloaded_files(db, job, result.downloaded_files)
+                    db.expire(job, ["files"])
+            else:
+                result = fetch_source_context_sync(source.kind, source.value)
+                source.parse_status = result.status
+                source.extracted_chars = result.extracted_chars
+                source.error = result.error
+                if result.context:
+                    _update_job_title_from_source_context(job, result.context)
+                    context_path = _persist_source_context(job, index, source.kind, result.context)
+                    source.context_path = str(context_path)
+                    source_blocks.append(result.context)
+                if result.downloaded_files:
+                    _store_tenderplan_downloaded_files(db, job, result.downloaded_files)
+                    db.expire(job, ["files"])
             db.commit()
 
         document_options = parse_json_dict(settings.document_settings_json)
@@ -297,6 +421,7 @@ def _process_job_sync(job_id: str) -> None:
         file_context = document_parser.combined_document_context(parsed)
         context = "\n\n".join([*source_blocks, file_context]).strip()
         if len(context.strip()) < 50:
+            release_job_reservation(db, job, note="Резерв возвращён: документы или ссылки не прочитались")
             _set_job(
                 db,
                 job,
@@ -322,6 +447,7 @@ def _process_job_sync(job_id: str) -> None:
     except Exception as exc:
         job = db.get(Job, job_id)
         if job:
+            release_job_reservation(db, job, note="Резерв возвращён: задача завершилась ошибкой")
             _persist_failure_evidence(db, job, exc, stage=stage)
             _set_job(db, job, status="failed", progress=100, message="Ошибка обработки", error=str(exc))
             job.completed_at = now_utc()
@@ -345,6 +471,7 @@ def build_failure_evidence(job: Job, exc: Exception, *, stage: str) -> dict:
             "message": str(exc)[:2000],
         },
         "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
         "contract": (
             "Supplier report was not generated because AI-required supplier search failed before verified results were produced."
             if supplier_search
@@ -368,6 +495,84 @@ def _job_sources_evidence(job: Job) -> list[dict]:
             }
         )
     return result
+
+
+def _job_files_evidence(job: Job) -> list[dict]:
+    files = getattr(job, "files", []) or []
+    result: list[dict] = []
+    for file in files:
+        result.append(
+            {
+                "filename": getattr(file, "original_filename", ""),
+                "parse_status": getattr(file, "parse_status", ""),
+                "extracted_chars": getattr(file, "extracted_chars", 0),
+                "error": getattr(file, "error", ""),
+            }
+        )
+    return result
+
+
+GENERIC_SOURCE_TITLE_RE = re.compile(
+    r"^(?:закупка\s+\d{11,19}|номер извещения|документация|source-only|"
+    r"(?:tenderplan|тендер\s*план|тендерплан)\s*(?:[-:]\s*)?(?:номер извещения)?)$",
+    re.I,
+)
+
+
+def _is_generic_source_title(value: object) -> bool:
+    text = _clean_label(value).lower()
+    if not text or GENERIC_SOURCE_TITLE_RE.fullmatch(text):
+        return True
+    has_notice_phrase = "номер извещения" in text
+    has_internal_brand = "tender" in text or "тендер" in text or "tande" in text
+    return has_notice_phrase and has_internal_brand
+
+
+def _extract_title_from_source_context(context: str) -> str:
+    text = str(context or "")
+    patterns = (
+        r"(?m)^\s*-\s*Наименование\s*:\s*(.+)$",
+        r"(?mi)^\s*(?:предмет|объект)\s+закупк[ии]\s*[:\-]\s*(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = _short_label(match.group(1), limit=120)
+        if value and not _is_generic_source_title(value):
+            return value
+    return ""
+
+
+def _update_job_title_from_source_context(job: Job, context: str) -> None:
+    title = _extract_title_from_source_context(context)
+    has_uploaded_files = bool(getattr(job, "files", []) or [])
+    if title and (_is_generic_source_title(job.title) or not has_uploaded_files):
+        job.title = title
+
+
+def _persist_source_context(job: Job, index: int, kind: str, context: str) -> Path:
+    source_dir = job_dir(job.id) / "input" / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    context_path = source_dir / f"{index:02d}_{kind}.txt"
+    context_path.write_text(context, encoding="utf-8")
+    return context_path
+
+
+def _store_tenderplan_downloaded_files(db: Session, job: Job, files: list[TenderplanDownloadedFile]) -> None:
+    input_dir = job_dir(job.id) / "input" / "tenderplan"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    existing_names = {Path(str(item.stored_path)).name for item in getattr(job, "files", []) or []}
+    for index, downloaded in enumerate(files, start=1):
+        safe_name = document_parser.sanitize_filename(downloaded.filename)
+        stored_name = f"{index:02d}_{safe_name}"
+        while stored_name in existing_names:
+            stored_name = f"{index:02d}_{len(existing_names) + 1}_{safe_name}"
+        existing_names.add(stored_name)
+        stored_path = input_dir / stored_name
+        stored_path.write_bytes(downloaded.content)
+        db.add(JobFile(job_id=job.id, original_filename=downloaded.filename, stored_path=str(stored_path)))
+    job.file_count = int(job.file_count or 0) + len(files)
 
 
 def _persist_failure_evidence(db: Session, job: Job, exc: Exception, *, stage: str) -> None:
@@ -421,7 +626,7 @@ def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
 
 def _source_title(job: Job) -> str:
     title = _clean_label(job.title)
-    if title:
+    if title and not _is_generic_source_title(title):
         return title
     files = getattr(job, "files", []) or []
     if files:
@@ -462,18 +667,33 @@ def _subject_from_report_text(markdown: str) -> str:
 def _analysis_report_title(job: Job, subject: str) -> str:
     source = _source_title(job)
     item = _short_label(subject)
-    if source and item:
-        return f"Анализ документации: {source} - {item}"
+    if item:
+        return f"Анализ документации: {item}"
     return f"Анализ документации: {source}" if source else "Анализ документации"
+
+
+def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
+    item = _short_label(subject)
+    if not item:
+        return
+    if job.mode == MODE_PROCUREMENT_REPORT:
+        job.title = f"Анализ закупки: {item}"
+    elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        job.title = f"Анализ + поиск: {item}"
+    elif job.mode == MODE_SUPPLIER_SEARCH:
+        job.title = f"ТЗ: {item}"
 
 
 def _result_stem(job: Job, subject: str) -> str:
     source = _source_title(job)
     item = _short_label(subject)
-    base = f"{source} - {item}" if item else source
+    if item:
+        base = item
+    else:
+        base = source
     base = re.sub(r"[()\[\]{}]+", " ", base)
     base = re.sub(r"\s+", " ", base).strip()
-    return _truncate_filename_component(document_parser.sanitize_filename(base), RESULT_STEM_MAX_BYTES, fallback="result")
+    return _truncate_filename_component(document_parser.sanitize_filename(base), RESULT_STEM_MAX_BYTES, fallback="анализ_закупки")
 
 
 def _truncate_filename_component(value: str, max_bytes: int, *, fallback: str) -> str:
@@ -497,25 +717,37 @@ def _clean_label(value: object) -> str:
 
 
 def _process_supplier_search(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=25, message="Запускаю AI-поиск поставщиков")
+    _set_job(db, job, progress=25, message="Запускаю ИИ-поиск поставщиков")
 
     async def progress_callback(progress: int, message: str) -> None:
         _set_job(db, job, status="running", progress=progress, message=message)
 
-    accepted, evidence = asyncio.run(discover_suppliers(settings, context, job.target_suppliers, progress_callback=progress_callback))
+    excluded_suppliers = _load_supplier_exclusions(job)
+    accepted, evidence = asyncio.run(
+        discover_suppliers(
+            settings,
+            context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+        )
+    )
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
     _persist_supplier_rows(db, job, accepted)
     job.verified_count = len(accepted)
-    _set_job(db, job, status="running", progress=97, message="Формирую XLSX и evidence")
+    _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(evidence)
+    source_title = _source_title(job)
     evidence["subject"] = subject
-    evidence["source_title"] = _source_title(job)
+    evidence["source_title"] = source_title
     evidence["sources"] = _job_sources_evidence(job)
     evidence_path = write_evidence(out_dir / "evidence.json", evidence)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if not accepted:
         job.result_path = ""
+        release_job_reservation(db, job, note="Резерв возвращён: поставщики не найдены")
         _set_job(
             db,
             job,
@@ -529,7 +761,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         return
 
     xlsx_path = write_supplier_xlsx(
-        out_dir / f"{_result_stem(job, subject)}_{job.id[:8]}.xlsx",
+        out_dir / f"{_result_stem(job, subject)}_поставщики.xlsx",
         accepted,
         title=job.title,
         subject=subject,
@@ -540,8 +772,8 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         status = "completed"
         message = _supplier_count_message("Готово", len(accepted), job.target_suppliers)
     elif settings.allow_partial_supplier_reports:
-        status = "partial"
-        message = _supplier_count_message("Частично готово", len(accepted), job.target_suppliers)
+        status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        message = _supplier_count_message("Найдено меньше поставщиков", len(accepted), job.target_suppliers)
     else:
         status = "needs_review"
         message = _supplier_count_message("Нужна ручная проверка", len(accepted), job.target_suppliers)
@@ -551,14 +783,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
 
 def _process_procurement_report(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=45, message="AI готовит анализ документации")
+    _set_job(db, job, progress=45, message="ИИ готовит анализ документации")
     result = asyncio.run(generate_procurement_report(settings, context))
-    _set_job(db, job, progress=90, message="Формирую отчёт и evidence")
+    _set_job(db, job, progress=90, message="Формирую отчёт и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_report_text(result.report)
     report_title = _analysis_report_title(job, subject)
+    source_title = _source_title(job)
     docx_path = write_procurement_docx(
-        out_dir / f"{_result_stem(job, subject)}_анализ_{job.id[:8]}.docx",
+        out_dir / f"{_result_stem(job, subject)}_анализ.docx",
         result.report,
         title=report_title,
     )
@@ -567,8 +800,9 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         {
             "mode": job.mode,
             "subject": subject,
-            "source_title": _source_title(job),
+            "source_title": source_title,
             "sources": _job_sources_evidence(job),
+            "files": _job_files_evidence(job),
             "output_files": [{"kind": "analysis", "path": str(docx_path)}],
             "ai_used": result.ai_used,
             "ai_model": result.ai_model,
@@ -580,13 +814,14 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     )
     job.result_path = str(docx_path)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if result.warning:
         _set_job(
             db,
             job,
             status="needs_review",
             progress=100,
-            message="Анализ готов, нужна проверка AI-настроек",
+            message="Анализ готов, нужна проверка ИИ-настроек",
             error=result.warning,
         )
     else:
@@ -596,7 +831,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 
 
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
-    _set_job(db, job, progress=25, message="AI готовит анализ документации")
+    _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
     report = asyncio.run(generate_procurement_report(settings, context))
     _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
     supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
@@ -616,12 +851,14 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     subject = _subject_from_supplier_evidence(supplier_evidence) or _subject_from_report_text(report.report)
     stem = _result_stem(job, subject)
     report_title = _analysis_report_title(job, subject)
-    docx_path = write_procurement_docx(out_dir / f"{stem}_анализ_{job.id[:8]}.docx", report.report, title=report_title)
+    docx_path = write_procurement_docx(out_dir / f"{stem}_анализ.docx", report.report, title=report_title)
+    source_title = _source_title(job)
     evidence_payload = {
         "mode": job.mode,
         "subject": subject,
-        "source_title": _source_title(job),
+        "source_title": source_title,
         "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
         "report": {
             "ai_used": report.ai_used,
             "ai_model": report.ai_model,
@@ -641,7 +878,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     xlsx_path = None
     if accepted:
         xlsx_path = write_supplier_xlsx(
-            out_dir / f"{stem}_поставщики_{job.id[:8]}.xlsx",
+            out_dir / f"{stem}_поставщики.xlsx",
             accepted,
             title=job.title,
             subject=subject,
@@ -652,10 +889,17 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         output_files.append({"kind": "suppliers", "path": str(xlsx_path)})
     evidence_payload["output_files"] = output_files
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
-    zip_path = zip_paths(out_dir / f"{stem}_{job.id[:8]}.zip", [Path(item["path"]) for item in output_files])
+    zip_path = zip_paths(out_dir / f"{stem}.zip", [Path(item["path"]) for item in output_files])
     job.result_path = str(zip_path)
     job.evidence_path = str(evidence_path)
+    _set_customer_job_title_from_subject(job, subject)
     if not accepted:
+        release_job_kind_reservation(
+            db,
+            job,
+            KIND_SUPPLIER_SEARCH,
+            note="Резерв поставщиков возвращён: подтверждённых поставщиков нет",
+        )
         _set_job(
             db,
             job,
@@ -665,11 +909,18 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             error="Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
         )
     elif report.warning:
-        _set_job(db, job, status="needs_review", progress=100, message="Анализ и поставщики готовы, нужна проверка AI-настроек", error=report.warning)
+        _set_job(db, job, status="needs_review", progress=100, message="Анализ и поставщики готовы, нужна проверка ИИ-настроек", error=report.warning)
     elif len(accepted) >= job.target_suppliers:
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
     else:
-        _set_job(db, job, status="partial", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
+        _set_job(
+            db,
+            job,
+            status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+            progress=100,
+            message=_supplier_count_message("Анализ готов, найдено меньше поставщиков", len(accepted), job.target_suppliers),
+            error="",
+        )
     job.completed_at = now_utc()
     db.commit()
 
@@ -687,15 +938,23 @@ def package_job_outputs(job: Job) -> Path | None:
 
 
 def package_job_output_files(job: Job) -> list[Path]:
+    return [Path(item["path"]) for item in package_job_output_items(job)]
+
+
+def package_job_output_items(job: Job) -> list[dict]:
     if job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        paths = _output_files_from_evidence(job)
-        if paths:
-            return paths
+        items = _output_file_items_from_evidence(job)
+        if items:
+            return items
     output = package_job_outputs(job)
-    return [output] if output and output.exists() else []
+    if not output or not output.exists():
+        return []
+    kind = "analysis" if job.mode == MODE_PROCUREMENT_REPORT else "suppliers"
+    label = "Анализ" if kind == "analysis" else "Поставщики"
+    return [{"kind": kind, "label": label, "path": str(output)}]
 
 
-def _output_files_from_evidence(job: Job) -> list[Path]:
+def _output_file_items_from_evidence(job: Job) -> list[dict]:
     evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
     if not evidence_path.exists():
         return []
@@ -707,7 +966,7 @@ def _output_files_from_evidence(job: Job) -> list[Path]:
     if not isinstance(files, list):
         return []
     out_dir = job_dir(job.id).resolve() / "output"
-    paths: list[Path] = []
+    items: list[dict] = []
     for item in files:
         if not isinstance(item, dict):
             continue
@@ -717,8 +976,10 @@ def _output_files_from_evidence(job: Job) -> list[Path]:
         except ValueError:
             continue
         if path.exists():
-            paths.append(path)
-    return paths
+            kind = str(item.get("kind") or "").strip() or path.stem
+            label = str(item.get("label") or "").strip() or {"analysis": "Анализ", "suppliers": "Поставщики"}.get(kind, kind)
+            items.append({"kind": kind, "label": label, "path": str(path)})
+    return items
 
 
 def cleanup_expired_jobs(db: Session, settings=None) -> int:
@@ -733,7 +994,7 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         .filter(
             or_(
                 and_(
-                    Job.status.in_(["completed", "partial", "needs_review"]),
+                    Job.status.in_(["completed", "partial", "needs_review", STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED]),
                     Job.completed_at.is_not(None),
                     Job.completed_at < completed_cutoff,
                 ),

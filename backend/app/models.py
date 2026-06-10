@@ -9,6 +9,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+DEFAULT_PAYMENT_INSTRUCTIONS = (
+    "🧾 Чтобы купить пакет:\n"
+    "1. Выберите нужный пакет в списке выше.\n"
+    "2. Напишите менеджеру в Telegram (приоритетно), MAX или на email.\n"
+    "3. Укажите название пакета и ваш Telegram ID.\n"
+    "4. После подтверждения оплаты генерации будут начислены вручную.\n\n"
+    "✅ Пакеты не сгорают и действуют до полного исчерпания."
+)
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -22,14 +31,14 @@ class SystemSettings(Base):
     __tablename__ = "system_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    public_base_url: Mapped[str] = mapped_column(String(255), default="https://aipoisk.lexelence.ru")
+    public_base_url: Mapped[str] = mapped_column(String(255), default="https://tenderlex.ru")
 
     storage_retention_days: Mapped[int] = mapped_column(Integer, default=90)
     completed_job_retention_days: Mapped[int] = mapped_column(Integer, default=90)
     failed_job_retention_days: Mapped[int] = mapped_column(Integer, default=30)
     max_upload_mb: Mapped[int] = mapped_column(Integer, default=50)
     max_files_per_batch: Mapped[int] = mapped_column(Integer, default=20)
-    default_supplier_target: Mapped[int] = mapped_column(Integer, default=15)
+    default_supplier_target: Mapped[int] = mapped_column(Integer, default=25)
     allow_partial_supplier_reports: Mapped[bool] = mapped_column(Boolean, default=True)
     logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -41,6 +50,8 @@ class SystemSettings(Base):
     primary_model: Mapped[str] = mapped_column(String(160), default="")
     light_provider: Mapped[str] = mapped_column(String(80), default="")
     light_model: Mapped[str] = mapped_column(String(160), default="")
+    supplier_ai_provider: Mapped[str] = mapped_column(String(80), default="")
+    supplier_ai_model: Mapped[str] = mapped_column(String(160), default="")
     custom_ai_providers_json: Mapped[str] = mapped_column(Text, default="[]")
     saved_models_json: Mapped[str] = mapped_column(Text, default="[]")
     ai_function_models_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -58,6 +69,17 @@ class SystemSettings(Base):
     report_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     document_settings_json: Mapped[str] = mapped_column(Text, default="{}")
     bot_messages_json: Mapped[str] = mapped_column(Text, default="{}")
+    bot_telegram: Mapped[str] = mapped_column(String(255), default="@tenderlex_bot")
+    contact_email: Mapped[str] = mapped_column(String(255), default="")
+    contact_telegram: Mapped[str] = mapped_column(String(255), default="")
+    contact_max: Mapped[str] = mapped_column(String(255), default="")
+    contact_max_link: Mapped[str] = mapped_column(String(255), default="")
+    contact_website: Mapped[str] = mapped_column(String(255), default="")
+    payment_instructions: Mapped[str] = mapped_column(Text, default=DEFAULT_PAYMENT_INSTRUCTIONS)
+    payment_provider: Mapped[str] = mapped_column(String(40), default="manual")
+    yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
+    yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
+    yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -80,6 +102,8 @@ class SystemSettings(Base):
             "primary_model": self.primary_model,
             "light_provider": self.light_provider,
             "light_model": self.light_model,
+            "supplier_ai_provider": self.supplier_ai_provider,
+            "supplier_ai_model": self.supplier_ai_model,
             "custom_ai_providers_json": self.custom_ai_providers_json,
             "saved_models_json": self.saved_models_json,
             "ai_function_models_json": self.ai_function_models_json,
@@ -95,12 +119,24 @@ class SystemSettings(Base):
             "report_settings_json": self.report_settings_json,
             "document_settings_json": self.document_settings_json,
             "bot_messages_json": self.bot_messages_json,
+            "bot_telegram": self.bot_telegram,
+            "contact_email": self.contact_email,
+            "contact_telegram": self.contact_telegram,
+            "contact_max": self.contact_max,
+            "contact_max_link": self.contact_max_link,
+            "contact_website": self.contact_website,
+            "payment_instructions": self.payment_instructions or DEFAULT_PAYMENT_INSTRUCTIONS,
+            "payment_provider": self.payment_provider or "manual",
+            "yookassa_shop_id": self.yookassa_shop_id,
+            "yookassa_secret_key_set": bool(self.yookassa_secret_key),
+            "yookassa_return_url": self.yookassa_return_url,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
             data["supplier_search_adapter_api_key"] = self.supplier_search_adapter_api_key
             data["yandex_search_api_key"] = self.yandex_search_api_key
             data["google_search_api_key"] = self.google_search_api_key
+            data["yookassa_secret_key"] = self.yookassa_secret_key
         return data
 
     @property
@@ -123,10 +159,11 @@ class Client(Base):
     access_until: Mapped[str] = mapped_column(String(32), default="")
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
-    monthly_job_limit: Mapped[int] = mapped_column(Integer, default=100)
-    monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=100)
-    monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=100)
+    monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_file_limit: Mapped[int] = mapped_column(Integer, default=300)
+    supplier_target_min: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -136,6 +173,11 @@ class Client(Base):
         back_populates="client",
         cascade="all, delete-orphan",
     )
+    web_users: Mapped[list["WebUser"]] = relationship(
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
+    billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
 
 
 class ClientTelegramAccount(Base):
@@ -152,6 +194,94 @@ class ClientTelegramAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     client: Mapped[Client] = relationship(back_populates="telegram_accounts")
+
+
+class WebUser(Base):
+    __tablename__ = "web_users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, default="")
+    name: Mapped[str] = mapped_column(String(255), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship(back_populates="web_users")
+    sessions: Mapped[list["WebSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    password_reset_requests: Mapped[list["WebPasswordResetRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    email_verification_tokens: Mapped[list["WebEmailVerificationToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class WebSession(Base):
+    __tablename__ = "web_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_token: Mapped[str] = mapped_column(String(128), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    ip_address: Mapped[str] = mapped_column(String(80), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    user: Mapped[WebUser] = relationship(back_populates="sessions")
+
+
+class WebPasswordResetRequest(Base):
+    __tablename__ = "web_password_reset_requests"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="open", index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    admin_note: Mapped[str] = mapped_column(Text, default="")
+    resolved_by: Mapped[str] = mapped_column(String(80), default="")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebEmailVerificationToken(Base):
+    __tablename__ = "web_email_verification_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="email_verification_tokens")
+
+
+class WebRegistrationAttempt(Base):
+    __tablename__ = "web_registration_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
 class Job(Base):
@@ -179,6 +309,40 @@ class Job(Base):
     files: Mapped[list["JobFile"]] = relationship(back_populates="job", cascade="all, delete-orphan")
     sources: Mapped[list["JobSource"]] = relationship(back_populates="job", cascade="all, delete-orphan")
     suppliers: Mapped[list["SupplierResult"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="job")
+
+
+class TariffPackage(Base):
+    __tablename__ = "tariff_packages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    units: Mapped[int] = mapped_column(Integer, default=1)
+    price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class BillingTransaction(Base):
+    __tablename__ = "billing_transactions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    package_id: Mapped[str] = mapped_column(String(32), default="")
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    units: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    client: Mapped[Client] = relationship(back_populates="billing_transactions")
+    job: Mapped[Job | None] = relationship(back_populates="billing_transactions")
 
 
 class JobFile(Base):

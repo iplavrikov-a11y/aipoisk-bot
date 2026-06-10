@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import config
@@ -23,11 +23,34 @@ def _database_url() -> str:
     return url
 
 
+DATABASE_URL = _database_url()
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _sqlite_connect_args(database_url: str) -> dict:
+    if not database_url.startswith("sqlite"):
+        return {}
+    return {"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+
+
+def _configure_sqlite_connection(dbapi_connection) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 engine = create_engine(
-    _database_url(),
-    connect_args={"check_same_thread": False} if _database_url().startswith("sqlite") else {},
+    DATABASE_URL,
+    connect_args=_sqlite_connect_args(DATABASE_URL),
     pool_pre_ping=True,
 )
+
+if DATABASE_URL.startswith("sqlite"):
+    event.listen(engine, "connect", lambda dbapi_connection, _connection_record: _configure_sqlite_connection(dbapi_connection))
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
@@ -57,16 +80,34 @@ def _ensure_schema() -> None:
         "trial_supplier_search_limit": "INTEGER DEFAULT 0",
         "trial_procurement_report_limit": "INTEGER DEFAULT 0",
         "trial_file_limit": "INTEGER DEFAULT 10",
+        "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
+        "contact_email": "VARCHAR(255) DEFAULT ''",
+        "contact_telegram": "VARCHAR(255) DEFAULT ''",
+        "contact_max": "VARCHAR(255) DEFAULT ''",
+        "contact_max_link": "VARCHAR(255) DEFAULT ''",
+        "contact_website": "VARCHAR(255) DEFAULT ''",
+        "payment_instructions": "TEXT DEFAULT ''",
+        "payment_provider": "VARCHAR(40) DEFAULT 'manual'",
+        "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
+        "yookassa_secret_key": "TEXT DEFAULT ''",
+        "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
+        "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
+        "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
     }
     clients_existing = _existing_columns(inspector, "clients")
     client_additions = {
         "is_trial": "BOOLEAN DEFAULT 0",
         "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
         "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
+        "supplier_target_min": "INTEGER DEFAULT 0",
     }
     jobs_existing = _existing_columns(inspector, "jobs")
     job_additions = {
         "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
+    }
+    web_users_existing = _existing_columns(inspector, "web_users")
+    web_user_additions = {
+        "is_email_verified": "BOOLEAN DEFAULT 1",
     }
     supplier_results_existing = _existing_columns(inspector, "supplier_results")
     supplier_results_additions = {
@@ -101,6 +142,23 @@ def _ensure_schema() -> None:
                     """
                 )
             )
+        if (
+            "supplier_ai_provider" not in system_settings_existing
+            and "supplier_ai_model" not in system_settings_existing
+            and "light_provider" in system_settings_existing
+            and "light_model" in system_settings_existing
+        ):
+            connection.execute(
+                text(
+                    """
+                    UPDATE system_settings
+                    SET supplier_ai_provider = COALESCE(light_provider, ''),
+                        supplier_ai_model = COALESCE(light_model, '')
+                    WHERE (supplier_ai_provider IS NULL OR TRIM(supplier_ai_provider) = '')
+                      AND (supplier_ai_model IS NULL OR TRIM(supplier_ai_model) = '')
+                    """
+                )
+            )
         added_client_columns: set[str] = set()
         for column, definition in client_additions.items():
             if column not in clients_existing:
@@ -113,6 +171,9 @@ def _ensure_schema() -> None:
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
+        for column, definition in web_user_additions.items():
+            if web_users_existing and column not in web_users_existing:
+                connection.execute(text(f"ALTER TABLE web_users ADD COLUMN {column} {definition}"))
         for column, definition in supplier_results_additions.items():
             if column not in supplier_results_existing:
                 connection.execute(text(f"ALTER TABLE supplier_results ADD COLUMN {column} {definition}"))
