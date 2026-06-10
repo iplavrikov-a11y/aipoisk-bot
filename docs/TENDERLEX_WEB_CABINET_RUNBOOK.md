@@ -7,6 +7,9 @@
 - Online payment is not enabled yet.
 - Web users and Telegram users are separate. Web clients are identified in admin data as `web:<id>`.
 - Web access is topped up manually from the admin panel.
+- Linked Telegram and website accounts share the same customer job history.
+  A Telegram-launched job can therefore appear in the website cabinet; this is
+  not a duplicate job.
 - The cabinet mirrors the Telegram bot scenarios:
   - `Одно ТЗ`
   - `Несколько ТЗ`
@@ -24,6 +27,16 @@
 - `Анализ закупки` accepts a notice number, source link, uploaded procurement materials, or archive. It must not ask the customer for a separate "what to check" field.
 - `Анализ + поиск` accepts the same procurement inputs and creates the combined analysis plus supplier-search flow. It must not ask the customer for a separate "what to check" field.
 - The supplier count is owner-controlled in admin/settings; customers should not choose it in the cabinet.
+- Customer task history is paginated at 15 tasks per page.
+- Customer-visible timestamps are shown in Moscow time. Backend storage remains UTC.
+- If a supplier search underfills the target, the Telegram bot must show one
+  customer-facing confirmation message only: the found count, the fact that the
+  file is incomplete, and the buttons to send-and-charge or decline. It must
+  not send internal task IDs, filesystem paths, evidence paths, provider details,
+  or separate owner diagnostic alerts into the customer chat.
+- Finished supplier-search jobs can offer `Найти ещё`; the customer must confirm
+  that one supplier-search generation will be spent before an additional search
+  starts.
 
 ## Manual Top-Up
 
@@ -88,13 +101,16 @@ Use this checklist after deploy:
 13. Confirm no `Что особенно проверить` or `Что важно учесть` field is visible.
 14. Start a supplier search from text or a test file.
 15. Start a procurement analysis from a notice number, link, or document.
-16. Confirm tasks appear in `Задачи`, progress updates, and finished results can be downloaded.
+16. Confirm tasks appear in `Задачи`, pagination shows 15 tasks per page, progress updates, and finished results can be downloaded.
 17. For a procurement where the published documents indicate an active
     prohibition, confirm the analysis says the Minpromtorg registry extract is
     required and `evidence.json` has `supplier_search.minprom_registry.required`
     set to `true`. If the registry search returns no entries, the supplier
     result must say to request registry confirmation instead of claiming that a
     supplier already satisfies the registry requirement.
+18. For a partial supplier-search result in Telegram, confirm there is only one
+    confirmation message with send/decline buttons and no internal paths or job
+    IDs.
 
 ## Legal Pages
 
@@ -122,19 +138,23 @@ Do not switch payment mode to `YooKassa` until checkout creation, webhook proces
 From repo root:
 
 ```bash
-PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests -q
-cd site && npm run typecheck && npm run build
-cd ../frontend && npm run build
-systemctl restart aipoisk-api.service aipoisk-worker.service tenderlex-site.service
-curl -fsS http://127.0.0.1:8088/api/health
-curl -i -s https://tenderlex.ru/api/customer/auth/session
+./scripts/deploy_tenderlex_live.sh
 ```
 
-For site-only copy/UI changes, at minimum run:
+This script is the release gate for cabinet/site/backend changes: it runs backend
+tests, builds the admin panel and public site, backs up SQLite, restarts the
+FastAPI API, worker, bot, and public site services when safe, then checks the
+live API, site routes, and Yandex Metrika placement. Do not report a
+cabinet/site change as live until this script, or the same evidence-equivalent
+sequence, has passed.
 
-```bash
-cd site && npm run typecheck && npm run build
-systemctl restart tenderlex-site.service
-curl -I https://tenderlex.ru/
-curl -I https://tenderlex.ru/cabinet
-```
+Safety behavior:
+
+- before service restarts, the script checks SQLite for `pending` jobs and fresh
+  `running` jobs;
+- if active jobs exist, the script skips `aipoisk-api.service`,
+  `aipoisk-worker.service`, and `aipoisk-bot.service` restarts because worker and
+  bot are `PartOf=aipoisk-api.service`;
+- `tenderlex-site.service` can still restart during active backend jobs;
+- use `AIPOISK_FORCE_JOB_SERVICE_RESTART=1` only when deliberately interrupting
+  active jobs.

@@ -169,6 +169,7 @@ type Job = {
   verified_count: number
   file_count: number
   has_result: boolean
+  has_evidence: boolean
   error: string
   created_at: string
 }
@@ -211,6 +212,8 @@ type SettingsPayload = {
   bot_telegram: string
   contact_email: string
   contact_telegram: string
+  contact_max: string
+  contact_max_link: string
   contact_website: string
   payment_instructions: string
   payment_provider: string
@@ -219,6 +222,13 @@ type SettingsPayload = {
   yookassa_secret_key?: string
   yookassa_return_url: string
   supplier_search_ui: SupplierSearchUi
+}
+
+type SettingsPatchPayload = Partial<SettingsPayload> & {
+  supplier_search_adapter_api_key?: string
+  yandex_search_api_key?: string
+  google_search_api_key?: string
+  yookassa_secret_key?: string
 }
 
 type TariffPackage = {
@@ -396,6 +406,7 @@ type AiTestState = {
 }
 
 const apiBase = ''
+const ADMIN_JOBS_PAGE_SIZE = 12
 const procurementAiRoutingKeys = [
   'procurement_document_analysis',
   'procurement_report_verification',
@@ -436,11 +447,11 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   billing: {
     title: 'Тарифы',
-    description: 'Пакеты как витрина, произвольные начисления клиентам и контактные инструкции для оплаты.',
+    description: 'Пакеты как витрина и произвольные начисления клиентам.',
   },
   settings: {
     title: 'Настройки',
-    description: 'Бесплатный период, контакты, хранение файлов и поиск поставщиков.',
+    description: 'Контакты, ручная оплата, бесплатный период, хранение файлов и поиск поставщиков.',
   },
   ai: {
     title: 'ИИ-модели',
@@ -764,11 +775,25 @@ function formatDuration(seconds: number) {
   return minutes >= 1 ? `${minutes} мин` : `${safeSeconds} сек`
 }
 
+const MOSCOW_TIME_ZONE = 'Europe/Moscow'
+
+function apiDateValue(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return trimmed
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed}T00:00:00Z`
+  }
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) {
+    return trimmed
+  }
+  return `${trimmed}Z`
+}
+
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
-  const date = new Date(value)
+  const date = new Date(apiDateValue(value))
   if (Number.isNaN(date.getTime())) return String(value).slice(0, 16)
-  return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
+  return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
 export function App() {
@@ -799,7 +824,7 @@ export function App() {
       const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
-        api<Job[]>('/api/jobs?include_internal=true'),
+        api<Job[]>('/api/jobs?include_internal=true&limit=500'),
         api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
@@ -952,7 +977,7 @@ export function App() {
         {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'quality' && <QualityView quality={quality} />}
-        {isReady && view === 'billing' && settings && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
+        {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
       </main>
@@ -1139,7 +1164,7 @@ function AnalyticsView({ analytics }: { analytics: BotAnalytics | null }) {
           {analytics.jobs.daily.map(item => (
             <div className="daily-bar" key={item.date} title={`${item.date}: ${item.total}`}>
               <span style={{ height: `${Math.max(6, Math.round(item.total * 100 / maxDaily))}%` }} />
-              <small>{new Date(item.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</small>
+              <small>{new Date(apiDateValue(item.date)).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', timeZone: MOSCOW_TIME_ZONE })}</small>
             </div>
           ))}
         </div>
@@ -1773,6 +1798,7 @@ function fallbackDownloadName(job: Job, extension: string) {
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
   const [evidence, setEvidence] = useState<{ job: Job; payload: unknown } | null>(null)
+  const [page, setPage] = useState(1)
   const [showInternalJobs, setShowInternalJobs] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
   const [modeFilter, setModeFilter] = useState('')
@@ -1792,19 +1818,35 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         job.message,
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
     })
-  const visibleJobs = filteredJobs.slice(0, 30)
+  const pageCount = Math.max(1, Math.ceil(filteredJobs.length / ADMIN_JOBS_PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const pageStart = (currentPage - 1) * ADMIN_JOBS_PAGE_SIZE
+  const visibleJobs = filteredJobs.slice(pageStart, pageStart + ADMIN_JOBS_PAGE_SIZE)
   const hiddenInternalCount = showInternalJobs ? 0 : jobs.filter(job => job.is_internal).length
-  const hiddenByLimitCount = Math.max(0, filteredJobs.length - visibleJobs.length)
   const statusOptions = Array.from(new Set(jobs.map(job => job.status).filter(Boolean)))
   const modeOptions = Array.from(new Set(jobs.map(job => job.mode).filter(Boolean)))
+  const shownFrom = filteredJobs.length ? pageStart + 1 : 0
+  const shownTo = Math.min(filteredJobs.length, pageStart + visibleJobs.length)
+
+  useEffect(() => {
+    setPage(1)
+  }, [showInternalJobs, statusFilter, modeFilter, normalizedQuery])
 
   async function retry(job: Job) {
     await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
     await onChange()
   }
   async function showEvidence(job: Job) {
-    const payload = await api<unknown>(`/api/jobs/${job.id}/evidence`)
-    setEvidence({ job, payload })
+    setEvidence(null)
+    if (!job.has_evidence) {
+      return
+    }
+    try {
+      const payload = await api<unknown>(`/api/jobs/${job.id}/evidence`)
+      setEvidence({ job, payload })
+    } catch (err) {
+      setEvidence({ job, payload: { error: formatError(err) } })
+    }
   }
   async function download(job: Job) {
     const response = await fetch(`/api/jobs/${job.id}/download`, { credentials: 'same-origin' })
@@ -1826,7 +1868,14 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   return (
     <section className="stack">
       <div className="list-toolbar">
-        <strong>Показано задач: {visibleJobs.length}</strong>
+        <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
+        {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
+          <div className="list-pagination toolbar-pagination">
+            <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
+            <span>Страница {currentPage} из {pageCount}</span>
+            <button className="ghost small-text" onClick={() => setPage(value => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>Вперёд</button>
+          </div>
+        )}
         <input
           className="toolbar-search"
           placeholder="Найти задачу, клиента или Telegram ID"
@@ -1841,7 +1890,6 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           <option value="">Все режимы</option>
           {modeOptions.map(mode => <option key={mode} value={mode}>{humanMode(mode)}</option>)}
         </select>
-        {hiddenByLimitCount > 0 && <span>Ещё {hiddenByLimitCount} старых задач скрыто, чтобы список не превращался в простыню.</span>}
         {hiddenInternalCount > 0 && (
           <label>
             <input type="checkbox" checked={showInternalJobs} onChange={e => setShowInternalJobs(e.target.checked)} />
@@ -1849,6 +1897,15 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           </label>
         )}
       </div>
+      {evidence && (
+        <div className="wide-panel full-width-panel job-evidence-panel">
+          <div className="panel-heading">
+            <h2>Данные проверки: {evidence.job.human_title || humanMode(evidence.job.mode)}</h2>
+            <button className="ghost small-text" onClick={() => setEvidence(null)}>Закрыть</button>
+          </div>
+          <pre className="json-view">{stringify(evidence.payload)}</pre>
+        </div>
+      )}
       <div className="job-list">
         {visibleJobs.map(job => (
           <article className={job.is_internal ? 'job-card service' : 'job-card'} key={job.id}>
@@ -1866,20 +1923,18 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             <Progress value={job.progress} note={job.message || humanStatus(job.status)} />
             <div className="row-actions">
               {job.has_result && <button className="icon-button small" onClick={() => void download(job)} title="Скачать"><Download size={15} /></button>}
-              <button className="icon-button small" onClick={() => void showEvidence(job)} title="Данные проверки"><FileText size={15} /></button>
+              {job.has_evidence && <button className="icon-button small" onClick={() => void showEvidence(job)} title="Данные проверки"><FileText size={15} /></button>}
               <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
             </div>
           </article>
         ))}
         {!visibleJobs.length && <div className="empty inline-empty">Нет пользовательских задач для показа.</div>}
       </div>
-      {evidence && (
-        <div className="wide-panel full-width-panel">
-          <div className="panel-heading">
-            <h2>Данные проверки: {evidence.job.human_title || humanMode(evidence.job.mode)}</h2>
-            <button className="ghost small-text" onClick={() => setEvidence(null)}>Закрыть</button>
-          </div>
-          <pre className="json-view">{stringify(evidence.payload)}</pre>
+      {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
+        <div className="list-pagination">
+          <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
+          <span>Страница {currentPage} из {pageCount}</span>
+          <button className="ghost small-text" onClick={() => setPage(value => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>Вперёд</button>
         </div>
       )}
     </section>
@@ -1965,42 +2020,8 @@ function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
   )
 }
 
-function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]; settings: SettingsPayload; onChange: () => Promise<void> }) {
+function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
   const [newTariff, setNewTariff] = useState({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
-  const [contactDraft, setContactDraft] = useState({
-    bot_telegram: settings.bot_telegram || '@tenderlex_bot',
-    contact_email: settings.contact_email || '',
-    contact_telegram: settings.contact_telegram || '',
-    contact_website: settings.contact_website || '',
-    payment_instructions: settings.payment_instructions || '',
-  })
-  const [paymentDraft, setPaymentDraft] = useState({
-    payment_provider: settings.payment_provider || 'manual',
-    yookassa_shop_id: settings.yookassa_shop_id || '',
-    yookassa_return_url: settings.yookassa_return_url || '',
-  })
-  const [yookassaSecret, setYookassaSecret] = useState('')
-
-  useEffect(() => {
-    setContactDraft({
-      bot_telegram: settings.bot_telegram || '@tenderlex_bot',
-      contact_email: settings.contact_email || '',
-      contact_telegram: settings.contact_telegram || '',
-      contact_website: settings.contact_website || '',
-      payment_instructions: settings.payment_instructions || '',
-    })
-    setPaymentDraft({
-      payment_provider: settings.payment_provider || 'manual',
-      yookassa_shop_id: settings.yookassa_shop_id || '',
-      yookassa_return_url: settings.yookassa_return_url || '',
-    })
-  }, [settings])
-  useEffect(() => {
-    void api<{ yookassa_secret_key?: string }>('/api/settings/keys')
-      .then(data => setYookassaSecret(data.yookassa_secret_key || ''))
-      .catch(() => setYookassaSecret(''))
-  }, [])
-
   async function createTariff() {
     await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
     setNewTariff({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
@@ -2012,20 +2033,6 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
   }
   async function deleteTariff(item: TariffPackage) {
     await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
-    await onChange()
-  }
-  async function saveContacts() {
-    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(contactDraft) })
-    await onChange()
-  }
-  async function savePaymentSettings() {
-    const payload: Partial<SettingsPayload> = {
-      ...paymentDraft,
-    }
-    if (yookassaSecret.trim() || !settings.yookassa_secret_key_set) {
-      payload.yookassa_secret_key = yookassaSecret
-    }
-    await api('/api/settings', { method: 'PATCH', body: JSON.stringify(payload) })
     await onChange()
   }
   const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
@@ -2045,44 +2052,14 @@ function BillingView({ tariffs, settings, onChange }: { tariffs: TariffPackage[]
           <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
           <NumberField label="Генераций" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
           <NumberField label="Цена, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
-          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать в боте</label>
+          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать клиентам</label>
         </div>
+        <p className="field-help">Активные пакеты показываются и в боте, и на сайте.</p>
         <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
       </div>
 
       <TariffGroup title="Поставщики" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
       <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-
-      <div className="form-panel full-width-panel">
-        <h2>Контакты и ручная оплата</h2>
-        <div className="settings-grid compact-grid">
-          <TextField label="Telegram-бот для пробного запуска и работы" value={contactDraft.bot_telegram} onChange={value => setContactDraft({ ...contactDraft, bot_telegram: value })} />
-          <TextField label="Email" value={contactDraft.contact_email} onChange={value => setContactDraft({ ...contactDraft, contact_email: value })} />
-          <TextField label="Telegram для связи и оплаты" value={contactDraft.contact_telegram} onChange={value => setContactDraft({ ...contactDraft, contact_telegram: value })} />
-          <TextField label="Сайт" value={contactDraft.contact_website} onChange={value => setContactDraft({ ...contactDraft, contact_website: value })} />
-        </div>
-        <TextArea className="payment-textarea" label="Инструкция оплаты в боте" value={contactDraft.payment_instructions} onChange={value => setContactDraft({ ...contactDraft, payment_instructions: value })} />
-        <p className="field-help">Пока YooKassa не подключена, бот показывает эту инструкцию, email, Telegram и сайт. Реквизиты не подставляются автоматически.</p>
-        <button onClick={() => void saveContacts()}><CheckCircle2 size={16} />Сохранить контакты</button>
-      </div>
-
-      <div className="form-panel full-width-panel">
-        <h2>YooKassa</h2>
-        <div className="settings-grid compact-grid">
-          <label className="field">
-            <span>Режим оплаты</span>
-            <select value={paymentDraft.payment_provider} onChange={e => setPaymentDraft({ ...paymentDraft, payment_provider: e.target.value })}>
-              <option value="manual">Ручная оплата</option>
-              <option value="yookassa">YooKassa</option>
-            </select>
-          </label>
-          <TextField label="Shop ID" value={paymentDraft.yookassa_shop_id} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_shop_id: value })} />
-          <TextField label="Return URL" value={paymentDraft.yookassa_return_url} onChange={value => setPaymentDraft({ ...paymentDraft, yookassa_return_url: value })} />
-          <SecretField label="Secret key" value={yookassaSecret} onChange={setYookassaSecret} />
-        </div>
-        <p className="field-help">Это заготовка настроек кассы. Приём платежей включим отдельным шагом после подключения YooKassa.</p>
-        <button onClick={() => void savePaymentSettings()}><Save size={16} />Сохранить оплату</button>
-      </div>
     </section>
   )
 }
@@ -2097,7 +2074,7 @@ function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tar
             <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
             <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
             <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> В боте</label>
+            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Клиентам</label>
             <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
           </article>
         ))}
@@ -2112,36 +2089,72 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [yookassaSecret, setYookassaSecret] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
+    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string; yookassa_secret_key?: string }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
+        setYookassaSecret(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
+        setYookassaSecret('')
       })
   }, [])
   async function save() {
+    const payload: SettingsPatchPayload = {
+      ...draft,
+      supplier_search_adapter_api_key: adapterKey,
+      yandex_search_api_key: yandexKey,
+      google_search_api_key: googleKey,
+      supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex,google,tavily,ddgs',
+    }
+    if (yookassaSecret.trim() || !settings.yookassa_secret_key_set) {
+      payload.yookassa_secret_key = yookassaSecret
+    }
     await api('/api/settings', {
       method: 'PATCH',
-      body: JSON.stringify({
-        ...draft,
-        supplier_search_adapter_api_key: adapterKey,
-        yandex_search_api_key: yandexKey,
-        google_search_api_key: googleKey,
-        supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex,google,tavily,ddgs',
-      }),
+      body: JSON.stringify(payload),
     })
     await onChange()
   }
   return (
     <section className="settings-grid">
+      <div className="form-panel full">
+        <h2>Контакты и ручная оплата</h2>
+        <div className="settings-grid compact-grid">
+          <TextField label="Telegram-бот для работы" value={draft.bot_telegram} onChange={value => setDraft({ ...draft, bot_telegram: value })} />
+          <TextField label="Telegram для связи и оплаты" value={draft.contact_telegram} onChange={value => setDraft({ ...draft, contact_telegram: value })} />
+          <TextField label="Email" value={draft.contact_email} onChange={value => setDraft({ ...draft, contact_email: value })} />
+          <TextField label="MAX телефон для показа" value={draft.contact_max} onChange={value => setDraft({ ...draft, contact_max: value })} />
+          <TextField label="MAX ссылка из приложения" value={draft.contact_max_link} onChange={value => setDraft({ ...draft, contact_max_link: value })} />
+          <TextField label="Сайт" value={draft.contact_website} onChange={value => setDraft({ ...draft, contact_website: value })} />
+        </div>
+        <p className="field-help">Приоритетная связь для клиентов — Telegram. Для рабочей кнопки MAX вставьте ссылку, скопированную в приложении MAX через профиль, QR или приглашение; телефон используется только как текст рядом с контактом.</p>
+        <TextArea className="payment-textarea" label="Инструкция ручной оплаты" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
+      </div>
+      <div className="form-panel full">
+        <h2>YooKassa</h2>
+        <div className="settings-grid compact-grid">
+          <label className="field">
+            <span>Режим оплаты</span>
+            <select value={draft.payment_provider} onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}>
+              <option value="manual">Ручная оплата</option>
+              <option value="yookassa">YooKassa</option>
+            </select>
+          </label>
+          <TextField label="Shop ID" value={draft.yookassa_shop_id} onChange={value => setDraft({ ...draft, yookassa_shop_id: value })} />
+          <TextField label="Return URL" value={draft.yookassa_return_url} onChange={value => setDraft({ ...draft, yookassa_return_url: value })} />
+          <SecretField label="Secret key" value={yookassaSecret} onChange={setYookassaSecret} />
+        </div>
+        <p className="field-help">Пока YooKassa не подключена, клиентам показываются ручная инструкция, Telegram, MAX, email и сайт. Реквизиты не подставляются автоматически.</p>
+      </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>
         <TextField label="Адрес сайта" value={draft.public_base_url} onChange={value => setDraft({ ...draft, public_base_url: value })} />

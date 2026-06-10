@@ -296,6 +296,7 @@ export default async function Home() {
               subtitle="Компании, контакты и комментарии для запроса КП"
               tariffs={supplierTariffs}
               contactUrl={contactUrl}
+              note="Нужен больший лимит поставщиков или другой объём работы? Напишите нам — обсудим индивидуальные условия под вашу задачу."
             />
             <PricingTable
               icon={FileText}
@@ -351,13 +352,14 @@ export default async function Home() {
             </Button>
             <div className="contact-stack">
               <ContactLink href={data.contacts.telegram_url} icon={MessageCircle} label={data.contacts.telegram} />
+              <ContactLink href={data.contacts.max_url} icon={MessageCircle} label="MAX" staticLabel={data.contacts.max || "MAX"} />
               <ContactLink href={data.contacts.email ? `mailto:${data.contacts.email}` : ""} icon={Mail} label={data.contacts.email} />
             </div>
           </div>
         </div>
       </section>
 
-      <Footer email={data.contacts.email} telegramUrl={data.contacts.telegram_url} telegram={data.contacts.telegram} />
+      <Footer email={data.contacts.email} telegramUrl={data.contacts.telegram_url} telegram={data.contacts.telegram} maxUrl={data.contacts.max_url} max={data.contacts.max} />
     </main>
   );
 }
@@ -523,12 +525,14 @@ function PricingTable({
   subtitle,
   tariffs,
   contactUrl,
+  note,
 }: {
   icon: LucideIcon;
   title: string;
   subtitle: string;
   tariffs: PublicTariff[];
   contactUrl: string;
+  note?: string;
 }) {
   return (
     <article className="pricing-table">
@@ -552,6 +556,7 @@ function PricingTable({
           </div>
         ))}
       </div>
+      {note ? <p className="pricing-note">{note}</p> : null}
       <Button asChild variant="secondary">
         <a href={contactUrl} target={contactUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
           Выбрать пакет
@@ -592,9 +597,18 @@ function ResultPoint({ title, text }: { title: string; text: string }) {
   );
 }
 
-function ContactLink({ href, icon: Icon, label }: { href: string; icon: LucideIcon; label: string }) {
-  if (!href || !label) {
+function ContactLink({ href, icon: Icon, label, staticLabel }: { href: string; icon: LucideIcon; label: string; staticLabel?: string }) {
+  const fallbackLabel = staticLabel || label;
+  if (!fallbackLabel) {
     return null;
+  }
+  if (!href) {
+    return (
+      <span className="contact-link contact-link-static">
+        <Icon size={17} aria-hidden="true" />
+        {fallbackLabel}
+      </span>
+    );
   }
   return (
     <a className="contact-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
@@ -604,7 +618,7 @@ function ContactLink({ href, icon: Icon, label }: { href: string; icon: LucideIc
   );
 }
 
-function Footer({ email, telegramUrl, telegram }: { email: string; telegramUrl: string; telegram: string }) {
+function Footer({ email, telegramUrl, telegram, maxUrl, max }: { email: string; telegramUrl: string; telegram: string; maxUrl: string; max: string }) {
   return (
     <footer className="site-footer">
       <div className="container footer-inner">
@@ -629,6 +643,7 @@ function Footer({ email, telegramUrl, telegram }: { email: string; telegramUrl: 
         </nav>
         <div className="footer-contacts">
           <a href={telegramUrl} target="_blank" rel="noreferrer">{telegram}</a>
+          {max ? (maxUrl ? <a href={maxUrl} target="_blank" rel="noreferrer">MAX</a> : <span>{max}</span>) : null}
           <a href={`mailto:${email}`}>{email}</a>
         </div>
       </div>

@@ -27,11 +27,16 @@ from app.bot import (
     BUTTON_STATUS,
     BUTTON_SUPPLIERS,
     BUTTON_TARIFFS,
+    INDIVIDUAL_TERMS_NOTE,
     JobProgressSnapshot,
+    OWNER_ALERT_STATUSES,
     PendingBatch,
     _add_pending_sources,
     _contacts_text,
     _edit_or_send_status,
+    _find_more_suppliers_confirmation_text,
+    _find_more_suppliers_offer_keyboard,
+    _find_more_suppliers_offer_text,
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
@@ -183,10 +188,15 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("только подтверждённые компании", text)
         self.assertNotIn("target", text.lower())
 
+    def test_partial_confirmation_status_is_not_internal_owner_alert(self) -> None:
+        self.assertNotIn("awaiting_customer_confirmation", OWNER_ALERT_STATUSES)
+
     def test_contacts_text_includes_site_when_configured(self) -> None:
         settings = SystemSettings(
             id=1,
             contact_telegram="@owner",
+            contact_max="+79210629909",
+            contact_max_link="https://max.ru/invite/owner",
             contact_email="owner@example.ru",
             contact_website="https://aipoisk.example",
         )
@@ -194,6 +204,8 @@ class BotProgressFormattingTests(unittest.TestCase):
         text = _contacts_text(settings, telegram_id="123")
 
         self.assertIn("Telegram: @owner", text)
+        self.assertIn("MAX: +79210629909", text)
+        self.assertIn("MAX ссылка: https://max.ru/invite/owner", text)
         self.assertIn("Email: owner@example.ru", text)
         self.assertIn("Сайт: https://aipoisk.example", text)
         self.assertIn("Ваш Telegram ID: 123", text)
@@ -229,8 +241,20 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Поставщики 20", text)
         self.assertIn("1 500 ₽", text)
         self.assertIn("После подтверждения оплаты генерации будут начислены вручную", text)
+        self.assertIn(INDIVIDUAL_TERMS_NOTE, text)
         self.assertIn(AI_HELP_NOTE, text)
         self.assertNotIn("Как купить пакет:\n🧾 Чтобы купить пакет:", text)
+
+    def test_find_more_supplier_copy_requires_explicit_paid_confirmation(self) -> None:
+        offer_text = _find_more_suppliers_offer_text()
+        confirmation_text = _find_more_suppliers_confirmation_text()
+        keyboard = _find_more_suppliers_offer_keyboard("job-1")
+
+        self.assertIn("Найти ещё", keyboard.inline_keyboard[0][0].text)
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "find_more_prompt:job-1")
+        self.assertIn("дополнительный поиск", offer_text)
+        self.assertIn("Будет списана 1 генерация", confirmation_text)
+        self.assertIn("исключит уже найденные компании", confirmation_text)
 
     def test_start_text_uses_tenderlex_brand(self) -> None:
         text = _start_text()
@@ -425,9 +449,10 @@ class BotProgressFormattingTests(unittest.TestCase):
     def test_supplier_multi_intro_explains_mass_processing_contract(self) -> None:
         text = _supplier_multi_intro_text()
 
-        self.assertIn("ТЗ файлом или текстом", text)
+        self.assertIn("ТЗ файлом, текстом или архивом", text)
         self.assertIn("отдельный поиск поставщиков", text)
         self.assertIn("Проверьте количество добавленных ТЗ", text)
+        self.assertIn("одним архивом", text)
         self.assertIn(BUTTON_RUN_BATCH, text)
 
     def test_supplier_multi_added_text_explains_next_step(self) -> None:
@@ -441,6 +466,8 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("✅ ТЗ добавлено", text)
         self.assertIn("В комплекте: 2/20", text)
+        self.assertIn("разные ТЗ", text)
+        self.assertIn("одним архивом", text)
         self.assertIn(f"нажмите «{BUTTON_RUN_BATCH}»", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
@@ -715,6 +742,64 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(status_message.edits), 1)
         self.assertIn("анализ документации готов", status_message.edits[-1])
 
+    async def test_watch_job_progress_edits_launch_message_into_partial_confirmation(self) -> None:
+        snapshots = [
+            JobProgressSnapshot(
+                id="job-1",
+                mode="supplier_search",
+                status="running",
+                progress=92,
+                message="Расширяю поиск: подтверждено 45",
+                error="",
+                created_at=None,
+            ),
+            JobProgressSnapshot(
+                id="job-1",
+                mode="supplier_search",
+                status="awaiting_customer_confirmation",
+                progress=100,
+                message="Найдено меньше поставщиков: найдено и проверено 36",
+                error="",
+                created_at=None,
+            ),
+        ]
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.answers: list[tuple[str, object]] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.edits: list[tuple[str, object]] = []
+
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
+                return self
+
+            async def answer(self, value: str, reply_markup=None):
+                raise AssertionError(f"unexpected fallback status message: {value}")
+
+        message = FakeMessage()
+        status_message = FakeStatusMessage()
+        original_load = bot_module._load_job_snapshot
+        try:
+            bot_module._load_job_snapshot = lambda _job_id: snapshots.pop(0)
+
+            result = await watch_job_progress(message, "job-1", status_message=status_message, poll_interval=0)
+        finally:
+            bot_module._load_job_snapshot = original_load
+
+        self.assertEqual(result.status, "awaiting_customer_confirmation")
+        self.assertEqual(message.answers, [])
+        self.assertEqual(len(status_message.edits), 1)
+        self.assertIn("Найдено меньше поставщиков", status_message.edits[-1][0])
+        self.assertIsNotNone(status_message.edits[-1][1])
+        self.assertIn("Да, отправить и списать", status_message.edits[-1][1].inline_keyboard[0][0].text)
+
     async def test_send_job_outputs_edits_file_caption_instead_of_sending_balance_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "analysis.docx"
@@ -789,6 +874,80 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✅ Результат отправлен. Баланс обновлён.", message.documents[0].caption)
         self.assertEqual(len(message.documents[0].edits), 1)
         self.assertIsNotNone(message.documents[0].reply_markup)
+
+    async def test_send_job_outputs_offers_find_more_for_supplier_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "suppliers.xlsx"
+            output.write_bytes(b"xlsx")
+
+            done_job = SimpleNamespace(
+                id="job-2",
+                mode=MODE_SUPPLIER_SEARCH,
+                client=SimpleNamespace(id="client-1"),
+                verified_count=8,
+                status="completed",
+            )
+            charges: list[str] = []
+
+            class FakeDb:
+                def get(self, _model, job_id: str):
+                    assert job_id == "job-2"
+                    return done_job
+
+                def close(self) -> None:
+                    return None
+
+            class FakeSentDocument:
+                def __init__(self, caption: str, reply_markup) -> None:
+                    self.caption = caption
+                    self.reply_markup = reply_markup
+                    self.edits: list[tuple[str, object]] = []
+
+                async def edit_caption(self, *, caption: str, reply_markup=None):
+                    self.caption = caption
+                    self.reply_markup = reply_markup
+                    self.edits.append((caption, reply_markup))
+                    return self
+
+            class FakeMessage:
+                def __init__(self) -> None:
+                    self.answers: list[tuple[str, object]] = []
+                    self.documents: list[FakeSentDocument] = []
+
+                async def answer(self, value: str, reply_markup=None):
+                    self.answers.append((value, reply_markup))
+                    return self
+
+                async def answer_document(self, _document, *, caption: str, reply_markup=None):
+                    sent = FakeSentDocument(caption, reply_markup)
+                    self.documents.append(sent)
+                    return sent
+
+            message = FakeMessage()
+            originals = {
+                "SessionLocal": bot_module.SessionLocal,
+                "package_job_output_files": bot_module.package_job_output_files,
+                "charge_job_reservation": bot_module.charge_job_reservation,
+                "_after_delivery_balance_text": bot_module._after_delivery_balance_text,
+            }
+            try:
+                bot_module.SessionLocal = lambda: FakeDb()
+                bot_module.package_job_output_files = lambda _job: [output]
+                bot_module.charge_job_reservation = lambda _db, job: charges.append(job.id)
+                bot_module._after_delivery_balance_text = (
+                    lambda _db, _client: "✅ Результат отправлен. Баланс обновлён."
+                )
+
+                delivered = await _send_job_outputs(message, "job-2")
+            finally:
+                for name, value in originals.items():
+                    setattr(bot_module, name, value)
+
+        self.assertTrue(delivered)
+        self.assertEqual(charges, ["job-2"])
+        self.assertEqual(len(message.answers), 1)
+        self.assertIn("Найти ещё", message.answers[0][0])
+        self.assertEqual(message.answers[0][1].inline_keyboard[0][0].callback_data, "find_more_prompt:job-2")
 
 
 class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):

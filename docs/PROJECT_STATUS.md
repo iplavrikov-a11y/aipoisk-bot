@@ -28,6 +28,10 @@ Current runtime note:
   customers;
 - SQLite runtime connections use WAL mode and a 30-second busy timeout to make
   the current DB-backed queue safer under modest concurrent worker load;
+- live deploys use `scripts/deploy_tenderlex_live.sh`; before restarts it checks
+  for pending or fresh running jobs and skips API/worker/bot restarts when
+  active jobs exist. This prevents deploys from interrupting supplier searches.
+  Use `AIPOISK_FORCE_JOB_SERVICE_RESTART=1` only for an intentional interruption;
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
 
@@ -89,6 +93,8 @@ Current admin capabilities:
 - admin API errors are shown as readable Russian messages in the top alert
   instead of looking like a silent button failure;
 - service/internal jobs are hidden by default in the jobs list;
+- admin and cabinet task lists use pagination so long job histories do not turn
+  into unbounded vertical pages;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
 - statistics show the Telegram-bot business funnel for the last 30 days:
@@ -179,7 +185,7 @@ Telegram supplier input and navigation contract:
   `🗂 Несколько ТЗ`, `📄 Анализ закупки`, `📄🔎 Анализ + поиск`, and
   `⬅️ Меню`.
 - `🔎 Одно ТЗ` creates one supplier-search job from one ТЗ/ООЗ
-  file or one plain text technical assignment / object description message and
+  file, one archive containing one ТЗ package, or one plain text technical assignment / object description message and
   returns one XLSX;
 - `🗂 Несколько ТЗ` is a mass-processing mode, not a multi-document
   context mode;
@@ -205,6 +211,17 @@ Telegram supplier input and navigation contract:
   show internal provider names, raw service booleans such as `True`/`False`,
   task IDs, or diagnostic counters unless the user explicitly asks for status
   details that require them.
+- partial supplier-search results use a single customer-facing confirmation
+  message. The bot edits the running progress message into the confirmation with
+  send-and-charge / decline buttons. It must not also send a separate progress
+  warning or owner diagnostic message into the customer chat.
+- internal owner diagnostic alerts are reserved for failed or needs-review jobs.
+  The `awaiting_customer_confirmation` state is a normal customer decision point,
+  not an owner-alert state.
+- after a completed or accepted supplier-search result, Telegram can offer
+  `Найти ещё`. Starting that additional search requires explicit confirmation
+  that one supplier-search generation will be spent and already found companies
+  will be excluded.
 
 ## Procurement Source Links
 

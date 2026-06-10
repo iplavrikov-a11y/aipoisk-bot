@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { Inter, Manrope } from "next/font/google";
-import Script from "next/script";
 import type { ReactNode } from "react";
 
 import "./globals.css";
+import { YandexMetrika } from "./yandex-metrika";
 
 const manrope = Manrope({
   subsets: ["cyrillic", "latin"],
@@ -78,45 +78,5 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
         <YandexMetrika counterId={yandexMetrikaId} />
       </body>
     </html>
-  );
-}
-
-function YandexMetrika({ counterId }: { counterId?: string }) {
-  if (!counterId) {
-    return null;
-  }
-
-  const tagUrl = `https://mc.yandex.ru/metrika/tag.js?id=${encodeURIComponent(counterId)}`;
-
-  return (
-    <>
-      <Script id="yandex-metrika" strategy="afterInteractive">
-        {`
-          (function(m,e,t,r,i,k,a){
-            m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
-            m[i].l=1*new Date();
-            for (var j = 0; j < document.scripts.length; j++) {
-              if (document.scripts[j].src === r) { return; }
-            }
-            k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
-          })(window, document, "script", ${JSON.stringify(tagUrl)}, "ym");
-          ym(${JSON.stringify(counterId)}, "init", {
-            ssr: true,
-            webvisor: true,
-            clickmap: true,
-            ecommerce: "dataLayer",
-            referrer: document.referrer,
-            url: location.href,
-            accurateTrackBounce: true,
-            trackLinks: true
-          });
-        `}
-      </Script>
-      <noscript>
-        <div>
-          <img src={`https://mc.yandex.ru/watch/${encodeURIComponent(counterId)}`} style={{ position: "absolute", left: "-9999px" }} alt="" />
-        </div>
-      </noscript>
-    </>
   );
 }

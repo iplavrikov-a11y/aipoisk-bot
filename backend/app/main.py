@@ -4,9 +4,10 @@ import json
 import os
 import re
 import shutil
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import time
 
@@ -47,6 +48,7 @@ from .jobs import (
     package_job_output_items,
     package_job_outputs,
     recover_interrupted_jobs,
+    write_supplier_exclusions,
 )
 from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
@@ -118,6 +120,7 @@ from .supplier_search import _google_credentials, _provider_order, _tavily_key_c
 ANALYTICS_EXCLUDED_WEB_EMAILS = {"79210629909@ya.ru"}
 ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES = {"lexelence", "lexs"}
 ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
@@ -435,17 +438,20 @@ def customer_me_api(
 @app.get("/api/customer/jobs")
 def customer_jobs_api(
     limit: int = 50,
+    offset: int = 0,
+    include_pagination: bool = False,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
-) -> list[dict]:
+) -> list[dict] | dict:
     safe_limit = max(1, min(200, int(limit or 50)))
-    jobs = (
-        commercial_jobs_query(db, context.user.client)
-        .order_by(Job.created_at.desc())
-        .limit(safe_limit)
-        .all()
-    )
-    return [customer_job_to_dict(job) for job in jobs]
+    safe_offset = max(0, int(offset or 0))
+    query = commercial_jobs_query(db, context.user.client)
+    total = query.count()
+    jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
+    items = [customer_job_to_dict(job) for job in jobs]
+    if include_pagination:
+        return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
+    return items
 
 
 @app.post("/api/customer/jobs")
@@ -520,6 +526,17 @@ def customer_decline_partial_route(
 ) -> dict:
     require_customer_csrf(request, context)
     return decline_customer_partial_job_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/find-more-suppliers")
+def customer_find_more_suppliers_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    return create_additional_supplier_search_api(job_id, context=context, db=db)
 
 
 @app.post("/api/auth/login")
@@ -1658,12 +1675,18 @@ def human_status_label(status: str) -> str:
     return labels.get(str(status or ""), str(status or "") or "неизвестно")
 
 
+def _as_moscow(value):
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(MOSCOW_TZ)
+
+
 def client_display_name(client: Client) -> str:
     return client.name or (f"@{client.username}" if client.username else "") or client.telegram_id or "без имени"
 
 
 def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
-    start = (now - timedelta(days=period_days - 1)).date()
+    start = (_as_moscow(now) - timedelta(days=period_days - 1)).date()
     buckets = {
         (start + timedelta(days=index)).isoformat(): {
             "date": (start + timedelta(days=index)).isoformat(),
@@ -1677,7 +1700,7 @@ def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
     for job in jobs:
         if not job.created_at:
             continue
-        key = job.created_at.date().isoformat()
+        key = _as_moscow(job.created_at).date().isoformat()
         if key not in buckets:
             continue
         mode = str(job.mode or "")
@@ -1819,6 +1842,8 @@ def public_site_payload(db: Session) -> dict:
             "email": settings.contact_email,
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
+            "max": settings.contact_max,
+            "max_url": max_public_url(settings.contact_max_link),
             "website": settings.contact_website,
             "website_url": website_public_url(settings.contact_website),
         },
@@ -1870,6 +1895,20 @@ def website_public_url(value: str) -> str:
     return f"https://{website}"
 
 
+def max_public_url(value: str) -> str:
+    contact = str(value or "").strip()
+    if not contact:
+        return ""
+    if contact.startswith(("http://", "https://")):
+        return contact
+    if contact.startswith("max.ru/"):
+        return f"https://{contact}"
+    handle = contact.lstrip("@").strip("/")
+    if re.fullmatch(r"(?=.*[A-Za-z])[A-Za-z0-9_.-]{3,80}", handle):
+        return f"https://max.ru/{handle}"
+    return ""
+
+
 def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = "", authenticated: bool = True) -> dict:
     settings = get_or_create_settings(db)
     return {
@@ -1898,6 +1937,8 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "email": settings.contact_email,
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
+            "max": settings.contact_max,
+            "max_url": max_public_url(settings.contact_max_link),
         },
         "payment": {
             "provider": settings.payment_provider or "manual",
@@ -1942,6 +1983,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
+        "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "result_files": result_files,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
         "error": job.error,
@@ -2157,6 +2199,193 @@ def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db
     job.updated_at = now_utc()
     db.commit()
     return {"success": True, "job": customer_job_to_dict(job)}
+
+
+FIND_MORE_SUPPLIER_STATUSES = {"completed", "partial", "needs_review"}
+
+
+def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+    if not context.user.is_email_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    original_job = _customer_job_or_404(db, job_id, context)
+    job = create_additional_supplier_search_for_client(
+        db,
+        client=context.user.client,
+        original_job=original_job,
+        created_by_telegram_id=f"web:{context.user.id}",
+    )
+
+    return {
+        "success": True,
+        "message": "Запущен дополнительный поиск поставщиков. Он резервирует 1 генерацию и исключает уже найденные компании.",
+        "job": customer_job_to_dict(job),
+    }
+
+
+def create_additional_supplier_search_for_client(
+    db: Session,
+    *,
+    client: Client,
+    original_job: Job,
+    created_by_telegram_id: str,
+) -> Job:
+    if original_job.client_id != client.id:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    if not job_can_find_more_suppliers(original_job):
+        raise HTTPException(status_code=409, detail="Дополнительный поиск доступен только после готового поиска поставщиков.")
+    excluded_suppliers = _supplier_exclusions_from_job(original_job)
+    if not excluded_suppliers:
+        raise HTTPException(status_code=409, detail="Не нашёл поставщиков исходной задачи для исключения из нового поиска.")
+    input_files = _repeat_supplier_search_input_files(original_job)
+    if not input_files:
+        raise HTTPException(status_code=409, detail="Не нашёл исходное ТЗ или контекст для дополнительного поиска.")
+
+    settings = get_or_create_settings(db)
+    access_error = client_access_error(
+        db,
+        client,
+        MODE_SUPPLIER_SEARCH,
+        incoming_file_count=len(input_files),
+        supplier_search_count=1,
+    )
+    if access_error:
+        raise HTTPException(status_code=403, detail=access_error)
+
+    target_suppliers = max(1, int(original_job.target_suppliers or 0) or supplier_target_for_client(settings, client))
+    job: Job | None = None
+    try:
+        job = create_job(
+            db,
+            client_id=client.id,
+            created_by_telegram_id=created_by_telegram_id,
+            mode=MODE_SUPPLIER_SEARCH,
+            title=_additional_supplier_search_title(original_job),
+            target_suppliers=target_suppliers,
+            files=input_files,
+            sources=[],
+        )
+        reserve_job_units(db, client, job, supplier_search_count=1)
+        write_supplier_exclusions(job, previous_job_id=original_job.id, suppliers=excluded_suppliers)
+        enqueue_job(job.id)
+    except BillingError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return job
+
+
+def job_can_find_more_suppliers(job: Job | object) -> bool:
+    return bool(
+        str(getattr(job, "mode", "") or "") in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}
+        and str(getattr(job, "status", "") or "") in FIND_MORE_SUPPLIER_STATUSES
+        and int(getattr(job, "verified_count", 0) or 0) > 0
+    )
+
+
+def _discard_created_job(db: Session, job: Job) -> None:
+    shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
+    db.delete(job)
+    db.commit()
+
+
+def _additional_supplier_search_title(job: Job) -> str:
+    subject = _customer_job_subject_from_evidence(job) or _clean_customer_job_subject(job.title) or human_job_title(job)
+    return _ellipsize_customer_title(f"Добор поставщиков: {subject}", limit=120)
+
+
+def _repeat_supplier_search_input_files(job: Job) -> list[tuple[str, bytes]]:
+    payload: list[tuple[str, bytes]] = []
+    for file in getattr(job, "files", []) or []:
+        path = Path(str(getattr(file, "stored_path", "") or ""))
+        if path.exists() and path.is_file():
+            payload.append((str(getattr(file, "original_filename", "") or path.name), path.read_bytes()))
+    for source in getattr(job, "sources", []) or []:
+        path = Path(str(getattr(source, "context_path", "") or ""))
+        if path.exists() and path.is_file():
+            label = _clean_customer_job_subject(getattr(source, "label", "") or getattr(source, "kind", "")) or "source"
+            payload.append((f"{label[:60]}_context.txt", path.read_bytes()))
+    if payload:
+        return payload
+    context = _supplier_context_from_job_evidence(job)
+    return [("previous_supplier_context.txt", context.encode("utf-8"))] if context else []
+
+
+def _supplier_context_from_job_evidence(job: Job) -> str:
+    try:
+        evidence = read_job_evidence_payload(job)
+    except HTTPException:
+        return ""
+    supplier_evidence = evidence.get("supplier_search") if isinstance(evidence.get("supplier_search"), dict) else evidence
+    profile = supplier_evidence.get("procurement_profile") if isinstance(supplier_evidence, dict) else {}
+    if not isinstance(profile, dict):
+        return ""
+    lines = [
+        f"Предмет закупки: {evidence.get('subject') or profile.get('summary') or evidence.get('source_title') or ''}".strip(),
+    ]
+    items = profile.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            parts = [
+                str(item.get("name") or "").strip(),
+                ", ".join(str(value) for value in item.get("aliases", []) if str(value).strip()) if isinstance(item.get("aliases"), list) else "",
+                ", ".join(str(value) for value in item.get("category_terms", []) if str(value).strip()) if isinstance(item.get("category_terms"), list) else "",
+                ", ".join(str(value) for value in item.get("exact_terms", []) if str(value).strip()) if isinstance(item.get("exact_terms"), list) else "",
+                ", ".join(str(value) for value in item.get("required_terms", []) if str(value).strip()) if isinstance(item.get("required_terms"), list) else "",
+            ]
+            text = "; ".join(part for part in parts if part)
+            if text:
+                lines.append(f"Позиция: {text}")
+    return "\n".join(line for line in lines if line and len(line) > 16)
+
+
+def _supplier_exclusions_from_job(job: Job) -> list[dict]:
+    suppliers = [
+        _supplier_result_exclusion(item)
+        for item in getattr(job, "suppliers", []) or []
+        if getattr(item, "evidence_status", "") == "verified" or getattr(item, "company_name", "")
+    ]
+    suppliers = [item for item in suppliers if item.get("company_name") or item.get("site")]
+    if suppliers:
+        return suppliers
+    try:
+        evidence = read_job_evidence_payload(job)
+    except HTTPException:
+        return []
+    accepted = evidence.get("accepted")
+    if not isinstance(accepted, list) and isinstance(evidence.get("supplier_search"), dict):
+        accepted = evidence["supplier_search"].get("accepted")
+    if not isinstance(accepted, list):
+        return []
+    return [
+        {
+            "company_name": str(item.get("company_name") or ""),
+            "site": str(item.get("site") or ""),
+            "evidence_url": str(item.get("evidence_url") or ""),
+            "contact_url": str(item.get("contact_url") or ""),
+            "email": str(item.get("email") or ""),
+            "phone": str(item.get("phone") or ""),
+        }
+        for item in accepted
+        if isinstance(item, dict) and (item.get("company_name") or item.get("site"))
+    ]
+
+
+def _supplier_result_exclusion(item: SupplierResult) -> dict:
+    return {
+        "company_name": item.company_name,
+        "site": item.site,
+        "evidence_url": item.evidence_url,
+        "contact_url": item.contact_url,
+        "email": item.email,
+        "phone": item.phone,
+    }
 
 
 def is_internal_job(job: Job | object) -> bool:
@@ -2616,6 +2845,7 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
 
 def job_to_dict(job: Job, include_files: bool = False) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
+    evidence_path = str(getattr(job, "evidence_path", "") or "")
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -2636,6 +2866,7 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "verified_count": job.verified_count,
         "file_count": job.file_count,
         "has_result": bool(job.result_path),
+        "has_evidence": bool(evidence_path),
         "error": job.error,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,

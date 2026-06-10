@@ -15,6 +15,13 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - The cabinet must mirror the bot scenarios: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 - `Анализ закупки` and `Анализ + поиск` accept a notice number, link, or uploaded procurement materials; they must not expose extra invented fields such as "what to check".
 - `Несколько ТЗ` is mass supplier search: each uploaded ТЗ is processed as a separate supplier-search job.
+- The cabinet task list is paginated at 15 tasks per page and shows timestamps
+  in Moscow time. The backend continues to store timestamps in UTC.
+- The cabinet and Telegram bot can show the same job when the same customer has
+  linked website and Telegram accounts. This is shared customer history, not a
+  duplicate launch.
+- Yandex Metrika must not render on `/cabinet`; it is limited to public SEO
+  pages.
 
 ## Public Data Contract
 
@@ -42,6 +49,11 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Web users are separate from Telegram users. They sign in by email/password and are represented in job/client metadata with `web:<id>`.
 - Customer job creation sends the same backend modes used by the bot: `supplier_search`, `procurement_report`, and `analysis_and_suppliers`.
 - The frontend hides `target_suppliers`; the backend uses the configured default supplier target.
+- `GET /api/customer/jobs` supports pagination for the cabinet. The current UI
+  page size is 15 tasks.
+- Supplier-search results that can be extended expose an additional action for
+  finding more suppliers. The customer must confirm the paid extra run before
+  the backend creates the additional supplier-search job.
 - Online checkout is intentionally disabled until YooKassa checkout creation, webhooks, idempotency, and payment history are implemented.
 
 ## Admin-Managed Fields
@@ -52,7 +64,8 @@ access to the admin panel.
 - Tariffs are managed from the tariff/package section.
 - `bot_telegram` is labelled "Telegram-бот для пробного запуска и работы".
 - `contact_telegram` is labelled "Telegram для связи и оплаты".
-- `contact_email`, `contact_website`, and payment instructions remain existing contact/payment settings.
+- `contact_max`, `contact_max_link`, `contact_email`, `contact_website`, and
+  payment instructions remain existing contact/payment settings.
 - Trial counters come from existing free-period settings: supplier search limit, procurement report limit, and file limit.
 - Website access is topped up manually from the admin customer card until online payment is enabled.
 - Password recovery requests from `/cabinet` are handled by the admin customer tools; public responses must not reveal whether an email exists.
@@ -96,6 +109,7 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX'` should return no matches.
 - SEO smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/sitemap.xml | rg 'analiz-zakupochnoi-dokumentacii|poisk-postavshchikov-po-tz|reestr-minpromtorga-v-zakupkah'`
 - Verification smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/yandex_b3b74a829ce4a7c6.html`
+- Cabinet Metrika smoke: `curl -fsS http://127.0.0.1:3093/cabinet | rg 'mc\.yandex\.ru|yandex-metrika|metrika'` should return no matches.
 
 ## Production Wiring
 
@@ -114,6 +128,9 @@ Production assumptions:
 - `npm run build` copies `.next/static` and `public/` into the standalone bundle before `npm run start`.
 - Public `443` on this server is routed through the existing nginx stream layout to HTTPS vhosts listening on `4443`.
 - The live site service can be updated with `systemctl restart tenderlex-site.service` after site-only SEO/content changes; backend and bot services do not need a restart for those changes.
+- Use `scripts/deploy_tenderlex_live.sh` for ordinary live deploys. It skips
+  API/worker/bot restarts when active jobs are present, because worker and bot
+  units are tied to the API unit with `PartOf=aipoisk-api.service`.
 
 Manual server activation, after build:
 

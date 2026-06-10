@@ -41,6 +41,8 @@ class SettingsPatch(BaseModel):
     bot_telegram: str | None = None
     contact_email: str | None = None
     contact_telegram: str | None = None
+    contact_max: str | None = None
+    contact_max_link: str | None = None
     contact_website: str | None = None
     payment_instructions: str | None = None
     payment_provider: str | None = None

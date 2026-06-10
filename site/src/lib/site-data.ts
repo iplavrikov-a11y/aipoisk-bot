@@ -21,6 +21,8 @@ export type PublicSitePayload = {
     email: string;
     telegram: string;
     telegram_url: string;
+    max: string;
+    max_url: string;
     website: string;
     website_url: string;
   };
@@ -123,6 +125,8 @@ const fallbackData: PublicSitePayload = {
     email: "snab@dealpartner.ru",
     telegram: "@lexelence",
     telegram_url: "https://t.me/lexelence",
+    max: "",
+    max_url: "",
     website: "tenderlex.ru",
     website_url: "https://tenderlex.ru",
   },

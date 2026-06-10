@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -56,6 +57,7 @@ MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
 RESULT_STEM_MAX_BYTES = 220
+SUPPLIER_EXCLUSIONS_FILENAME = "excluded_suppliers.json"
 logger = logging.getLogger(__name__)
 
 
@@ -135,6 +137,29 @@ def enqueue_job(job_id: str) -> None:
     # Jobs are durable queue items: API and bot only persist pending jobs.
     # app.worker is responsible for claiming and processing them.
     return None
+
+
+def write_supplier_exclusions(job: Job, *, previous_job_id: str, suppliers: list[dict]) -> Path:
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / SUPPLIER_EXCLUSIONS_FILENAME
+    payload = {
+        "previous_job_id": previous_job_id,
+        "suppliers": [item for item in suppliers if isinstance(item, dict)],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_supplier_exclusions(job: Job) -> list[dict]:
+    path = job_dir(job.id) / "input" / SUPPLIER_EXCLUSIONS_FILENAME
+    if not path.exists():
+        return []
+    payload = parse_json_dict(path.read_text(encoding="utf-8"))
+    suppliers = payload.get("suppliers")
+    if not isinstance(suppliers, list):
+        return []
+    return [item for item in suppliers if isinstance(item, dict)]
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -697,7 +722,16 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     async def progress_callback(progress: int, message: str) -> None:
         _set_job(db, job, status="running", progress=progress, message=message)
 
-    accepted, evidence = asyncio.run(discover_suppliers(settings, context, job.target_suppliers, progress_callback=progress_callback))
+    excluded_suppliers = _load_supplier_exclusions(job)
+    accepted, evidence = asyncio.run(
+        discover_suppliers(
+            settings,
+            context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+        )
+    )
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
     _persist_supplier_rows(db, job, accepted)
     job.verified_count = len(accepted)

@@ -12,7 +12,7 @@ from .db import Base
 DEFAULT_PAYMENT_INSTRUCTIONS = (
     "🧾 Чтобы купить пакет:\n"
     "1. Выберите нужный пакет в списке выше.\n"
-    "2. Напишите владельцу сервиса в Telegram или на email.\n"
+    "2. Напишите менеджеру в Telegram (приоритетно), MAX или на email.\n"
     "3. Укажите название пакета и ваш Telegram ID.\n"
     "4. После подтверждения оплаты генерации будут начислены вручную.\n\n"
     "✅ Пакеты не сгорают и действуют до полного исчерпания."
@@ -72,6 +72,8 @@ class SystemSettings(Base):
     bot_telegram: Mapped[str] = mapped_column(String(255), default="@tenderlex_bot")
     contact_email: Mapped[str] = mapped_column(String(255), default="")
     contact_telegram: Mapped[str] = mapped_column(String(255), default="")
+    contact_max: Mapped[str] = mapped_column(String(255), default="")
+    contact_max_link: Mapped[str] = mapped_column(String(255), default="")
     contact_website: Mapped[str] = mapped_column(String(255), default="")
     payment_instructions: Mapped[str] = mapped_column(Text, default=DEFAULT_PAYMENT_INSTRUCTIONS)
     payment_provider: Mapped[str] = mapped_column(String(40), default="manual")
@@ -120,6 +122,8 @@ class SystemSettings(Base):
             "bot_telegram": self.bot_telegram,
             "contact_email": self.contact_email,
             "contact_telegram": self.contact_telegram,
+            "contact_max": self.contact_max,
+            "contact_max_link": self.contact_max_link,
             "contact_website": self.contact_website,
             "payment_instructions": self.payment_instructions or DEFAULT_PAYMENT_INSTRUCTIONS,
             "payment_provider": self.payment_provider or "manual",

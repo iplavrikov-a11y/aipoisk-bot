@@ -83,6 +83,8 @@ def _ensure_schema() -> None:
         "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
         "contact_email": "VARCHAR(255) DEFAULT ''",
         "contact_telegram": "VARCHAR(255) DEFAULT ''",
+        "contact_max": "VARCHAR(255) DEFAULT ''",
+        "contact_max_link": "VARCHAR(255) DEFAULT ''",
         "contact_website": "VARCHAR(255) DEFAULT ''",
         "payment_instructions": "TEXT DEFAULT ''",
         "payment_provider": "VARCHAR(40) DEFAULT 'manual'",

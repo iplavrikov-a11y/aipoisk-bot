@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +25,20 @@ class DocumentParserTests(unittest.TestCase):
 
         self.assertEqual(text, "Текст технического задания")
         libreoffice.assert_called_once()
+
+    def test_zip_archive_extracts_member_documents_as_one_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "parts.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("part-1.txt", "Первая часть ТЗ: насос ЦНС 60-330")
+                archive.writestr("nested/part-2.txt", "Вторая часть ТЗ: количество 3 шт.")
+
+            text, status = document_parser.extract_text(archive_path)
+
+        self.assertEqual(status, "archive_ok")
+        self.assertIn("=== ARCHIVE FILE:", text)
+        self.assertIn("Первая часть ТЗ", text)
+        self.assertIn("Вторая часть ТЗ", text)
 
 
 if __name__ == "__main__":

@@ -307,6 +307,31 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 target=5,
             )
 
+    async def test_discover_candidates_filters_previously_found_domains(self) -> None:
+        original_ddgs = supplier_search._search_with_ddgs
+        captured: dict = {}
+
+        async def fake_ddgs(queries: list[str], max_results: int, *, existing_domains=None):
+            captured["existing_domains"] = set(existing_domains or set())
+            return [
+                Candidate(url="https://old.example/catalog", domain="old.example", title="old", source="ddgs", query=queries[0]),
+                Candidate(url="https://new.example/catalog", domain="new.example", title="new", source="ddgs", query=queries[0]),
+            ]
+
+        supplier_search._search_with_ddgs = fake_ddgs
+        try:
+            candidates, _meta = await supplier_search.discover_candidates(
+                SimpleNamespace(supplier_search_provider_order="ddgs"),
+                ["поставщик"],
+                max_results=10,
+                excluded_domains={"old.example"},
+            )
+        finally:
+            supplier_search._search_with_ddgs = original_ddgs
+
+        self.assertIn("old.example", captured["existing_domains"])
+        self.assertEqual([candidate.domain for candidate in candidates], ["new.example"])
+
     async def test_build_supplier_queries_prefers_ai_queries_over_deterministic_fallback(self) -> None:
         original_call_llm = supplier_search.call_llm
         profile = ProcurementProfile(
@@ -728,7 +753,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         async def fake_build(settings, context: str, target: int, profile=None) -> list[str]:
             return ["query"]
 
-        async def fake_candidates(settings, queries: list[str], max_results: int):
+        async def fake_candidates(settings, queries: list[str], max_results: int, **kwargs):
             return (
                 [
                     Candidate(
@@ -828,7 +853,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         async def fake_build(settings, context: str, target: int, profile=None) -> list[str]:
             return ["точная позиция поставщик"]
 
-        async def fake_candidates(settings, queries: list[str], max_results: int):
+        async def fake_candidates(settings, queries: list[str], max_results: int, **kwargs):
             search_calls.append(list(queries))
             if len(search_calls) == 1:
                 candidates = [

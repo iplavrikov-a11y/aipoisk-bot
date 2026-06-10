@@ -3,9 +3,12 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
 from .ai import call_llm, get_model_selection, parse_json_object
 from .models import SystemSettings, parse_json_dict
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 DEFAULT_REPORT_SYSTEM_PROMPT = """Ты — Макс, экспертный тендерный аналитик.
 Работай строго по документам закупки. Не придумывай факты, поставщиков, цены, URL или нормативные требования.
@@ -249,7 +252,7 @@ async def generate_procurement_report(settings: SystemSettings, document_text: s
     prompt_settings = parse_json_dict(settings.prompt_settings_json)
     report_settings = parse_json_dict(settings.report_settings_json)
     max_chars = int(report_settings.get("analysis_max_chars") or 800000)
-    current_date = dt.datetime.now(dt.timezone.utc).strftime("%d.%m.%Y")
+    current_date = dt.datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y")
     user_template = str(
         prompt_settings.get("procurement_report_user_template")
         or DEFAULT_REPORT_USER_TEMPLATE

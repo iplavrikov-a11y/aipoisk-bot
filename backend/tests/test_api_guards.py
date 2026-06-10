@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -174,6 +174,13 @@ class ApiGuardTests(unittest.TestCase):
 
         self.assertTrue(payload["is_internal"])
         self.assertEqual(payload["human_title"], "Служебная проверка")
+
+    def test_job_to_dict_marks_evidence_presence_for_admin_ui(self) -> None:
+        job = Job(id="job-1", mode="supplier_search", title="ok", evidence_path="/tmp/evidence.json")
+
+        payload = job_to_dict(job)
+
+        self.assertTrue(payload["has_evidence"])
 
     def test_client_to_dict_includes_two_usage_counters_and_recent_writeoffs(self) -> None:
         from sqlalchemy import create_engine
@@ -846,6 +853,8 @@ class ApiGuardTests(unittest.TestCase):
         settings = SystemSettings(
             id=1,
             bot_telegram="@tenderlex_bot",
+            contact_max="@ownermax",
+            contact_max_link="https://max.ru/invite/owner",
             contact_website="https://aipoisk.example",
             payment_instructions="",
         )
@@ -853,6 +862,8 @@ class ApiGuardTests(unittest.TestCase):
         payload = settings_to_public_dict(settings)
 
         self.assertEqual(payload["bot_telegram"], "@tenderlex_bot")
+        self.assertEqual(payload["contact_max"], "@ownermax")
+        self.assertEqual(payload["contact_max_link"], "https://max.ru/invite/owner")
         self.assertEqual(payload["contact_website"], "https://aipoisk.example")
         self.assertEqual(payload["payment_instructions"], DEFAULT_PAYMENT_INSTRUCTIONS)
 
@@ -909,6 +920,20 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["trial_followups"][0]["client_id"], "trial-1")
         self.assertEqual(payload["top_clients"][0]["jobs_total"], 1)
 
+    def test_daily_job_series_groups_by_moscow_calendar_day(self) -> None:
+        rows = main._daily_job_series(
+            [
+                SimpleNamespace(mode="supplier_search", created_at=datetime(2026, 6, 10, 20, 30, tzinfo=timezone.utc)),
+                SimpleNamespace(mode="procurement_report", created_at=datetime(2026, 6, 10, 21, 15, tzinfo=timezone.utc)),
+            ],
+            now=datetime(2026, 6, 10, 21, 30, tzinfo=timezone.utc),
+            period_days=2,
+        )
+
+        self.assertEqual([item["date"] for item in rows], ["2026-06-10", "2026-06-11"])
+        self.assertEqual(rows[0]["supplier_search"], 1)
+        self.assertEqual(rows[1]["procurement_report"], 1)
+
     def test_public_site_payload_exposes_only_active_tariffs_and_contacts(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
@@ -926,6 +951,8 @@ class ApiGuardTests(unittest.TestCase):
                     bot_telegram="@tenderlex_bot",
                     contact_email="snab@example.ru",
                     contact_telegram="@lexelence",
+                    contact_max="+79210629909",
+                    contact_max_link="https://max.ru/invite/max-owner",
                     contact_website="tenderlex.ru",
                 )
             )
@@ -959,11 +986,46 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["bot"]["telegram_url"], "https://t.me/tenderlex_bot")
         self.assertEqual(payload["contacts"]["email"], "snab@example.ru")
         self.assertEqual(payload["contacts"]["telegram_url"], "https://t.me/lexelence")
+        self.assertEqual(payload["contacts"]["max"], "+79210629909")
+        self.assertEqual(payload["contacts"]["max_url"], "https://max.ru/invite/max-owner")
         self.assertEqual(payload["contacts"]["website_url"], "https://tenderlex.ru")
         self.assertEqual(len(payload["tariffs"]), 1)
         self.assertEqual(payload["tariffs"][0]["label"], "Поставщики")
         self.assertEqual(payload["tariff_groups"]["supplier_search"][0]["name"], "10 запросов")
         self.assertEqual(payload["tariff_groups"]["procurement_report"], [])
+
+    def test_max_phone_does_not_become_public_url(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        self.assertEqual(main.max_public_url("+79210629909"), "")
+        self.assertEqual(main.max_public_url("79210629909"), "")
+        self.assertEqual(main.max_public_url("@ownermax"), "https://max.ru/ownermax")
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            db.add(SystemSettings(id=1, contact_max="+79210629909", contact_max_link=""))
+            db.commit()
+
+            payload = public_site_payload(db)
+            client = Client(id="client-1", telegram_id="web:client-1")
+            user = WebUser(id="user-1", client_id="client-1", email="client@example.ru", password_hash="hash")
+            client.web_users.append(user)
+            db.add(client)
+            db.commit()
+            session_payload = main.customer_session_payload(db, user)
+        finally:
+            db.close()
+
+        self.assertEqual(payload["contacts"]["max"], "+79210629909")
+        self.assertEqual(payload["contacts"]["max_url"], "")
+        self.assertEqual(session_payload["contacts"]["max"], "+79210629909")
+        self.assertEqual(session_payload["contacts"]["max_url"], "")
 
     def test_system_status_exposes_resources_queue_and_configured_services(self) -> None:
         from sqlalchemy import create_engine

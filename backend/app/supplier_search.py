@@ -526,9 +526,11 @@ async def discover_suppliers(
     target: int,
     *,
     progress_callback: ProgressCallback | None = None,
+    excluded_suppliers: list[dict] | None = None,
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
+    excluded_domains, excluded_company_keys = _supplier_exclusion_sets(excluded_suppliers)
     await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
     profile = await build_procurement_profile(settings, context)
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
@@ -542,9 +544,14 @@ async def discover_suppliers(
     await _emit_progress(progress_callback, 42, "Подбираю поисковые запросы")
     queries = await build_supplier_queries(settings, context, target, profile=profile)
     await _emit_progress(progress_callback, 50, f"Ищу сайты поставщиков: поисковых запросов {len(queries)}")
-    candidates, search_meta = await discover_candidates(settings, queries, max_results=max(target * 10, 120))
+    candidates, search_meta = await discover_candidates(
+        settings,
+        queries,
+        max_results=max(target * 10, 120),
+        excluded_domains=excluded_domains,
+    )
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _rank_candidates(candidates, context)[: max(target * 5, 60)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(target * 5, 60)]
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, target)
     candidates = rerank.candidates
@@ -556,6 +563,8 @@ async def discover_suppliers(
         target,
         profile=profile,
         registry_context=minprom_context,
+        excluded_domains=excluded_domains,
+        excluded_company_keys=excluded_company_keys,
         progress_callback=progress_callback,
     )
     recovery_rounds: list[dict] = []
@@ -583,8 +592,10 @@ async def discover_suppliers(
                     settings,
                     recovery_queries,
                     max_results=max(target * 8, 80),
+                    excluded_domains=excluded_domains,
                 )
                 seen_domains = {candidate.domain for candidate in candidates}
+                seen_domains.update(excluded_domains)
                 seen_domains.update(base_domain(str(item.get("site") or "")) for item in reviewed)
                 recovery_candidates = [
                     candidate
@@ -605,10 +616,19 @@ async def discover_suppliers(
                     max(1, target - len(accepted)),
                     profile=profile,
                     registry_context=minprom_context,
+                    excluded_domains=excluded_domains,
+                    excluded_company_keys=excluded_company_keys,
                     progress_callback=progress_callback,
                 )
                 reviewed.extend(recovery_reviewed)
-                accepted = _accepted_supplier_results(reviewed, target, profile=profile, limit_to_target=False)
+                accepted = _accepted_supplier_results(
+                    reviewed,
+                    target,
+                    profile=profile,
+                    limit_to_target=False,
+                    excluded_domains=excluded_domains,
+                    excluded_company_keys=excluded_company_keys,
+                )
                 recovery_round = {
                     "status": "ok",
                     "queries": recovery_queries,
@@ -642,6 +662,11 @@ async def discover_suppliers(
         ],
         "acceptance_policy": "Supplier rows are accepted only after AI verifier returns action=accept with verified evidence.",
         "target": target,
+        "excluded_suppliers": {
+            "count": len(excluded_suppliers or []),
+            "domains": sorted(excluded_domains),
+            "company_keys": sorted(excluded_company_keys),
+        },
         "procurement_profile": _profile_to_dict(profile),
         "minprom_registry": _minprom_context_to_dict(minprom_context),
         "search_provider": "multi",
@@ -715,6 +740,29 @@ async def _emit_progress(progress_callback: ProgressCallback | None, progress: i
     if progress_callback is None:
         return
     await progress_callback(progress, message)
+
+
+def _supplier_exclusion_sets(excluded_suppliers: list[dict] | None) -> tuple[set[str], set[str]]:
+    domains: set[str] = set()
+    company_keys: set[str] = set()
+    for item in excluded_suppliers or []:
+        if not isinstance(item, dict):
+            continue
+        domain = base_domain(
+            str(item.get("site") or item.get("evidence_url") or item.get("contact_url") or "")
+        )
+        if domain:
+            domains.add(domain)
+        company_key = _normalize_company_key(item.get("company_name") or domain)
+        if company_key:
+            company_keys.add(company_key)
+    return domains, company_keys
+
+
+def _exclude_candidates(candidates: list[Candidate], excluded_domains: set[str]) -> list[Candidate]:
+    if not excluded_domains:
+        return candidates
+    return [candidate for candidate in candidates if candidate.domain and candidate.domain not in excluded_domains]
 
 
 def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
@@ -1197,6 +1245,8 @@ async def _review_candidates_until_target(
     *,
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
+    excluded_domains: set[str] | None = None,
+    excluded_company_keys: set[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     reviewed: list[dict] = []
@@ -1211,7 +1261,14 @@ async def _review_candidates_until_target(
 
     for batch_start in range(0, len(candidates), batch_size):
         batch = candidates[batch_start : batch_start + batch_size]
-        already_accepted = _accepted_supplier_results(reviewed, target, profile=profile, limit_to_target=False)
+        already_accepted = _accepted_supplier_results(
+            reviewed,
+            target,
+            profile=profile,
+            limit_to_target=False,
+            excluded_domains=excluded_domains,
+            excluded_company_keys=excluded_company_keys,
+        )
         review_progress = 74 + int(18 * min(batch_start, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
             progress_callback,
@@ -1231,7 +1288,14 @@ async def _review_candidates_until_target(
                 reviewed.append(result)
         await asyncio.gather(*tasks, return_exceptions=True)
         stopped_after = batch_start + len(batch)
-        accepted = _accepted_supplier_results(reviewed, target, profile=profile, limit_to_target=False)
+        accepted = _accepted_supplier_results(
+            reviewed,
+            target,
+            profile=profile,
+            limit_to_target=False,
+            excluded_domains=excluded_domains,
+            excluded_company_keys=excluded_company_keys,
+        )
         review_progress = 74 + int(18 * min(stopped_after, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
             progress_callback,
@@ -1247,7 +1311,14 @@ async def _review_candidates_until_target(
                 "early_stop": stopped_after < len(candidates),
             }
 
-    return _accepted_supplier_results(reviewed, target, profile=profile, limit_to_target=False), reviewed, {
+    return _accepted_supplier_results(
+        reviewed,
+        target,
+        profile=profile,
+        limit_to_target=False,
+        excluded_domains=excluded_domains,
+        excluded_company_keys=excluded_company_keys,
+    ), reviewed, {
         "batch_size": batch_size,
         "reviewed_count": len(reviewed),
         "candidate_count": len(candidates),
@@ -1266,10 +1337,12 @@ def _accepted_supplier_results(
     *,
     profile: ProcurementProfile | None = None,
     limit_to_target: bool = True,
+    excluded_domains: set[str] | None = None,
+    excluded_company_keys: set[str] | None = None,
 ) -> list[dict]:
     accepted: list[dict] = []
-    seen_domains: set[str] = set()
-    seen_companies: set[str] = set()
+    seen_domains: set[str] = set(excluded_domains or set())
+    seen_companies: set[str] = set(excluded_company_keys or set())
     verified = [item for item in reviewed if item.get("evidence_status") == "verified"]
     sorted_verified = sorted(verified, key=_supplier_result_sort_key)
 
@@ -1304,10 +1377,17 @@ def _accepted_supplier_results(
     return accepted[:target] if limit_to_target else accepted
 
 
-async def discover_candidates(settings: SystemSettings, queries: list[str], max_results: int) -> tuple[list[Candidate], dict]:
+async def discover_candidates(
+    settings: SystemSettings,
+    queries: list[str],
+    max_results: int,
+    *,
+    excluded_domains: set[str] | None = None,
+) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
     provider_order = _provider_order(settings)
+    base_excluded_domains = set(excluded_domains or set())
 
     for provider in provider_order:
         before = len(candidates)
@@ -1315,7 +1395,7 @@ async def discover_candidates(settings: SystemSettings, queries: list[str], max_
         status = "skipped"
         error = ""
         try:
-            existing_domains = {candidate.domain for candidate in candidates}
+            existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
                 provider_candidates = await _search_with_yandex(settings, queries, max_results, existing_domains=existing_domains)
             elif provider == "google":
@@ -1324,11 +1404,12 @@ async def discover_candidates(settings: SystemSettings, queries: list[str], max_
                 provider_candidates = await _search_with_tavily(settings, queries, max_results, existing_domains=existing_domains)
             elif provider == "ddgs":
                 provider_candidates = await _search_with_ddgs(queries, max_results, existing_domains=existing_domains)
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
             error = f"{type(exc).__name__}: {str(exc)[:180]}"
-        candidates = _merge_candidates(candidates, provider_candidates, max_results=max_results)
+        candidates = _merge_candidates(candidates, provider_candidates, max_results=max_results, excluded_domains=base_excluded_domains)
         reports.append(
             {
                 "provider": provider,
@@ -1362,9 +1443,13 @@ def _provider_query_limit(settings: SystemSettings, provider: str) -> int:
         return 14 if provider == "google" else 18
 
 
-def _merge_candidates(*groups: list[Candidate] | tuple[Candidate, ...], max_results: int) -> list[Candidate]:
+def _merge_candidates(
+    *groups: list[Candidate] | tuple[Candidate, ...],
+    max_results: int,
+    excluded_domains: set[str] | None = None,
+) -> list[Candidate]:
     merged: list[Candidate] = []
-    seen_domains: set[str] = set()
+    seen_domains: set[str] = set(excluded_domains or set())
     for group in groups:
         for candidate in group:
             domain = base_domain(candidate.domain or candidate.url)

@@ -9,6 +9,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from fastapi import HTTPException
 
 from .billing import (
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
@@ -38,6 +39,7 @@ from .jobs import (
     create_job,
     package_job_output_files,
 )
+from .main import create_additional_supplier_search_for_client, job_can_find_more_suppliers
 from .models import DEFAULT_PAYMENT_INSTRUCTIONS, Client, Job, now_utc
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import client_access_error, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
@@ -62,10 +64,10 @@ BUTTON_BACK_MAIN = "⬅️ Меню"
 BUTTON_PROCESSING_STATUS = "⏳ В работе"
 
 BRAND_NAME = "TenderLex"
-BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, номер извещения, документация и поставщики."
+BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, архивы документов и поставщики."
 BOT_DESCRIPTION = (
     "TenderLex помогает работать с закупками: анализирует документацию по номеру извещения, "
-    "ссылке или файлам, ищет поставщиков по ТЗ и выдаёт готовые файлы в Telegram.\n\n"
+    "ссылке, файлам или архивам, ищет поставщиков по ТЗ и выдаёт готовые файлы в Telegram.\n\n"
     "Чтобы начать, откройте бота, нажмите «Start» или «Запустить» и используйте кнопки меню."
 )
 AI_CUSTOMER_NOTE = (
@@ -76,7 +78,11 @@ AI_HELP_NOTE = (
     "ИИ помогает быстро подготовить первичный анализ, но важные юридические, финансовые "
     "и технические условия лучше дополнительно сверять по официальным документам."
 )
-OWNER_ALERT_STATUSES = {"failed", "needs_review", STATUS_AWAITING_CUSTOMER_CONFIRMATION}
+INDIVIDUAL_TERMS_NOTE = (
+    "Возможен индивидуальный подход: если нужен больший лимит поставщиков, больше компаний "
+    "в одном поиске или другой объём генераций, напишите нам — настроим условия под вашу задачу."
+)
+OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
 
 
@@ -252,7 +258,8 @@ def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
 def _supplier_multi_intro_text() -> str:
     return (
         "🔎 Поставщики по ТЗ\n\n"
-        "Отправьте ТЗ файлом или текстом. Если ТЗ несколько, по каждому будет отдельный поиск поставщиков.\n\n"
+        "Отправьте ТЗ файлом, текстом или архивом. Если ТЗ несколько, по каждому будет отдельный поиск поставщиков.\n"
+        "Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.\n\n"
         "1. Отправьте одно или несколько ТЗ.\n"
         "2. Проверьте количество добавленных ТЗ.\n"
         f"3. Нажмите «{BUTTON_RUN_BATCH}»."
@@ -261,11 +268,20 @@ def _supplier_multi_intro_text() -> str:
 
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
     if pending.mode == MODE_SUPPLIER_SEARCH:
-        return (
-            "✅ ТЗ добавлено\n"
-            f"• В комплекте: {len(pending.files)}/{max_files}\n\n"
-            f"Добавьте ещё ТЗ или нажмите «{BUTTON_RUN_BATCH}»."
-        )
+        lines = [
+            "✅ ТЗ добавлено",
+            f"• В комплекте: {len(pending.files)}/{max_files}",
+            "",
+        ]
+        if len(pending.files) > 1:
+            lines.append(
+                "⚠️ Эти файлы будут обработаны как разные ТЗ. "
+                "Если это части одного ТЗ, очистите комплект и загрузите их одним архивом."
+            )
+        else:
+            lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
+        lines.append(f"Добавьте ещё отдельное ТЗ или нажмите «{BUTTON_RUN_BATCH}».")
+        return "\n".join(lines)
     lines = [
         "✅ Материалы добавлены",
         f"• Файлов: {len(pending.files)}/{max_files}",
@@ -730,6 +746,10 @@ async def _alert_owner_about_job(
 ) -> None:
     if not output_missing and snapshot.status not in OWNER_ALERT_STATUSES:
         return
+    owner_id = str(config.owner_telegram_id or "").strip()
+    chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "").strip()
+    if owner_id and chat_id == owner_id:
+        return
     key = (snapshot.id, reason)
     if key in OWNER_ALERTED_KEYS:
         return
@@ -744,14 +764,20 @@ async def _alert_owner_about_job(
     )
 
 
-async def _edit_or_send_status(status_message: Message, text: str) -> Message:
+async def _edit_or_send_status(status_message: Message, text: str, *, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
     try:
-        await status_message.edit_text(text)
+        if reply_markup is None:
+            await status_message.edit_text(text)
+        else:
+            await status_message.edit_text(text, reply_markup=reply_markup)
         return status_message
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return status_message
-        replacement = await status_message.answer(text)
+        if reply_markup is None:
+            replacement = await status_message.answer(text)
+        else:
+            replacement = await status_message.answer(text, reply_markup=reply_markup)
         try:
             await status_message.delete()
         except Exception:
@@ -794,6 +820,8 @@ async def watch_job_progress(
             await _edit_or_send_status(status_message, "Задача не найдена. Сообщите владельцу сервиса.")
             return None
         snapshot = current
+        if snapshot.status in TERMINAL_JOB_STATUSES:
+            break
         key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
         now = asyncio.get_running_loop().time()
         if key != last_key or now - last_heartbeat >= 60:
@@ -801,7 +829,14 @@ async def watch_job_progress(
             last_key = key
             last_heartbeat = now
 
-    await _edit_or_send_status(status_message, _format_job_progress(snapshot))
+    if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        await _edit_or_send_status(
+            status_message,
+            _partial_confirmation_text(snapshot),
+            reply_markup=_partial_confirmation_keyboard(job_id),
+        )
+    else:
+        await _edit_or_send_status(status_message, _format_job_progress(snapshot))
     return snapshot
 
 
@@ -839,11 +874,21 @@ def _contacts_text(settings, telegram_id: str = "") -> str:
     lines = ["📞 Контакты"]
     if settings.contact_telegram:
         lines.append(f"Telegram: {settings.contact_telegram}")
+    if getattr(settings, "contact_max", ""):
+        lines.append(f"MAX: {settings.contact_max}")
+    if getattr(settings, "contact_max_link", ""):
+        lines.append(f"MAX ссылка: {settings.contact_max_link}")
     if settings.contact_email:
         lines.append(f"Email: {settings.contact_email}")
     if getattr(settings, "contact_website", ""):
         lines.append(f"Сайт: {settings.contact_website}")
-    if not settings.contact_telegram and not settings.contact_email and not getattr(settings, "contact_website", ""):
+    if (
+        not settings.contact_telegram
+        and not getattr(settings, "contact_max", "")
+        and not getattr(settings, "contact_max_link", "")
+        and not settings.contact_email
+        and not getattr(settings, "contact_website", "")
+    ):
         lines.append("Контакты для покупки пока не указаны владельцем сервиса.")
     if telegram_id:
         lines.extend(["", f"Ваш Telegram ID: {telegram_id}"])
@@ -873,7 +918,13 @@ def _cabinet_text(db, client: Client, settings) -> str:
     if low:
         lines.extend(["", f"⚠️ Заканчивается баланс: {', '.join(low)}."])
     lines.extend(["", f"Пополнить пакет можно в разделе «{BUTTON_TARIFFS}»."])
-    if settings.contact_telegram or settings.contact_email or getattr(settings, "contact_website", ""):
+    if (
+        settings.contact_telegram
+        or getattr(settings, "contact_max", "")
+        or getattr(settings, "contact_max_link", "")
+        or settings.contact_email
+        or getattr(settings, "contact_website", "")
+    ):
         lines.extend(["", _contacts_text(settings)])
     return "\n".join(lines)
 
@@ -907,6 +958,7 @@ def _tariffs_text(db, settings) -> str:
     if not supplier and not reports:
         lines.extend(["", "Тарифы пока не настроены в админ-панели."])
     lines.extend(["", settings.payment_instructions or DEFAULT_PAYMENT_INSTRUCTIONS])
+    lines.extend(["", INDIVIDUAL_TERMS_NOTE])
     lines.extend(["", AI_HELP_NOTE])
     lines.extend(["", _contacts_text(settings)])
     return "\n".join(lines)
@@ -933,6 +985,59 @@ def _partial_confirmation_keyboard(job_id: str) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def _find_more_suppliers_offer_text() -> str:
+    return (
+        "Можно добрать ещё поставщиков по этому ТЗ. "
+        "Нажмите «Найти ещё», если нужен дополнительный поиск."
+    )
+
+
+def _find_more_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔎 Найти ещё", callback_data=f"find_more_prompt:{job_id}"),
+            ]
+        ]
+    )
+
+
+def _find_more_suppliers_confirmation_text() -> str:
+    return (
+        "Найти ещё поставщиков по этому ТЗ?\n\n"
+        "Будет списана 1 генерация поиска поставщиков. "
+        "Новый поиск исключит уже найденные компании."
+    )
+
+
+def _find_more_suppliers_confirmation_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, списать 1 генерацию", callback_data=f"find_more_yes:{job_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"find_more_no:{job_id}"),
+            ],
+        ]
+    )
+
+
+def _callback_user_fields(callback: CallbackQuery) -> tuple[str, str, str]:
+    user = callback.from_user
+    telegram_id = str(user.id if user else "")
+    username = str(getattr(user, "username", "") or "")
+    name = " ".join(
+        item
+        for item in [
+            str(getattr(user, "first_name", "") or "").strip(),
+            str(getattr(user, "last_name", "") or "").strip(),
+        ]
+        if item
+    )
+    return telegram_id, username, name
 
 
 @router.message(Command("start"))
@@ -1050,7 +1155,7 @@ async def create_button(message: Message) -> None:
     await message.answer(
         "🚀 Создать\n\n"
         "Выберите сценарий:\n"
-        "🔎 Поставщики по ТЗ — файл или текст ТЗ.\n"
+        "🔎 Поставщики по ТЗ — файл, текст или архив с одним ТЗ.\n"
         "📄 Анализ закупки — номер, ссылка или документы закупки.\n"
         "📄🔎 Анализ + поиск — анализ закупки и поставщики по найденному ТЗ.",
         reply_markup=create_menu(),
@@ -1119,7 +1224,10 @@ async def run_batch_button(message: Message) -> None:
                 "Отправьте файлы закупки, архив, номер извещения или ссылку на закупку."
             )
         else:
-            text = "📎 ТЗ не добавлено\n\nОтправьте файл ТЗ/ООЗ или текстовое описание объекта закупки."
+            text = (
+                "📎 ТЗ не добавлено\n\n"
+                "Отправьте файл ТЗ/ООЗ, архив с несколькими файлами или текстовое описание объекта закупки."
+            )
         await message.answer(text, reply_markup=batch_menu())
         return
     BATCH_RUNNING_CHATS.add(message.chat.id)
@@ -1209,9 +1317,7 @@ async def run_batch_button(message: Message) -> None:
             return
         if job_id is not None:
             snapshot = await watch_job_progress(message, job_id, status_message=launch_message)
-            if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-                await _send_partial_confirmation(message, job_id, snapshot)
-            else:
+            if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
                 await _send_job_outputs(message, job_id, snapshot)
     finally:
         BATCH_RUNNING_CHATS.discard(message.chat.id)
@@ -1232,7 +1338,7 @@ async def _watch_supplier_multi_outputs(
             status_message = await message.answer(f"Обрабатываю ТЗ {index}/{total}: {title}")
         snapshot = await watch_job_progress(message, job_id, status_message=status_message)
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-            await _send_partial_confirmation(message, job_id, snapshot)
+            status_message = None
         else:
             await _send_job_outputs(
                 message,
@@ -1284,6 +1390,8 @@ async def _send_job_outputs(
                     _after_delivery_balance_text(db, done_job.client),
                     reply_markup=final_reply_markup,
                 )
+            if job_can_find_more_suppliers(done_job):
+                await _send_find_more_suppliers_offer(message, done_job.id)
             return True
         elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
             await message.answer(
@@ -1334,10 +1442,16 @@ async def _edit_output_delivery_caption(
 
 
 async def _send_partial_confirmation(message: Message, job_id: str, snapshot: JobProgressSnapshot) -> None:
-    await _alert_owner_about_job(message, snapshot, reason="awaiting_customer_confirmation")
     await message.answer(
         _partial_confirmation_text(snapshot),
         reply_markup=_partial_confirmation_keyboard(job_id),
+    )
+
+
+async def _send_find_more_suppliers_offer(message: Message, job_id: str) -> None:
+    await message.answer(
+        _find_more_suppliers_offer_text(),
+        reply_markup=_find_more_suppliers_offer_keyboard(job_id),
     )
 
 
@@ -1405,15 +1519,108 @@ async def help_button(message: Message) -> None:
         "2. Выберите нужный режим.\n"
         "3. Отправьте ТЗ, документы, номер извещения или ссылку — в зависимости от режима.\n\n"
         "Режимы:\n"
-        f"{BUTTON_SUPPLIERS} — ТЗ файлом или текстом.\n"
+        f"{BUTTON_SUPPLIERS} — ТЗ файлом, текстом или архивом.\n"
         f"{BUTTON_REPORT} — номер извещения, документы, архив или ссылка.\n"
         f"{BUTTON_ANALYSIS_AND_SUPPLIERS} — анализ закупки и поставщики по найденному ТЗ.\n\n"
         "💳 Генерация списывается только после выдачи результата.\n"
         f"📊 Остатки смотрите в «{BUTTON_ACCESS}».\n\n"
+        f"{INDIVIDUAL_TERMS_NOTE}\n\n"
         f"{AI_HELP_NOTE}\n\n"
         "Если доступа нет, нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
         reply_markup=_menu_for_chat(message.chat.id),
     )
+
+
+@router.callback_query(F.data.startswith("find_more_prompt:"))
+async def find_more_suppliers_prompt(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    await callback.answer()
+    try:
+        await callback.message.edit_text(
+            _find_more_suppliers_confirmation_text(),
+            reply_markup=_find_more_suppliers_confirmation_keyboard(job_id),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            _find_more_suppliers_confirmation_text(),
+            reply_markup=_find_more_suppliers_confirmation_keyboard(job_id),
+        )
+
+
+@router.callback_query(F.data.startswith("find_more_no:"))
+async def find_more_suppliers_decline(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    await callback.answer("Поиск не запущен.")
+    if callback.message:
+        try:
+            await callback.message.edit_text("Дополнительный поиск не запущен.")
+        except TelegramBadRequest:
+            await callback.message.answer("Дополнительный поиск не запущен.", reply_markup=main_menu())
+
+
+@router.callback_query(F.data.startswith("find_more_yes:"))
+async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    chat_id = int(callback.message.chat.id)
+    if _chat_has_processing_job(chat_id):
+        await callback.answer("У вас уже есть задача в работе. Дождитесь результата.", show_alert=True)
+        return
+
+    telegram_id, username, name = _callback_user_fields(callback)
+    db = SessionLocal()
+    new_job_id = ""
+    launch_snapshot: JobProgressSnapshot | None = None
+    try:
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await callback.answer(account_error, show_alert=True)
+            return
+        if not client:
+            await callback.answer("Доступ не подключён. Откройте «Контакты» и отправьте владельцу ваш Telegram ID.", show_alert=True)
+            return
+        original_job = db.get(Job, job_id)
+        if not original_job or original_job.client_id != client.id:
+            await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+            return
+        new_job = create_additional_supplier_search_for_client(
+            db,
+            client=client,
+            original_job=original_job,
+            created_by_telegram_id=telegram_id,
+        )
+        new_job_id = new_job.id
+        launch_snapshot = _job_snapshot(new_job)
+    except HTTPException as exc:
+        detail = str(exc.detail or "Не удалось запустить дополнительный поиск.")
+        await callback.answer(detail, show_alert=True)
+        return
+    finally:
+        db.close()
+
+    BATCH_RUNNING_CHATS.add(chat_id)
+    await callback.answer("Дополнительный поиск запущен.")
+    launch_message = await callback.message.answer(
+        _format_launch_progress(launch_snapshot, "✅ Дополнительный поиск поставщиков запущен."),
+        reply_markup=processing_menu(),
+    )
+    try:
+        snapshot = await watch_job_progress(callback.message, new_job_id, status_message=launch_message)
+        if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
+            await _send_job_outputs(callback.message, new_job_id, snapshot)
+    finally:
+        BATCH_RUNNING_CHATS.discard(chat_id)
 
 
 @router.callback_query(F.data.startswith("partial_yes:"))
@@ -1446,6 +1653,7 @@ async def partial_report_accept(callback: CallbackQuery) -> None:
     _mark_partial_delivered(job_id)
     await callback.answer("Отчёт отправлен.")
     await callback.message.answer("Неполный отчёт отправлен. Генерация списана после успешной отправки.", reply_markup=main_menu())
+    await _send_find_more_suppliers_offer(callback.message, job_id)
 
 
 @router.callback_query(F.data.startswith("partial_no:"))

@@ -74,6 +74,7 @@ export default function SupplierSearchPage() {
           <p>
             Загрузите ТЗ в <a href="/cabinet">личном кабинете</a> или отправьте описание товара в{" "}
             <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">Telegram-бот TenderLex</a>.
+            {" "}Если нужен больший лимит поставщиков, больше компаний в первом поиске или другой объём работы, напишите нам — обсудим индивидуальные условия под вашу задачу.
           </p>
         </section>
       </article>

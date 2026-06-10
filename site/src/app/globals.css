@@ -1242,12 +1242,12 @@ select {
 
 .payment-panel {
   display: grid;
-  grid-template-columns: minmax(250px, 0.75fr) repeat(2, minmax(190px, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
-    "payment-title supplier-tariffs report-tariffs"
-    "payment-copy supplier-tariffs report-tariffs"
-    "payment-actions payment-actions payment-actions";
-  gap: 9px 18px;
+    "payment-title payment-actions"
+    "payment-copy payment-copy"
+    "payment-tariffs payment-tariffs";
+  gap: 10px 16px;
   align-content: start;
   align-items: start;
 }
@@ -1258,22 +1258,21 @@ select {
 
 .payment-copy {
   grid-area: payment-copy;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
 }
 
-.payment-panel .mini-tariffs:nth-of-type(2) {
-  grid-area: supplier-tariffs;
-}
-
-.payment-panel .mini-tariffs:nth-of-type(3) {
-  grid-area: report-tariffs;
+.payment-tariffs {
+  grid-area: payment-tariffs;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  align-self: start;
 }
 
 .contact-actions {
   grid-area: payment-actions;
-}
-
-.payment-panel .mini-tariffs {
-  align-self: start;
 }
 
 .panel-title {
@@ -1292,6 +1291,7 @@ select {
   display: grid;
   justify-content: start;
   gap: 4px;
+  padding: 0;
 }
 
 .panel-title h2 {
@@ -1511,6 +1511,14 @@ select {
   line-height: 1.45;
 }
 
+.task-hint-warning {
+  padding: 10px 12px;
+  border: 1px solid #dfb86f;
+  border-radius: 6px;
+  background: #fff8e8;
+  color: #765414;
+}
+
 .submit-row {
   display: flex;
   justify-content: flex-end;
@@ -1591,7 +1599,18 @@ select {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
-  line-height: 1.32;
+  line-height: 1.35;
+}
+
+.payment-copy p {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+
+.payment-copy p + p {
+  margin-top: 0;
+  color: var(--muted);
 }
 
 .mini-tariffs div {
@@ -1619,11 +1638,13 @@ select {
   flex-wrap: wrap;
   gap: 7px;
   align-self: start;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+  justify-content: flex-end;
+  padding-top: 0;
+  border-top: 0;
 }
 
-.contact-actions a {
+.contact-actions a,
+.contact-text {
   display: inline-flex;
   min-height: 32px;
   align-items: center;
@@ -1640,6 +1661,13 @@ select {
 .jobs-panel {
   margin-top: 18px;
   margin-bottom: 48px;
+}
+
+.jobs-help {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .jobs-table {
@@ -1667,8 +1695,8 @@ select {
 }
 
 .job-row {
-  min-height: 76px;
-  padding: 13px 14px;
+  min-height: 68px;
+  padding: 11px 14px;
   border-top: 1px solid var(--line);
   color: var(--ink-soft);
   font-size: 13px;
@@ -1682,19 +1710,19 @@ select {
 
 .job-row strong {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
   line-height: 1.25;
 }
 
 .job-row span {
-  margin-top: 4px;
+  margin-top: 3px;
   color: var(--muted);
   line-height: 1.35;
 }
 
 .job-row small {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--amber);
   line-height: 1.35;
 }
@@ -1755,7 +1783,7 @@ select {
   display: flex;
   width: 100%;
   min-width: 0;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1764,7 +1792,7 @@ select {
   display: inline-flex;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 38px;
+  min-height: 34px;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -1774,6 +1802,141 @@ select {
   font-weight: 850;
   line-height: 1;
   white-space: nowrap;
+}
+
+.job-actions .secondary-action {
+  background: #f7fbfa;
+}
+
+.job-note {
+  flex: 1 0 100%;
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.jobs-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.jobs-pagination-inline {
+  padding-top: 0;
+}
+
+.jobs-pagination button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.jobs-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(4px);
+}
+
+.confirm-dialog {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 14px 12px;
+  width: min(100%, 440px);
+  padding: 18px 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 24px 70px rgba(7, 52, 58, 0.18);
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.confirm-dialog p {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.confirm-dialog span {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.confirm-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.confirm-cancel {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.confirm-dialog .primary-action {
+  min-width: 0;
+  padding-inline: 16px;
+}
+
+.confirm-cancel:disabled,
+.confirm-dialog .primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .job-actions button:only-child {
@@ -2263,6 +2426,14 @@ select {
   white-space: nowrap;
 }
 
+.pricing-note {
+  margin: 16px 24px 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
 .pricing-table > a {
   width: calc(100% - 48px);
   margin: 20px 24px 24px;
@@ -2371,6 +2542,10 @@ select {
   color: white;
   font-size: 14px;
   font-weight: 700;
+}
+
+.contact-link-static {
+  cursor: default;
 }
 
 .site-footer {
@@ -2777,12 +2952,18 @@ select {
   .payment-panel .panel-title,
   .payment-copy,
   .contact-actions,
-  .payment-panel .mini-tariffs,
-  .payment-panel .mini-tariffs:nth-of-type(2),
-  .payment-panel .mini-tariffs:nth-of-type(3) {
+  .payment-tariffs {
     grid-area: auto;
     grid-column: auto;
     grid-row: auto;
+  }
+
+  .payment-tariffs {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-copy {
+    grid-template-columns: 1fr;
   }
 
   .work-panel,
@@ -2800,6 +2981,40 @@ select {
     justify-content: center;
     padding-inline: 8px;
     font-size: 11px;
+  }
+
+  .jobs-pagination {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .jobs-pagination button {
+    flex: 1 1 110px;
+  }
+
+  .jobs-pagination span {
+    flex: 1 0 100%;
+    text-align: center;
+  }
+
+  .confirm-dialog {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 16px;
+  }
+
+  .confirm-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .confirm-actions {
+    flex-direction: column-reverse;
+  }
+
+  .confirm-actions .primary-action,
+  .confirm-cancel {
+    width: 100%;
   }
 
   .auth-benefits {

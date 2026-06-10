@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent,
 import {
   ArrowRight,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
   FileText,
@@ -68,6 +70,8 @@ type SessionPayload = {
     email: string;
     telegram: string;
     telegram_url: string;
+    max: string;
+    max_url: string;
   };
   payment?: {
     provider: string;
@@ -92,6 +96,7 @@ type CustomerJob = {
   file_count: number;
   has_result: boolean;
   can_download: boolean;
+  can_find_more_suppliers: boolean;
   result_files: Array<{
     kind: string;
     label: string;
@@ -103,11 +108,20 @@ type CustomerJob = {
   updated_at: string | null;
 };
 
+type CustomerJobsResponse = {
+  items: CustomerJob[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+const CUSTOMER_JOBS_PAGE_SIZE = 15;
+
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
     id: "supplier_search",
     label: "Поиск поставщиков",
-    description: "ТЗ файлом или текстом",
+    description: "ТЗ файлом, текстом или архивом",
     icon: Search,
   },
   {
@@ -138,12 +152,12 @@ const modeCopy: Record<Scenario, {
 }> = {
   supplier_search: {
     mode: "supplier_search",
-    uploadTitle: "Загрузите одно или несколько ТЗ",
-    uploadText: "Каждое ТЗ даст отдельный поиск поставщиков.",
+    uploadTitle: "Загрузите ТЗ",
+    uploadText: "Каждый отдельный файл даст отдельный поиск поставщиков.",
     multipleFiles: true,
     textLabel: "Или вставьте ТЗ текстом",
     textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса КП.",
-    hint: "Можно загрузить файлы или вставить одно ТЗ текстом. Если материалов несколько, каждый будет обработан отдельной задачей.",
+    hint: "Если одно ТЗ состоит из нескольких файлов, объедините их в архив и загрузите одним файлом. Разные ТЗ загружайте отдельными файлами.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
@@ -179,11 +193,25 @@ const statusClasses: Record<string, string> = {
   customer_declined: "failed",
 };
 
+const MOSCOW_TIME_ZONE = "Europe/Moscow";
+
+function apiDateValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed}T00:00:00Z`;
+  }
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}Z`;
+}
+
 function formatDate(value: string | null) {
   if (!value) return "-";
-  const date = new Date(value);
+  const date = new Date(apiDateValue(value));
   if (Number.isNaN(date.getTime())) return value.slice(0, 16);
-  return date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+  return date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: MOSCOW_TIME_ZONE });
 }
 
 function formatRubles(kopeks: number) {
@@ -262,6 +290,8 @@ function downloadBlob(blob: Blob, filename: string) {
 export function CabinetClient() {
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [jobs, setJobs] = useState<CustomerJob[]>([]);
+  const [jobsPage, setJobsPage] = useState(1);
+  const [jobsTotal, setJobsTotal] = useState(0);
   const [authMode, setAuthMode] = useState<"login" | "register" | "reset">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -276,6 +306,7 @@ export function CabinetClient() {
   const [dragActive, setDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -288,10 +319,15 @@ export function CabinetClient() {
   const acceptsText = Boolean(selectedCopy.textLabel);
   const maxFiles = session?.limits?.max_files_per_batch || 20;
   const emailVerified = session?.user?.is_email_verified !== false;
+  const supplierMultiFileWarning = scenario === "supplier_search" && selectedFiles.length > 1;
   const activeJobs = useMemo(
     () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation"].includes(job.status)).length,
     [jobs],
   );
+  const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / CUSTOMER_JOBS_PAGE_SIZE));
+  const jobsStart = jobsTotal ? (jobsPage - 1) * CUSTOMER_JOBS_PAGE_SIZE + 1 : 0;
+  const jobsEnd = Math.min(jobsTotal, jobsPage * CUSTOMER_JOBS_PAGE_SIZE);
+  const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
   async function loadSession() {
     const response = await fetch("/api/customer/auth/session", { credentials: "same-origin" });
@@ -303,12 +339,25 @@ export function CabinetClient() {
     setSession(payload.authenticated ? payload : null);
   }
 
-  async function loadJobs() {
+  async function loadJobs(page = jobsPage) {
     if (!authenticated) return;
     setJobsLoading(true);
     try {
-      const response = await fetch("/api/customer/jobs", { credentials: "same-origin" });
-      setJobs(await readJson<CustomerJob[]>(response));
+      const offset = (page - 1) * CUSTOMER_JOBS_PAGE_SIZE;
+      const response = await fetch(`/api/customer/jobs?limit=${CUSTOMER_JOBS_PAGE_SIZE}&offset=${offset}&include_pagination=true`, { credentials: "same-origin" });
+      const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
+      if (Array.isArray(payload)) {
+        setJobs(payload);
+        setJobsTotal(payload.length);
+        return;
+      }
+      const nextPageCount = Math.max(1, Math.ceil(payload.total / payload.limit));
+      setJobsTotal(payload.total);
+      if (page > nextPageCount) {
+        setJobsPage(nextPageCount);
+        return;
+      }
+      setJobs(payload.items);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -381,7 +430,18 @@ export function CabinetClient() {
     loadJobs();
     const timer = window.setInterval(loadJobs, 7000);
     return () => window.clearInterval(timer);
-  }, [authenticated]);
+  }, [authenticated, jobsPage]);
+
+  useEffect(() => {
+    if (!findMoreConfirmJob) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setFindMoreConfirmJob(null);
+      }
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [findMoreConfirmJob]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -431,6 +491,9 @@ export function CabinetClient() {
       await readJson(response);
       setSession(null);
       setJobs([]);
+      setJobsPage(1);
+      setJobsTotal(0);
+      setFindMoreConfirmJob(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -535,8 +598,9 @@ export function CabinetClient() {
       setSourceUrls("");
       clearSelectedFiles();
       setMessage(payload.batch ? `Запущено задач: ${payload.count}.` : "Задача запущена.");
+      setJobsPage(1);
       await loadSession();
-      await loadJobs();
+      await loadJobs(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -611,6 +675,30 @@ export function CabinetClient() {
       await readJson(response);
       await loadSession();
       await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function findMoreSuppliers(job: CustomerJob) {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    setFindMoreConfirmJob(null);
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/find-more-suppliers`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      });
+      const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      setMessage(payload.message || "Запущен дополнительный поиск поставщиков.");
+      setJobsPage(1);
+      await loadSession();
+      await loadJobs(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -865,6 +953,11 @@ export function CabinetClient() {
           </div>
 
           <p className="task-hint">{selectedCopy.hint}</p>
+          {supplierMultiFileWarning ? (
+            <p className="task-hint task-hint-warning">
+              Выбрано {selectedFiles.length} {pluralizeRu(selectedFiles.length, ["файл", "файла", "файлов"])}. Они будут обработаны как отдельные ТЗ. Если это части одного ТЗ, объедините их в архив и загрузите одним файлом.
+            </p>
+          ) : null}
           {!emailVerified ? <p className="task-hint">Подтвердите email, чтобы запускать задачи.</p> : null}
 
           <div className="submit-row submit-row-compact">
@@ -902,15 +995,31 @@ export function CabinetClient() {
               <h2>Пополнить доступ</h2>
               <span>через менеджера</span>
             </div>
-            <p className="payment-copy">Выберите подходящий пакет и напишите нам email кабинета. После подтверждения мы начислим доступ.</p>
-            <TariffList title="Поиск поставщиков" tariffs={session?.tariff_groups?.supplier_search || []} />
-            <TariffList title="Анализ закупки" tariffs={session?.tariff_groups?.procurement_report || []} />
+            <div className="payment-copy">
+              <p>Выберите пакет ниже и напишите в Telegram: укажите email кабинета и нужный пакет. После подтверждения мы начислим доступ.</p>
+              <p>Возможен индивидуальный подход: если нужен больший лимит поставщиков, больше компаний в одном поиске или другой объём генераций, напишите нам — настроим условия под вашу задачу.</p>
+            </div>
+            <div className="payment-tariffs">
+              <TariffList title="Поиск поставщиков" tariffs={session?.tariff_groups?.supplier_search || []} />
+              <TariffList title="Анализ закупки" tariffs={session?.tariff_groups?.procurement_report || []} />
+            </div>
             <div className="contact-actions">
               {session?.contacts?.telegram_url ? (
                 <a href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
                   <MessageCircle size={16} aria-hidden="true" />
                   Написать в Telegram
                 </a>
+              ) : null}
+              {session?.contacts?.max_url ? (
+                <a href={session.contacts.max_url} target="_blank" rel="noreferrer">
+                  <MessageCircle size={16} aria-hidden="true" />
+                  Написать в MAX
+                </a>
+              ) : session?.contacts?.max ? (
+                <span className="contact-text">
+                  <MessageCircle size={16} aria-hidden="true" />
+                  MAX: {session.contacts.max}
+                </span>
               ) : null}
               {session?.contacts?.email ? (
                 <a href={`mailto:${session.contacts.email}`}>
@@ -926,11 +1035,30 @@ export function CabinetClient() {
       <section id="jobs" className="jobs-panel">
         <div className="panel-title">
           <h2>Задачи</h2>
-          <button type="button" onClick={loadJobs} disabled={jobsLoading}>
+          <span>{jobsTotal ? `${jobsStart}-${jobsEnd} из ${jobsTotal}` : "0 задач"}</span>
+          {jobsTotal > CUSTOMER_JOBS_PAGE_SIZE ? (
+            <div className="jobs-pagination jobs-pagination-inline" aria-label="Навигация по задачам">
+              <button type="button" onClick={() => setJobsPage((page) => Math.max(1, page - 1))} disabled={jobsPage <= 1 || jobsLoading}>
+                <ChevronLeft size={16} aria-hidden="true" />
+                Назад
+              </button>
+              <span>Страница {jobsPage} из {jobsPageCount}</span>
+              <button type="button" onClick={() => setJobsPage((page) => Math.min(jobsPageCount, page + 1))} disabled={jobsPage >= jobsPageCount || jobsLoading}>
+                Вперёд
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          <button type="button" onClick={() => void loadJobs()} disabled={jobsLoading}>
             {jobsLoading ? <Loader2 size={16} aria-hidden="true" /> : <Clock3 size={16} aria-hidden="true" />}
             Обновить
           </button>
         </div>
+        {hasFindMoreSuppliers ? (
+          <p className="jobs-help">
+            В готовом поиске кнопка «Найти ещё» запускает новый платный добор по тому же ТЗ: списывается одна генерация, а уже найденные компании исключаются из результата.
+          </p>
+        ) : null}
         <div className="jobs-table">
           <div className="jobs-head">
             <span>Задача</span>
@@ -969,20 +1097,37 @@ export function CabinetClient() {
                         Отказаться
                       </button>
                     </>
-                  ) : job.result_files?.length ? (
-                    job.result_files.map((file) => (
-                      <button key={`${job.id}-${file.kind}`} type="button" onClick={() => downloadJobFile(job, file)} disabled={busy}>
-                        <Download size={16} aria-hidden="true" />
-                        {file.label || "Скачать"}
-                      </button>
-                    ))
-                  ) : job.can_download ? (
-                    <button type="button" onClick={() => downloadJob(job)} disabled={busy}>
-                      <Download size={16} aria-hidden="true" />
-                      Скачать
-                    </button>
                   ) : (
-                    <span className="muted-action">-</span>
+                    <>
+                      {job.result_files?.length ? (
+                        job.result_files.map((file) => (
+                          <button key={`${job.id}-${file.kind}`} type="button" onClick={() => downloadJobFile(job, file)} disabled={busy}>
+                            <Download size={16} aria-hidden="true" />
+                            {file.label || "Скачать"}
+                          </button>
+                        ))
+                      ) : job.can_download ? (
+                        <button type="button" onClick={() => downloadJob(job)} disabled={busy}>
+                          <Download size={16} aria-hidden="true" />
+                          Скачать
+                        </button>
+                      ) : null}
+                      {job.can_find_more_suppliers ? (
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={() => setFindMoreConfirmJob(job)}
+                          disabled={busy}
+                          title="Новый поиск поставщиков списывает одну генерацию"
+                        >
+                          <Search size={16} aria-hidden="true" />
+                          Найти ещё
+                        </button>
+                      ) : null}
+                      {!job.result_files?.length && !job.can_download && !job.can_find_more_suppliers ? (
+                        <span className="muted-action">-</span>
+                      ) : null}
+                    </>
                   )}
                 </div>
               </article>
@@ -994,7 +1139,49 @@ export function CabinetClient() {
             </div>
           )}
         </div>
+        {jobsTotal > CUSTOMER_JOBS_PAGE_SIZE ? (
+          <div className="jobs-pagination" aria-label="Навигация по задачам">
+            <button type="button" onClick={() => setJobsPage((page) => Math.max(1, page - 1))} disabled={jobsPage <= 1 || jobsLoading}>
+              <ChevronLeft size={16} aria-hidden="true" />
+              Назад
+            </button>
+            <span>Страница {jobsPage} из {jobsPageCount}</span>
+            <button type="button" onClick={() => setJobsPage((page) => Math.min(jobsPageCount, page + 1))} disabled={jobsPage >= jobsPageCount || jobsLoading}>
+              Вперёд
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
       </section>
+
+      {findMoreConfirmJob ? (
+        <div
+          className="confirm-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setFindMoreConfirmJob(null);
+          }}
+        >
+          <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="find-more-confirm-title" aria-describedby="find-more-confirm-copy">
+            <div className="confirm-icon">
+              <Search size={18} aria-hidden="true" />
+            </div>
+            <div>
+              <h2 id="find-more-confirm-title">Найти ещё поставщиков?</h2>
+              <p id="find-more-confirm-copy">Спишется 1 генерация поиска поставщиков. Уже найденные компании не попадут в новый результат.</p>
+              <span>{findMoreConfirmJob.human_title}</span>
+            </div>
+            <div className="confirm-actions">
+              <button className="confirm-cancel" type="button" onClick={() => setFindMoreConfirmJob(null)} disabled={busy}>
+                Отмена
+              </button>
+              <button className="primary-action" type="button" onClick={() => void findMoreSuppliers(findMoreConfirmJob)} disabled={busy}>
+                {busy ? <Loader2 size={16} aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
+                Продолжить
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
