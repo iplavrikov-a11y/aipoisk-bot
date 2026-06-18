@@ -1,0 +1,27 @@
+[Unit]
+Description=TenderLex Telegram Bot
+After=network.target aipoisk-api.service
+Wants=network-online.target
+PartOf=aipoisk-api.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/projects/aipoisk-bot/backend
+Environment=PYTHONPATH=/root/projects/aipoisk-bot/backend
+Environment=OMP_THREAD_LIMIT=1
+EnvironmentFile=/root/projects/aipoisk-bot/.env
+ExecStart=/root/projects/aipoisk-bot/backend/.venv/bin/python -m app.bot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aipoisk-bot
+MemoryHigh=512M
+MemoryMax=768M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

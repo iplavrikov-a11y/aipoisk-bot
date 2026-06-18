@@ -1,0 +1,30 @@
+[
+  {
+    "id": "industrial_equipment",
+    "category": "industrial_equipment",
+    "context": "Техническое задание. Поставка сварочного полуавтомата MIG/MAG 500А для промышленной эксплуатации.",
+    "item_name": "сварочный полуавтомат MIG/MAG 500А",
+    "supplier_domain": "welding-supplier.example"
+  },
+  {
+    "id": "construction_materials",
+    "category": "construction_materials",
+    "context": "Техническое задание. Поставка монолитного поликарбоната прозрачного 8 мм и вермикулита вспученного.",
+    "item_name": "монолитный поликарбонат прозрачный 8 мм",
+    "supplier_domain": "materials-supplier.example"
+  },
+  {
+    "id": "laboratory_reagents",
+    "category": "laboratory_reagents",
+    "context": "Техническое задание. Поставка лабораторных реактивов для хроматографии, чистота HPLC grade.",
+    "item_name": "лабораторные реактивы HPLC grade",
+    "supplier_domain": "lab-supplier.example"
+  },
+  {
+    "id": "power_equipment",
+    "category": "power_equipment",
+    "context": "Техническое задание. Поставка дизель-генераторной установки 100 кВт с автоматическим вводом резерва.",
+    "item_name": "дизель-генераторная установка 100 кВт",
+    "supplier_domain": "power-supplier.example"
+  }
+]

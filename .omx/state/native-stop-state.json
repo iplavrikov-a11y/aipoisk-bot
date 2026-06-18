@@ -1,0 +1,64 @@
+{
+  "sessions": {
+    "019ea2d6-bdfa-7323-bb6f-f73e5acb5f3f": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|сделал безопасное обновление документации без изменения кода: уточнил в `readme.md`, `docs/project_status.md` и `docs/tenderlex_web_cabinet_runbook.md`, что `анализ + поиск` автоматически решает вопрос минпромторга/гисп, а реестр ищется только при действующем запрете или другом обязательном требовании. коммит `db38bcf` запушен в `origin/codex/web-cabinet-site-20260607`. чужую папку `.agent/tasks/2026-06-07-web-cabinet/raw/` не трогал. ::git-stage{cwd=\"/root/projects/aipoisk-bot\"} ::git-commit{cwd=\"/root/projects/aipoisk-bot\"} ::git-push{cwd=\"/root/projects/aipoisk-bot\" branch=\"codex/web-cabinet-site-20260607\"}",
+        "first_seen_at": "2026-06-08T20:36:15.872Z",
+        "last_seen_at": "2026-06-08T20:36:15.917Z",
+        "repeat_count": 2,
+        "last_turn_id": "019ea8f0-fe79-7a22-9ca2-f716550c4693",
+        "last_thread_id": null
+      }
+    },
+    "019ea900-8734-7ba1-a3b6-31de0851ce06": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|готово. обновил документацию и отправил изменения в github. в коммит вошли: - `readme.md` - `docs/tenderlex_site.md` - `docs/project_status.md` - seo-страницы, sitemap, yandex verification file, metrika/env wiring, canonical metadata. github: - ветка: `codex/web-cabinet-site-20260607` - коммит: [`2761fbd`](https://github.com/iplavrikov-a11y/aipoisk-bot/commit/2761fbdc5982bdb3fd4241e381313fb82e490346) не включал в коммит оставшиеся локальные изменения в `backend/`, `frontend/`, `site/src/app/cabinet/cabinet-client.tsx` и часть `globals.css`, потому что они не относятся к seo/документации и могли быть отдельной незавершённой работой. проверка: `git diff --cached --check` прошёл, push на github подтверждён через `git ls-remote`. ::git-stage{cwd=\"/root/projects/aipoisk-bot\"} ::git-commit{cwd=\"/root/projects/aipoisk-bot\"} ::git-push{cwd=\"/root/projects/aipoisk-bot\" branch=\"codex/web-cabinet-site-20260607\"}",
+        "first_seen_at": "2026-06-10T08:14:55.549Z",
+        "last_seen_at": "2026-06-10T08:14:55.564Z",
+        "repeat_count": 2,
+        "last_turn_id": "019eb092-679a-7832-97e9-789789893ef9",
+        "last_thread_id": null
+      }
+    },
+    "019eae0b-a8c7-7832-b244-4c2e912c17dd": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|посмотрел процесс до конца. оценка работы: всё отработало правильно. что произошло: - задача `поиск поставщиков` была `running`, вторая задача этого же клиента ждала в `pending`. - после завершения первой задачи вторая автоматически перешла в `running`. - первая завершилась успешно: найдено и проверено `52` поставщика, создан xlsx. - вторая завершилась успешно: создан docx-анализ закупки. - сейчас в очереди нет `pending` и `running`: только завершённые задачи. - worker активен, `aipoisk_worker_concurrency=2`. - ошибок в свежих логах worker нет. важный вывод: на скриншоте всё было корректно. так как обе задачи у одного клиента, система специально не запустила их одновременно. это правильно: один клиент не должен занимать оба worker-слота своими задачами. когда первая закончилась, вторая сразу пошла в работу. по этой проверке решение работает штатно. реальный следующий показатель будет, когда одновременно запустятся задачи от двух разных клиентов: тогда они должны идти параллельно.",
+        "first_seen_at": "2026-06-09T23:51:12.170Z",
+        "last_seen_at": "2026-06-09T23:51:12.176Z",
+        "repeat_count": 2,
+        "last_turn_id": "019eaec6-033c-7833-b8f3-0b727474d8cb",
+        "last_thread_id": null
+      }
+    },
+    "019eb067-f59a-7c60-bb62-81e375c2e845": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|готово. документация и github обновлены безопасно. коммит: `3bdebae2b2103229d0827e95d600e6023ead08fc` ветка: `codex/web-cabinet-site-20260607` github: [branch](https://github.com/iplavrikov-a11y/aipoisk-bot/tree/codex/web-cabinet-site-20260607) проверки перед коммитом/пушем: - `git diff --check` и `git diff --cached --check` прошли - `bash -n scripts/deploy_tenderlex_live.sh` прошёл - backend: `290 passed, 2 warnings, 46 subtests passed` - admin build прошёл - site `typecheck` и `build` прошли в github не добавлял raw-скриншоты qa: `.agent/tasks/2026-06-07-web-cabinet/raw/` остались локально untracked. production-деплой в этом шаге не перезапускал, так как задача была про документацию и github. ::git-stage{cwd=\"/root/projects/aipoisk-bot\"} ::git-commit{cwd=\"/root/projects/aipoisk-bot\"} ::git-push{cwd=\"/root/projects/aipoisk-bot\" branch=\"codex/web-cabinet-site-20260607\"}",
+        "first_seen_at": "2026-06-10T17:13:36.774Z",
+        "last_seen_at": "2026-06-10T17:13:36.787Z",
+        "repeat_count": 2,
+        "last_turn_id": "019eb280-5864-7390-98d8-2e4005c1bb10",
+        "last_thread_id": null
+      }
+    },
+    "019eb551-a971-7792-bd3d-b79786970f5f": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|выполнил и задеплоил. в telegram-боте теперь контактный блок выглядит так по текущим настройкам: ```text 📞 контакты telegram: написать в telegram email: info@tenderlex.ru сайт: tenderlex.ru ваш telegram id: 320433711 ``` что изменил: - [backend/app/bot.py](/root/projects/aipoisk-bot/backend/app/bot.py:882): убрал вывод `max`, `max ссылка` и сырого `max.ru` из telegram-бота. - [backend/app/bot.py](/root/projects/aipoisk-bot/backend/app/bot.py:917): сообщения с контактами отправляются как html и с `disable_web_page_preview=true`, чтобы не появлялась зелёная плашка preview. - [backend/app/bot.py](/root/projects/aipoisk-bot/backend/app/bot.py:988): если в custom-инструкции оплаты вдруг есть `max`/`макс`, бот подставит безопасный текст без max. проверки: - `backend/tests/test_bot_progress.py`: `44 passed`. - полный deploy: `292 passed`, admin build, site typecheck/build, service restart, live checks — `live deploy verified`. - ручная проверка текста на текущих настройках: `max in contacts: false`, `max in tariffs: false`, options: `parse_mode=html`, `disable_web_page_preview=true`. не трогал чужие untracked каталоги `.agent/tasks/2026-06-07-web-cabinet/raw/` и `.agent/avito-ad-2026-06-11/`.",
+        "first_seen_at": "2026-06-11T06:35:06.594Z",
+        "last_seen_at": "2026-06-11T06:35:06.607Z",
+        "repeat_count": 2,
+        "last_turn_id": "019eb55d-4038-7861-a8f3-96d8e056b8e8",
+        "last_thread_id": null
+      }
+    },
+    "019eb55a-2c6f-7733-bd81-06bfff455614": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|да, ты прав. тяжёлые процессы больше не запускаю. зависший `convert` я остановил, дальше только подготовил текстовый файл без обработки изображений. готовый пакет для productradar лежит здесь: [submission-texts.md](/root/projects/aipoisk-bot/.agent/productradar-tenderlex-2026-06-11/submission-texts.md) там есть: - тексты для всех полей формы productradar; - выбранные категории; - что ставить в цену; - какие 6 исходных png использовать для галереи; - какие сгенерированные файлы не использовать; - путь к логотипу. логотип для загрузки: `/root/projects/aipoisk-bot/.agent/productradar-tenderlex-2026-06-11/tenderlex-logo-productradar.png` сжатие галереи оставляю тебе: исходники уже отобраны в файле, их нужно только ужать до 9:16 и меньше 1mb.",
+        "first_seen_at": "2026-06-11T18:30:44.628Z",
+        "last_seen_at": "2026-06-11T18:30:44.638Z",
+        "repeat_count": 2,
+        "last_turn_id": "019eb7f0-ce87-73a2-9bef-3d793131e974",
+        "last_thread_id": null
+      }
+    }
+  }
+}

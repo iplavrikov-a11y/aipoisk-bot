@@ -1,0 +1,11 @@
+.agent/
+node_modules/
+.next/
+data/
+storage/
+*.pyc
+__pycache__/
+.env*
+.pytest_cache/
+*.bak
+*.backup*

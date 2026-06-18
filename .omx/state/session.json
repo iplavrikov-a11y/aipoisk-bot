@@ -1,0 +1,10 @@
+{
+  "session_id": "019eb55a-2c6f-7733-bd81-06bfff455614",
+  "native_session_id": "019eb55a-2c6f-7733-bd81-06bfff455614",
+  "started_at": "2026-06-11T18:27:52.835Z",
+  "cwd": "/root/projects/aipoisk-bot",
+  "pid": 3631,
+  "platform": "linux",
+  "pid_start_ticks": 1487,
+  "pid_cmdline": "/usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex app-server --listen unix://"
+}

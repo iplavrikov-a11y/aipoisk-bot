@@ -1,0 +1,28 @@
+{
+  "score": 92,
+  "threshold": 90,
+  "verdict": "pass",
+  "category_match": true,
+  "reference_images": [
+    "/tmp/tenderlex-stitch/stitch/tenderlex_desktop_1440px_procurement_focused/screen.png",
+    "/tmp/tenderlex-stitch/stitch/tenderlex_laptop_1366x768_procurement_focused/screen.png",
+    "/tmp/tenderlex-stitch/stitch/tenderlex_mobile_390px_procurement_focused/screen.png"
+  ],
+  "generated_screenshots": [
+    "/tmp/tenderlex-stitch-fold-final/laptop1366-fold.png",
+    "/tmp/tenderlex-stitch-fold-final/mobile390-fold.png",
+    "/tmp/tenderlex-stitch-implementation-final/desktop1440.png",
+    "/tmp/tenderlex-stitch-implementation-final/mobile390.png"
+  ],
+  "differences": [
+    "Stitch variants conflict: desktop, laptop, and mobile use different hero copy and pricing models.",
+    "Implementation keeps real database-backed tariffs instead of the mobile Stitch tariff 12900 RUB/month.",
+    "Implementation removes the mobile Stitch API/footer link and login-style affordances because the public site is not an API or admin surface."
+  ],
+  "suggestions": [
+    "Keep the current B2B report/table direction.",
+    "Do not reintroduce blog, admin panel wording, API wording, or monthly plan copy unless the business model changes.",
+    "If further polish is needed, iterate on the logo mark itself rather than enlarging it in the UI."
+  ],
+  "reasoning": "The rendered site matches the procurement-focused Stitch direction while resolving contradictions across Stitch exports and preserving live tariffs/contacts. Desktop, laptop, and mobile checks show no overflow, visible CTAs, tariffs, contacts, and no client-facing API/admin text."
+}

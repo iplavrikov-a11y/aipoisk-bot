@@ -1,0 +1,81 @@
+{
+  "directives": [
+    {
+      "directive": "Supplier search is AI-first and AI-required: AI must extract the procurement profile, generate supplier queries, rerank/filter candidates, verify supplier/site/product/contact fit, and no customer supplier report may be generated without AI verification. Deterministic code may gather/clean/prefilter and persist evidence, but must not replace AI decisions with token-saving fallbacks.",
+      "priority": "high",
+      "timestamp": "2026-06-02T19:04:15.401Z"
+    },
+    {
+      "directive": "Configured supplier target is a minimum, not a hard cap. Supplier search should stop early once the minimum is reached to control Yandex/API/AI cost, but any extra suppliers already AI-verified in the same paid review batch must remain in the customer XLSX. Do not run extra paid search/AI batches solely to overfill beyond the configured minimum.",
+      "priority": "high",
+      "timestamp": "2026-06-02T19:30:54.199Z"
+    },
+    {
+      "directive": "Business model rule: paid customers should receive a useful report/result; do not propose withholding reports as the primary quality strategy. Improve root causes first: AI/model quality, official-field checks, national-regime/Minpromtorg handling, hallucination prevention, fair billing, owner alerts, and soft customer disclaimers that AI can make mistakes and critical facts should be checked.",
+      "priority": "high",
+      "timestamp": "2026-06-04T16:15:00.000Z"
+    }
+  ],
+  "notes": [
+    {
+      "category": "architecture",
+      "content": "2026-06-03: Customer-facing supplier counts must show only the actual verified count, never the internal target/minimum. analysis_and_suppliers must run AI supplier-context extraction from the full docs before supplier discovery. If the first AI-verified supplier round underfills target, AI must generate recovery queries and run another searched/verified pool; no deterministic fallback.",
+      "timestamp": "2026-06-03T00:00:00.000Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-03: Customer access separates customers from Telegram manager accounts. Monthly commercial limits are per customer and split into supplier search and procurement analysis; analysis_and_suppliers consumes one unit of each. Trial auto-access can be enabled in settings, but trial forbids mass supplier processing and analysis+suppliers.",
+      "timestamp": "2026-06-03T00:00:00.000Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-02: Supplier count is customer-facing as actual found/verified count only when target is met/exceeded; do not show configured minimum. Procurement analysis prompt/verification aligned closer to EmailAgent: require NMC, legal regime, platform, deadlines, full TZ Markdown table, clarify questions, OSINT without unsourced suppliers/prices/standards. Corrected current mobile-jack DOCX in job 8dfce3c9 and updated ZIP; XLSX unchanged.",
+      "timestamp": "2026-06-02T20:00:26.736Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-04: Procurement report generation has deterministic guardrails in backend/app/procurement_report.py: distinguish national-regime prohibition/restriction/advantage/not_applied; Minprom registry extracts are required only for active prohibition, not for advantage/restriction/not_applied. VAT/USN risk wording must discuss only price/payment reduction or VAT withholding; do not write that payment does not increase.",
+      "timestamp": "2026-06-04T14:31:00.000Z"
+    },
+    {
+      "category": "architecture",
+      "content": "Tenderplan integration added as primary procurement source for plain 11/19-digit notice numbers. Backend resolves notice -> Tenderplan card/context, downloads Tenderplan/EIS attachment hrefs from zakupki.gov.ru into normal JobFile pipeline, includes explanations/protocol attachments, and keeps manual file/link flows. Configure via AIPOISK_TENDERPLAN_* env vars; use RU SOCKS proxy (e.g. socks5://127.0.0.1:1080) for zakupki.gov.ru downloads when NL server is blocked. Do not store API tokens in memory.",
+      "timestamp": "2026-06-05T15:08:38.389Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-06: Tenderplan ingestion now uses shared local Tender Source Service at http://127.0.0.1:8096 first, then falls back to local Tenderplan client. Service returns pre-award Tenderplan context, raw sanitized tender/attachments/explanations, downloads docs through /v1/files/{sha256}. Supplier-search mode still rejects notice numbers instead of auto-starting analysis.",
+      "timestamp": "2026-06-06T09:26:32.678Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-06 Tenderplan hardening: AI Poisk preserves Tender Source Service file document_type metadata. create_job() now rejects procurement sources in supplier_search mode before DB write; notice/link inputs must use procurement_report or analysis_and_suppliers.",
+      "timestamp": "2026-06-06T09:55:08.883Z"
+    },
+    {
+      "category": "architecture",
+      "content": "2026-06-06 Tender Source Service schema 2.1 consumed by AI Poisk: fetch_tenderplan_source_sync preserves schema_version, warnings, document_hints.primary_technical_spec, document_type_source/confidence, and content_document_types.",
+      "timestamp": "2026-06-06T10:17:44.064Z"
+    },
+    {
+      "category": "architecture",
+      "content": "Tenderplan numeric placingWay codes (e.g. 22) must not be rendered as procurement method names. Reports should prefer human-readable method/date wording from the notice docs when Tenderplan timestamp/code is ambiguous, estimate logistics approximately when product quantity/physical parameters exist, and not repeat generic 'товар должен быть новым' while preserving explicit production date/year requirements.",
+      "timestamp": "2026-06-06T19:01:23.656Z"
+    },
+    {
+      "category": "architecture",
+      "content": "Tenderplan API fullinfo/search may expose numeric tender.placingWay only, but tender.globalSearch can contain the human-readable procurement method. Source ingestion now uses globalSearch to decode numeric placingWay before falling back to documents; keep code as a separate service line, never as the report method.",
+      "timestamp": "2026-06-06T19:18:23.258Z"
+    },
+    {
+      "category": "architecture",
+      "content": "Tenderplan code dictionaries: official API endpoints are /api/tools/placingways/list, /api/tools/statuses/list, /api/tools/types/list, /api/tools/regions/list. placingWay/status must be decoded via official dictionary first, then globalSearch fallback, never rendered as user-facing raw code. Code 0 means generic 'Иной способ' and must not be auto-expanded to a guessed subtype without document/platform evidence.",
+      "timestamp": "2026-06-06T19:43:46.724Z"
+    },
+    {
+      "category": "deploy",
+      "content": "TenderLex site SEO/analytics configured on 2026-06-10: Yandex Webmaster HTML file at site/public/yandex_b3b74a829ce4a7c6.html; production env in /etc/systemd/system/tenderlex-site.service.d/seo.conf sets TENDERLEX_YANDEX_METRIKA_ID=109753178 and TENDERLEX_YANDEX_VERIFICATION=b3b74a829ce4a7c6. Google Search Console uses DNS TXT google-site-verification=SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY, no Google meta env needed.",
+      "timestamp": "2026-06-10T07:52:56.705Z"
+    }
+  ]
+}
