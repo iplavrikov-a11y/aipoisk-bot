@@ -38,8 +38,10 @@ from .jobs import (
     MODE_SUPPLIER_SEARCH,
     TERMINAL_JOB_STATUSES,
     cleanup_expired_jobs,
+    cancel_running_job,
     create_job,
     package_job_output_files,
+    package_job_output_items,
 )
 from .main import create_additional_supplier_search_for_client, job_can_find_more_suppliers
 from .models import Client, Job, now_utc
@@ -64,6 +66,7 @@ BUTTON_RUN_BATCH = "▶️ Запустить"
 BUTTON_CANCEL_BATCH = "🗑 Очистить"
 BUTTON_BACK_MAIN = "⬅️ Меню"
 BUTTON_PROCESSING_STATUS = "⏳ В работе"
+BUTTON_CANCEL_PROCESSING = "⛔ Отменить"
 
 BRAND_NAME = "TenderLex"
 BOT_SHORT_DESCRIPTION = "TenderLex: анализ закупок, архивы документов и поставщики."
@@ -118,6 +121,7 @@ class JobProgressSnapshot:
 PENDING_UPLOADS: dict[int, PendingBatch] = {}
 CHAT_UPLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 BATCH_RUNNING_CHATS: set[int] = set()
+BOT_CANCEL_NOTIFIED_JOBS: set[str] = set()
 TEXT_TZ_MIN_CHARS = 50
 TEXT_TZ_MIN_WORDS = 6
 TELEGRAM_CAPTION_LIMIT = 1024
@@ -313,7 +317,8 @@ def _source_added_text(pending: PendingBatch) -> str:
 def _batch_running_text() -> str:
     return (
         "⏳ Обработка уже идёт\n\n"
-        "Новые действия пока не запускаются. Я обновляю статус и пришлю файл, когда он будет готов."
+        "Новые действия пока не запускаются. Я обновляю статус и пришлю файл, когда он будет готов.\n"
+        f"Если запуск ошибочный, нажмите «{BUTTON_CANCEL_PROCESSING}»."
     )
 
 
@@ -389,6 +394,7 @@ def processing_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BUTTON_PROCESSING_STATUS), KeyboardButton(text=BUTTON_STATUS)],
+            [KeyboardButton(text=BUTTON_CANCEL_PROCESSING)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Дождитесь завершения обработки",
@@ -413,6 +419,53 @@ def _chat_has_processing_job(chat_id: int) -> bool:
             db.close()
         except Exception:
             pass
+
+
+def _active_processing_jobs_for_chat(db, chat_id: int) -> list[Job]:
+    return (
+        db.query(Job)
+        .filter(Job.created_by_telegram_id == str(chat_id))
+        .filter(Job.status.in_(["pending", "running"]))
+        .order_by(Job.created_at.desc())
+        .all()
+    )
+
+
+def _cancel_processing_job(db, job: Job, *, note: str, message: str) -> bool:
+    if job.status not in {"pending", "running"}:
+        return False
+    release_job_reservation(db, job, note=note)
+    now = now_utc()
+    job.status = "cancelled"
+    job.progress = 100
+    job.error = ""
+    job.message = message
+    job.completed_at = now
+    job.updated_at = now
+    db.commit()
+    cancel_running_job(str(job.id))
+    BOT_CANCEL_NOTIFIED_JOBS.add(str(job.id))
+    return True
+
+
+def _cancel_processing_jobs_for_chat(chat_id: int) -> int:
+    db = SessionLocal()
+    try:
+        jobs = _active_processing_jobs_for_chat(db, chat_id)
+        if not jobs:
+            return 0
+        cancelled_count = 0
+        for job in jobs:
+            if _cancel_processing_job(
+                db,
+                job,
+                note="Резерв возвращён: задача отменена в Telegram",
+                message="Задача отменена в Telegram",
+            ):
+                cancelled_count += 1
+        return cancelled_count
+    finally:
+        db.close()
 
 
 def _menu_for_chat(chat_id: int) -> ReplyKeyboardMarkup:
@@ -452,6 +505,7 @@ def _status_label(status: str) -> str:
         "partial": "частично готово",
         "needs_review": "нужна проверка",
         "failed": "ошибка",
+        "cancelled": "отменено",
         STATUS_AWAITING_CUSTOMER_CONFIRMATION: "ожидает решения",
         STATUS_CUSTOMER_DECLINED: "отклонено клиентом",
         STATUS_CONFIRMATION_EXPIRED: "подтверждение истекло",
@@ -466,6 +520,8 @@ def _progress_bar(progress: int) -> str:
 
 
 def _progress_heading(snapshot: JobProgressSnapshot) -> str:
+    if snapshot.status == "cancelled":
+        return "⛔ Задача отменена"
     if snapshot.status == "failed":
         return "⚠️ Не удалось подготовить файл"
     if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
@@ -611,6 +667,18 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
                 f"Прошло: {elapsed}",
                 "",
                 "Баланс не списан. Можно запустить повторно позже или передать материалы владельцу сервиса для проверки.",
+            ]
+        )
+    if snapshot.status == "cancelled":
+        reason = _friendly_stage_text(snapshot.message)
+        return "\n".join(
+            [
+                _progress_heading(snapshot),
+                "",
+                f"• Статус: {reason}",
+                f"• Прошло: {elapsed}",
+                "",
+                "Резерв возвращён. Можно запустить новую обработку.",
             ]
         )
     if snapshot.status in {"completed", "partial", "needs_review"}:
@@ -774,9 +842,29 @@ async def _alert_owner_about_job(
     )
 
 
-async def _edit_or_send_status(status_message: Message, text: str, *, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+def _cancel_job_inline_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⛔ Отменить задачу", callback_data=f"cancel_job:{job_id}")],
+        ]
+    )
+
+
+def _progress_status_keyboard(snapshot: JobProgressSnapshot) -> InlineKeyboardMarkup | None:
+    if snapshot.status in {"pending", "running"}:
+        return _cancel_job_inline_keyboard(snapshot.id)
+    return None
+
+
+async def _edit_or_send_status(
+    status_message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    clear_reply_markup: bool = False,
+) -> Message:
     try:
-        if reply_markup is None:
+        if reply_markup is None and not clear_reply_markup:
             await status_message.edit_text(text)
         else:
             await status_message.edit_text(text, reply_markup=reply_markup)
@@ -784,7 +872,7 @@ async def _edit_or_send_status(status_message: Message, text: str, *, reply_mark
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return status_message
-        if reply_markup is None:
+        if reply_markup is None and not clear_reply_markup:
             replacement = await status_message.answer(text)
         else:
             replacement = await status_message.answer(text, reply_markup=reply_markup)
@@ -812,7 +900,13 @@ async def watch_job_progress(
         )
         return None
     if status_message is None:
-        status_message = await message.answer(_format_job_progress(snapshot))
+        status_message = await message.answer(_format_job_progress(snapshot), reply_markup=_progress_status_keyboard(snapshot))
+    else:
+        status_message = await _edit_or_send_status(
+            status_message,
+            _format_job_progress(snapshot),
+            reply_markup=_progress_status_keyboard(snapshot),
+        )
     last_key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
     last_heartbeat = started
 
@@ -822,6 +916,7 @@ async def watch_job_progress(
                 status_message,
                 _format_job_progress(snapshot)
                 + f"\n\nЗадача всё ещё выполняется. Я продолжу обработку на сервере, статус можно проверить кнопкой «{BUTTON_STATUS}».",
+                reply_markup=_progress_status_keyboard(snapshot),
             )
             return snapshot
         await asyncio.sleep(poll_interval)
@@ -835,7 +930,11 @@ async def watch_job_progress(
         key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
         now = asyncio.get_running_loop().time()
         if key != last_key or now - last_heartbeat >= 60:
-            status_message = await _edit_or_send_status(status_message, _format_job_progress(snapshot))
+            status_message = await _edit_or_send_status(
+                status_message,
+                _format_job_progress(snapshot),
+                reply_markup=_progress_status_keyboard(snapshot),
+            )
             last_key = key
             last_heartbeat = now
 
@@ -846,7 +945,13 @@ async def watch_job_progress(
             reply_markup=_partial_confirmation_keyboard(job_id),
         )
     else:
-        await _edit_or_send_status(status_message, _format_job_progress(snapshot))
+        await _edit_or_send_status(status_message, _format_job_progress(snapshot), clear_reply_markup=True)
+        if snapshot.status == "cancelled" and snapshot.id not in BOT_CANCEL_NOTIFIED_JOBS:
+            BOT_CANCEL_NOTIFIED_JOBS.add(snapshot.id)
+            await message.answer(
+                "⛔ Задача отменена. Резерв возвращён, можно запустить новую обработку.",
+                reply_markup=main_menu(),
+            )
     return snapshot
 
 
@@ -1231,6 +1336,60 @@ async def processing_status_button(message: Message) -> None:
     await message.answer("✅ Активной обработки сейчас нет", reply_markup=main_menu())
 
 
+@router.message(Command("cancel"))
+@router.message(F.text == BUTTON_CANCEL_PROCESSING)
+async def cancel_processing_button(message: Message) -> None:
+    cancelled_count = _cancel_processing_jobs_for_chat(message.chat.id)
+    BATCH_RUNNING_CHATS.discard(message.chat.id)
+    if cancelled_count:
+        text = "⛔ Задача отменена. Резерв возвращён." if cancelled_count == 1 else f"⛔ Отменено задач: {cancelled_count}. Резервы возвращены."
+        await message.answer(f"{text}\n\nМожно запустить новую обработку.", reply_markup=main_menu())
+        return
+    if PENDING_UPLOADS.pop(message.chat.id, None):
+        await message.answer("🗑 Материалы очищены. Активной обработки не было.", reply_markup=main_menu())
+        return
+    await message.answer("✅ Активной обработки сейчас нет", reply_markup=main_menu())
+
+
+@router.callback_query(F.data.startswith("cancel_job:"))
+async def cancel_job_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            await callback.answer("Задача не найдена.", show_alert=True)
+            return
+        if job.status not in {"pending", "running"}:
+            await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
+            await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
+            return
+        _cancel_processing_job(
+            db,
+            job,
+            note="Резерв возвращён: задача отменена в Telegram",
+            message="Задача отменена в Telegram",
+        )
+        snapshot = _job_snapshot(job)
+    finally:
+        db.close()
+
+    BATCH_RUNNING_CHATS.discard(callback.message.chat.id)
+    await callback.answer("Задача отменена.")
+    await _edit_or_send_status(callback.message, _format_job_progress(snapshot), clear_reply_markup=True)
+    await callback.message.answer(
+        "⛔ Задача отменена. Резерв возвращён, можно запустить новую обработку.",
+        reply_markup=main_menu(),
+    )
+
+
 @router.message(F.text == BUTTON_CANCEL_BATCH)
 async def cancel_batch_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
@@ -1368,13 +1527,18 @@ async def _watch_supplier_multi_outputs(
         snapshot = await watch_job_progress(message, job_id, status_message=status_message)
         if snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             status_message = None
+        elif snapshot and snapshot.status == "cancelled":
+            status_message = None
+            break
         else:
-            await _send_job_outputs(
+            delivered = await _send_job_outputs(
                 message,
                 job_id,
                 snapshot,
                 reply_markup=main_menu() if index == total else processing_menu(),
             )
+            if not delivered and snapshot and snapshot.status in TERMINAL_JOB_STATUSES:
+                status_message = None
     if status_message is not None:
         final_text = "Обработка ТЗ завершена. Файл отправлен ниже." if total == 1 else "Обработка ТЗ завершена. Файлы отправлены ниже."
         await _edit_or_send_status(status_message, final_text)
@@ -1397,13 +1561,20 @@ async def _send_job_outputs(
                 reply_markup=final_reply_markup,
             )
             return False
-        outputs = package_job_output_files(done_job)
-        if outputs:
+        if getattr(done_job, "status", "") == "cancelled" or (snapshot and snapshot.status == "cancelled"):
+            return False
+        output_items = package_job_output_items(done_job) if (
+            getattr(done_job, "evidence_path", None) or getattr(done_job, "result_path", None)
+        ) else []
+        if not output_items:
+            output_items = [{"kind": "", "path": str(path)} for path in package_job_output_files(done_job)]
+        if output_items:
             sent_output_message: Message | None = None
             sent_output_base_caption = ""
-            for index, output in enumerate(outputs):
-                is_last = index == len(outputs) - 1
-                sent_output_base_caption = _output_caption(done_job.mode, output)
+            for index, item in enumerate(output_items):
+                output = Path(str(item.get("path") or ""))
+                is_last = index == len(output_items) - 1
+                sent_output_base_caption = _output_caption_for_item(done_job.mode, str(item.get("kind") or ""), output)
                 sent_output_message = await message.answer_document(
                     FSInputFile(output),
                     caption=sent_output_base_caption,
@@ -1422,7 +1593,7 @@ async def _send_job_outputs(
             if job_can_find_more_suppliers(done_job):
                 await _send_find_more_suppliers_offer(message, done_job.id)
             return True
-        elif snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
+        if snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
             await message.answer(
                 f"⏳ Обработка продолжается\n\nСтатус можно проверить кнопкой «{BUTTON_STATUS}».",
                 reply_markup=processing_menu(),
@@ -1482,6 +1653,16 @@ async def _send_find_more_suppliers_offer(message: Message, job_id: str) -> None
         _find_more_suppliers_offer_text(),
         reply_markup=_find_more_suppliers_offer_keyboard(job_id),
     )
+
+
+def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
+    if kind == "quote_request":
+        return "Запрос КП во вложении."
+    if kind == "analysis":
+        return "Анализ документации во вложении."
+    if kind == "suppliers":
+        return "Поставщики по ТЗ во вложении."
+    return _output_caption(mode, output)
 
 
 def _output_caption(mode: str, output: Path) -> str:

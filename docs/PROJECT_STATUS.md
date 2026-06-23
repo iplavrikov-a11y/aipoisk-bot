@@ -36,6 +36,10 @@ Current runtime note:
   for pending or fresh running jobs and skips API/worker/bot restarts when
   active jobs exist. This prevents deploys from interrupting supplier searches.
   Use `AIPOISK_FORCE_JOB_SERVICE_RESTART=1` only for an intentional interruption;
+- job cancellation is DB-authoritative across Telegram, website, API, and
+  worker processes. The worker must re-read job status from SQLite before
+  progress writes and must not overwrite a customer/admin `cancelled` status
+  back to `running`;
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
 
@@ -57,8 +61,9 @@ There are exactly two commercial counters:
 
 Mode accounting:
 
-- `🔎 Одно ТЗ` spends one supplier-report unit;
-- mass supplier search spends one supplier-report unit per independent ТЗ;
+- `🔎 Поставщики по ТЗ` spends one supplier-report unit per independent ТЗ;
+- when several supplier-search inputs are collected before launch, each
+  independent ТЗ spends one supplier-report unit;
 - `📄 Анализ закупки` spends one documentation-analysis unit;
 - `📄🔎 Анализ + поиск` spends one supplier-report unit and one
   documentation-analysis unit.
@@ -185,17 +190,13 @@ Telegram supplier input and navigation contract:
 - Main customer navigation is a compact two-column reply keyboard:
   `🚀 Создать`, `🕘 Задачи`, `📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`, and
   `📞 Контакты`.
-- `🚀 Создать` opens the scenario keyboard: `🔎 Одно ТЗ`,
-  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, `📄🔎 Анализ + поиск`, and
-  `⬅️ Меню`.
-- `🔎 Одно ТЗ` creates one supplier-search job from one ТЗ/ООЗ
-  file, one archive containing one ТЗ package, or one plain text technical assignment / object description message and
-  returns one XLSX;
-- `🗂 Несколько ТЗ` is a mass-processing mode, not a multi-document
-  context mode;
-- each uploaded ТЗ/ООЗ file or accepted plain text ТЗ message in
-  mass-processing mode creates its own independent supplier-search job with
-  exactly that one input as context;
+- `🚀 Создать` opens the scenario keyboard: `🔎 Поставщики по ТЗ`,
+  `📄 Анализ закупки`, `📄🔎 Анализ + поиск`, and `⬅️ Меню`.
+- `🔎 Поставщики по ТЗ` accepts a ТЗ/ООЗ file, archive, or plain text technical
+  assignment / object description message and returns supplier-search output;
+- when several ТЗ/ООЗ files are collected before launch, each accepted input
+  creates its own independent supplier-search job with exactly that one input
+  as context;
 - each independent job extracts its own procurement profile, generates its own
   AI search queries, verifies suppliers independently, and returns its own XLSX;
 - unrelated ТЗ files must never be concatenated into one supplier-search
@@ -205,12 +206,15 @@ Telegram supplier input and navigation contract:
 - before processing starts, collected multi-file and documentation scenarios
   show only `▶️ Запустить`, `🗑 Очистить`, and `⬅️ Меню`.
 - while any job is pending or running for the chat, the bot shows only
-  `⏳ В работе` and `🕘 Задачи`; it hides `🚀 Создать`, `▶️ Запустить`, and
-  all scenario buttons, preventing duplicate launches and making the active
-  state clear to the customer.
-- there is no customer-facing stop button yet, because safe worker
-  cancellation is not implemented; `🗑 Очистить` clears only materials that
-  have not been launched.
+  `⏳ В работе`, `🕘 Задачи`, and `⛔ Отменить`; it hides `🚀 Создать`,
+  `▶️ Запустить`, and all scenario buttons, preventing duplicate launches and
+  making the active state clear to the customer.
+- each pending/running Telegram progress message also has an inline
+  `⛔ Отменить задачу` button. It cancels only the matching customer's job,
+  releases the reservation, removes the inline button from the progress
+  message, and returns the chat to the main menu. `/cancel` and the reply
+  keyboard `⛔ Отменить` remain fallback cancellation paths for the chat's
+  active pending/running jobs.
 - customer-facing Telegram copy must use the TenderLex brand only. It must not
   show internal provider names, raw service booleans such as `True`/`False`,
   task IDs, or diagnostic counters unless the user explicitly asks for status
@@ -226,6 +230,11 @@ Telegram supplier input and navigation contract:
   `Найти ещё`. Starting that additional search requires explicit confirmation
   that one supplier-search generation will be spent and already found companies
   will be excluded.
+- completed supplier-search, procurement-analysis, and combined analysis jobs
+  can include an additional `Запрос КП` output. It is built from the original
+  customer materials plus available AI analysis/procurement profile data and is
+  intended for supplier-facing requests to issue an invoice or commercial
+  proposal.
 
 ## Procurement Source Links
 
@@ -419,8 +428,8 @@ without polluting the customer's XLSX report.
   not higher, until real AI/search and memory pressure are observed.
 - Claiming keeps one active non-stale job per customer at a time, while still
   allowing different customers and anonymous/system jobs to be claimed.
-- Telegram has four customer-facing scenarios: `🔎 Одно ТЗ`,
-  `🗂 Несколько ТЗ`, `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
+- Telegram has three customer-facing creation scenarios: `🔎 Поставщики по ТЗ`,
+  `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Website cabinet mirrors those scenarios without Telegram-only emoji:
   `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 - Website `Одно ТЗ` starts one supplier-search job from one uploaded file or
@@ -431,6 +440,13 @@ without polluting the customer's XLSX report.
 - Website `Анализ закупки` and `Анализ + поиск` accept notice numbers, links,
   files, and archives. The customer does not choose supplier count and does not
   fill extra invented "what to check" fields; those are intentionally absent.
+- Website job rows expose `Отменить` while a job is pending/running. Completed
+  jobs can expose `Запрос КП` as a preview/copy/download action when the backend
+  produced that output file.
+- The website job list and customer session requests are served/fetched with
+  `no-store`; while active jobs exist, the cabinet polls more frequently so
+  Telegram-side cancellation is reflected in the website without a manual page
+  reload.
 - Single-ТЗ supplier search starts after one uploaded ТЗ/ООЗ file;
   it can also start from one plain text ТЗ/ООЗ message.
 - Multi-ТЗ supplier search collects several ТЗ/ООЗ files and/or accepted plain

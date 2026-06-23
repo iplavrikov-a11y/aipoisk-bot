@@ -1679,7 +1679,7 @@ select {
 .jobs-head,
 .job-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.05fr) minmax(120px, 0.58fr) minmax(120px, 0.5fr) minmax(150px, 0.82fr) minmax(238px, 0.78fr);
+  grid-template-columns: minmax(220px, 1.12fr) minmax(130px, 0.5fr) minmax(110px, 0.42fr) minmax(210px, 0.74fr) minmax(340px, 1fr);
   gap: 12px;
   align-items: center;
 }
@@ -1790,13 +1790,13 @@ select {
 
 .job-actions button {
   display: inline-flex;
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: max-content;
   min-height: 34px;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 7px 11px;
+  padding: 7px 12px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 850;
@@ -1806,6 +1806,12 @@ select {
 
 .job-actions .secondary-action {
   background: #f7fbfa;
+}
+
+.job-actions .danger-action {
+  border-color: #f2c9c4;
+  background: #fff7f6;
+  color: #a23b30;
 }
 
 .job-note {
@@ -1939,9 +1945,194 @@ select {
   opacity: 0.65;
 }
 
-.job-actions button:only-child {
+.quote-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.44);
+  backdrop-filter: blur(4px);
+}
+
+.quote-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(100%, 920px);
+  max-height: min(820px, calc(100vh - 40px));
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 24px 70px rgba(7, 52, 58, 0.18);
+}
+
+.quote-dialog-header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.quote-dialog-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.quote-dialog-header span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.quote-close {
+  display: inline-grid;
   flex: 0 0 auto;
-  min-width: 118px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.quote-editor {
+  width: 100%;
+  min-height: 420px;
+  overflow: auto;
+  padding: 28px 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.quote-editor:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.quote-editor h2 {
+  margin: 0 0 14px;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.quote-editor h3 {
+  margin: 22px 0 10px;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.quote-editor p {
+  margin: 0 0 12px;
+}
+
+.quote-editor ul {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.quote-editor li {
+  margin: 5px 0;
+}
+
+.quote-editor table {
+  width: 100%;
+  margin: 16px 0 18px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.quote-editor th,
+.quote-editor td {
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.quote-editor th {
+  background: #f7f8fb;
+  color: var(--ink-soft);
+  font-weight: 900;
+}
+
+.quote-editor th:first-child,
+.quote-editor td:first-child,
+.quote-editor th:nth-child(4),
+.quote-editor td:nth-child(4),
+.quote-editor th:nth-child(5),
+.quote-editor td:nth-child(5) {
+  width: 72px;
+}
+
+.quote-editor th:nth-child(2),
+.quote-editor td:nth-child(2) {
+  width: 20%;
+}
+
+.quote-editor th:nth-child(3),
+.quote-editor td:nth-child(3) {
+  width: 40%;
+}
+
+.quote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.quote-actions button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.quote-actions .primary-action {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.quote-close:disabled,
+.quote-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.job-actions button:only-child {
+  min-width: max-content;
 }
 
 .job-actions button svg {
@@ -2977,7 +3168,8 @@ select {
   }
 
   .job-actions button {
-    flex: 1 1 0;
+    flex: 1 1 150px;
+    min-width: 0;
     justify-content: center;
     padding-inline: 8px;
     font-size: 11px;
@@ -3014,6 +3206,37 @@ select {
 
   .confirm-actions .primary-action,
   .confirm-cancel {
+    width: 100%;
+  }
+
+  .quote-overlay {
+    padding: 12px;
+  }
+
+  .quote-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 14px;
+  }
+
+  .quote-dialog-header h2 {
+    font-size: 18px;
+  }
+
+  .quote-editor {
+    min-height: 320px;
+    padding: 18px;
+    font-size: 13px;
+  }
+
+  .quote-editor table {
+    min-width: 720px;
+  }
+
+  .quote-actions {
+    flex-direction: column-reverse;
+  }
+
+  .quote-actions button {
     width: 100%;
   }
 

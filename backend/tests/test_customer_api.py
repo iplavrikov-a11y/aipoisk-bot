@@ -31,10 +31,13 @@ from app.main import (
     customer_register_api,
     customer_jobs_api,
     customer_job_to_dict,
+    customer_quote_request_api,
     customer_session_payload,
+    cancel_customer_job_api,
     decline_customer_partial_job_api,
     download_customer_job_api,
     download_customer_job_file_api,
+    download_customer_quote_request_docx_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, SystemSettings, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
@@ -696,19 +699,24 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 out_dir.mkdir(parents=True)
                 analysis_path = out_dir / "analysis.docx"
                 suppliers_path = out_dir / "suppliers.xlsx"
+                quote_path = out_dir / "quote.docx"
+                quote_md_path = out_dir / "quote.md"
                 analysis_path.write_bytes(b"docx")
                 suppliers_path.write_bytes(b"xlsx")
+                quote_path.write_bytes(b"quote-docx")
+                quote_md_path.write_text("ЗАПРОС КП\n\n| № | Наименование |\n|---|---|\n| 1 | Товар |", encoding="utf-8")
                 evidence_path = out_dir / "evidence.json"
                 evidence_path.write_text(
                     """
 {
   "output_files": [
     {"kind": "analysis", "path": "%s"},
-    {"kind": "suppliers", "path": "%s"}
+    {"kind": "suppliers", "path": "%s"},
+    {"kind": "quote_request", "label": "Запрос КП", "path": "%s", "content_path": "%s"}
   ]
 }
 """
-                    % (analysis_path, suppliers_path),
+                    % (analysis_path, suppliers_path, quote_path, quote_md_path),
                     encoding="utf-8",
                 )
                 job = Job(
@@ -753,6 +761,24 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     context=WebAuthContext(user=user, session=None),
                     db=db,
                 )
+                quote_payload = customer_quote_request_api(
+                    job.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                quote_response = download_customer_job_file_api(
+                    job.id,
+                    "quote_request",
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                edited_quote_response = download_customer_quote_request_docx_api(
+                    job.id,
+                    content=quote_payload["content"],
+                    filename="custom-quote.docx",
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
                 charges = (
                     db.query(BillingTransaction)
                     .filter(BillingTransaction.job_id == job.id)
@@ -768,10 +794,19 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             [
                 {"kind": "analysis", "label": "Анализ", "filename": "analysis.docx"},
                 {"kind": "suppliers", "label": "Поставщики", "filename": "suppliers.xlsx"},
+                {"kind": "quote_request", "label": "Запрос КП", "filename": "quote.docx"},
             ],
         )
         self.assertEqual(analysis_response.filename, "analysis.docx")
         self.assertEqual(suppliers_response.filename, "suppliers.xlsx")
+        self.assertEqual(quote_payload["filename"], "quote.docx")
+        self.assertIn("ЗАПРОС КП", quote_payload["content"])
+        self.assertEqual(quote_response.filename, "quote.docx")
+        self.assertEqual(
+            edited_quote_response.media_type,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        self.assertIn("custom-quote.docx", edited_quote_response.headers["content-disposition"])
         self.assertEqual(sorted((item.kind, item.units) for item in charges), [(KIND_PROCUREMENT_REPORT, 1), (KIND_SUPPLIER_SEARCH, 1)])
 
     def test_customer_can_start_find_more_suppliers_job_with_exclusions(self) -> None:
@@ -863,8 +898,10 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             )
             db.commit()
             user = create_web_user(db, email="owner@example.com", password="StrongPass123", name="Owner", client=client)
+            response = Response()
 
             page = customer_jobs_api(
+                response=response,
                 limit=2,
                 offset=2,
                 include_pagination=True,
@@ -876,6 +913,8 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(page["limit"], 2)
             self.assertEqual(page["offset"], 2)
             self.assertEqual(len(page["items"]), 2)
+            self.assertIn("no-store", response.headers["cache-control"])
+            self.assertEqual(response.headers["pragma"], "no-cache")
         finally:
             db.close()
 
@@ -966,6 +1005,72 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(release.units, 1)
         finally:
             db.close()
+
+    def test_customer_can_cancel_own_running_job_and_release_reservation(self) -> None:
+        db = self.Session()
+        try:
+            owner = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=1)
+            other = Client(id="client-2", telegram_id="web:client-2", monthly_supplier_search_limit=1)
+            db.add_all([owner, other])
+            db.commit()
+            owner_user = create_web_user(db, email="owner@example.com", password="StrongPass123", name="Owner", client=owner)
+            other_user = create_web_user(db, email="other@example.com", password="StrongPass123", name="Other", client=other)
+            job = Job(
+                id="job-1",
+                client_id=owner.id,
+                mode=MODE_SUPPLIER_SEARCH,
+                status="running",
+                progress=35,
+                message="Проверяю сайты",
+            )
+            db.add(job)
+            db.add(
+                BillingTransaction(
+                    client_id=owner.id,
+                    job_id=job.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_RESERVE,
+                    units=1,
+                )
+            )
+            db.commit()
+
+            with self.assertRaises(HTTPException) as raised:
+                cancel_customer_job_api(job.id, context=WebAuthContext(user=other_user, session=None), db=db)
+            payload = cancel_customer_job_api(job.id, context=WebAuthContext(user=owner_user, session=None), db=db)
+
+            db.refresh(job)
+            self.assertEqual(raised.exception.status_code, 404)
+            self.assertTrue(payload["success"])
+            self.assertEqual(job.status, "cancelled")
+            self.assertEqual(job.progress, 100)
+            self.assertFalse(payload["job"]["can_cancel"])
+            release = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == job.id)
+                .filter(BillingTransaction.operation == OP_RELEASE)
+                .one()
+            )
+            self.assertEqual(release.units, 1)
+        finally:
+            db.close()
+
+    def test_cancelled_job_hides_result_files_even_if_worker_wrote_outputs(self) -> None:
+        job = Job(
+            id="job-cancelled",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="cancelled",
+            progress=100,
+            title="ТЗ",
+            result_path="/tmp/should-not-show.xlsx",
+            evidence_path="/tmp/should-not-show.json",
+        )
+
+        payload = customer_job_to_dict(job)
+
+        self.assertFalse(payload["has_result"])
+        self.assertFalse(payload["can_download"])
+        self.assertEqual(payload["result_files"], [])
 
 
 if __name__ == "__main__":

@@ -51,7 +51,14 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
         if suffix in {".html", ".htm", ".xml"}:
             return _extract_html(file_path), "ok"
         if suffix == ".docx":
-            return _extract_docx(file_path), "ok"
+            try:
+                return _extract_docx(file_path), "ok"
+            except Exception:
+                if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
+                    text, status = _extract_archive(file_path, options, depth)
+                    if text.strip():
+                        return text, f"docx_archive_{status}"
+                raise
         if suffix == ".xlsx":
             return _extract_xlsx(file_path), "ok"
         if suffix == ".xls":
@@ -120,6 +127,15 @@ def _extract_docx(path: Path) -> str:
             if any(cells):
                 blocks.append(" | ".join(cells))
     return "\n".join(blocks)
+
+
+def _is_docx_package(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
+    return "[Content_Types].xml" in names and any(name.startswith("word/") for name in names)
 
 
 def _extract_xlsx(path: Path) -> str:

@@ -8,7 +8,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   Download,
+  Eye,
   FileText,
   HelpCircle,
   Loader2,
@@ -19,6 +21,7 @@ import {
   Pencil,
   Receipt,
   Search,
+  X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -96,6 +99,7 @@ type CustomerJob = {
   file_count: number;
   has_result: boolean;
   can_download: boolean;
+  can_cancel: boolean;
   can_find_more_suppliers: boolean;
   result_files: Array<{
     kind: string;
@@ -108,6 +112,13 @@ type CustomerJob = {
   updated_at: string | null;
 };
 
+type QuoteRequestModal = {
+  job: CustomerJob;
+  html: string;
+  filename: string;
+  copied: boolean;
+};
+
 type CustomerJobsResponse = {
   items: CustomerJob[];
   total: number;
@@ -116,6 +127,10 @@ type CustomerJobsResponse = {
 };
 
 const CUSTOMER_JOBS_PAGE_SIZE = 15;
+const CUSTOMER_JOB_FETCH_OPTIONS: RequestInit = {
+  credentials: "same-origin",
+  cache: "no-store",
+};
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
@@ -191,6 +206,7 @@ const statusClasses: Record<string, string> = {
   awaiting_customer_confirmation: "review",
   failed: "failed",
   customer_declined: "failed",
+  cancelled: "failed",
 };
 
 const MOSCOW_TIME_ZONE = "Europe/Moscow";
@@ -287,6 +303,221 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.*?)__/g, "<strong>$1</strong>");
+}
+
+function quoteMarkdownToHtml(markdown: string) {
+  const value = String(markdown || "").trim();
+  if (!value) return "<p></p>";
+  if (/^\s*</.test(value)) return value;
+  const lines = value.split(/\r?\n/);
+  const html: string[] = [];
+  let tableRows: string[][] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    html.push(`<ul>${listItems.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    listItems = [];
+  };
+
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const [header, ...body] = normalizeQuoteTableRows(tableRows);
+    html.push(
+      `<table><thead><tr>${header.map((cell) => `<th>${formatInlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${body
+        .map((row) => `<tr>${row.map((cell) => `<td>${formatInlineMarkdown(cell)}</td>`).join("")}</tr>`)
+        .join("")}</tbody></table>`,
+    );
+    tableRows = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      flushList();
+      const compact = trimmed.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+      if (!compact) continue;
+      tableRows.push(trimmed.slice(1, -1).split("|").map((cell) => cell.trim()));
+      continue;
+    }
+    flushTable();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      listItems.push(trimmed.slice(2));
+      continue;
+    }
+    flushList();
+    if (trimmed.startsWith("### ")) {
+      html.push(`<h3>${formatInlineMarkdown(trimmed.slice(4))}</h3>`);
+    } else if (trimmed.startsWith("## ")) {
+      html.push(`<h2>${formatInlineMarkdown(trimmed.slice(3))}</h2>`);
+    } else if (trimmed.startsWith("# ")) {
+      html.push(`<h2>${formatInlineMarkdown(trimmed.slice(2))}</h2>`);
+    } else if (trimmed.toUpperCase() === "ЗАПРОС КП") {
+      html.push(`<h2>${formatInlineMarkdown(trimmed)}</h2>`);
+    } else {
+      html.push(`<p>${formatInlineMarkdown(trimmed)}</p>`);
+    }
+  }
+  flushTable();
+  flushList();
+  return html.join("");
+}
+
+function cellsText(row: HTMLTableRowElement) {
+  return Array.from(row.querySelectorAll("th,td")).map((cell) => (cell.textContent || "").replace(/\s+/g, " ").trim());
+}
+
+function quotePlainText(value: string | null | undefined) {
+  return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function quoteHeaderKey(value: string) {
+  return quotePlainText(value).toLowerCase().replace("ед. изм.", "ед.изм.").replace("ед изм", "ед.изм.");
+}
+
+function quoteColumnIndex(header: string[], aliases: string[]) {
+  return header.findIndex((cell) => aliases.some((alias) => quoteHeaderKey(cell).includes(alias)));
+}
+
+function normalizeQuoteTableRows(rows: string[][]) {
+  if (!rows.length) return rows;
+  const header = rows[0];
+  const dropIndexes = new Set<number>();
+  header.forEach((cell, index) => {
+    const key = quoteHeaderKey(cell);
+    if (key.includes("примечан") || key.includes("комментар")) {
+      dropIndexes.add(index);
+    }
+  });
+  if (!dropIndexes.size) return rows;
+  return rows.map((row) => row.filter((_, index) => !dropIndexes.has(index)));
+}
+
+function quoteCell(row: string[], index: number) {
+  return index >= 0 && index < row.length ? quotePlainText(row[index]) : "";
+}
+
+function quoteTableToReadableText(table: Element) {
+  const rows = normalizeQuoteTableRows(
+    Array.from(table.querySelectorAll("tr"))
+      .map((row) => cellsText(row as HTMLTableRowElement))
+      .filter((row) => row.some(Boolean)),
+  );
+  if (!rows.length) return "";
+  const [header, ...body] = rows;
+  const indexes = {
+    num: quoteColumnIndex(header, ["№", "номер", "n"]),
+    name: quoteColumnIndex(header, ["наименование", "товар", "позиция", "предмет"]),
+    characteristics: quoteColumnIndex(header, ["характерист", "описание", "требован"]),
+    unit: quoteColumnIndex(header, ["ед.изм.", "единица"]),
+    quantity: quoteColumnIndex(header, ["кол-во", "количество", "объем"]),
+  };
+  if (indexes.name < 0) {
+    return body.map((row) => row.map(quotePlainText).filter(Boolean).join("; ")).filter(Boolean).join("\n\n");
+  }
+  return body
+    .map((row, rowIndex) => {
+      const number = quoteCell(row, indexes.num) || `${rowIndex + 1}`;
+      const name = quoteCell(row, indexes.name);
+      if (!name) return "";
+      const lines = [`${number}. ${name}`];
+      const characteristics = quoteCell(row, indexes.characteristics);
+      const unit = quoteCell(row, indexes.unit);
+      const quantity = quoteCell(row, indexes.quantity);
+      if (characteristics) lines.push(`Характеристики: ${characteristics}`);
+      if (unit) lines.push(`Ед. изм.: ${unit}`);
+      if (quantity) lines.push(`Кол-во: ${quantity}`);
+      return lines.join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function quoteHtmlToMarkdown(root: HTMLElement | null) {
+  if (!root) return "";
+  const lines: string[] = [];
+  const appendText = (value: string) => {
+    const cleaned = value.replace(/\s+/g, " ").trim();
+    if (cleaned) lines.push(cleaned);
+  };
+  Array.from(root.children).forEach((child) => {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "table") {
+      const rows = normalizeQuoteTableRows(
+        Array.from(child.querySelectorAll("tr"))
+          .map((row) => cellsText(row as HTMLTableRowElement))
+          .filter((row) => row.some(Boolean)),
+      );
+      if (rows.length) {
+        lines.push(`| ${rows[0].join(" | ")} |`);
+        lines.push(`| ${rows[0].map(() => "---").join(" | ")} |`);
+        rows.slice(1).forEach((row) => lines.push(`| ${row.join(" | ")} |`));
+      }
+    } else if (tag === "ul" || tag === "ol") {
+      Array.from(child.querySelectorAll("li")).forEach((item) => appendText(`- ${item.textContent || ""}`));
+    } else if (tag === "h3") {
+      appendText(`### ${child.textContent || ""}`);
+    } else if (tag === "h2" || tag === "h1") {
+      appendText(child.textContent || "");
+    } else {
+      appendText(child.textContent || "");
+    }
+    if (lines[lines.length - 1] !== "") lines.push("");
+  });
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function quoteHtmlToReadableText(root: HTMLElement | null) {
+  if (!root) return "";
+  const blocks: string[] = [];
+  const appendBlock = (value: string) => {
+    const cleaned = String(value || "").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (cleaned) blocks.push(cleaned);
+  };
+  Array.from(root.children).forEach((child) => {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "table") {
+      appendBlock(quoteTableToReadableText(child));
+    } else if (tag === "ul" || tag === "ol") {
+      appendBlock(Array.from(child.querySelectorAll("li")).map((item) => quotePlainText(item.textContent)).filter(Boolean).join("\n"));
+    } else {
+      appendBlock(quotePlainText(child.textContent));
+    }
+  });
+  return blocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.style.position = "fixed";
+  textArea.style.left = "-999999px";
+  textArea.style.top = "-999999px";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  const copied = document.execCommand("copy");
+  textArea.remove();
+  if (!copied) throw new Error("Не удалось скопировать текст.");
+}
+
 export function CabinetClient() {
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [jobs, setJobs] = useState<CustomerJob[]>([]);
@@ -307,9 +538,11 @@ export function CabinetClient() {
   const [busy, setBusy] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
+  const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const quoteEditorRef = useRef<HTMLDivElement | null>(null);
 
   const csrf = session?.csrf_token || "";
   const authenticated = Boolean(session?.authenticated && session.user);
@@ -330,7 +563,7 @@ export function CabinetClient() {
   const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
   async function loadSession() {
-    const response = await fetch("/api/customer/auth/session", { credentials: "same-origin" });
+    const response = await fetch("/api/customer/auth/session", { credentials: "same-origin", cache: "no-store" });
     if (response.status === 401 || response.status === 404) {
       setSession(null);
       return;
@@ -344,7 +577,10 @@ export function CabinetClient() {
     setJobsLoading(true);
     try {
       const offset = (page - 1) * CUSTOMER_JOBS_PAGE_SIZE;
-      const response = await fetch(`/api/customer/jobs?limit=${CUSTOMER_JOBS_PAGE_SIZE}&offset=${offset}&include_pagination=true`, { credentials: "same-origin" });
+      const response = await fetch(
+        `/api/customer/jobs?limit=${CUSTOMER_JOBS_PAGE_SIZE}&offset=${offset}&include_pagination=true`,
+        CUSTOMER_JOB_FETCH_OPTIONS,
+      );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
       if (Array.isArray(payload)) {
         setJobs(payload);
@@ -428,9 +664,12 @@ export function CabinetClient() {
   useEffect(() => {
     if (!authenticated) return;
     loadJobs();
-    const timer = window.setInterval(loadJobs, 7000);
+    const timer = window.setInterval(() => {
+      loadJobs();
+      if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
-  }, [authenticated, jobsPage]);
+  }, [authenticated, jobsPage, activeJobs]);
 
   useEffect(() => {
     if (!findMoreConfirmJob) return;
@@ -612,7 +851,7 @@ export function CabinetClient() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/customer/jobs/${job.id}/download`, { credentials: "same-origin" });
+      const response = await fetch(`/api/customer/jobs/${job.id}/download`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, `${job.human_title || "result"}.zip`));
       await loadSession();
@@ -628,9 +867,85 @@ export function CabinetClient() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/customer/jobs/${job.id}/download/${encodeURIComponent(file.kind)}`, { credentials: "same-origin" });
+      const response = await fetch(`/api/customer/jobs/${job.id}/download/${encodeURIComponent(file.kind)}`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, file.filename || `${job.human_title || "result"}`));
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openQuoteRequest(job: CustomerJob, file: CustomerJob["result_files"][number]) {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/quote-request`, CUSTOMER_JOB_FETCH_OPTIONS);
+      const payload = await readJson<{ content: string; filename: string }>(response);
+      setQuoteRequestModal({
+        job,
+        html: quoteMarkdownToHtml(payload.content || ""),
+        filename: payload.filename || file.filename || "Запрос КП.docx",
+        copied: false,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadEditedQuoteRequest() {
+    if (!csrf || !quoteRequestModal) return;
+    const content = quoteHtmlToMarkdown(quoteEditorRef.current);
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${quoteRequestModal.job.id}/quote-request/docx`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ content, filename: quoteRequestModal.filename }),
+      });
+      if (!response.ok) throw new Error(parseError(await response.text()));
+      downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос КП.docx"));
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyQuoteRequestText() {
+    if (!quoteRequestModal) return;
+    const content = quoteHtmlToReadableText(quoteEditorRef.current);
+    try {
+      await writeClipboardText(content);
+      setQuoteRequestModal({ ...quoteRequestModal, copied: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function cancelJob(job: CustomerJob) {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/cancel`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      });
+      await readJson(response);
+      setMessage("Задача отменена.");
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1099,13 +1414,27 @@ export function CabinetClient() {
                     </>
                   ) : (
                     <>
+                      {job.can_cancel ? (
+                        <button type="button" className="danger-action" onClick={() => void cancelJob(job)} disabled={busy}>
+                          <XCircle size={16} aria-hidden="true" />
+                          Отменить
+                        </button>
+                      ) : null}
                       {job.result_files?.length ? (
-                        job.result_files.map((file) => (
-                          <button key={`${job.id}-${file.kind}`} type="button" onClick={() => downloadJobFile(job, file)} disabled={busy}>
-                            <Download size={16} aria-hidden="true" />
-                            {file.label || "Скачать"}
-                          </button>
-                        ))
+                        job.result_files.map((file) => {
+                          const isQuoteRequest = file.kind === "quote_request";
+                          return (
+                            <button
+                              key={`${job.id}-${file.kind}`}
+                              type="button"
+                              onClick={() => (isQuoteRequest ? openQuoteRequest(job, file) : downloadJobFile(job, file))}
+                              disabled={busy}
+                            >
+                              {isQuoteRequest ? <Eye size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
+                              {file.label || "Скачать"}
+                            </button>
+                          );
+                        })
                       ) : job.can_download ? (
                         <button type="button" onClick={() => downloadJob(job)} disabled={busy}>
                           <Download size={16} aria-hidden="true" />
@@ -1124,7 +1453,7 @@ export function CabinetClient() {
                           Найти ещё
                         </button>
                       ) : null}
-                      {!job.result_files?.length && !job.can_download && !job.can_find_more_suppliers ? (
+                      {!job.result_files?.length && !job.can_download && !job.can_find_more_suppliers && !job.can_cancel ? (
                         <span className="muted-action">-</span>
                       ) : null}
                     </>
@@ -1153,6 +1482,53 @@ export function CabinetClient() {
           </div>
         ) : null}
       </section>
+
+      {quoteRequestModal ? (
+        <div
+          className="quote-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setQuoteRequestModal(null);
+          }}
+        >
+          <section className="quote-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
+            <header className="quote-dialog-header">
+              <div>
+                <h2 id="quote-request-title">Запрос КП</h2>
+                <span>{quoteRequestModal.job.human_title}</span>
+              </div>
+              <button type="button" className="quote-close" onClick={() => setQuoteRequestModal(null)} disabled={busy} aria-label="Закрыть">
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+            <div
+              ref={quoteEditorRef}
+              className="quote-editor"
+              contentEditable
+              suppressContentEditableWarning
+              dangerouslySetInnerHTML={{ __html: quoteRequestModal.html }}
+              onInput={() => {
+                if (quoteRequestModal.copied) {
+                  setQuoteRequestModal({ ...quoteRequestModal, html: quoteEditorRef.current?.innerHTML || quoteRequestModal.html, copied: false });
+                }
+              }}
+              aria-label="Текст запроса КП"
+            />
+            <div className="quote-actions">
+              <button type="button" className="confirm-cancel" onClick={() => setQuoteRequestModal(null)} disabled={busy}>
+                Закрыть
+              </button>
+              <button type="button" onClick={() => void copyQuoteRequestText()} disabled={busy}>
+                <Copy size={16} aria-hidden="true" />
+                {quoteRequestModal.copied ? "Скопировано" : "Копировать"}
+              </button>
+              <button className="primary-action" type="button" onClick={() => void downloadEditedQuoteRequest()} disabled={busy}>
+                {busy ? <Loader2 size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
+                Скачать Word
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {findMoreConfirmJob ? (
         <div

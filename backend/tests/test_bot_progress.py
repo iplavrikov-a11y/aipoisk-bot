@@ -19,6 +19,7 @@ from app.bot import (
     BUTTON_ANALYSIS_AND_SUPPLIERS,
     BUTTON_ACCESS,
     BUTTON_CANCEL_BATCH,
+    BUTTON_CANCEL_PROCESSING,
     BUTTON_CONTACTS,
     BUTTON_CREATE,
     BUTTON_HELP,
@@ -59,8 +60,10 @@ from app.bot import (
     _pending_added_text,
     _batch_running_text,
     _chat_has_processing_job,
+    _cancel_job_inline_keyboard,
     _contact_message_options,
     _menu_for_chat,
+    _progress_status_keyboard,
     _supplier_multi_intro_text,
     _supplier_multi_job_specs,
     _supplier_text_tz_payload,
@@ -81,6 +84,37 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(_progress_bar(0), "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜")
         self.assertEqual(_progress_bar(37), "🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜")
         self.assertEqual(_progress_bar(100), "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩")
+
+    def test_processing_menu_exposes_cancel_button(self) -> None:
+        rows = [[button.text for button in row] for row in processing_menu().keyboard]
+        labels = [text for row in rows for text in row]
+
+        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
+        self.assertIn(BUTTON_CANCEL_PROCESSING, labels)
+
+    def test_progress_message_exposes_inline_cancel_button_for_active_job(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-1",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="running",
+            progress=25,
+            message="Ищу поставщиков",
+            error="",
+            created_at=None,
+        )
+
+        keyboard = _progress_status_keyboard(snapshot)
+
+        self.assertIsNotNone(keyboard)
+        assert keyboard is not None
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, "⛔ Отменить задачу")
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "cancel_job:job-1")
+        self.assertIsNone(_progress_status_keyboard(snapshot.__class__(**{**snapshot.__dict__, "status": "completed"})))
+
+    def test_cancel_job_inline_keyboard_targets_exact_job(self) -> None:
+        keyboard = _cancel_job_inline_keyboard("job-42")
+
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "cancel_job:job-42")
 
     def test_format_job_progress_explains_stage_and_eta(self) -> None:
         now = datetime(2026, 6, 2, 12, 10, tzinfo=timezone.utc)
@@ -154,6 +188,23 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertNotIn("не отправлять непроверенный список", text)
         self.assertNotIn("AI candidate reranking", text)
         self.assertNotIn("TimeoutError", text)
+
+    def test_cancelled_progress_returns_user_to_next_action(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-1",
+            mode=MODE_ANALYSIS_AND_SUPPLIERS,
+            status="cancelled",
+            progress=100,
+            message="Задача отменена клиентом",
+            error="",
+            created_at=None,
+        )
+
+        text = _format_job_progress(snapshot)
+
+        self.assertIn("⛔ Задача отменена", text)
+        self.assertIn("Резерв возвращён", text)
+        self.assertNotIn("Готовлю анализ", text)
 
     def test_failed_query_generation_uses_specific_customer_reason(self) -> None:
         snapshot = JobProgressSnapshot(
@@ -710,10 +761,10 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 self.deleted = False
                 self.replacement = ReplacementMessage()
 
-            async def edit_text(self, value: str):
+            async def edit_text(self, value: str, reply_markup=None):
                 raise TelegramBadRequest(method=None, message="Bad Request: message can't be edited")
 
-            async def answer(self, value: str):
+            async def answer(self, value: str, reply_markup=None):
                 self.answers.append(value)
                 return self.replacement
 
@@ -749,13 +800,13 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeStatusMessage:
             def __init__(self) -> None:
-                self.edits: list[str] = []
+                self.edits: list[tuple[str, object]] = []
 
-            async def edit_text(self, value: str):
-                self.edits.append(value)
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
                 return self
 
-            async def answer(self, value: str):
+            async def answer(self, value: str, reply_markup=None):
                 raise AssertionError(f"unexpected fallback status message: {value}")
 
         message = FakeMessage()
@@ -770,8 +821,276 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, snapshot)
         self.assertEqual(message.answers, [])
-        self.assertEqual(len(status_message.edits), 1)
-        self.assertIn("анализ документации готов", status_message.edits[-1])
+        self.assertGreaterEqual(len(status_message.edits), 1)
+        self.assertIn("анализ документации готов", status_message.edits[-1][0])
+
+    async def test_watch_job_progress_attaches_inline_cancel_to_running_message(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-1",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="running",
+            progress=30,
+            message="Ищу поставщиков",
+            error="",
+            created_at=None,
+        )
+
+        class FakeMessage:
+            class Chat:
+                id = 123
+
+            chat = Chat()
+            answers: list[tuple[str, object]] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.edits: list[tuple[str, object]] = []
+
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
+                return self
+
+            async def answer(self, value: str, reply_markup=None):
+                raise AssertionError(f"unexpected fallback status message: {value}")
+
+        message = FakeMessage()
+        status_message = FakeStatusMessage()
+        original_load = bot_module._load_job_snapshot
+        try:
+            bot_module._load_job_snapshot = lambda _job_id: snapshot
+
+            result = await watch_job_progress(
+                message,
+                "job-1",
+                status_message=status_message,
+                timeout_seconds=0,
+            )
+        finally:
+            bot_module._load_job_snapshot = original_load
+
+        self.assertEqual(result, snapshot)
+        self.assertGreaterEqual(len(status_message.edits), 1)
+        first_markup = status_message.edits[0][1]
+        self.assertIsNotNone(first_markup)
+        self.assertEqual(first_markup.inline_keyboard[0][0].callback_data, "cancel_job:job-1")
+
+    async def test_cancel_job_callback_cancels_running_job_and_returns_menu(self) -> None:
+        job = SimpleNamespace(
+            id="job-1",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="running",
+            progress=30,
+            message="Ищу поставщиков",
+            error="",
+            created_at=None,
+            completed_at=None,
+            updated_at=None,
+        )
+        commits: list[bool] = []
+        closed: list[bool] = []
+        released: list[str] = []
+        cancelled: list[str] = []
+
+        class FakeDb:
+            def get(self, _model, job_id: str):
+                self.last_job_id = job_id
+                return job
+
+            def commit(self) -> None:
+                commits.append(True)
+
+            def close(self) -> None:
+                closed.append(True)
+
+        class FakeChat:
+            id = 123
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.chat = FakeChat()
+                self.edits: list[tuple[str, object]] = []
+                self.answers: list[tuple[str, object]] = []
+
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
+                return self
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        class FakeCallback:
+            def __init__(self) -> None:
+                self.data = "cancel_job:job-1"
+                self.message = FakeMessage()
+                self.from_user = SimpleNamespace(id=123)
+                self.answers: list[tuple[str, bool]] = []
+
+            async def answer(self, value: str = "", show_alert: bool = False):
+                self.answers.append((value, show_alert))
+
+        callback = FakeCallback()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "_callback_job_allowed": bot_module._callback_job_allowed,
+            "release_job_reservation": bot_module.release_job_reservation,
+            "cancel_running_job": bot_module.cancel_running_job,
+        }
+        original_notified = set(bot_module.BOT_CANCEL_NOTIFIED_JOBS)
+        running_chats = set(bot_module.BATCH_RUNNING_CHATS)
+        try:
+            bot_module.BOT_CANCEL_NOTIFIED_JOBS.clear()
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.BATCH_RUNNING_CHATS.add(123)
+            bot_module.SessionLocal = lambda: FakeDb()
+            bot_module._callback_job_allowed = lambda _callback, _job_id: True
+            bot_module.release_job_reservation = lambda _db, _job, *, note: released.append(note)
+            bot_module.cancel_running_job = lambda job_id: cancelled.append(job_id)
+
+            await bot_module.cancel_job_callback(callback)
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            bot_module.BOT_CANCEL_NOTIFIED_JOBS.clear()
+            bot_module.BOT_CANCEL_NOTIFIED_JOBS.update(original_notified)
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.BATCH_RUNNING_CHATS.update(running_chats)
+
+        self.assertEqual(job.status, "cancelled")
+        self.assertEqual(job.progress, 100)
+        self.assertEqual(job.message, "Задача отменена в Telegram")
+        self.assertEqual(released, ["Резерв возвращён: задача отменена в Telegram"])
+        self.assertEqual(cancelled, ["job-1"])
+        self.assertTrue(commits)
+        self.assertTrue(closed)
+        self.assertEqual(callback.answers, [("Задача отменена.", False)])
+        self.assertIn("Задача отменена", callback.message.edits[-1][0])
+        self.assertIsNone(callback.message.edits[-1][1])
+        self.assertIn("можно запустить новую обработку", callback.message.answers[-1][0])
+        self.assertIsNotNone(callback.message.answers[-1][1])
+        self.assertNotIn(123, bot_module.BATCH_RUNNING_CHATS)
+
+    def test_watch_job_progress_sends_main_menu_after_external_cancel(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-cancelled",
+            mode=MODE_ANALYSIS_AND_SUPPLIERS,
+            status="cancelled",
+            progress=100,
+            message="Задача отменена клиентом",
+            error="",
+            created_at=None,
+        )
+
+        class FakeChat:
+            id = 12345
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.chat = FakeChat()
+                self.answers: list[tuple[str, object]] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.edits: list[tuple[str, object]] = []
+
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
+                return self
+
+            async def answer(self, value: str, reply_markup=None):
+                raise AssertionError(f"unexpected fallback status message: {value}")
+
+        async def run_case():
+            message = FakeMessage()
+            status_message = FakeStatusMessage()
+            original_load = bot_module._load_job_snapshot
+            original_notified = set(bot_module.BOT_CANCEL_NOTIFIED_JOBS)
+            try:
+                bot_module.BOT_CANCEL_NOTIFIED_JOBS.clear()
+                bot_module._load_job_snapshot = lambda _job_id: snapshot
+                result = await watch_job_progress(message, "job-cancelled", status_message=status_message)
+            finally:
+                bot_module._load_job_snapshot = original_load
+                bot_module.BOT_CANCEL_NOTIFIED_JOBS.clear()
+                bot_module.BOT_CANCEL_NOTIFIED_JOBS.update(original_notified)
+            return result, message, status_message
+
+        result, message, status_message = asyncio.run(run_case())
+
+        self.assertEqual(result, snapshot)
+        self.assertGreaterEqual(len(status_message.edits), 1)
+        self.assertIn("Задача отменена", status_message.edits[-1][0])
+        self.assertEqual(len(message.answers), 1)
+        self.assertIn("можно запустить новую обработку", message.answers[0][0])
+        self.assertIsNotNone(message.answers[0][1])
+
+    async def test_supplier_multi_watch_does_not_claim_file_sent_after_cancel(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-cancelled",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="cancelled",
+            progress=100,
+            message="Задача отменена клиентом",
+            error="",
+            created_at=None,
+        )
+
+        class FakeChat:
+            id = 12345
+
+        class FakeMessage:
+            chat = FakeChat()
+
+            async def answer(self, value: str, reply_markup=None):
+                raise AssertionError(f"unexpected message: {value}")
+
+        class FakeStatusMessage:
+            def __init__(self) -> None:
+                self.edits: list[tuple[str, object]] = []
+
+            async def edit_text(self, value: str, reply_markup=None):
+                self.edits.append((value, reply_markup))
+                return self
+
+            async def answer(self, value: str, reply_markup=None):
+                raise AssertionError(f"unexpected fallback status message: {value}")
+
+        async def fake_watch(_message, _job_id, *, status_message=None):
+            return snapshot
+
+        async def fake_outputs(*_args, **_kwargs):
+            raise AssertionError("cancelled jobs should not send outputs")
+
+        status_message = FakeStatusMessage()
+        originals = {
+            "watch_job_progress": bot_module.watch_job_progress,
+            "_send_job_outputs": bot_module._send_job_outputs,
+        }
+        try:
+            bot_module.watch_job_progress = fake_watch
+            bot_module._send_job_outputs = fake_outputs
+
+            await bot_module._watch_supplier_multi_outputs(
+                FakeMessage(),
+                [("job-cancelled", "Запрос КП - Испытательный пресс.docx")],
+                status_message=status_message,
+            )
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+
+        edited_text = "\n".join(text for text, _reply_markup in status_message.edits)
+        self.assertIn("Обрабатываю ТЗ", edited_text)
+        self.assertNotIn("Файл отправлен ниже", edited_text)
+        self.assertNotIn("Файлы отправлены ниже", edited_text)
 
     async def test_watch_job_progress_edits_launch_message_into_partial_confirmation(self) -> None:
         snapshots = [
@@ -826,7 +1145,10 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "awaiting_customer_confirmation")
         self.assertEqual(message.answers, [])
-        self.assertEqual(len(status_message.edits), 1)
+        self.assertEqual(len(status_message.edits), 2)
+        self.assertIn("Расширяю поиск", status_message.edits[0][0])
+        self.assertIsNotNone(status_message.edits[0][1])
+        self.assertEqual(status_message.edits[0][1].inline_keyboard[0][0].callback_data, "cancel_job:job-1")
         self.assertIn("Найдено меньше поставщиков", status_message.edits[-1][0])
         self.assertIsNotNone(status_message.edits[-1][1])
         self.assertIn("Да, отправить и списать", status_message.edits[-1][1].inline_keyboard[0][0].text)
@@ -905,6 +1227,65 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✅ Результат отправлен. Баланс обновлён.", message.documents[0].caption)
         self.assertEqual(len(message.documents[0].edits), 1)
         self.assertIsNotNone(message.documents[0].reply_markup)
+
+    async def test_send_job_outputs_does_not_send_files_for_cancelled_job(self) -> None:
+        done_job = SimpleNamespace(
+            id="job-cancelled",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="cancelled",
+            evidence_path="/tmp/should-not-read.json",
+            result_path="/tmp/should-not-send.xlsx",
+            client=SimpleNamespace(id="client-1"),
+        )
+        package_calls: list[str] = []
+        charges: list[str] = []
+
+        class FakeDb:
+            def get(self, _model, job_id: str):
+                assert job_id == "job-cancelled"
+                return done_job
+
+            def close(self) -> None:
+                return None
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.answers: list[tuple[str, object]] = []
+                self.documents: list[object] = []
+
+            async def answer(self, value: str, reply_markup=None):
+                self.answers.append((value, reply_markup))
+                return self
+
+            async def answer_document(self, *_args, **_kwargs):
+                self.documents.append((_args, _kwargs))
+                return self
+
+        message = FakeMessage()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "package_job_output_items": bot_module.package_job_output_items,
+            "package_job_output_files": bot_module.package_job_output_files,
+            "charge_job_reservation": bot_module.charge_job_reservation,
+        }
+        try:
+            bot_module.SessionLocal = lambda: FakeDb()
+            bot_module.package_job_output_items = lambda _job: package_calls.append(_job.id) or [
+                {"kind": "suppliers", "path": "/tmp/should-not-send.xlsx"}
+            ]
+            bot_module.package_job_output_files = lambda _job: package_calls.append(_job.id) or [Path("/tmp/should-not-send.xlsx")]
+            bot_module.charge_job_reservation = lambda _db, job: charges.append(job.id)
+
+            delivered = await _send_job_outputs(message, "job-cancelled")
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+
+        self.assertFalse(delivered)
+        self.assertEqual(package_calls, [])
+        self.assertEqual(charges, [])
+        self.assertEqual(message.answers, [])
+        self.assertEqual(message.documents, [])
 
     async def test_send_job_outputs_offers_find_more_for_supplier_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

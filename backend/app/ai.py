@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +30,36 @@ DEFAULT_MODEL_FALLBACKS: dict[str, tuple[str, ...]] = {
     "gemini-3.5-flash": ("gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"),
     "gemini-3.1-flash-lite": ("gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"),
 }
+
+# --- LLM call robustness: retry, throttle, free-only fallback ----------------
+# Transient HTTP statuses worth retrying before moving on to the next model.
+_RETRIABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+# Extra attempts after the first one, per model selection.
+_MAX_RETRIES = 2
+_RETRY_BASE_DELAY = 1.5
+_RETRY_MAX_DELAY = 20.0
+# Provider ids that cost real money and must NEVER be added as an automatic
+# fallback target. The user can still pick them explicitly as the primary.
+_PAID_PROVIDER_IDS = {"polza"}
+
+
+class LLMError(RuntimeError):
+    """An LLM call failure with enough context to surface a clear message."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Any = None,
+        retriable: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(message or "LLM request failed")
+        self.status = status
+        self.retriable = retriable
+        self.provider = provider
+        self.model = model
 
 
 @dataclass(frozen=True)
@@ -175,7 +207,108 @@ def model_selection_attempts(
             )
         except Exception:
             continue
+    # User-configured ordered fallback (manual). Tried before the automatic
+    # free pool. Paid models ARE allowed here — this is the user's explicit
+    # choice (the auto pool below stays strictly free-only).
+    for entry in _manual_fallback_entries(settings, routing_key):
+        pid = str(entry.get("provider") or "").strip()
+        mid = str(entry.get("modelId") or "").strip()
+        if not pid or not mid:
+            continue
+        key = f"{pid}:{mid}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            attempts.append(
+                get_model_selection(settings, tier=tier, routing_key=None, override=key)
+            )
+        except Exception:
+            continue
+    # Cross-provider free-only fallback. Paid providers/models (Polza, and
+    # OpenRouter models without ":free") are never added automatically; they
+    # can only be used when the user picks them as the primary.
+    for entry in _saved_model_entries(settings):
+        pid = str(entry.get("provider") or "").strip()
+        mid = str(entry.get("modelId") or "").strip()
+        if not pid or not mid or _is_paid_model(pid, mid):
+            continue
+        key = f"{pid}:{mid}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            attempts.append(
+                get_model_selection(settings, tier=tier, routing_key=None, override=key)
+            )
+        except Exception:
+            continue
     return attempts
+
+
+def _extra_headers(selection: ModelSelection) -> dict[str, str]:
+    """OpenRouter rewards (and some free routes require) HTTP-Referer / X-Title."""
+    if selection.provider_id == "openrouter" or "openrouter.ai" in (selection.base_url or "").lower():
+        return {"HTTP-Referer": "https://tenderlex.ru", "X-Title": "TenderLex"}
+    return {}
+
+
+def _is_paid_model(provider_id: str, model: str) -> bool:
+    pid = str(provider_id or "").strip().lower()
+    if pid in _PAID_PROVIDER_IDS:
+        return True
+    if pid == "openrouter" and ":free" not in str(model or ""):
+        return True
+    return False
+
+
+def _saved_model_entries(settings: SystemSettings) -> list[dict]:
+    return parse_json_list(getattr(settings, "saved_models_json", "[]") or "[]")
+
+
+def _manual_fallback_entries(settings: SystemSettings, routing_key: str | None) -> list[dict]:
+    """User-configured ordered fallback list for the current scenario.
+
+    Supplier-search routing keys use the supplier list; everything else (document
+    analysis, primary/light tiers) uses the analysis list. Paid models are NOT
+    filtered here — the user picks them explicitly.
+    """
+    col = (
+        "ai_supplier_fallback_json"
+        if routing_key in SUPPLIER_SEARCH_ROUTING_KEYS
+        else "ai_analysis_fallback_json"
+    )
+    return parse_json_list(getattr(settings, col, "[]") or "[]")
+
+
+def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
+    if response is not None:
+        try:
+            value = response.headers.get("retry-after")
+            if value:
+                return min(_RETRY_MAX_DELAY, float(value))
+        except Exception:
+            pass
+    return min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** attempt))
+
+
+# Throttle concurrent LLM calls so free tiers (OpenRouter :free, Gemini
+# accounts, Z.AI coding plan) are not burned down in a single search burst.
+# Keyed by running loop so it survives across event loops without errors.
+_llm_semaphores: dict[int, asyncio.Semaphore] = {}
+
+
+def _llm_semaphore() -> asyncio.Semaphore:
+    loop_id = id(asyncio.get_running_loop())
+    sem = _llm_semaphores.get(loop_id)
+    if sem is None:
+        try:
+            limit = max(1, int(os.getenv("AIPOISK_LLM_MAX_CONCURRENCY", "3")))
+        except ValueError:
+            limit = 3
+        sem = asyncio.Semaphore(limit)
+        _llm_semaphores[loop_id] = sem
+    return sem
 
 
 async def _post_llm_request(
@@ -192,18 +325,96 @@ async def _post_llm_request(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    headers = {"Authorization": f"Bearer {selection.api_key}"}
+    headers.update(_extra_headers(selection))
 
+    last_error: LLMError | None = None
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-        response = await client.post(
-            selection.base_url,
-            headers={"Authorization": f"Bearer {selection.api_key}"},
-            json=payload,
-        )
-        if response.status_code >= 400:
-            detail = response.text.strip()[:500]
-            raise RuntimeError(f"HTTP {response.status_code}: {detail or response.reason_phrase}")
-        data = response.json()
-    return str(data["choices"][0]["message"]["content"] or "")
+        for attempt in range(_MAX_RETRIES + 1):
+            async with _llm_semaphore():
+                try:
+                    response = await client.post(selection.base_url, headers=headers, json=payload)
+                    transport_error: Exception | None = None
+                except httpx.HTTPError as exc:
+                    transport_error = exc
+
+            if transport_error is not None:
+                last_error = LLMError(
+                    f"{selection.provider_name}:{selection.model} transport "
+                    f"{type(transport_error).__name__}: {transport_error or '<no detail>'}",
+                    retriable=True,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(attempt))
+                    continue
+                raise last_error
+
+            if response.status_code >= 400:
+                detail = response.text.strip()[:500]
+                retriable = response.status_code in _RETRIABLE_STATUS
+                last_error = LLMError(
+                    f"{selection.provider_name}:{selection.model} HTTP {response.status_code}: "
+                    f"{detail or response.reason_phrase}",
+                    status=response.status_code,
+                    retriable=retriable,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+                if retriable and attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(attempt, response))
+                    continue
+                raise last_error
+
+            try:
+                data = response.json()
+            except Exception:
+                last_error = LLMError(
+                    f"{selection.provider_name}:{selection.model} returned non-JSON: "
+                    f"{response.text.strip()[:300]}",
+                    retriable=True,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(attempt))
+                    continue
+                raise last_error
+
+            # Some providers (e.g. OpenRouter upstream errors) answer HTTP 200
+            # with an {"error": ...} body and no choices.
+            if isinstance(data, dict) and data.get("error") and not data.get("choices"):
+                err = data.get("error")
+                code = err.get("code") if isinstance(err, dict) else None
+                err_msg = (err.get("message") if isinstance(err, dict) else str(err)) or "upstream error"
+                retriable = str(code) in {"429", "502", "503", "504"} or "rate" in str(err_msg).lower()
+                last_error = LLMError(
+                    f"{selection.provider_name}:{selection.model} upstream error: {err_msg} (code={code})",
+                    status=code,
+                    retriable=retriable,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+                if retriable and attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(attempt))
+                    continue
+                raise last_error
+
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not choices:
+                last_error = LLMError(
+                    f"{selection.provider_name}:{selection.model} returned no choices",
+                    retriable=True,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(attempt))
+                    continue
+                raise last_error
+            return str(choices[0].get("message", {}).get("content") or "")
+    raise last_error or LLMError("LLM request failed")
 
 
 async def call_llm(

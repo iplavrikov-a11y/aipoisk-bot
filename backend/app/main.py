@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from datetime import timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -41,7 +42,9 @@ from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
+    TERMINAL_JOB_STATUSES,
     VALID_JOB_MODES,
+    cancel_running_job,
     cleanup_expired_jobs,
     create_job,
     enqueue_job,
@@ -68,6 +71,7 @@ from .repository import (
     seed_owner_client,
     supplier_target_for_client,
 )
+from .report_builder import write_quote_request_docx
 from .schemas import (
     AiTestRequest,
     ClientCreate,
@@ -134,6 +138,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _mark_no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
 
 @app.on_event("startup")
@@ -417,9 +427,11 @@ def customer_logout_api(
 
 @app.get("/api/customer/auth/session")
 def customer_session_api(
+    response: Response,
     context: WebAuthContext | None = Depends(optional_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
+    _mark_no_store(response)
     if not context:
         return {"authenticated": False}
     csrf_token = context.session.csrf_token if context.session else ""
@@ -437,12 +449,14 @@ def customer_me_api(
 
 @app.get("/api/customer/jobs")
 def customer_jobs_api(
+    response: Response,
     limit: int = 50,
     offset: int = 0,
     include_pagination: bool = False,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> list[dict] | dict:
+    _mark_no_store(response)
     safe_limit = max(1, min(200, int(limit or 50)))
     safe_offset = max(0, int(offset or 0))
     query = commercial_jobs_query(db, context.user.client)
@@ -504,6 +518,46 @@ def customer_job_file_download_route(
     db: Session = Depends(db_session),
 ):
     return download_customer_job_file_api(job_id, file_kind, context=context, db=db)
+
+
+@app.get("/api/customer/jobs/{job_id}/quote-request")
+def customer_job_quote_request_route(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    return customer_quote_request_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/cancel")
+def customer_job_cancel_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    return cancel_customer_job_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/quote-request/docx")
+async def customer_job_quote_request_docx_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+):
+    require_customer_csrf(request, context)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный запрос.")
+    return download_customer_quote_request_docx_api(
+        job_id,
+        content=str(payload.get("content") or ""),
+        filename=str(payload.get("filename") or ""),
+        context=context,
+        db=db,
+    )
 
 
 @app.post("/api/customer/jobs/{job_id}/accept-partial")
@@ -1305,6 +1359,53 @@ def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     return {"success": True, "job": job_to_dict(job)}
 
 
+@app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
+def cancel_job(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in TERMINAL_JOB_STATUSES:
+        return {"success": True, "job": job_to_dict(job), "note": "Job already in terminal status"}
+    release_job_reservation(db, job, note="Резерв возвращён: задача отменена администратором")
+    job.status = "cancelled"
+    job.progress = 100
+    job.error = "Отменено администратором"
+    job.message = "Задача отменена"
+    job.completed_at = now_utc()
+    job.updated_at = now_utc()
+    db.commit()
+    cancel_running_job(job_id)
+    return {"success": True, "job": job_to_dict(job)}
+
+
+@app.post("/api/jobs/force-stale", dependencies=[Depends(require_admin)])
+def force_fail_stale_jobs(
+    max_minutes: int = 45,
+    db: Session = Depends(db_session),
+) -> dict:
+    """Force-fail any job stuck in 'running' longer than max_minutes without update."""
+    cutoff = now_utc() - timedelta(minutes=max(5, min(240, max_minutes)))
+    stale_jobs = (
+        db.query(Job)
+        .filter(Job.status == "running", Job.updated_at < cutoff)
+        .all()
+    )
+    cancelled = []
+    for job in stale_jobs:
+        release_job_reservation(db, job, note="Резерв возвращён: задача зависла и принудительно остановлена")
+        job.status = "cancelled"
+        job.progress = 100
+        job.error = f"Принудительная остановка: задача зависла (без обновления >{max_minutes} мин)"
+        job.message = "Задача принудительно остановлена"
+        job.completed_at = now_utc()
+        job.updated_at = now_utc()
+        cancel_running_job(job.id)
+        cancelled.append(job.id)
+    if cancelled:
+        db.commit()
+    return {"cancelled": cancelled, "count": len(cancelled)}
+
+
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     if not evidence_path:
@@ -1671,6 +1772,7 @@ def human_status_label(status: str) -> str:
         "awaiting_customer_confirmation": "ожидает клиента",
         "customer_declined": "отклонено",
         "confirmation_expired": "истёк срок",
+        "cancelled": "отменено",
     }
     return labels.get(str(status or ""), str(status or "") or "неизвестно")
 
@@ -1983,6 +2085,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
+        "can_cancel": job.status in {"pending", "running"},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "result_files": result_files,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
@@ -1998,7 +2101,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
 
 
 def customer_job_result_files(job: Job) -> list[dict]:
-    if getattr(job, "status", "") in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED}:
+    if getattr(job, "status", "") in {"cancelled", STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED}:
         return []
     result: list[dict] = []
     for item in package_job_output_items(job):
@@ -2020,6 +2123,8 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
         return "Анализ"
     if kind == "suppliers":
         return "Поставщики"
+    if kind == "quote_request":
+        return "Запрос КП"
     return "Файл"
 
 
@@ -2171,6 +2276,84 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
         raise HTTPException(status_code=404, detail="Файл результата не найден.")
     charge_job_reservation(db, job)
     return FileResponse(output, filename=output.name)
+
+
+def cancel_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
+    release_job_reservation(db, job, note="Резерв возвращён: задача отменена клиентом")
+    job.status = "cancelled"
+    job.progress = 100
+    job.error = ""
+    job.message = "Задача отменена клиентом"
+    job.completed_at = now_utc()
+    job.updated_at = now_utc()
+    db.commit()
+    cancel_running_job(job.id)
+    return {"success": True, "job": customer_job_to_dict(job)}
+
+
+def customer_quote_request_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед открытием запроса КП.")
+    item = _quote_request_output_item(job)
+    content_path = Path(str(item.get("content_path") or ""))
+    if not content_path.exists():
+        raise HTTPException(status_code=404, detail="Текст запроса КП не найден.")
+    content = content_path.read_text(encoding="utf-8")
+    output = Path(str(item.get("path") or ""))
+    filename = output.name if output.name else "Запрос КП.docx"
+    return {"content": content, "filename": filename}
+
+
+def download_customer_quote_request_docx_api(
+    job_id: str,
+    *,
+    content: str,
+    filename: str,
+    context: WebAuthContext,
+    db: Session,
+):
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
+    _quote_request_output_item(job)
+    markdown = str(content or "").strip()
+    if not markdown:
+        raise HTTPException(status_code=400, detail="Текст запроса КП пустой.")
+    if len(markdown) > 300_000:
+        raise HTTPException(status_code=413, detail="Текст запроса КП слишком большой.")
+    safe_filename = _safe_docx_filename(filename, fallback="Запрос КП.docx")
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / safe_filename
+        write_quote_request_docx(out_path, markdown, title="Запрос КП")
+        payload = out_path.read_bytes()
+    charge_job_reservation(db, job)
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_filename, safe='')}"},
+    )
+
+
+def _quote_request_output_item(job: Job) -> dict:
+    for item in package_job_output_items(job):
+        if str(item.get("kind") or "") == "quote_request":
+            return item
+    raise HTTPException(status_code=404, detail="Запрос КП для этой задачи не найден.")
+
+
+def _safe_docx_filename(value: str, *, fallback: str) -> str:
+    name = Path(str(value or fallback)).name.strip()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip(" .") or fallback
+    if not name.lower().endswith(".docx"):
+        name = f"{name}.docx"
+    if len(name.encode("utf-8")) <= 180:
+        return name
+    stem = Path(name).stem.encode("utf-8")[:170].decode("utf-8", errors="ignore").rstrip(" ._-")
+    return f"{stem or 'Запрос КП'}.docx"
 
 
 def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session):

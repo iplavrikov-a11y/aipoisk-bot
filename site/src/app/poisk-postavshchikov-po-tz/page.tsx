@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по техническому заданию — TenderLex",
+  title: "Поиск поставщиков по техническому заданию",
   description:
     "TenderLex автоматически находит поставщиков по ТЗ: производители, дилеры, дистрибьюторы с контактами, сайтами и комментариями. Попробуйте бесплатно в Telegram или на сайте.",
   alternates: {

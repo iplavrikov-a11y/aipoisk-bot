@@ -8,7 +8,14 @@ from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
 
-from app.report_builder import PROCUREMENT_REPORT_DISCLAIMER, write_procurement_docx, write_supplier_xlsx
+from app.quote_request import build_quote_request_markdown
+from app.report_builder import (
+    PROCUREMENT_REPORT_DISCLAIMER,
+    QUOTE_REQUEST_INTRO,
+    write_procurement_docx,
+    write_quote_request_docx,
+    write_supplier_xlsx,
+)
 
 
 class ReportBuilderTests(unittest.TestCase):
@@ -61,6 +68,58 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertGreater(grid_cols[2], grid_cols[1])
         self.assertGreater(grid_cols[2], grid_cols[3] * 5)
         self.assertGreater(grid_cols[2], grid_cols[4] * 5)
+
+    def test_quote_request_docx_uses_request_text_without_analysis_disclaimer(self) -> None:
+        from docx import Document
+
+        markdown = f"""ЗАПРОС КП
+
+{QUOTE_REQUEST_INTRO}
+
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Канат стальной КТРУ 25.93.11 | ГОСТ 3062-80, диаметр 6,8 мм | м | 5000 |
+
+### Условия поставки
+
+- **Срок поставки:** 30 календарных дней
+- **Город поставки:** Казань
+- **Документы качества:** паспорт качества
+- **Упаковка/тара:** бухты
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quote.docx"
+            write_quote_request_docx(path, markdown, title="Запрос КП")
+
+            doc = Document(path)
+            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+            table_text = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
+
+        self.assertIn("Запрос КП", text)
+        self.assertIn(QUOTE_REQUEST_INTRO, text)
+        self.assertIn("Канат стальной", table_text)
+        self.assertIn("Срок поставки:", text)
+        self.assertNotIn(PROCUREMENT_REPORT_DISCLAIMER, text)
+        self.assertNotRegex(f"{text}\n{table_text}", r"(?i)ОКПД|OKPD|КТРУ|KTRU")
+
+    def test_quote_request_markdown_omits_note_column(self) -> None:
+        source = """### Товары и требования
+| № | Наименование | Характеристики | Ед.изм. | Кол-во | Примечание |
+|---|---|---|---|---|---|
+| 1 | Канат стальной | ГОСТ 3062-80, диаметр 6,8 мм | м | 5000 | Просим указать в КП |
+
+- **Срок поставки:** 30 календарных дней
+- **Город поставки:** Казань
+- **Условия оплаты:** по договору
+- **Документы качества:** паспорт качества
+- **Упаковка/тара:** бухты
+"""
+
+        markdown = build_quote_request_markdown(source, subject="Канат стальной")
+
+        self.assertIn("| № | Наименование | Характеристики | Ед.изм. | Кол-во |", markdown)
+        self.assertNotIn("Примечание", markdown)
+        self.assertNotIn("Просим указать в КП", markdown)
 
     def test_supplier_xlsx_is_client_facing_without_technical_search_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

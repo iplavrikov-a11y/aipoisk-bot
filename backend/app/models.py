@@ -55,6 +55,8 @@ class SystemSettings(Base):
     custom_ai_providers_json: Mapped[str] = mapped_column(Text, default="[]")
     saved_models_json: Mapped[str] = mapped_column(Text, default="[]")
     ai_function_models_json: Mapped[str] = mapped_column(Text, default="{}")
+    ai_analysis_fallback_json: Mapped[str] = mapped_column(Text, default="[]")
+    ai_supplier_fallback_json: Mapped[str] = mapped_column(Text, default="[]")
 
     supplier_search_adapter_base_url: Mapped[str] = mapped_column(Text, default="")
     supplier_search_adapter_api_key: Mapped[str] = mapped_column(Text, default="")
@@ -107,6 +109,8 @@ class SystemSettings(Base):
             "custom_ai_providers_json": self.custom_ai_providers_json,
             "saved_models_json": self.saved_models_json,
             "ai_function_models_json": self.ai_function_models_json,
+            "ai_analysis_fallback_json": self.ai_analysis_fallback_json,
+            "ai_supplier_fallback_json": self.ai_supplier_fallback_json,
             "supplier_search_adapter_base_url": self.supplier_search_adapter_base_url,
             "supplier_search_adapter_api_key_set": bool(self.supplier_search_adapter_api_key),
             "supplier_search_adapter_model": self.supplier_search_adapter_model,

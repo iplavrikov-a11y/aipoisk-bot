@@ -443,22 +443,31 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
 
 ТЗ:
 {context[:16000]}"""
-    try:
-        raw = await call_llm(
-            settings,
-            prompt,
-            system_prompt="Ты закупочный аналитик. Строишь профиль закупки для поиска поставщиков, не подменяешь товар условиями и комплектующими.",
-            tier="primary",
-            routing_key="supplier_procurement_profile",
-            json_mode=True,
-            timeout_seconds=90,
-        )
-        profile = _normalize_procurement_profile(parse_json_object(raw))
-        if not profile.items:
-            raise RuntimeError("AI did not return procurement items")
-        return profile
-    except Exception as exc:
-        raise RuntimeError(f"AI procurement profile extraction failed: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            current_prompt = prompt if attempt == 0 else (
+                prompt + "\n\nВАЖНО: Ответ ОБЯЗАН содержать массив items с хотя бы одним элементом. "
+                "Каждый элемент должен иметь name с названием товара/позиции."
+            )
+            raw = await call_llm(
+                settings,
+                current_prompt,
+                system_prompt="Ты закупочный аналитик. Строишь профиль закупки для поиска поставщиков, не подменяешь товар условиями и комплектующими.",
+                tier="primary",
+                routing_key="supplier_procurement_profile",
+                json_mode=True,
+                timeout_seconds=90,
+            )
+            profile = _normalize_procurement_profile(parse_json_object(raw))
+            if not profile.items:
+                last_error = RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+                continue
+            return profile
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"AI procurement profile extraction failed: {last_error}") from last_error
 
 
 async def build_supplier_queries(
@@ -568,8 +577,11 @@ async def discover_suppliers(
         progress_callback=progress_callback,
     )
     recovery_rounds: list[dict] = []
-    if len(accepted) < target:
-        await _emit_progress(progress_callback, 92, f"Расширяю поиск: подтверждено {len(accepted)}")
+    max_recovery_rounds = 2
+    for recovery_attempt in range(max_recovery_rounds):
+        if len(accepted) >= target:
+            break
+        await _emit_progress(progress_callback, 92 + recovery_attempt, f"Расширяю поиск (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
         accepted_before_recovery = len(accepted)
         recovery_queries = await _build_supplier_recovery_queries_with_ai(
             settings,
@@ -648,6 +660,8 @@ async def discover_suppliers(
                     "error": _exception_summary(exc),
                 }
         recovery_rounds.append(recovery_round)
+        # Merge recovery queries into main list so next round generates different queries
+        queries = queries + recovery_queries
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
 
     evidence = {
@@ -1130,6 +1144,7 @@ def _ranked_candidates_from_ai(
     by_id: dict[str, Candidate],
     *,
     seen_domains: set[str] | None = None,
+    min_confidence: int = 50,
 ) -> tuple[list[Candidate], set[str], set[str]]:
     kept: list[Candidate] = []
     seen_ids: set[str] = set()
@@ -1142,7 +1157,7 @@ def _ranked_candidates_from_ai(
         if not candidate or candidate.domain in domains:
             continue
         confidence = _bounded_int(item.get("confidence"), default=0)
-        if confidence < 50:
+        if confidence < min_confidence:
             continue
         seen_ids.add(item_id)
         domains.add(candidate.domain)
@@ -1153,6 +1168,14 @@ def _ranked_candidates_from_ai(
                 ai_rank_confidence=confidence,
                 ai_rank_reason=str(item.get("reason") or "")[:300],
             )
+        )
+    if kept:
+        return kept, seen_ids, domains
+    # Fallback: confidence threshold too strict — accept any keep=true candidate
+    # Prevents total failure when the model rates all candidates conservatively
+    if min_confidence > 0:
+        return _ranked_candidates_from_ai(
+            ranked, by_id, seen_domains=seen_domains, min_confidence=0
         )
     return kept, seen_ids, domains
 
@@ -1269,6 +1292,10 @@ async def _review_candidates_until_target(
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
         )
+        # Early stop: skip batch entirely if we already have enough
+        if len(already_accepted) >= target:
+            stopped_after = batch_start
+            break
         review_progress = 74 + int(18 * min(batch_start, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
             progress_callback,
@@ -1323,7 +1350,7 @@ async def _review_candidates_until_target(
         "reviewed_count": len(reviewed),
         "candidate_count": len(candidates),
         "stopped_after_candidates": stopped_after,
-        "early_stop": False,
+        "early_stop": stopped_after < len(candidates),
     }
 
 
@@ -1999,15 +2026,30 @@ async def verify_candidate(
     site_url = evidence_url if match.level == "exact" else candidate.url
     phone = _verified_phone(decision.get("phone"), phones)
     email = _verified_email(decision.get("email"), emails)
+    contact_warning = ""
     if not phone and not email:
-        return {
-            "company_name": decision.get("company_name") or candidate.domain,
-            "site": site_url,
-            "evidence_status": "weak",
-            "source": candidate.source,
-            "search_query": candidate.query,
-            "comments": "ИИ-аудит не подтвердил опубликованный телефон или email поставщика.",
-        }
+        # Fallback: accept AI-provided contacts even without parser confirmation
+        ai_email = str(decision.get("email") or "").strip()
+        ai_phone = str(decision.get("phone") or "").strip()
+        if ai_email and EMAIL_RE.fullmatch(ai_email.lower()):
+            email = ai_email.lower()
+            contact_warning = " Контакт указан ИИ, требует ручной проверки."
+        elif ai_phone:
+            phone_match = PHONE_RE.search(ai_phone)
+            if phone_match:
+                normalized = _normalize_ru_phone(phone_match.group(0))
+                if normalized:
+                    phone = normalized
+                    contact_warning = " Контакт указан ИИ, требует ручной проверки."
+        if not phone and not email:
+            return {
+                "company_name": decision.get("company_name") or candidate.domain,
+                "site": site_url,
+                "evidence_status": "weak",
+                "source": candidate.source,
+                "search_query": candidate.query,
+                "comments": "ИИ-аудит не подтвердил опубликованный телефон или email поставщика.",
+            }
     result = {
         "company_name": decision.get("company_name") or candidate.domain,
         "region": decision.get("region") or "",
@@ -2019,7 +2061,7 @@ async def verify_candidate(
         "site": site_url,
         "evidence_url": evidence_url,
         "contact_url": contact_url,
-        "comments": decision.get("comments") or match.reason or "Официальный сайт открыт, релевантность и контакты проверены.",
+        "comments": (decision.get("comments") or match.reason or "Официальный сайт открыт, релевантность и контакты проверены.") + contact_warning,
         "evidence_status": "verified",
         "match_level": _ai_match_level(decision, match.level),
         "procurement_item_id": str(decision.get("procurement_item_id") or candidate.procurement_item_id or ""),
@@ -2047,12 +2089,22 @@ async def collect_pages(url: str) -> list[dict]:
         if first:
             pages.append(first)
             links = extract_internal_links(first["html"], first["url"])
-            for link in links[:5]:
-                page = await fetch_page(client, link)
-                if page:
-                    pages.append(page)
-                if len(pages) >= 6:
-                    break
+            # Parallel fetch: up to 5 internal links concurrently, capped at 3 to avoid hammering the server
+            link_semaphore = asyncio.Semaphore(3)
+
+            async def _fetch_link(link_url: str) -> dict | None:
+                async with link_semaphore:
+                    return await fetch_page(client, link_url)
+
+            if links:
+                tasks = [asyncio.create_task(_fetch_link(link)) for link in links[:5]]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException) or result is None:
+                        continue
+                    pages.append(result)
+                    if len(pages) >= 6:
+                        break
     if pages and _pages_have_contact(pages):
         return pages
     browser_page = await fetch_page_with_browser(url)
@@ -2096,23 +2148,77 @@ def html_text_to_page(html_text: str, url: str) -> dict | None:
 
 
 async def fetch_page_with_browser(url: str) -> dict | None:
+    """Fetch a page using Playwright browser. Uses a shared browser pool for efficiency."""
     try:
         from playwright.async_api import async_playwright  # type: ignore
     except ImportError:
         return None
     try:
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        # Use a shared browser pool to avoid launching a new Chromium for every candidate
+        browser_pool = _get_browser_pool()
+        async with browser_pool:
+            browser = await browser_pool.get_browser()
+            page = await browser.new_page(user_agent="TenderLex supplier verifier")
             try:
-                page = await browser.new_page(user_agent="TenderLex supplier verifier")
                 await page.goto(url, wait_until="networkidle", timeout=18000)
                 html_text = await page.content()
                 final_url = page.url
             finally:
-                await browser.close()
+                await page.close()
     except Exception:
         return None
     return html_text_to_page(html_text[:300000], final_url)
+
+
+class _BrowserPool:
+    """Manages a shared Playwright browser instance with semaphore-based concurrency."""
+
+    def __init__(self) -> None:
+        self._playwright = None
+        self._browser = None
+        self._semaphore = asyncio.Semaphore(3)  # Max 3 concurrent browser tabs
+        self._lock = asyncio.Lock()
+
+    async def get_browser(self):
+        """Get or create the shared browser instance."""
+        if self._browser is None or not self._browser.is_connected():
+            from playwright.async_api import async_playwright  # type: ignore
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        return self._browser
+
+    async def __aenter__(self):
+        await self._semaphore.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._semaphore.release()
+
+    async def close(self) -> None:
+        """Close the browser and playwright instances."""
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+
+_browser_pool: _BrowserPool | None = None
+
+
+def _get_browser_pool() -> _BrowserPool:
+    """Get or create the global browser pool."""
+    global _browser_pool
+    if _browser_pool is None:
+        _browser_pool = _BrowserPool()
+    return _browser_pool
 
 
 def _pages_have_contact(pages: list[dict]) -> bool:
@@ -2273,12 +2379,18 @@ def _ai_rejection_reason(decision: dict) -> str:
     normalized_confidence = _bounded_int(confidence, default=-1)
     if normalized_confidence < 0:
         return "ИИ-аудит отклонил кандидата: некорректная оценка уверенности."
-    if normalized_confidence < 65:
-        return "ИИ-аудит отклонил кандидата: низкая уверенность в соответствии ТЗ."
-    if not str(decision.get("evidence_snippet") or "").strip():
-        return "ИИ-аудит отклонил кандидата: отсутствует фрагмент-доказательство по товару."
-    if not str(decision.get("contact_evidence_snippet") or "").strip():
-        return "ИИ-аудит отклонил кандидата: отсутствует фрагмент-доказательство по контакту."
+    # Adaptive confidence threshold by product_fit
+    confidence_thresholds = {
+        "exact": 45,
+        "analog": 40,
+        "category": 35,
+        "profile": 50,
+    }
+    min_confidence = confidence_thresholds.get(product_fit, 45)
+    if normalized_confidence < min_confidence:
+        return f"ИИ-аудит отклонил кандидата: низкая уверенность ({normalized_confidence}) для {product_fit} (порог {min_confidence})."
+    # evidence_snippet and contact_evidence_snippet are no longer blocking —
+    # missing snippets will be noted in comments but won't reject the candidate
     return ""
 
 

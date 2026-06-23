@@ -23,6 +23,10 @@ PROCUREMENT_REPORT_DISCLAIMER = (
     "Критичные юридические, финансовые и технические условия сверяйте с официальными документами закупки. "
     "Отчёт не заменяет профессиональную проверку; решения по участию, цене и обязательствам принимает пользователь."
 )
+QUOTE_REQUEST_INTRO = (
+    "Просим выставить счёт или направить коммерческое предложение по указанным ниже товарам. "
+    "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки."
+)
 
 
 MATCH_LEVEL_LABELS = {
@@ -175,6 +179,27 @@ def _compact_comment_detail(comment: str, limit: int = 260) -> str:
 
 
 def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Path:
+    return _write_markdown_docx(
+        path,
+        markdown,
+        title=title or "Отчёт анализа закупки",
+        intro=PROCUREMENT_REPORT_DISCLAIMER,
+        intro_italic=True,
+    )
+
+
+def write_quote_request_docx(path: str | Path, markdown: str, *, title: str = "Запрос КП") -> Path:
+    return _write_markdown_docx(path, markdown, title=title or "Запрос КП")
+
+
+def _write_markdown_docx(
+    path: str | Path,
+    markdown: str,
+    *,
+    title: str,
+    intro: str = "",
+    intro_italic: bool = False,
+) -> Path:
     from docx import Document
     from docx.shared import Pt
 
@@ -186,13 +211,14 @@ def write_procurement_docx(path: str | Path, markdown: str, *, title: str) -> Pa
         section.bottom_margin = Pt(28)
         section.left_margin = Pt(34)
         section.right_margin = Pt(34)
-    heading = doc.add_heading(title or "Отчёт анализа закупки", level=1)
+    heading = doc.add_heading(title, level=1)
     heading.alignment = 1
-    disclaimer = doc.add_paragraph()
-    disclaimer.paragraph_format.space_after = Pt(8)
-    disclaimer_run = disclaimer.add_run(PROCUREMENT_REPORT_DISCLAIMER)
-    disclaimer_run.italic = True
-    disclaimer_run.font.size = Pt(9)
+    if intro:
+        intro_paragraph = doc.add_paragraph()
+        intro_paragraph.paragraph_format.space_after = Pt(8)
+        intro_run = intro_paragraph.add_run(intro)
+        intro_run.italic = intro_italic
+        intro_run.font.size = Pt(9)
     lines = _remove_okpd_codes(str(markdown or "")).splitlines()
     index = 0
     while index < len(lines):
@@ -270,6 +296,8 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
 def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
     normalized = [_normalize_table_header(header) for header in headers]
     if normalized[:5] == ["№", "наименование", "характеристики", "ед.изм.", "кол-во"]:
+        if width >= 6 and normalized[5] == "примечание":
+            return [520, 2100, 4700, 850, 850, 1340]
         return [520, 2300, 5600, 850, 850]
     return None
 
@@ -319,7 +347,7 @@ def _add_markdown_runs(paragraph, text: str) -> None:
 
 def _remove_okpd_codes(text: str) -> str:
     value = str(text or "")
-    okpd_name = r"(?:ОКПД\s*2?|OKPD\s*2?)"
+    okpd_name = r"(?:ОКПД\s*2?|OKPD\s*2?|КТРУ|KTRU)"
     value = re.sub(
         rf"\s*[\(\[]\s*(?:код\s+)?{okpd_name}\s*[:№#Nn\-–—]?\s*[\d.\s/-]+[\)\]]",
         "",

@@ -40,6 +40,17 @@ class DocumentParserTests(unittest.TestCase):
         self.assertIn("Первая часть ТЗ", text)
         self.assertIn("Вторая часть ТЗ", text)
 
+    def test_docx_extension_archive_falls_back_to_archive_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "documentation.docx"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("Техническое задание.txt", "Огнезащитный материал, количество 2106 кг")
+
+            text, status = document_parser.extract_text(archive_path)
+
+        self.assertEqual(status, "docx_archive_archive_ok")
+        self.assertIn("Огнезащитный материал", text)
+
 
 if __name__ == "__main__":
     unittest.main()

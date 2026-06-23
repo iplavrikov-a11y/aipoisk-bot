@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Анализ закупочной документации — TenderLex",
+  title: "Анализ закупочной документации",
   description:
     "TenderLex разбирает закупочную документацию: условия участия, сроки, обеспечение, оплату, поставку, риски договора, нацрежим и вопросы заказчику. Попробуйте бесплатно.",
   alternates: {

@@ -10,6 +10,7 @@ Environment=PORT=3093
 Environment=HOSTNAME=127.0.0.1
 Environment=AIPOISK_SITE_API_BASE_URL=http://127.0.0.1:8088
 Environment=NEXT_PUBLIC_SITE_URL=https://tenderlex.ru
+Environment=TENDERLEX_GOOGLE_SITE_VERIFICATION=SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY
 ExecStart=/usr/bin/npm run start
 Restart=always
 RestartSec=5

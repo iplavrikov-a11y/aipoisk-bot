@@ -26,6 +26,8 @@ class SettingsPatch(BaseModel):
     custom_ai_providers_json: str | None = None
     saved_models_json: str | None = None
     ai_function_models_json: str | None = None
+    ai_analysis_fallback_json: str | None = None
+    ai_supplier_fallback_json: str | None = None
     supplier_search_adapter_base_url: str | None = None
     supplier_search_adapter_api_key: str | None = None
     supplier_search_adapter_model: str | None = None

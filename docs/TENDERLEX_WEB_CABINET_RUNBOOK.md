@@ -37,6 +37,10 @@
 - Finished supplier-search jobs can offer `Найти ещё`; the customer must confirm
   that one supplier-search generation will be spent before an additional search
   starts.
+- If a job is cancelled from Telegram, the website cabinet must show the same
+  terminal `отменено` state after polling. The customer job API and cabinet
+  fetches are no-store, and active job polling is intentionally more frequent
+  than idle polling.
 
 ## Manual Top-Up
 
@@ -111,6 +115,9 @@ Use this checklist after deploy:
 18. For a partial supplier-search result in Telegram, confirm there is only one
     confirmation message with send/decline buttons and no internal paths or job
     IDs.
+19. Start a test job from Telegram while the same customer is signed in on the
+    website, cancel it in Telegram, and confirm the cabinet row changes to
+    `отменено` and no result buttons appear for that cancelled job.
 
 ## Legal Pages
 
@@ -158,3 +165,7 @@ Safety behavior:
 - `tenderlex-site.service` can still restart during active backend jobs;
 - use `AIPOISK_FORCE_JOB_SERVICE_RESTART=1` only when deliberately interrupting
   active jobs.
+- after Telegram bot or worker cancellation changes, confirm the deploy did not
+  skip API/worker/bot restarts. If it skipped them, wait for active jobs to
+  clear and rerun deploy before treating Telegram/cabinet synchronization as
+  live.

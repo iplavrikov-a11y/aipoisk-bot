@@ -57,6 +57,10 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Supplier-search results that can be extended expose an additional action for
   finding more suppliers. The customer must confirm the paid extra run before
   the backend creates the additional supplier-search job.
+- `GET /api/customer/jobs` and `/api/customer/auth/session` must not be cached.
+  The cabinet uses no-store fetches and a shorter polling interval while active
+  jobs exist so Telegram/API-side cancellation appears in the website task list
+  without a manual reload.
 - Online checkout is intentionally disabled until YooKassa checkout creation, webhooks, idempotency, and payment history are implemented.
 
 ## Admin-Managed Fields

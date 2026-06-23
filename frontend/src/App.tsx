@@ -197,6 +197,8 @@ type SettingsPayload = {
   custom_ai_providers_json: string
   saved_models_json: string
   ai_function_models_json: string
+  ai_analysis_fallback_json: string
+  ai_supplier_fallback_json: string
   supplier_search_adapter_base_url: string
   supplier_search_adapter_api_key_set: boolean
   supplier_search_adapter_model: string
@@ -398,6 +400,11 @@ type SavedModel = {
   modelId: string
 }
 
+type FallbackEntry = {
+  provider: string
+  modelId: string
+}
+
 type AiTestState = {
   status: 'idle' | 'running' | 'success' | 'error'
   message: string
@@ -477,6 +484,7 @@ const statusLabels: Record<string, string> = {
   partial: 'частично готово',
   needs_review: 'нужна проверка',
   failed: 'ошибка',
+  cancelled: 'отменено',
   awaiting_customer_confirmation: 'ожидает клиента',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
@@ -1247,6 +1255,15 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
           )
         })}
       </div>
+      {opsStatus.queue.running > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <button className="icon-button small" onClick={async () => {
+            if (!window.confirm('Остановить задачи, зависшие более 45 минут?')) return
+            const res = await api<{ cancelled: string[]; count: number }>('/api/jobs/force-stale?max_minutes=45', { method: 'POST' })
+            alert(res.count ? `Остановлено задач: ${res.count}` : 'Зависших задач не найдено')
+          }} title="Разблокировать зависшие задачи">Разблокировать зависшие</button>
+        </div>
+      )}
       {opsStatus.warnings.length > 0 && (
         <div className="warning-list">
           {opsStatus.warnings.map(item => <div key={item}>{item}</div>)}
@@ -1836,6 +1853,11 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
     await onChange()
   }
+  async function cancelJob(job: Job) {
+    if (!window.confirm('Отменить задачу?')) return
+    await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
+    await onChange()
+  }
   async function showEvidence(job: Job) {
     setEvidence(null)
     if (!job.has_evidence) {
@@ -1924,6 +1946,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             <div className="row-actions">
               {job.has_result && <button className="icon-button small" onClick={() => void download(job)} title="Скачать"><Download size={15} /></button>}
               {job.has_evidence && <button className="icon-button small" onClick={() => void showEvidence(job)} title="Данные проверки"><FileText size={15} /></button>}
+              {(job.status === 'running' || job.status === 'pending') && <button className="icon-button small" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={15} /></button>}
               <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
             </div>
           </article>
@@ -2255,6 +2278,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
   const [lightModel, setLightModel] = useState(settings.light_model)
   const [supplierProvider, setSupplierProvider] = useState(settings.supplier_ai_provider || settings.light_provider)
   const [supplierModel, setSupplierModel] = useState(settings.supplier_ai_model || settings.light_model)
+  const [analysisFallback, setAnalysisFallback] = useState<FallbackEntry[]>(() => parseJson(settings.ai_analysis_fallback_json, []))
+  const [supplierFallback, setSupplierFallback] = useState<FallbackEntry[]>(() => parseJson(settings.ai_supplier_fallback_json, []))
   const [testResults, setTestResults] = useState<Record<string, AiTestState>>({})
   const [saveStatus, setSaveStatus] = useState<Record<string, string>>({})
 
@@ -2269,6 +2294,8 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     setLightModel(settings.light_model)
     setSupplierProvider(settings.supplier_ai_provider || settings.light_provider)
     setSupplierModel(settings.supplier_ai_model || settings.light_model)
+    setAnalysisFallback(parseJson(settings.ai_analysis_fallback_json, []))
+    setSupplierFallback(parseJson(settings.ai_supplier_fallback_json, []))
   }, [settings])
 
   const modelOptions = useMemo(
@@ -2379,6 +2406,72 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     setSavedModels(moveArrayItem(savedModels, index, delta))
     clearSaveStatus('models')
   }
+  function isPaidFallbackEntry(provider: string, model: string) {
+    const pid = String(provider || '').trim().toLowerCase()
+    if (pid === 'polza') return true
+    if (pid === 'openrouter' && !String(model || '').includes(':free')) return true
+    return false
+  }
+  function normalizedFallbackList(list: FallbackEntry[]) {
+    return list
+      .map(entry => ({ provider: String(entry.provider || '').trim(), modelId: String(entry.modelId || '').trim() }))
+      .filter(entry => entry.provider && entry.modelId)
+  }
+  function addFallbackItem(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, section: string) {
+    const last = list[list.length - 1]
+    if (last && !last.modelId.trim()) return
+    setList([...list, { provider: providers[0]?.id || '', modelId: '' }])
+    clearSaveStatus(section)
+  }
+  function moveFallbackItem(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, index: number, delta: number, section: string) {
+    setList(moveArrayItem(list, index, delta))
+    clearSaveStatus(section)
+  }
+  function updateFallbackItem(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, index: number, value: string, section: string) {
+    const [provider, ...rest] = value.split(':')
+    setList(list.map((item, itemIndex) => (itemIndex === index ? { provider: (provider || '').trim(), modelId: rest.join(':').trim() } : item)))
+    clearSaveStatus(section)
+  }
+  function removeFallbackItem(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, index: number, section: string) {
+    setList(list.filter((_, itemIndex) => itemIndex !== index))
+    clearSaveStatus(section)
+  }
+  function renderFallbackEditor(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, section: string) {
+    return (
+      <div className="advanced-section">
+        <button className="ghost ai-add-button" onClick={() => addFallbackItem(list, setList, section)}><Plus size={16} />Добавить модель</button>
+        <p className="field-help">Пробуются по порядку, если основная модель недоступна. В конце автоматически добавляются оставшиеся бесплатные модели. Выберите из списка «Доступные модели».</p>
+        {list.length > 0 && (
+          <div className="model-row-head"><span>Модель</span><span></span><span></span></div>
+        )}
+        {list.map((entry, index) => (
+          <div className="model-row" key={`${entry.provider}:${entry.modelId}-${index}`}>
+            <select
+              value={entry.provider && entry.modelId ? `${entry.provider}:${entry.modelId}` : ''}
+              onChange={event => updateFallbackItem(list, setList, index, event.target.value, section)}
+            >
+              <option value="">Выберите модель</option>
+              {modelOptions.map(option => <option key={option} value={option}>{modelOptionLabel(option)}</option>)}
+            </select>
+            <span className="row-cell-badge">
+              {isPaidFallbackEntry(entry.provider, entry.modelId) ? <span className="badge-paid" title="Платная модель — используется по вашему выбору">платная</span> : null}
+            </span>
+            <RowActions
+              index={index}
+              count={list.length}
+              onMoveUp={() => moveFallbackItem(list, setList, index, -1, section)}
+              onMoveDown={() => moveFallbackItem(list, setList, index, 1, section)}
+              onRemove={() => removeFallbackItem(list, setList, index, section)}
+              removeTitle="Удалить из фолбэка"
+            />
+          </div>
+        ))}
+        {list.length === 0 && (
+          <p className="field-help">Список пуст — после основной модели автоматически идут оставшиеся бесплатные модели.</p>
+        )}
+      </div>
+    )
+  }
   function removeProvider(index: number) {
     const provider = providers[index]
     if (!provider) return
@@ -2439,6 +2532,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       light_provider: lightProvider,
       light_model: lightModel,
       ai_function_models_json: stringify(explicitFunctionModels()),
+      ai_analysis_fallback_json: stringify(normalizedFallbackList(analysisFallback)),
     })
   }
   async function saveSupplierModelSettings() {
@@ -2446,6 +2540,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       supplier_ai_provider: supplierProvider,
       supplier_ai_model: supplierModel,
       ai_function_models_json: stringify(explicitFunctionModels()),
+      ai_supplier_fallback_json: stringify(normalizedFallbackList(supplierFallback)),
     })
   }
   async function saveProviderSettings() {
@@ -2581,6 +2676,10 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
               clearSaveStatus('global')
             }}
           />
+          <div className="fallback-block">
+            <p className="field-help"><strong>Резервные модели (фолбэк) для анализа</strong></p>
+            {renderFallbackEditor(analysisFallback, setAnalysisFallback, 'global')}
+          </div>
           <div className="section-actions">
             <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить анализ</button>
             {sectionSaveStatus('global')}
@@ -2602,6 +2701,10 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
               clearSaveStatus('supplier')
             }}
           />
+          <div className="fallback-block">
+            <p className="field-help"><strong>Резервные модели (фолбэк) для поиска поставщиков</strong></p>
+            {renderFallbackEditor(supplierFallback, setSupplierFallback, 'supplier')}
+          </div>
           <div className="section-actions">
             <button onClick={() => void saveSupplierModelSettings()}><Save size={16} />Сохранить поиск</button>
             {sectionSaveStatus('supplier')}

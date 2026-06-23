@@ -93,6 +93,8 @@ def _ensure_schema() -> None:
         "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
         "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
         "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
+        "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
+        "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
     }
     clients_existing = _existing_columns(inspector, "clients")
     client_additions = {

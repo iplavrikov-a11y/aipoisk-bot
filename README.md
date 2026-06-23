@@ -54,7 +54,14 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   payments are still handled manually until the cashier account is connected.
 - Public TenderLex site with no blog: SEO landing page, pricing, contact blocks, Telegram CTAs, and authenticated customer cabinet at `/cabinet`.
 - Website cabinet users are separate from Telegram users. Web clients sign in by email/password and appear in admin data as `web:<id>`; Telegram payments/access stay tied to Telegram accounts.
-- Website cabinet exposes the same customer work scenarios as the bot: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
+- Website cabinet exposes the same customer work scenarios as the bot:
+  supplier search by ТЗ, procurement analysis, and combined analysis plus
+  supplier search.
+- Completed supplier-search, procurement-analysis, and combined jobs can expose
+  a `Запрос КП` document generated from the original customer materials and
+  available analysis data. The customer can preview/copy it and download DOCX
+  from the website cabinet; Telegram receives it as an additional job output
+  when available.
 - Public site data comes from `GET /api/public/site`; only active tariffs, safe contacts, trial counters, and public copy are exposed.
 - Telegram links are intentionally split: `bot_telegram` is the bot used for Telegram work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.
 - OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints,
@@ -78,17 +85,21 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - The bot presents compact reply-keyboard navigation under the TenderLex brand:
   `🚀 Создать`, `🕘 Задачи`, `📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`,
   and `📞 Контакты`.
-- `🚀 Создать` opens four work scenarios: `🔎 Одно ТЗ`, `🗂 Несколько ТЗ`,
+- `🚀 Создать` opens the work scenarios: `🔎 Поставщики по ТЗ`,
   `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
-- `🔎 Одно ТЗ` and `🗂 Несколько ТЗ` accept only a ТЗ/ООЗ file or a plain text
+- `🔎 Поставщики по ТЗ` accepts only a ТЗ/ООЗ file, archive, or plain text
   description of the procurement object. If the customer sends a notice number
   or procurement link in these modes, the bot must show a clear warning instead
   of silently starting analysis.
 - `📄 Анализ закупки` and `📄🔎 Анализ + поиск` accept uploaded files, archives,
   procurement links, and notice numbers.
 - While any job is pending or running for the chat, the bot shows only
-  `⏳ В работе` and `🕘 Задачи`; new scenario/start buttons are hidden until the
-  active processing finishes.
+  `⏳ В работе`, `🕘 Задачи`, and `⛔ Отменить`; new scenario/start buttons are
+  hidden until the active processing finishes.
+- Every Telegram progress message for a pending/running job must also include a
+  visible inline button `⛔ Отменить задачу`. Pressing it cancels only the
+  matching customer job, releases the reservation, removes the inline cancel
+  button from the progress message, and returns the customer to the main menu.
 - Internal source/vendor names, service booleans, task IDs, and diagnostic
   counters must not appear in Telegram messages, generated filenames, report
   titles, or public site copy.
@@ -149,6 +160,9 @@ AIPOISK_WORKER_CONCURRENCY=1 python -m app.worker
 Production bot code changes require restarting only `aipoisk-bot.service`;
 the durable queue worker and FastAPI backend do not need a restart for
 Telegram routing-only changes.
+If `scripts/deploy_tenderlex_live.sh` skips API/worker/bot restarts because
+active jobs exist, wait for active pending/running jobs to finish and rerun the
+deploy before reporting Telegram bot behavior as live.
 
 Queue worker code or `AIPOISK_WORKER_CONCURRENCY` changes require restarting
 only `aipoisk-worker.service`.

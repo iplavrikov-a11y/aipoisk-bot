@@ -31,3 +31,4 @@
 - Existing backend listens on `127.0.0.1:8088`.
 - TenderLex site should listen on `127.0.0.1:3093` and fetch public site data from `http://127.0.0.1:8088/api/public/site`.
 - After changing site, cabinet, admin, or backend behavior that must be visible to users, do not stop at code edits or local builds. Run `./scripts/deploy_tenderlex_live.sh` and verify the live local service URLs (`127.0.0.1:8088` for API, `127.0.0.1:3093` for site) before reporting the change as deployed.
+- For Telegram bot behavior changes, also verify that `./scripts/deploy_tenderlex_live.sh` actually restarted `aipoisk-bot.service`. If the script prints `skipping api/worker/bot restart because active jobs are present`, wait for active `pending`/`running` jobs to clear and rerun the deploy or otherwise verify a fresh bot service start before reporting the bot change as live.
