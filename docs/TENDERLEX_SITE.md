@@ -40,7 +40,10 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property.
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
 - `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
-- `robots.txt` allows public pages and keeps `/cabinet` out of indexing.
+- `robots.txt` allows public pages, keeps `/cabinet` out of indexing, and declares `Host: https://tenderlex.ru` for Yandex.
+- `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths must include a `120x120` asset.
+- Yandex Webmaster has both `http:tenderlex.ru:80` and `https:tenderlex.ru:443` properties. Keep the HTTP favicon paths returning `200 OK` instead of only redirecting, because the HTTP property can diagnose `http://tenderlex.ru/favicon.ico` and `http://tenderlex.ru/favicon.png` directly.
+- On 2026-06-23 the Yandex Webmaster DNS check was resent and the following URLs were queued for re-crawl: `http://tenderlex.ru/`, `http://tenderlex.ru/favicon.ico`, `http://tenderlex.ru/favicon.png`, and `https://tenderlex.ru/` in the HTTPS property.
 - Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site can pick them up without touching backend or bot services.
 
 ## Customer API Contract
@@ -78,7 +81,7 @@ access to the admin panel.
 - `site/src/app/layout.tsx` owns public SEO metadata.
 - `site/src/lib/site-data.ts` defines the public payload type and safe fallback data.
 - `site/src/components/ui/button.tsx` contains the local button primitive.
-- `site/public/tenderlex-logo.png` is the provided logo used by the page and favicon metadata.
+- `site/public/tenderlex-logo.png` is the provided logo used by the page. The favicon metadata points to the dedicated icon files listed in the SEO section.
 
 ## Local Commands
 
@@ -109,6 +112,8 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX'` should return no matches.
 - SEO smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/sitemap.xml | rg 'analiz-zakupochnoi-dokumentacii|poisk-postavshchikov-po-tz|reestr-minpromtorga-v-zakupkah'`
 - Verification smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/yandex_b3b74a829ce4a7c6.html`
+- Yandex favicon smoke: `curl -sS -D - -o /tmp/tenderlex-favicon.ico http://tenderlex.ru/favicon.ico | sed -n '1,12p'` should show `200 OK`, and `identify -format '%wx%h %m\n' /tmp/tenderlex-favicon.ico` should show `120x120`.
+- Yandex PNG favicon smoke: `curl -sS -D - -o /tmp/tenderlex-favicon.png http://tenderlex.ru/favicon.png | sed -n '1,12p'` should show `200 OK`, and `identify -format '%wx%h %m\n' /tmp/tenderlex-favicon.png` should show `120x120`.
 - Cabinet Metrika smoke: `curl -fsS http://127.0.0.1:3093/cabinet | rg 'mc\.yandex\.ru|yandex-metrika|metrika'` should return no matches.
 
 ## Production Wiring
@@ -125,6 +130,7 @@ Production assumptions:
 - Next.js site listens on `127.0.0.1:3093`.
 - Canonical public URL is `https://tenderlex.ru`.
 - `www.tenderlex.ru` redirects to `https://tenderlex.ru`.
+- The plain HTTP vhost still redirects normal traffic to HTTPS, but it proxies `/favicon.ico`, `/favicon.png`, and `/icon.png` to the site service so Yandex Webmaster can fetch those icon URLs with `200 OK`.
 - `npm run build` copies `.next/static` and `public/` into the standalone bundle before `npm run start`.
 - Public `443` on this server is routed through the existing nginx stream layout to HTTPS vhosts listening on `4443`.
 - The live site service can be updated with `systemctl restart tenderlex-site.service` after site-only SEO/content changes; backend and bot services do not need a restart for those changes.
