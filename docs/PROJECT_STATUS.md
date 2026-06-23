@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-10
+Date: 2026-06-23
 
 ## Current Production State
 
@@ -15,6 +15,10 @@ Date: 2026-06-10
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.
+- Yandex Webmaster SEO follow-up on 2026-06-23 fixed HTTP favicon availability
+  for the `http:tenderlex.ru:80` property, added the Yandex `Host` directive to
+  `robots.txt`, resent the DNS diagnostic check, and queued the homepage plus
+  favicon URLs for re-crawl.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
 

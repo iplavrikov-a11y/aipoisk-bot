@@ -64,9 +64,12 @@ export const metadata: Metadata = {
     images: [defaultOgImage],
   },
   icons: {
-    icon: "/tenderlex-logo.png",
-    shortcut: "/tenderlex-logo.png",
-    apple: "/tenderlex-logo.png",
+    icon: [
+      { url: "/favicon.ico", sizes: "120x120", type: "image/x-icon" },
+      { url: "/favicon.png", sizes: "120x120", type: "image/png" },
+      { url: "/icon.png", sizes: "120x120", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
   },
 };
 
