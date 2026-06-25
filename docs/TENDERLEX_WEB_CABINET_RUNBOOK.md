@@ -5,7 +5,7 @@
 - Public site: `https://tenderlex.ru`
 - Customer cabinet: `https://tenderlex.ru/cabinet`
 - Online payment is not enabled yet.
-- Web users and Telegram users are separate. Web clients are identified in admin data as `web:<id>`.
+- Web users and Telegram users are separate. Internal `web:<id>` markers may exist in runtime data, but the owner-facing admin UI must not show them as Telegram accounts or Telegram IDs.
 - Web access is topped up manually from the admin panel.
 - Linked Telegram and website accounts share the same customer job history.
   A Telegram-launched job can therefore appear in the website cabinet; this is
@@ -51,14 +51,14 @@
 5. In `Баланс`, choose:
    - `Поставщики` for supplier search runs.
    - `Анализ документации` for procurement analysis runs.
-6. Enter the number of runs or choose a tariff template.
-7. Add a short note, for example `Оплата по счету от YYYY-MM-DD`.
-8. Click `Начислить`.
-9. Ask the customer to refresh the cabinet.
+6. Enter the number of runs, use `+1`, `+10`, `+50`, or choose a tariff template.
+7. Click `Начислить`.
+8. Ask the customer to refresh the cabinet.
 
 Notes:
 
 - Use the customer's website email to find web-cabinet clients.
+- Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
 - Do not merge website users into Telegram customers unless the owner explicitly decides to change the billing/account model.
 - Until YooKassa is enabled, payment confirmation happens outside the site and the owner grants runs manually.
 

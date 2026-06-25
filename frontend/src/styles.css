@@ -14,7 +14,9 @@ button { border: 0; cursor: pointer; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 248px 1fr; min-width: 0; }
 .sidebar { min-width: 0; background: #0f172a; color: #fff; padding: 22px 16px; display: flex; flex-direction: column; gap: 28px; }
-.brand { display: flex; align-items: center; gap: 12px; padding: 0 4px; }
+.brand { display: flex; align-items: center; gap: 12px; padding: 0 4px; border-radius: 8px; color: inherit; text-decoration: none; }
+.brand:hover .brand-mark { background: #2dd4bf; }
+.brand:focus-visible { outline: 2px solid #5eead4; outline-offset: 4px; }
 .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; background: #14b8a6; color: #06211e; border-radius: 8px; }
 .brand-name { font-size: 17px; font-weight: 750; }
 .brand-sub { color: #94a3b8; font-size: 12px; margin-top: 2px; }
@@ -360,7 +362,6 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   display: grid;
   grid-template-columns: minmax(0, 1fr) 408px;
   grid-template-areas:
-    "web balance"
     "telegram balance"
     "settings balance"
     "history balance";
@@ -497,12 +498,26 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   padding-top: 8px;
   border-top: 1px solid #e2e8f0;
 }
-.manual-grant-panel .mini-field:nth-child(3),
-.manual-grant-panel > input,
+.manual-grant-panel .grant-package-field,
 .manual-grant-panel > button { grid-column: 1 / -1; }
 .manual-grant-panel input,
 .manual-grant-panel select { min-height: 34px; padding: 6px 8px; font-size: 12px; }
 .manual-grant-panel button { justify-content: center; width: 100%; }
+.quick-grants {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+.quick-grants button { width: 100%; min-height: 30px; }
+.supplier-target-input { max-width: 96px; }
+.merge-client-details summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+.merge-client-details[open] summary { margin-bottom: 8px; }
 .system-status-panel { display: grid; gap: 14px; }
 .system-metrics-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .system-metric {
@@ -576,6 +591,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 }
 .job-card .job-main {
   align-items: center;
+  justify-content: flex-start;
 }
 .job-card .job-main > div {
   min-width: 0;
@@ -590,10 +606,67 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .job-card .progress-wrap {
   min-width: 0;
 }
+.job-output-list {
+  grid-column: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
 .job-card .row-actions {
   grid-column: 2;
   grid-row: 1 / 4;
   align-self: center;
+}
+.job-detail-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  margin-top: 2px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.job-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.job-detail-grid > div,
+.job-detail-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.job-detail-grid strong,
+.job-detail-section strong {
+  color: #0f172a;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.job-detail-grid span,
+.job-detail-section span {
+  color: #475569;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.job-detail-section {
+  padding-top: 9px;
+  border-top: 1px solid #e2e8f0;
+}
+.job-detail-section.compact-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.job-detail-section.compact-list strong { grid-column: 1 / -1; }
+.job-detail-error {
+  padding: 9px 10px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .job-meta { display: flex; flex-wrap: wrap; gap: 8px; }
 .job-meta span {
@@ -622,6 +695,11 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 }
 .job-evidence-panel {
   padding: 16px;
+}
+.sync-note {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 750;
 }
 .failure-card { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; padding: 14px; }
 .failure-card strong { display: block; }
@@ -800,7 +878,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .tariff-list { display: grid; gap: 10px; }
 .tariff-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 110px 140px 110px 32px;
+  grid-template-columns: minmax(180px, 1fr) 110px 140px 180px 32px;
   gap: 8px;
   align-items: end;
   padding: 12px;
@@ -862,7 +940,6 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .ai-settings .provider-row, .ai-settings .model-row, .ai-settings .provider-row-head, .ai-settings .model-row-head, .function-route-row { grid-template-columns: 1fr; }
   .client-card-grid {
     grid-template-areas:
-      "web"
       "telegram"
       "balance"
       "settings"
@@ -875,6 +952,10 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
     grid-row: auto;
     justify-content: flex-start;
   }
+  .job-output-list,
+  .job-detail-panel { grid-column: 1; }
+  .job-detail-grid,
+  .job-detail-section.compact-list { grid-template-columns: 1fr; }
   .list-pagination {
     justify-content: stretch;
     flex-wrap: wrap;

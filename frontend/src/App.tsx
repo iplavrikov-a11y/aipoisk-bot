@@ -31,7 +31,7 @@ import {
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'analytics' | 'clients' | 'jobs' | 'quality' | 'billing' | 'settings' | 'ai'
+type View = 'dashboard' | 'analytics' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -152,6 +152,7 @@ type GrantDraft = {
 
 type Job = {
   id: string
+  client_id: string
   client_name: string
   telegram_id: string
   created_by_telegram_id: string
@@ -169,9 +170,57 @@ type Job = {
   verified_count: number
   file_count: number
   has_result: boolean
+  result_files: JobResultFile[]
   has_evidence: boolean
   error: string
   created_at: string
+  updated_at: string | null
+  completed_at: string | null
+}
+
+type JobResultFile = {
+  kind: string
+  label: string
+  filename: string
+}
+
+type JobInputFile = {
+  id: string
+  original_filename: string
+  parse_status: string
+  extracted_chars: number
+  error: string
+}
+
+type JobSource = {
+  id: string
+  kind: string
+  label: string
+  value: string
+  parse_status: string
+  extracted_chars: number
+  error: string
+}
+
+type JobSupplier = {
+  id: string
+  company_name: string
+  site: string
+  product_match: string
+  contact_email: string
+  contact_phone: string
+  source_url: string
+  verification_status: string
+}
+
+type JobDetail = Job & {
+  files?: JobInputFile[]
+  sources?: JobSource[]
+  suppliers?: JobSupplier[]
+}
+
+type JobDetailError = {
+  detail_error: string
 }
 
 type SettingsPayload = {
@@ -329,25 +378,6 @@ type SupplierSearchUi = {
   }>
 }
 
-type SupplierQualitySnapshot = {
-  window_size: number
-  status_counts: Record<string, number>
-  average_verified_count: number
-  average_duration_seconds: number
-  underfilled_terminal_jobs: number
-  ai_required_failures: number
-  provider_status_counts: Record<string, Record<string, number>>
-  alerts: Array<{ severity: string; code: string; message: string }>
-  recent_failures: Array<{
-    id: string
-    title: string
-    error: string
-    ai_required: boolean
-    stage: string
-    created_at: string | null
-  }>
-}
-
 type OpsStatus = {
   status: string
   updated_at: string
@@ -448,10 +478,6 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Задачи',
     description: 'Последние запуски бота, статусы обработки и готовые файлы для скачивания.',
   },
-  quality: {
-    title: 'Контроль отчётов',
-    description: 'Понятный мониторинг: где отчёты не собрались, где мало поставщиков и какие источники поиска сработали.',
-  },
   billing: {
     title: 'Тарифы',
     description: 'Пакеты как витрина и произвольные начисления клиентам.',
@@ -488,30 +514,6 @@ const statusLabels: Record<string, string> = {
   awaiting_customer_confirmation: 'ожидает клиента',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
-}
-
-const providerLabels: Record<string, string> = {
-  yandex: 'Яндекс Поиск',
-  google: 'Google Поиск',
-  tavily: 'Tavily',
-  ddgs: 'DuckDuckGo',
-}
-
-const providerStatusLabels: Record<string, string> = {
-  ok: 'успешно',
-  empty: 'пусто',
-  failed: 'ошибка',
-  skipped: 'пропущено',
-}
-
-const supplierProviderPriority = ['yandex', 'google', 'tavily', 'ddgs']
-
-const alertTitles: Record<string, string> = {
-  ai_required_failures: 'ИИ-проверка сорвалась',
-  underfilled_reports: 'Мало поставщиков в отчёте',
-  slow_supplier_jobs: 'Долгая обработка',
-  search_provider_no_ok: 'Источник поиска не дал результатов',
-  supplier_failure_rate: 'Много ошибок по отчётам',
 }
 
 const functionLabels: Record<string, string> = {
@@ -707,82 +709,6 @@ function humanMode(mode: string) {
   return modeLabels[mode] || mode || 'Задача'
 }
 
-function humanProvider(provider: string) {
-  return providerLabels[provider] || provider || 'Источник'
-}
-
-function humanProviderStatus(status: string) {
-  return providerStatusLabels[status] || status || 'статус'
-}
-
-function humanStage(stage: string) {
-  return humanMode(stage)
-}
-
-function humanAlertTitle(code: string) {
-  return alertTitles[code] || code
-}
-
-function humanAlertMessage(alert: { code: string; message: string }) {
-  const message = alert.message || ''
-  if (alert.code === 'ai_required_failures') {
-    const count = message.match(/\d+/)?.[0] || ''
-    return `ИИ не смог надёжно проверить ${count || 'несколько'} отчёта. Такие задачи нужно посмотреть вручную.`
-  }
-  if (alert.code === 'underfilled_reports') {
-    const count = message.match(/\d+/)?.[0] || ''
-    return `${count || 'Есть'} отчёта с меньшим количеством поставщиков, чем планировалось.`
-  }
-  if (alert.code === 'slow_supplier_jobs') {
-    const seconds = message.match(/[\d.]+/)?.[0]
-    return `Средняя обработка поиска поставщиков занимает ${seconds ? `${Math.round(Number(seconds) / 60)} мин` : 'слишком долго'}.`
-  }
-  if (alert.code === 'search_provider_no_ok') {
-    const provider = Object.keys(providerLabels).find(item => message.toLowerCase().includes(item))
-    return `${provider ? humanProvider(provider) : 'Один из источников'} не дал успешных результатов в текущем окне.`
-  }
-  return message
-}
-
-function friendlyError(error: string) {
-  const lowered = String(error || '').toLowerCase()
-  if (!lowered) return 'Причина не записана.'
-  if (lowered.includes('candidate reranking') || lowered.includes('reranker')) {
-    return 'ИИ не смог надёжно отобрать подходящие сайты поставщиков.'
-  }
-  if (lowered.includes('supplier query generation')) {
-    return 'ИИ не смог подготовить поисковые запросы для поставщиков.'
-  }
-  if (lowered.includes('ai provider') || lowered.includes('timeout') || lowered.includes('timed out')) {
-    return 'В момент обработки был недоступен ИИ-провайдер.'
-  }
-  if (lowered.includes('did not keep any candidates')) {
-    return 'После проверки не осталось подходящих поставщиков.'
-  }
-  return error
-}
-
-function providerStatusSummary(counts: Record<string, number>) {
-  return Object.entries(counts)
-    .map(([status, count]) => `${humanProviderStatus(status)}: ${count}`)
-    .join(', ')
-}
-
-function sortSupplierProviders<T>(entries: Array<[string, T]>) {
-  return entries.sort(([left], [right]) => providerPriority(left) - providerPriority(right) || left.localeCompare(right))
-}
-
-function providerPriority(provider: string) {
-  const index = supplierProviderPriority.indexOf(provider)
-  return index >= 0 ? index : supplierProviderPriority.length
-}
-
-function formatDuration(seconds: number) {
-  const safeSeconds = Math.max(0, Math.round(seconds || 0))
-  const minutes = Math.round(safeSeconds / 60)
-  return minutes >= 1 ? `${minutes} мин` : `${safeSeconds} сек`
-}
-
 const MOSCOW_TIME_ZONE = 'Europe/Moscow'
 
 function apiDateValue(value: string) {
@@ -812,7 +738,6 @@ export function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
-  const [quality, setQuality] = useState<SupplierQualitySnapshot | null>(null)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
@@ -829,11 +754,10 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, qualityData, opsStatusData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, opsStatusData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true&limit=500'),
-        api<SupplierQualitySnapshot>('/api/ops/supplier-quality'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
         api<BotAnalytics>('/api/analytics/bot?period_days=30'),
@@ -843,7 +767,6 @@ export function App() {
       setDashboard(dashboardData)
       setClients(clientsData)
       setJobs(jobsData)
-      setQuality(qualityData)
       setOpsStatus(opsStatusData)
       setSettings(settingsData)
       setAnalytics(analyticsData)
@@ -882,7 +805,6 @@ export function App() {
     setDashboard(null)
     setClients([])
     setJobs([])
-    setQuality(null)
     setOpsStatus(null)
     setSettings(null)
     setAnalytics(null)
@@ -920,7 +842,6 @@ export function App() {
     { id: 'analytics' as const, label: 'Статистика', icon: Database },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
-    { id: 'quality' as const, label: 'Контроль', icon: CheckCircle2 },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
@@ -944,13 +865,13 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
+        <a className="brand" href="https://tenderlex.ru/" target="_blank" rel="noreferrer">
           <div className="brand-mark"><Search size={18} /></div>
           <div>
             <div className="brand-name">TenderLex</div>
             <div className="brand-sub">tenderlex.ru</div>
           </div>
-        </div>
+        </a>
         <nav className="nav">
           {nav.map(item => {
             const Icon = item.icon
@@ -984,7 +905,6 @@ export function App() {
         {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
-        {isReady && view === 'quality' && <QualityView quality={quality} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
@@ -1423,6 +1343,12 @@ function ClientsView({
         : { ...current, package_id: '' },
     })
   }
+  function quickGrant(client: Client, kind: string, units: number) {
+    setGrantForms({
+      ...grantForms,
+      [client.id]: { package_id: '', kind, units: String(units), note: '' },
+    })
+  }
   async function grantUnits(client: Client) {
     const draft = grantDraft(client)
     const selected = activeTariffs.find(item => item.id === draft.package_id)
@@ -1431,7 +1357,7 @@ function ClientsView({
     const packageId = selected && selected.kind === draft.kind && selected.units === units ? selected.id : ''
     await api(`/api/clients/${client.id}/billing/grants`, {
       method: 'POST',
-      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: draft.note }),
+      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: '' }),
     })
     setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
     await onChange()
@@ -1492,7 +1418,6 @@ function ClientsView({
         <div className="client-create-head">
           <div>
             <h2>Добавить клиента</h2>
-            <p>Создайте Telegram-клиента вручную или управляйте web-клиентами, которые зарегистрировались на сайте.</p>
           </div>
         </div>
         <div className="client-create-grid">
@@ -1516,12 +1441,11 @@ function ClientsView({
             <Plus size={16} />Добавить
           </button>
         </div>
-        <p className="client-create-hint">Если указать только ник, ID подтянется после первого входа пользователя в бота. Ручной ID можно указать сразу.</p>
       </div>
       <div className="client-card-list">
         {clients.map(client => {
           const draft = accountDraft(client)
-          const accounts = client.telegram_accounts?.length ? client.telegram_accounts : []
+          const accounts = (client.telegram_accounts || []).filter(account => !isSyntheticWebTelegramAccount(account))
           const webUsers = client.web_users?.length ? client.web_users : []
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
@@ -1545,15 +1469,14 @@ function ClientsView({
                   </div>
                 </div>
                 <div className="client-summary-pills">
-                  <span>{client.source === 'web' ? 'Сайт' : 'Telegram'}</span>
                   {webUsers[0]?.email && <span>{webUsers[0].email}</span>}
-                  <span>Подключено: {connectedCount}</span>
+                  <span>Telegram: {connectedCount}</span>
                   {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
                   <span>Поставщики: {client.usage ? usageSummaryText(client.usage.supplier_search) : 'нет данных'}</span>
                   <span>Анализ: {client.usage ? usageSummaryText(client.usage.procurement_report) : 'нет данных'}</span>
                 </div>
                 <div className="client-state">
-                  <StatusBadge status={client.is_active ? 'active' : 'disabled'} />
+                  {!client.is_active && <StatusBadge status="disabled" />}
                   <button className="danger small-text" onClick={() => void deleteClient(client)}>
                     <Trash2 size={14} />Удалить
                   </button>
@@ -1561,31 +1484,6 @@ function ClientsView({
               </div>
 
               {expanded && <div className="client-card-grid">
-                {webUsers.length > 0 && (
-                  <div className="client-section client-web-section">
-                    <div className="section-head">
-                      <h3>Пользователь сайта</h3>
-                      <span>{webUsers.length}</span>
-                    </div>
-                    <div className="web-user-list">
-                      {webUsers.map(user => (
-                        <div className="web-user-row" key={user.id}>
-                          <div>
-                            <strong>{user.email}</strong>
-                            <small>{user.name || 'без имени'} · вход {formatDate(user.last_login_at)}</small>
-                          </div>
-                          <div className="account-actions">
-                            <StatusBadge status={user.is_active ? (user.is_email_verified ? 'active' : 'email_unverified') : 'disabled'} />
-                            {!user.is_email_verified && (
-                              <button className="ghost small-text" onClick={() => void verifyWebUserEmail(client, user)}>Подтвердить</button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
                 <div className="client-section client-telegram-section">
                   <div className="section-head">
                     <h3>Telegram-аккаунты</h3>
@@ -1609,7 +1507,8 @@ function ClientsView({
                             <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
                           </label>
                           <div className="account-edit-actions">
-                            <StatusBadge status={account.is_pending ? 'account_pending' : account.is_active ? 'active' : 'disabled'} />
+                            {account.is_pending && <StatusBadge status="account_pending" />}
+                            {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
                             <button className="small-text" onClick={() => void saveAccount(client, account)}>
                               <Save size={14} />Сохранить
                             </button>
@@ -1637,7 +1536,6 @@ function ClientsView({
                 <div className="client-section client-balance-section">
                   <div className="section-head">
                     <h3>Баланс</h3>
-                    <span>не сгорает</span>
                   </div>
                   {client.usage && (
                     <div className="balance-compact-list">
@@ -1654,48 +1552,31 @@ function ClientsView({
                       </select>
                     </label>
                     <label className="mini-field">
-                      <span>Количество</span>
+                      <span>Кол-во</span>
                       <input type="number" min={1} step={1} value={grant.units} onChange={e => setGrantDraft(client, { units: e.target.value, package_id: '' })} />
                     </label>
-                    <label className="mini-field">
-                      <span>Шаблон</span>
+                    <div className="quick-grants">
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 1)}>+1</button>
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 10)}>+10</button>
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 50)}>+50</button>
+                    </div>
+                    <label className="mini-field grant-package-field">
+                      <span>Пакет</span>
                       <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
                         <option value="">Вручную</option>
                         {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
                       </select>
                     </label>
-                    <input placeholder="Комментарий" value={grant.note} onChange={e => setGrantDraft(client, { note: e.target.value })} />
                     <button onClick={() => void grantUnits(client)} disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1}><Plus size={16} />Начислить</button>
                   </div>
                 </div>
 
                 <div className="client-section client-settings-section">
-                  <h3>Объединение клиентов</h3>
-                  <div className="merge-client-panel">
-                    <label className="mini-field">
-                      <span>Кого присоединить</span>
-                      <select
-                        value={mergeForms[client.id] || ''}
-                        onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
-                      >
-                        <option value="">Выберите клиента</option>
-                        {clients.filter(item => item.id !== client.id).map(item => (
-                          <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      className="small-text"
-                      onClick={() => void mergeClientIntoTarget(client)}
-                      disabled={!mergeForms[client.id]}
-                    >
-                      <Users size={14} />Объединить
-                    </button>
-                    <small className="field-help">Текущий клиент останется основным. К нему перейдут аккаунты, задачи и баланс выбранного клиента.</small>
-                  </div>
+                  <h3>Настройки</h3>
                   <label className="mini-field">
-                    <span>Мин. поставщиков по ТЗ</span>
+                    <span>Мин. поставщиков</span>
                     <input
+                      className="supplier-target-input"
                       type="number"
                       min={0}
                       max={100}
@@ -1704,13 +1585,30 @@ function ClientsView({
                       onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
                     />
                   </label>
-                  <small className="field-help">0 — брать значение из общих настроек.</small>
-                  <input
-                    className="client-note"
-                    placeholder="Заметка по клиенту"
-                    defaultValue={client.notes || ''}
-                    onBlur={e => patchClientNote(client, e.currentTarget.value)}
-                  />
+                  <details className="merge-client-details">
+                    <summary>Объединение</summary>
+                    <div className="merge-client-panel">
+                      <label className="mini-field">
+                        <span>Кого присоединить</span>
+                        <select
+                          value={mergeForms[client.id] || ''}
+                          onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
+                        >
+                          <option value="">Выберите клиента</option>
+                          {clients.filter(item => item.id !== client.id).map(item => (
+                            <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="small-text"
+                        onClick={() => void mergeClientIntoTarget(client)}
+                        disabled={!mergeForms[client.id]}
+                      >
+                        <Users size={14} />Объединить
+                      </button>
+                    </div>
+                  </details>
                 </div>
 
                 <details className="client-section billing-history-details">
@@ -1752,9 +1650,13 @@ function parseTelegramUsernames(value: string) {
     })
 }
 
+function isSyntheticWebTelegramAccount(account: TelegramAccount) {
+  return String(account.telegram_id || '').startsWith('web:')
+}
+
 function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
   if (client.web_users?.[0]?.email) {
-    return `Сайт: ${client.web_users[0].email}`
+    return client.web_users[0].email
   }
   const usernames = accounts.filter(account => account.username).map(account => `@${account.username}`).slice(0, 3)
   const connected = accounts.filter(account => !account.is_pending)
@@ -1814,7 +1716,8 @@ function fallbackDownloadName(job: Job, extension: string) {
 }
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
-  const [evidence, setEvidence] = useState<{ job: Job; payload: unknown } | null>(null)
+  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({})
+  const [jobDetails, setJobDetails] = useState<Record<string, JobDetail | JobDetailError>>({})
   const [page, setPage] = useState(1)
   const [showInternalJobs, setShowInternalJobs] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
@@ -1858,20 +1761,20 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
     await onChange()
   }
-  async function showEvidence(job: Job) {
-    setEvidence(null)
-    if (!job.has_evidence) {
-      return
-    }
+  async function toggleJobDetails(job: Job) {
+    const nextExpanded = !expandedJobs[job.id]
+    setExpandedJobs({ ...expandedJobs, [job.id]: nextExpanded })
+    if (!nextExpanded || jobDetails[job.id]) return
     try {
-      const payload = await api<unknown>(`/api/jobs/${job.id}/evidence`)
-      setEvidence({ job, payload })
+      const payload = await api<JobDetail>(`/api/jobs/${job.id}`)
+      setJobDetails(current => ({ ...current, [job.id]: payload }))
     } catch (err) {
-      setEvidence({ job, payload: { error: formatError(err) } })
+      setJobDetails(current => ({ ...current, [job.id]: { detail_error: formatError(err) } }))
     }
   }
-  async function download(job: Job) {
-    const response = await fetch(`/api/jobs/${job.id}/download`, { credentials: 'same-origin' })
+  async function download(job: Job, file?: JobResultFile) {
+    const suffix = file ? `/${encodeURIComponent(file.kind)}` : ''
+    const response = await fetch(`/api/jobs/${job.id}/download${suffix}`, { credentials: 'same-origin' })
     if (!response.ok) throw new Error(await response.text())
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
@@ -1879,9 +1782,25 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     const disposition = response.headers.get('content-disposition') || ''
     const encodedName = disposition.match(/filename\*=utf-8''([^;]+)/i)?.[1]
     const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
-    const fallbackExt = job.mode === 'analysis_and_suppliers' ? 'zip' : job.mode === 'procurement_report' ? 'docx' : 'xlsx'
+    const fallbackExt = file?.filename.split('.').pop() || (job.mode === 'analysis_and_suppliers' ? 'zip' : job.mode === 'procurement_report' ? 'docx' : 'xlsx')
     link.href = url
-    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || fallbackDownloadName(job, fallbackExt)
+    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || file?.filename || fallbackDownloadName(job, fallbackExt)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+  async function downloadInputFile(job: Job, file: JobInputFile) {
+    const response = await fetch(`/api/jobs/${job.id}/input-files/${file.id}/download`, { credentials: 'same-origin' })
+    if (!response.ok) throw new Error(await response.text())
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const disposition = response.headers.get('content-disposition') || ''
+    const encodedName = disposition.match(/filename\*=utf-8''([^;]+)/i)?.[1]
+    const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+    link.href = url
+    link.download = encodedName ? decodeURIComponent(encodedName) : plainName || file.original_filename || 'input-file'
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -1919,19 +1838,21 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           </label>
         )}
       </div>
-      {evidence && (
-        <div className="wide-panel full-width-panel job-evidence-panel">
-          <div className="panel-heading">
-            <h2>Данные проверки: {evidence.job.human_title || humanMode(evidence.job.mode)}</h2>
-            <button className="ghost small-text" onClick={() => setEvidence(null)}>Закрыть</button>
-          </div>
-          <pre className="json-view">{stringify(evidence.payload)}</pre>
-        </div>
-      )}
       <div className="job-list">
-        {visibleJobs.map(job => (
+        {visibleJobs.map(job => {
+          const expanded = Boolean(expandedJobs[job.id])
+          const details = jobDetails[job.id]
+          return (
           <article className={job.is_internal ? 'job-card service' : 'job-card'} key={job.id}>
             <div className="job-main">
+              <button
+                className="client-expand-button"
+                title={expanded ? 'Свернуть задачу' : 'Открыть задачу'}
+                aria-expanded={expanded}
+                onClick={() => void toggleJobDetails(job)}
+              >
+                {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+              </button>
               <div>
                 <h2>{job.human_title || humanMode(job.mode)}</h2>
                 <p>{formatDate(job.created_at)} · {job.client_name || 'клиент не указан'} · менеджер {job.created_by_telegram_id || job.telegram_id || 'не указан'}</p>
@@ -1943,14 +1864,35 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
               <span>{job.mode === 'procurement_report' ? 'Анализ документации' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
             </div>
             <Progress value={job.progress} note={job.message || humanStatus(job.status)} />
+            {job.result_files?.length > 0 && (
+              <div className="job-output-list">
+                {job.result_files.map(file => (
+                  <button
+                    key={`${job.id}-${file.kind}`}
+                    className="ghost small-text"
+                    onClick={() => void download(job, file)}
+                    title={file.filename}
+                  >
+                    <Download size={14} />{file.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {expanded && (
+              <JobDetailsPanel
+                job={job}
+                details={details}
+                onDownloadInput={downloadInputFile}
+              />
+            )}
             <div className="row-actions">
-              {job.has_result && <button className="icon-button small" onClick={() => void download(job)} title="Скачать"><Download size={15} /></button>}
-              {job.has_evidence && <button className="icon-button small" onClick={() => void showEvidence(job)} title="Данные проверки"><FileText size={15} /></button>}
+              {job.has_result && !job.result_files?.length && <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={15} /></button>}
               {(job.status === 'running' || job.status === 'pending') && <button className="icon-button small" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={15} /></button>}
               <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
             </div>
           </article>
-        ))}
+          )
+        })}
         {!visibleJobs.length && <div className="empty inline-empty">Нет пользовательских задач для показа.</div>}
       </div>
       {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
@@ -1964,82 +1906,33 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   )
 }
 
-function QualityView({ quality }: { quality: SupplierQualitySnapshot | null }) {
-  if (!quality) return <div className="empty">Пока нет данных контроля отчётов.</div>
-  const statusEntries = Object.entries(quality.status_counts)
-  const providerEntries = sortSupplierProviders(Object.entries(quality.provider_status_counts))
-  const visibleFailures = quality.recent_failures
+function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?: JobDetail | JobDetailError; onDownloadInput: (job: Job, file: JobInputFile) => Promise<void> }) {
+  if (!details) {
+    return <div className="job-detail-panel"><div className="inline-note">Загружаю детали задачи...</div></div>
+  }
+  if ('detail_error' in details) {
+    return <div className="job-detail-panel"><div className="alert error compact">{details.detail_error}</div></div>
+  }
+  const files = details.files || []
+  const sources = details.sources || []
   return (
-    <section className="stack">
-      <div className="content-grid">
-        <div className="metric">
-          <Search size={20} />
-          <div><span>Поисковых отчётов</span><strong>{quality.window_size}</strong><small>последние задачи</small></div>
-        </div>
-        <div className="metric">
-          <CheckCircle2 size={20} />
-          <div><span>Среднее поставщиков</span><strong>{quality.average_verified_count}</strong><small>в одном отчёте</small></div>
-        </div>
-        <div className="metric">
-          <RefreshCw size={20} />
-          <div><span>Средняя длительность</span><strong>{formatDuration(quality.average_duration_seconds)}</strong><small>по готовым задачам</small></div>
-        </div>
-        <div className="metric">
-          <XCircle size={20} />
-          <div><span>Срывов ИИ-проверки</span><strong>{quality.ai_required_failures}</strong><small>{quality.underfilled_terminal_jobs} недоборов</small></div>
-        </div>
-      </div>
-      <div className="ops-grid">
-        <div className="form-panel full-width-panel">
-          <h2>Что требует внимания</h2>
-          {quality.alerts.length ? (
-            <div className="alert-list">
-              {quality.alerts.map(alert => (
-                <div className={`alert-row ${alert.severity}`} key={alert.code}>
-                  <strong>{humanAlertTitle(alert.code)}</strong>
-                  <span>{humanAlertMessage(alert)}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty inline-empty">Активных сигналов нет.</div>
-          )}
-        </div>
-        <div className="form-panel">
-          <h2>Статусы задач</h2>
-          <div className="kv-list">
-            {statusEntries.map(([status, count]) => <div key={status}><StatusBadge status={status} /><strong>{count}</strong></div>)}
-          </div>
-        </div>
-        <div className="form-panel">
-          <h2>Источники поиска</h2>
-          <div className="kv-list">
-            {providerEntries.map(([provider, counts]) => (
-              <div key={provider}>
-                <span>{humanProvider(provider)}</span>
-                <strong>{providerStatusSummary(counts)}</strong>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="form-panel full-width-panel">
-        <h2>Задачи для ручной проверки</h2>
-        <div className="failure-list">
-          {visibleFailures.map(item => (
-            <article className="failure-card" key={item.id}>
-              <div>
-                <strong>{item.title || humanStage(item.stage || '')}</strong>
-                <small>{formatDate(item.created_at)} · {humanStage(item.stage || '')}</small>
-              </div>
-              <span>{item.ai_required ? 'Нужна ИИ-проверка' : 'Проверить вручную'}</span>
-              <p>{friendlyError(item.error)}</p>
-            </article>
+    <div className="job-detail-panel">
+      {(files.length > 0 || sources.length > 0) && (
+        <div className="job-detail-section">
+          <strong>Что загрузил клиент</strong>
+          {files.map(file => (
+            <button className="ghost small-text input-file-download" key={file.id} onClick={() => void onDownloadInput(job, file)}>
+              <Download size={14} />{file.original_filename}
+            </button>
           ))}
-          {!visibleFailures.length && <div className="empty inline-empty">Нет пользовательских задач с ошибками.</div>}
+          {sources.map(source => (
+            <span key={source.id}>{source.label || 'Ссылка'}: {source.value}</span>
+          ))}
         </div>
-      </div>
-    </section>
+      )}
+      {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
+      {job.error && <div className="job-detail-error">{job.error}</div>}
+    </div>
   )
 }
 
@@ -2077,7 +1970,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
           <NumberField label="Цена, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
           <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать клиентам</label>
         </div>
-        <p className="field-help">Активные пакеты показываются и в боте, и на сайте.</p>
+        <p className="field-help">Включённые пакеты сразу видны на сайте, в кабинете и в Telegram.</p>
         <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
       </div>
 
@@ -2090,14 +1983,17 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
 function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
   return (
     <div className="form-panel full-width-panel">
-      <h2>{title}</h2>
+      <div className="panel-heading">
+        <h2>{title}</h2>
+        <span className="sync-note">Сайт + кабинет + Telegram</span>
+      </div>
       <div className="tariff-list">
         {tariffs.map(item => (
           <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id}>
             <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
             <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
             <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Клиентам</label>
+            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать клиентам</label>
             <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
           </article>
         ))}

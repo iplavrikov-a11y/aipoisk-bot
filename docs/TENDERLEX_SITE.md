@@ -49,7 +49,7 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 ## Customer API Contract
 
 - The web cabinet uses `/api/customer/*` routes behind cookie session and CSRF protection.
-- Web users are separate from Telegram users. They sign in by email/password and are represented in job/client metadata with `web:<id>`.
+- Web users are separate from Telegram users. They sign in by email/password; internal `web:<id>` markers may exist in job/client metadata but must not appear as Telegram accounts in the owner-facing admin UI.
 - Customer job creation sends the same backend modes used by the bot: `supplier_search`, `procurement_report`, and `analysis_and_suppliers`.
 - The frontend hides `target_suppliers`; the backend uses the configured default supplier target.
 - `GET /api/customer/jobs` supports pagination for the cabinet. The current UI

@@ -53,7 +53,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - YooKassa settings foundation is present for future checkout integration, but
   payments are still handled manually until the cashier account is connected.
 - Public TenderLex site with no blog: SEO landing page, pricing, contact blocks, Telegram CTAs, and authenticated customer cabinet at `/cabinet`.
-- Website cabinet users are separate from Telegram users. Web clients sign in by email/password and appear in admin data as `web:<id>`; Telegram payments/access stay tied to Telegram accounts.
+- Website cabinet users are separate from Telegram users. Web clients sign in by email/password; internal `web:<id>` markers must stay hidden from the owner-facing Telegram-account UI. Telegram payments/access stay tied to real Telegram accounts.
 - Website cabinet exposes the same customer work scenarios as the bot:
   supplier search by ТЗ, procurement analysis, and combined analysis plus
   supplier search.

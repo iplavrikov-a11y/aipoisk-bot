@@ -50,9 +50,11 @@ can have several Telegram manager accounts; all linked accounts spend the same
 customer limits.
 
 Website cabinet users are intentionally separate from Telegram users. Web users
-sign in by email/password, appear in admin flows by website email, and are
-identified in job metadata as `web:<id>`. Telegram access remains tied to
-Telegram accounts unless the owner explicitly changes the account model.
+sign in by email/password and appear in admin flows by website email. Internal
+`web:<id>` markers may exist in job/account metadata, but the owner-facing admin
+UI must not show those markers as Telegram accounts or Telegram IDs. Telegram
+access remains tied to real Telegram accounts unless the owner explicitly
+changes the account model.
 
 There are exactly two commercial counters:
 
@@ -85,8 +87,10 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show linked Telegram accounts, access state, available balance,
+- customer cards show real linked Telegram accounts, available balance,
   reserved units, spent units, manual grants, and collapsed billing history;
+- website-cabinet service markers such as `web:<id>` and website-trial notes are
+  hidden from the owner-facing client card;
 - the owner can create clients by Telegram username before the real Telegram ID
   is known, edit linked Telegram accounts, grant arbitrary units by function,
   and delete extra Telegram accounts;
@@ -104,6 +108,9 @@ Current admin capabilities:
 - service/internal jobs are hidden by default in the jobs list;
 - admin and cabinet task lists use pagination so long job histories do not turn
   into unbounded vertical pages;
+- admin task details focus on practical owner actions: download customer input
+  files and finished result files. Raw evidence, supplier debug lists, and
+  report-control dashboards are not shown in the main owner workflow;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
 - statistics show the Telegram-bot business funnel for the last 30 days:

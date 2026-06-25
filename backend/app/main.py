@@ -1337,6 +1337,38 @@ def download_job(job_id: str, db: Session = Depends(db_session)):
     return FileResponse(output, filename=output.name)
 
 
+@app.get("/api/jobs/{job_id}/download/{file_kind}", dependencies=[Depends(require_admin)])
+def download_job_file(job_id: str, file_kind: str, db: Session = Depends(db_session)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    normalized_kind = str(file_kind or "").strip()
+    output = None
+    for item in package_job_output_items(job):
+        if str(item.get("kind") or "") == normalized_kind:
+            output = Path(str(item.get("path") or ""))
+            break
+    if not output or not output.exists():
+        raise HTTPException(status_code=404, detail="Output not found")
+    return FileResponse(output, filename=output.name)
+
+
+@app.get("/api/jobs/{job_id}/input-files/{file_id}/download", dependencies=[Depends(require_admin)])
+def download_job_input_file(job_id: str, file_id: str, db: Session = Depends(db_session)):
+    file = (
+        db.query(JobFile)
+        .filter(JobFile.id == file_id)
+        .filter(JobFile.job_id == job_id)
+        .first()
+    )
+    if not file:
+        raise HTTPException(status_code=404, detail="Input file not found")
+    path = Path(str(file.stored_path or ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Input file not found")
+    return FileResponse(path, filename=file.original_filename or path.name)
+
+
 @app.get("/api/jobs/{job_id}/evidence", dependencies=[Depends(require_admin)])
 def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
@@ -3029,6 +3061,7 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
 def job_to_dict(job: Job, include_files: bool = False) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
+    result_files = admin_job_result_files(job)
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -3048,7 +3081,8 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "target_suppliers": job.target_suppliers,
         "verified_count": job.verified_count,
         "file_count": job.file_count,
-        "has_result": bool(job.result_path),
+        "has_result": bool(result_files),
+        "result_files": result_files,
         "has_evidence": bool(evidence_path),
         "error": job.error,
         "created_at": job.created_at.isoformat() if job.created_at else None,
@@ -3060,6 +3094,21 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         data["sources"] = [source_to_dict(item) for item in job.sources]
         data["suppliers"] = [supplier_to_dict(item) for item in job.suppliers]
     return data
+
+
+def admin_job_result_files(job: Job) -> list[dict]:
+    result: list[dict] = []
+    for item in package_job_output_items(job):
+        path = Path(str(item.get("path") or ""))
+        kind = str(item.get("kind") or path.stem).strip()
+        result.append(
+            {
+                "kind": kind,
+                "label": _customer_result_file_label(kind, str(item.get("label") or "")),
+                "filename": path.name,
+            }
+        )
+    return result
 
 
 def file_to_dict(file: JobFile) -> dict:
