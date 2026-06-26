@@ -52,7 +52,13 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   supplier-search model used by the whole supplier-search flow.
 - YooKassa settings foundation is present for future checkout integration, but
   payments are still handled manually until the cashier account is connected.
-- Public TenderLex site with no blog: SEO landing page, pricing, contact blocks, Telegram CTAs, and authenticated customer cabinet at `/cabinet`.
+- Public TenderLex site with no blog: supplier-search-led landing page,
+  pricing, contact blocks, Telegram CTAs, SEO scenario pages, and authenticated
+  customer cabinet at `/cabinet`.
+- Public homepage positioning is supplier/contact search under a customer's
+  specification. Procurement-document analysis is still available, but it is
+  framed as an optional supporting check for complex tender work rather than
+  the dominant first-screen message.
 - Website cabinet users are separate from Telegram users. Web clients sign in by email/password; internal `web:<id>` markers must stay hidden from the owner-facing Telegram-account UI. Telegram payments/access stay tied to real Telegram accounts.
 - Website cabinet exposes the same customer work scenarios as the bot:
   supplier search by ТЗ, procurement analysis, and combined analysis plus
@@ -109,6 +115,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Current production status and the remaining commercial hardening backlog are documented in `docs/PROJECT_STATUS.md`.
 - TenderLex site/cabinet architecture and deploy notes are documented in `docs/TENDERLEX_SITE.md`.
 - Website cabinet operations, manual top-up, password recovery, and product smoke checks are documented in `docs/TENDERLEX_WEB_CABINET_RUNBOOK.md`.
+- For public-site copy changes, verify both positive copy and stale-copy
+  checks from `docs/TENDERLEX_SITE.md` before reporting the site as live.
 - Latest billing, Telegram UX, admin client deletion, tariff/payment, and button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 

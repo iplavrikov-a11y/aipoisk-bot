@@ -12,16 +12,40 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
-      url: `${siteUrl}/analiz-zakupochnoi-dokumentacii`,
+      url: `${siteUrl}/poisk-postavshchikov-po-tz`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.95,
+    },
+    {
+      url: `${siteUrl}/poisk-postavshchikov-dlya-tendera`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.9,
+    },
+    {
+      url: `${siteUrl}/poisk-proizvoditeley-po-tz`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.88,
+    },
+    {
+      url: `${siteUrl}/postavshchiki-dlya-zaprosa-kp`,
+      lastModified: updated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/zapros-kp-po-tz`,
       lastModified: updated,
       changeFrequency: "weekly",
       priority: 0.8,
     },
     {
-      url: `${siteUrl}/poisk-postavshchikov-po-tz`,
+      url: `${siteUrl}/analiz-zakupochnoi-dokumentacii`,
       lastModified: updated,
       changeFrequency: "weekly",
-      priority: 0.8,
+      priority: 0.75,
     },
     {
       url: `${siteUrl}/reestr-minpromtorga-v-zakupkah`,

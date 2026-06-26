@@ -2,6 +2,7 @@ import {
   ArrowRight,
   Building2,
   CheckCircle2,
+  ClipboardList,
   FileSearch,
   FileText,
   Mail,
@@ -23,78 +24,100 @@ export const dynamic = "force-dynamic";
 
 const featureItems = [
   {
+    icon: Search,
+    title: "Найти компании под позицию",
+    text: "Собирает производителей, дилеров, дистрибьюторов и профильных продавцов по описанию товара, спецификации или документам закупки.",
+  },
+  {
+    icon: ClipboardList,
+    title: "Подготовить запрос цены",
+    text: "Собирает один понятный текст для поставщика: что нужно, какие условия важны и какие документы попросить сразу.",
+  },
+  {
     icon: FileText,
-    title: "Анализ закупочной документации",
-    text: "Структурирует предмет закупки, требования к участнику, сроки, обеспечение, оплату, поставку и условия договора.",
+    title: "Разобрать закупку",
+    text: "Выносит предмет, сроки, обеспечение, оплату, поставку, требования к участнику и спорные места договора.",
   },
   {
     icon: ShieldCheck,
-    title: "Риски до подачи заявки",
-    text: "Выносит спорные требования, штрафы, приемку, нереалистичные сроки и вопросы, которые лучше уточнить заранее.",
-  },
-  {
-    icon: Search,
-    title: "Подбор поставщиков под ТЗ",
-    text: "Ищет производителей, официальных дистрибьюторов, региональных дилеров и профильных поставщиков по предмету закупки.",
-  },
-  {
-    icon: MessageCircle,
-    title: "Подготовка к запросу КП",
-    text: "Показывает, к кому обратиться, что запросить и какие параметры проверить перед сравнением предложений.",
+    title: "Понять риски до участия",
+    text: "Показывает, где могут быть проблемы: приемка, штрафы, короткие сроки, ограничения допуска и вопросы заказчику.",
   },
 ];
 
 const processSteps = [
   {
-    title: "Выберите задачу",
-    text: "Проверьте закупку перед участием, подберите поставщиков под ТЗ или используйте оба сценария вместе.",
+    title: "Поставьте задачу",
+    text: "Нужно найти кому написать, подготовить запрос цены или сначала понять условия закупки.",
   },
   {
     title: "Передайте материалы",
-    text: "Для анализа подойдет номер извещения, ссылка или комплект документов. Для поиска поставщиков — ТЗ или описание позиции.",
+    text: "Подойдет описание позиции, спецификация, ссылка на закупку, номер извещения или комплект документов.",
   },
   {
-    title: "Работайте с результатом",
-    text: "Получите структурированный разбор, перечень рисков, вопросы заказчику и список поставщиков для запроса КП.",
+    title: "Получите рабочий список",
+    text: "В результате есть компании, контакты, комментарии по релевантности и вопросы для первого обращения.",
   },
 ];
 
 const useCases = [
   {
+    icon: Building2,
+    title: "Снабжению и закупкам",
+    points: [
+      "быстро понять, кому отправить запрос цены",
+      "получить контакты производителей, дилеров и профильных продавцов",
+      "собрать сравнимые ответы по цене, срокам и условиям",
+    ],
+  },
+  {
     icon: Target,
     title: "Поставщикам и тендерным отделам",
     points: [
       "быстро понять, стоит ли заходить в закупку",
-      "увидеть требования, сроки, обеспечение, оплату и риски договора",
+      "увидеть сроки, обеспечение, оплату и риски договора",
       "подготовить вопросы заказчику и аргументы для решения об участии",
-    ],
-  },
-  {
-    icon: Building2,
-    title: "Закупщикам и снабжению",
-    points: [
-      "найти поставщиков по техническому заданию или описанию товара",
-      "собрать производителей, дилеров и профильных поставщиков",
-      "понять, какие параметры уточнять в запросе коммерческого предложения",
     ],
   },
 ];
 
-const scenarioPages = [
+const primaryScenario = {
+  href: "/poisk-postavshchikov-po-tz",
+  title: "Список компаний для запроса цены",
+  text: "Кто реально производит, продает или официально поставляет нужную позицию. Сайт, контакты, роль компании и что уточнить перед письмом.",
+  points: ["производитель, дилер или поставщик", "рабочие контакты", "что спросить в первом письме"],
+};
+
+const relatedScenarios = [
   {
-    href: "/analiz-zakupochnoi-dokumentacii",
-    title: "Анализ закупочной документации",
-    text: "Что проверяется, какие риски видны заранее и какой результат получает команда.",
+    href: "/poisk-postavshchikov-dlya-tendera",
+    title: "Разобрать закупку",
+    text: "Сроки, обеспечение, договор и спорные требования.",
   },
   {
-    href: "/poisk-postavshchikov-po-tz",
-    title: "Поиск поставщиков по ТЗ",
-    text: "Как сервис находит производителей, дилеров и профильные компании для запроса КП.",
+    href: "/poisk-proizvoditeley-po-tz",
+    title: "Выйти на завод",
+    text: "Когда посредник не подходит.",
+  },
+  {
+    href: "/postavshchiki-dlya-zaprosa-kp",
+    title: "Собрать адресатов",
+    text: "Кому отправить первый запрос.",
+  },
+  {
+    href: "/zapros-kp-po-tz",
+    title: "Подготовить письмо",
+    text: "Позиции, условия и вопросы без канцелярита.",
+  },
+  {
+    href: "/analiz-zakupochnoi-dokumentacii",
+    title: "Сравнить ответы",
+    text: "Цена, сроки, доставка и документы.",
   },
   {
     href: "/reestr-minpromtorga-v-zakupkah",
-    title: "Минпромторг в закупках",
-    text: "Как определяется, нужны ли выписки и реестровые записи, если в закупке есть нацрежим.",
+    title: "Проверить допуск",
+    text: "Реестры и ограничения, если они есть.",
   },
 ];
 
@@ -102,17 +125,17 @@ const trustItems = [
   {
     icon: ShieldCheck,
     title: "Работа по документам и открытым источникам",
-    text: "Анализ строится по номеру извещения, официальным данным закупки и присланным документам, а поставщики и контакты проверяются по открытым сайтам.",
+    text: "Анализ строится по номеру извещения, официальным данным и присланным материалам, а компании и контакты проверяются по открытым сайтам.",
   },
   {
     icon: FileSearch,
     title: "Ваши материалы не показываются другим",
-    text: "Номер закупки, документы и описание задачи используются для подготовки результата в вашем кабинете или Telegram.",
+    text: "Номер закупки, документы и описание задачи используются только для подготовки результата в вашем кабинете или Telegram.",
   },
   {
     icon: CheckCircle2,
     title: "Решение остается за командой",
-    text: "TenderLex ускоряет анализ и подготовку данных, но финальную юридическую, ценовую и коммерческую проверку делает человек.",
+    text: "TenderLex ускоряет подготовку, но финальную юридическую, ценовую и коммерческую проверку делает человек.",
   },
 ];
 
@@ -156,11 +179,12 @@ export default async function Home() {
       <section className="hero">
         <div className="container hero-layout">
           <div className="hero-copy">
-            <h1>Анализ закупок и подбор поставщиков для запроса КП</h1>
+            <h1>Поиск поставщиков под вашу спецификацию</h1>
             <p>
-              TenderLex помогает тендерным отделам и снабжению быстро разобрать документацию,
-              увидеть критичные условия и найти релевантных поставщиков под техническое задание.
-              Работать можно на сайте или в Telegram.
+              Загрузите описание позиции, ссылку на закупку или документы. TenderLex выделит
+              нужный товар, найдет компании, покажет контакты и подскажет, что спросить у
+              поставщика перед сравнением цен. Если закупка сложная, отдельно разберет сроки,
+              обеспечение, договор и спорные требования.
             </p>
             <div className="hero-actions">
               <Button asChild size="lg">
@@ -177,9 +201,9 @@ export default async function Home() {
               </Button>
             </div>
             <dl className="hero-proof" aria-label="Коротко о сервисе">
-              <ProofItem value="Документация" label="требования, сроки, обеспечение, договор" />
-              <ProofItem value="Риски" label="спорные условия и вопросы заказчику" />
-              <ProofItem value="Поставщики" label="производители, дилеры и аналоги под ТЗ" />
+              <ProofItem value="Компании" label="производители, дилеры, дистрибьюторы и профильные продавцы" />
+              <ProofItem value="Контакты" label="сайт, страница связи, email или телефон, комментарий" />
+              <ProofItem value="Проверки" label="что уточнить по цене, срокам, документам и ограничениям" />
             </dl>
           </div>
 
@@ -205,7 +229,7 @@ export default async function Home() {
         <div className="container">
           <SectionHeader
             title="Как это работает"
-            text="Сценарии можно использовать отдельно или вместе: оценить закупку перед участием, найти поставщиков и подготовить запрос КП."
+            text="Главный результат — список компаний, с которыми можно связаться. Разбор закупки и письмо поставщику подключаются только там, где они нужны."
           />
           <div className="process-grid">
             {processSteps.map((step, index) => (
@@ -222,12 +246,12 @@ export default async function Home() {
       <section className="section usecase-section">
         <div className="container">
           <SectionHeader
-            title="Для тендеров и закупок"
-            text="Один и тот же механизм полезен и тем, кто участвует в закупках, и тем, кто внутри компании ищет товар или поставщика по техническому заданию."
+            title="Для рабочих закупочных задач"
+            text="TenderLex полезен, когда нужно не прочитать еще одну справку, а быстро получить основу для действия: кому писать, что спросить и какие условия проверить."
           />
-          <div className="usecase-grid">
+          <div className="usecase-panel">
             {useCases.map((item) => (
-              <article key={item.title} className="usecase-card">
+              <article key={item.title} className="usecase-item">
                 <span className="icon-box accent">
                   <item.icon size={22} aria-hidden="true" />
                 </span>
@@ -247,20 +271,42 @@ export default async function Home() {
       </section>
 
       <section id="scenarios" className="section scenario-section">
-        <div className="container">
+        <div className="container scenario-layout">
           <SectionHeader
-            title="Отдельные сценарии"
-            text="Если нужен короткий вход в тему, у каждого сценария есть своя страница: что делает сервис, что проверяет и какой результат вы получаете."
+            title="Сначала список компаний"
+            text="Один основной путь: найти, кому отправить запрос цены. Остальные проверки нужны только когда задача сложнее обычного подбора."
+            align="left"
           />
-          <div className="scenario-link-grid">
-            {scenarioPages.map((item) => (
-              <a key={item.href} className="scenario-link-card" href={item.href}>
-                <span>Подробнее</span>
-                <h3>{item.title}</h3>
-                <p>{item.text}</p>
+          <div className="scenario-board" aria-label="Сценарии работы TenderLex">
+            <a className="scenario-primary" href={primaryScenario.href}>
+              <span className="scenario-tag">Основной путь</span>
+              <h3>{primaryScenario.title}</h3>
+              <p>{primaryScenario.text}</p>
+              <ul>
+                {primaryScenario.points.map((point) => (
+                  <li key={point}>
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                    <span>{point}</span>
+                  </li>
+                ))}
+              </ul>
+              <span className="scenario-primary-link">
+                Подробнее
                 <ArrowRight size={18} aria-hidden="true" />
-              </a>
-            ))}
+              </span>
+            </a>
+            <div className="scenario-related">
+              <p>Что подключить при необходимости</p>
+              <div className="scenario-related-grid">
+                {relatedScenarios.map((item) => (
+                  <a key={item.href} className="scenario-related-link" href={item.href}>
+                    <strong>{item.title}</strong>
+                    <span>{item.text}</span>
+                    <ArrowRight size={17} aria-hidden="true" />
+                  </a>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -269,15 +315,15 @@ export default async function Home() {
         <div className="container result-layout">
           <div>
             <SectionHeader
-              title="Что получает команда"
-              text="Не просто пересказ документов, а рабочая структура для решения: участвовать, уточнять условия, считать экономику или запрашивать цены."
+              title="На выходе не просто ссылки"
+              text="Команда получает список для действия: кто подходит, куда писать, что спросить и какие условия сравнить между ответами."
               align="left"
             />
             <ul className="result-list">
-              <ResultPoint title="Карта закупки" text="Предмет, процедура, сроки, обеспечение, оплата, поставка, требования к участнику и ключевые документы." />
-              <ResultPoint title="Риски и уточнения" text="Спорные условия договора, приемка, штрафы, требования к эквивалентам и вопросы заказчику до подачи заявки." />
-              <ResultPoint title="Подбор поставщиков" text="Компании под ТЗ: производители, официальные дистрибьюторы, региональные дилеры, поставщики аналогов и профильные продавцы." />
-              <ResultPoint title="Основа для КП" text="Кого запросить, какие характеристики проверить и какие условия сравнить после получения предложений." />
+              <ResultPoint title="Кого запросить" text="Производители, официальные дистрибьюторы, региональные дилеры, поставщики аналогов и профильные продавцы." />
+              <ResultPoint title="Куда писать" text="Сайты, страницы связи, email или телефон, профиль компании и комментарий, почему она подходит под задачу." />
+              <ResultPoint title="Что спросить" text="Цена, наличие, срок поставки, доставка, документы качества, гарантия, замены и ограничения по партии." />
+              <ResultPoint title="Что проверить" text="Сроки закупки, обеспечение, оплату, приемку, договор и специальные требования, если задача идет через процедуру." />
             </ul>
           </div>
           <SupplierSheet />
@@ -288,21 +334,21 @@ export default async function Home() {
         <div className="container">
           <SectionHeader
             title="Стоимость услуг"
-            text="Направления разделены по задаче: отдельно анализ закупки, отдельно подбор поставщиков. Для полного цикла можно использовать оба."
+            text="Базовая услуга — поиск компаний и контактов. Разбор закупки подключается отдельно, если перед запросом цены нужно понять условия и риски."
           />
           <div className="pricing-grid">
             <PricingTable
               icon={Search}
-              title="Подбор поставщиков"
-              subtitle="Компании, контакты и комментарии для запроса КП"
+              title="Поиск компаний"
+              subtitle="Список, контакты и комментарии для первого запроса"
               tariffs={supplierTariffs}
               contactUrl={contactUrl}
               contactLabel={contactActionLabel}
-              note="Нужен больший лимит поставщиков или другой объём работы? Напишите нам — обсудим индивидуальные условия под вашу задачу."
+              note="Нужен больший список компаний или нестандартная товарная группа? Напишите нам — обсудим условия под вашу задачу."
             />
             <PricingTable
               icon={FileText}
-              title="Анализ закупки"
+              title="Разбор закупки"
               subtitle="Требования, условия, риски и вопросы заказчику"
               tariffs={reportTariffs}
               contactUrl={contactUrl}
@@ -315,11 +361,10 @@ export default async function Home() {
       <section id="trust" className="section trust-section">
         <div className="container trust-layout">
           <div>
-            <h2>Ускоряет работу, но не подменяет ответственность</h2>
+            <h2>Инструмент для подготовки, не замена решения</h2>
             <p>
-              TenderLex нужен, чтобы быстрее разобрать закупочную документацию или найти поставщиков
-              с рабочими контактами. Итоговое решение по участию, цене, юридическим обязательствам и выбору
-              поставщика остается за вашей командой.
+              TenderLex помогает быстрее собрать компании, контакты, вопросы и условия для сравнения.
+              Итоговое решение по цене, обязательствам и выбору поставщика остается за вашей командой.
             </p>
           </div>
           <div className="trust-list">
@@ -338,8 +383,8 @@ export default async function Home() {
 
       <section id="contacts" className="cta-section">
         <div className="container cta-inner">
-          <h2>Попробуйте TenderLex на сайте или в Telegram</h2>
-          <p>Передайте номер извещения, документы или ТЗ. TenderLex подготовит разбор закупки или список поставщиков для запроса КП.</p>
+          <h2>Получите список компаний для запроса цены</h2>
+          <p>Передайте описание позиции, спецификацию, номер извещения или документы. TenderLex найдет компании, покажет контакты и подготовит основу для первого обращения.</p>
           <div className="cta-actions">
             <Button asChild size="lg">
               <a href={cabinetUrl}>
@@ -371,7 +416,7 @@ function Header({ contactUrl, ctaLabel }: { contactUrl: string; ctaLabel: string
   return (
     <header className="site-header">
       <div className="container header-inner">
-        <a className="brand" href="#" aria-label="TenderLex">
+        <a className="brand" href="/" aria-label="TenderLex">
           <Image src="/tenderlex-logo.png" alt="" width={32} height={32} priority />
           <span>TenderLex</span>
         </a>
@@ -405,11 +450,46 @@ function HeroProduct() {
         </div>
         <span>
           <Paperclip size={15} aria-hidden="true" />
-          номер закупки, документы, ссылка или ТЗ
+          номер закупки, документы, ссылка или спецификация
         </span>
       </div>
 
       <div className="hero-output-grid">
+        <article className="output-card">
+          <div className="output-head">
+            <span className="icon-box">
+              <Search size={20} aria-hidden="true" />
+            </span>
+            <div>
+              <p>Поиск поставщиков</p>
+              <h2>Компании под спецификацию</h2>
+            </div>
+          </div>
+          <div className="output-badges">
+            <span>производители</span>
+            <span>дилеры</span>
+            <span>комплектующие</span>
+          </div>
+          <div className="supplier-scale">
+            TenderLex ищет компании, связанные с нужной номенклатурой, и выводит основу для первого запроса.
+          </div>
+          <div className="supplier-mini-list">
+            {heroSupplierRows.map(([type, contact, note]) => (
+              <div key={type} className="supplier-mini-row">
+                <div className="supplier-mini-meta">
+                  <strong>{type}</strong>
+                  <small>{contact}</small>
+                </div>
+                <p>{note}</p>
+              </div>
+            ))}
+          </div>
+          <div className="output-footer">
+            <MessageCircle size={15} aria-hidden="true" />
+            Готово к письму поставщику и сравнению условий
+          </div>
+        </article>
+
         <article className="output-card">
           <div className="output-head">
             <span className="icon-box">
@@ -444,41 +524,6 @@ function HeroProduct() {
             Вердикт: участвовать после уточнений
           </div>
         </article>
-
-        <article className="output-card">
-          <div className="output-head">
-            <span className="icon-box">
-              <Search size={20} aria-hidden="true" />
-            </span>
-            <div>
-              <p>Подбор поставщиков</p>
-              <h2>Поставщики по ТЗ</h2>
-            </div>
-          </div>
-          <div className="output-badges">
-            <span>производители</span>
-            <span>дилеры</span>
-            <span>комплектующие</span>
-          </div>
-          <div className="supplier-scale">
-            TenderLex ищет компании, связанные с нужной номенклатурой, и выводит рабочую основу для запроса КП.
-          </div>
-          <div className="supplier-mini-list">
-            {heroSupplierRows.map(([type, contact, note]) => (
-              <div key={type} className="supplier-mini-row">
-                <div className="supplier-mini-meta">
-                  <strong>{type}</strong>
-                  <small>{contact}</small>
-                </div>
-                <p>{note}</p>
-              </div>
-            ))}
-          </div>
-          <div className="output-footer">
-            <MessageCircle size={15} aria-hidden="true" />
-            Готово к запросу КП и сравнению условий
-          </div>
-        </article>
       </div>
     </div>
   );
@@ -489,7 +534,7 @@ function SupplierSheet() {
     <div className="supplier-sheet" aria-label="Пример результата поиска поставщиков">
       <div className="sheet-bar">
         <span>Пример подбора поставщиков</span>
-        <strong>по ТЗ на цемент и сухие смеси</strong>
+        <strong>по цементу и сухим смесям</strong>
       </div>
       <table>
         <thead>
@@ -497,7 +542,7 @@ function SupplierSheet() {
             <th>Компания</th>
             <th>Профиль</th>
             <th>Контакты</th>
-            <th>Что проверить в КП</th>
+            <th>Что проверить в предложении</th>
           </tr>
         </thead>
         <tbody>
@@ -506,7 +551,7 @@ function SupplierSheet() {
               <td data-label="Компания">{company}</td>
               <td data-label="Профиль">{specialization}</td>
               <td data-label="Контакты">{contact}</td>
-              <td data-label="Что проверить в КП">{note}</td>
+              <td data-label="Что проверить в предложении">{note}</td>
             </tr>
           ))}
         </tbody>
@@ -514,7 +559,7 @@ function SupplierSheet() {
       <div className="sheet-footer">
         <span>
           <Phone size={16} aria-hidden="true" />
-          Основа для запроса КП: цена, марка, фасовка, документы качества, доставка
+          Основа для запроса: цена, марка, фасовка, документы качества, доставка
         </span>
         <CheckCircle2 size={18} aria-hidden="true" />
       </div>
@@ -628,25 +673,35 @@ function Footer({ email, telegramUrl, maxUrl, max }: { email: string; telegramUr
     <footer className="site-footer">
       <div className="container footer-inner">
         <div>
-          <a className="brand" href="#" aria-label="TenderLex">
+          <a className="brand" href="/" aria-label="TenderLex">
             <Image src="/tenderlex-logo.png" alt="" width={30} height={30} />
             <span>TenderLex</span>
           </a>
-          <p>Сервис для анализа закупок и поиска поставщиков на сайте и в Telegram.</p>
+          <p>Сервис для поиска компаний под закупочную задачу: контакты, вопросы поставщику и разбор условий.</p>
         </div>
-        <nav aria-label="Навигация в подвале">
-          <a href="#features">Возможности</a>
-          <a href="#process">Процесс</a>
-          <a href="#scenarios">Сценарии</a>
-          <a href="#tariffs">Тарифы</a>
-          <a href="#contacts">Контакты</a>
-          <a href="/analiz-zakupochnoi-dokumentacii">Анализ документации</a>
-          <a href="/poisk-postavshchikov-po-tz">Поиск поставщиков</a>
-          <a href="/reestr-minpromtorga-v-zakupkah">Минпромторг</a>
-          <a href="/terms">Условия</a>
-          <a href="/privacy">Конфиденциальность</a>
+        <nav className="footer-nav" aria-label="Навигация в подвале">
+          <div className="footer-group">
+            <strong>Сервис</strong>
+            <a href="#features">Возможности</a>
+            <a href="#process">Процесс</a>
+            <a href="#scenarios">Сценарии</a>
+            <a href="#tariffs">Тарифы</a>
+          </div>
+          <div className="footer-group">
+            <strong>Страницы</strong>
+            <a href="/poisk-postavshchikov-po-tz">Поставщики под спецификацию</a>
+            <a href="/poisk-postavshchikov-dlya-tendera">Поставщики для тендера</a>
+            <a href="/poisk-proizvoditeley-po-tz">Выйти на производителя</a>
+            <a href="/postavshchiki-dlya-zaprosa-kp">Кого запросить</a>
+            <a href="/zapros-kp-po-tz">Подготовить письмо</a>
+            <a href="/analiz-zakupochnoi-dokumentacii">Разобрать закупку</a>
+            <a href="/reestr-minpromtorga-v-zakupkah">Проверить допуск</a>
+            <a href="/terms">Условия</a>
+            <a href="/privacy">Конфиденциальность</a>
+          </div>
         </nav>
-        <div className="footer-contacts">
+        <div className="footer-contacts footer-group">
+          <strong>Связь</strong>
           {telegramUrl ? <a href={telegramUrl} target="_blank" rel="noreferrer">Telegram</a> : null}
           {max ? (maxUrl ? <a href={maxUrl} target="_blank" rel="noreferrer">MAX</a> : <span>{max}</span>) : null}
           <a href={`mailto:${email}`}>{email}</a>
@@ -681,7 +736,7 @@ function tariffDescription(tariff: PublicTariff) {
     return "Требования, условия участия, риски договора и вопросы заказчику.";
   }
   if (tariff.kind === "supplier_search") {
-    return "Подбор релевантных компаний и контактов для запроса КП.";
+    return "Подбор релевантных компаний и контактов для первого запроса.";
   }
   return tariff.description.trim() || tariffCountLabel(tariff);
 }
@@ -697,26 +752,78 @@ function tariffDisplayName(tariff: PublicTariff) {
 }
 
 function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string, email: string) {
+  const normalizedSiteUrl = siteUrl.replace(/\/+$/, "");
+  const sameAs = [botUrl, contactTelegramUrl].filter(Boolean);
+
   return {
     "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    name: "TenderLex",
-    applicationCategory: "BusinessApplication",
-    operatingSystem: "Web, Telegram",
-    url: siteUrl,
-    description:
-      "Сервис для анализа закупочной документации, оценки рисков и подбора поставщиков для запроса КП.",
-    offers: {
-      "@type": "Offer",
-      priceCurrency: "RUB",
-      availability: "https://schema.org/InStock",
-    },
-    provider: {
-      "@type": "Organization",
-      name: "TenderLex",
-      url: siteUrl,
-      email,
-      sameAs: [botUrl, contactTelegramUrl].filter(Boolean),
-    },
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": `${normalizedSiteUrl}/#organization`,
+        name: "TenderLex",
+        url: normalizedSiteUrl,
+        logo: {
+          "@type": "ImageObject",
+          url: `${normalizedSiteUrl}/tenderlex-logo.png`,
+          width: 512,
+          height: 512,
+        },
+        image: `${normalizedSiteUrl}/tenderlex-product-preview.png`,
+        email,
+        sameAs,
+        contactPoint: email
+          ? [
+              {
+                "@type": "ContactPoint",
+                email,
+                contactType: "customer support",
+                availableLanguage: ["ru"],
+              },
+            ]
+          : undefined,
+      },
+      {
+        "@type": "WebSite",
+        "@id": `${normalizedSiteUrl}/#website`,
+        name: "TenderLex",
+        url: normalizedSiteUrl,
+        inLanguage: "ru-RU",
+        description:
+          "TenderLex помогает найти компании под закупочную задачу, собрать контакты, подготовить вопросы поставщику и разобрать условия закупки.",
+        publisher: {
+          "@id": `${normalizedSiteUrl}/#organization`,
+        },
+      },
+      {
+        "@type": "SoftwareApplication",
+        "@id": `${normalizedSiteUrl}/#software`,
+        name: "TenderLex",
+        applicationCategory: "BusinessApplication",
+        operatingSystem: "Web, Telegram",
+        url: normalizedSiteUrl,
+        image: `${normalizedSiteUrl}/tenderlex-product-preview.png`,
+        description:
+          "Сервис для поиска поставщиков под спецификацию, проверки контактов, подготовки запроса цены и разбора закупочной документации.",
+        featureList: [
+          "Поиск поставщиков под спецификацию",
+          "Подготовка запроса цены",
+          "Проверка контактов и профиля поставщика",
+          "Разбор закупочной документации",
+          "Проверка рисков до подачи заявки",
+          "Проверка специальных требований допуска",
+        ],
+        offers: {
+          "@type": "AggregateOffer",
+          priceCurrency: "RUB",
+          lowPrice: "100",
+          highPrice: "5000",
+          availability: "https://schema.org/InStock",
+        },
+        provider: {
+          "@id": `${normalizedSiteUrl}/#organization`,
+        },
+      },
+    ],
   };
 }

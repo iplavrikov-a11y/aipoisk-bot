@@ -6,8 +6,12 @@ import { usePathname } from "next/navigation";
 const METRIKA_ALLOWED_PATHS = new Set([
   "/",
   "/analiz-zakupochnoi-dokumentacii",
+  "/poisk-postavshchikov-dlya-tendera",
   "/poisk-postavshchikov-po-tz",
+  "/poisk-proizvoditeley-po-tz",
+  "/postavshchiki-dlya-zaprosa-kp",
   "/reestr-minpromtorga-v-zakupkah",
+  "/zapros-kp-po-tz",
 ]);
 
 export function YandexMetrika({ counterId }: { counterId?: string }) {
@@ -40,6 +44,22 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
             accurateTrackBounce: true,
             informer: false,
             trackLinks: true
+          });
+          document.addEventListener("click", function(event) {
+            var target = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+            if (!target || !window.ym) { return; }
+            var href = target.href || "";
+            var goal = "";
+            if (href.indexOf("/cabinet") !== -1) {
+              goal = "cabinet_click";
+            } else if (href.indexOf("t.me/tenderlex_bot") !== -1 || href.indexOf("t.me/lexelence") !== -1) {
+              goal = "telegram_click";
+            } else if (href.indexOf("mailto:") === 0) {
+              goal = "email_click";
+            }
+            if (goal) {
+              ym(${JSON.stringify(counterId)}, "reachGoal", goal, { page: location.pathname, href: href });
+            }
           });
         `}
       </Script>

@@ -9,9 +9,18 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Dedicated scenario pages for procurement-document analysis, supplier search, and Minpromtorg-related registry context.
 - No blog, no CMS, no public admin panel.
 - Contacts and active tariffs come from the existing FastAPI backend through `GET /api/public/site`.
-- The first screen must sell two equal product scenarios: procurement-document analysis and supplier/contact search.
+- The first screen must lead with the main product promise: supplier/contact
+  search under a customer's specification or procurement task. Procurement
+  documentation analysis remains visible, but it is positioned as an optional
+  supporting check for complex tender work, not as the dominant public-site
+  message.
 - Public copy should offer both entry points: work on the site and work in Telegram.
 - Customer-facing copy must explain the business result, not implementation details such as file formats, internal balances, protected sessions, or exact free-run counters.
+- Homepage copy should avoid leading with internal or overloaded abbreviations
+  such as `ТЗ` and `КП`. SEO landing pages may keep those phrases in metadata
+  or narrow intent pages, but visible homepage copy should use buyer-language
+  phrases such as "спецификация", "запрос цены", "письмо поставщику", and
+  "список компаний".
 - The cabinet must mirror the bot scenarios: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 - `Анализ закупки` and `Анализ + поиск` accept a notice number, link, or uploaded procurement materials; they must not expose extra invented fields such as "what to check".
 - `Несколько ТЗ` is mass supplier search: each uploaded ТЗ is processed as a separate supplier-search job.
@@ -41,6 +50,9 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
 - `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
 - `robots.txt` allows public pages, keeps `/cabinet` out of indexing, and declares `Host: https://tenderlex.ru` for Yandex.
+- `site/src/app/layout.tsx` default metadata should align with the homepage
+  positioning. The current root title is supplier-search led rather than
+  documentation-analysis led.
 - `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths must include a `120x120` asset.
 - Yandex Webmaster has both `http:tenderlex.ru:80` and `https:tenderlex.ru:443` properties. Keep the HTTP favicon paths returning `200 OK` instead of only redirecting, because the HTTP property can diagnose `http://tenderlex.ru/favicon.ico` and `http://tenderlex.ru/favicon.png` directly.
 - On 2026-06-23 the Yandex Webmaster DNS check was resent and the following URLs were queued for re-crawl: `http://tenderlex.ru/`, `http://tenderlex.ru/favicon.ico`, `http://tenderlex.ru/favicon.png`, and `https://tenderlex.ru/` in the HTTPS property.
@@ -112,8 +124,8 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Admin production build, when public settings UI changes: `cd frontend && npm run build`
 - Targeted backend tests for the public/customer API contract: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_customer_api.py backend/tests/test_api_guards.py backend/tests/test_access_limits.py -q`
 - Production smoke: `curl -fsS http://127.0.0.1:8088/api/public/site | jq '{bot, contacts, trial}'`
-- Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram'`
-- Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX'` should return no matches.
+- Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram|Поиск поставщиков под вашу спецификацию|Список компаний для запроса цены'`
+- Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX|Поставщики по техническому заданию|запрос КП|запрос коммерческого предложения'` should return no matches on the homepage.
 - SEO smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/sitemap.xml | rg 'analiz-zakupochnoi-dokumentacii|poisk-postavshchikov-po-tz|reestr-minpromtorga-v-zakupkah'`
 - Verification smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/yandex_b3b74a829ce4a7c6.html`
 - Yandex favicon smoke: `curl -sS -D - -o /tmp/tenderlex-favicon.ico http://tenderlex.ru/favicon.ico | sed -n '1,12p'` should show `200 OK`, and `identify -format '%wx%h %m\n' /tmp/tenderlex-favicon.ico` should show `120x120`.

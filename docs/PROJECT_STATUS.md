@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-23
+Date: 2026-06-26
 
 ## Current Production State
 
@@ -15,6 +15,21 @@ Date: 2026-06-23
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.
+- Public site positioning was corrected on 2026-06-26: the homepage now leads
+  with supplier/contact search under a customer's specification, while
+  procurement-document analysis is presented as a supporting scenario for
+  tender risk review. Root metadata, Open Graph text, homepage sections,
+  scenario copy, CTA copy, and the main supplier-search landing page were
+  aligned with this positioning.
+- The current public copy intentionally avoids making the homepage sound like a
+  list of SEO clusters. Terms such as `ТЗ` and `КП` are reserved for narrow SEO
+  landing intent and metadata where useful; the homepage uses buyer-facing
+  language such as "спецификация", "запрос цены", "письмо поставщику", and
+  "список компаний".
+- Latest live site verification on 2026-06-26 passed
+  `scripts/deploy_tenderlex_live.sh`, `scripts/check_tenderlex_seo.sh
+  https://tenderlex.ru`, and direct live HTML checks for the root title,
+  description, H1, and homepage stale-copy phrases.
 - Yandex Webmaster SEO follow-up on 2026-06-23 fixed HTTP favicon availability
   for the `http:tenderlex.ru:80` property, added the Yandex `Host` directive to
   `robots.txt`, resent the DNS diagnostic check, and queued the homepage plus

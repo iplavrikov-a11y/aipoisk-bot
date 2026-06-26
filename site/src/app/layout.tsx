@@ -19,9 +19,9 @@ const inter = Inter({
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://tenderlex.ru";
-const defaultTitle = "TenderLex - анализ закупок и поиск поставщиков";
+const defaultTitle = "TenderLex - поиск поставщиков под спецификацию";
 const defaultDescription =
-  "TenderLex анализирует закупочную документацию, показывает риски и подбирает поставщиков для запроса КП. Работать можно на сайте или в Telegram.";
+  "TenderLex находит компании под закупочную задачу, проверяет контакты, помогает подготовить запрос цены и разобрать условия закупки.";
 const defaultOgImage = "/tenderlex-product-preview.png";
 const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
@@ -38,38 +38,53 @@ export const metadata: Metadata = {
     template: "%s | TenderLex",
   },
   description: defaultDescription,
+  keywords: [
+    "TenderLex",
+    "поиск поставщиков",
+    "подбор поставщиков",
+    "поиск поставщиков по ТЗ",
+    "поиск поставщиков по техническому заданию",
+    "поиск поставщиков под спецификацию",
+    "запрос цены поставщику",
+    "анализ закупок",
+    "анализ закупочной документации",
+    "тендерная документация",
+    "реестр Минпромторга",
+  ],
   alternates: {
     canonical: "/",
   },
+  manifest: "/manifest.webmanifest",
   verification: Object.keys(verification).length ? verification : undefined,
   openGraph: {
     type: "website",
     url: siteUrl,
     title: defaultTitle,
-    description: "Отправьте номер извещения, документы или ТЗ. TenderLex подготовит анализ закупки или подбор поставщиков на сайте и в Telegram.",
+    description: "Передайте описание позиции, спецификацию, номер извещения или документы. TenderLex найдет компании, покажет контакты и подготовит основу для первого обращения.",
     siteName: "TenderLex",
     images: [
       {
         url: defaultOgImage,
         width: 1200,
         height: 630,
-        alt: "TenderLex - анализ закупок и поиск поставщиков",
+        alt: "TenderLex - поиск поставщиков под спецификацию",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
     title: defaultTitle,
-    description: "Отправьте номер извещения, документы или ТЗ. TenderLex подготовит анализ закупки или подбор поставщиков на сайте и в Telegram.",
+    description: "Передайте описание позиции, спецификацию, номер извещения или документы. TenderLex найдет компании, покажет контакты и подготовит основу для первого обращения.",
     images: [defaultOgImage],
   },
   icons: {
     icon: [
+      { url: "/favicon.svg", sizes: "120x120", type: "image/svg+xml" },
       { url: "/favicon.ico", sizes: "120x120", type: "image/x-icon" },
       { url: "/favicon.png", sizes: "120x120", type: "image/png" },
       { url: "/icon.png", sizes: "120x120", type: "image/png" },
     ],
-    apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
 };
 

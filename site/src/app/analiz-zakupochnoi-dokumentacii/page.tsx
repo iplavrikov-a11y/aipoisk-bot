@@ -1,9 +1,18 @@
 import type { Metadata } from "next";
 
+import {
+  buildBreadcrumbJsonLd,
+  buildFaqJsonLd,
+  buildHowToJsonLd,
+  buildServiceJsonLd,
+  commercialPageLastUpdated,
+  type FaqItem,
+} from "@/lib/seo";
+
 export const metadata: Metadata = {
   title: "Анализ закупочной документации",
   description:
-    "TenderLex разбирает закупочную документацию: условия участия, сроки, обеспечение, оплату, поставку, риски договора, нацрежим и вопросы заказчику. Попробуйте бесплатно.",
+    "TenderLex разбирает закупочную документацию: условия участия, сроки, обеспечение, оплату, поставку, риски договора, нацрежим и вопросы заказчику.",
   alternates: {
     canonical: "/analiz-zakupochnoi-dokumentacii",
   },
@@ -25,11 +34,13 @@ export const metadata: Metadata = {
   },
 };
 
-const faqItems = [
+const pagePath = "/analiz-zakupochnoi-dokumentacii";
+
+const faqItems: FaqItem[] = [
   {
     question: "Что нужно предоставить для анализа?",
     answer:
-      "Достаточно номера извещения с ЕИС, ссылки на закупку или загруженного комплекта документов (PDF, Word, ZIP). TenderLex сам загрузит и разберёт необходимую документацию.",
+      "Достаточно номера извещения, ссылки на закупку или файла с документацией. TenderLex загрузит материалы и разберёт условия закупки по смысловым блокам.",
   },
   {
     question: "Что именно проверяет TenderLex в документации?",
@@ -44,7 +55,7 @@ const faqItems = [
   {
     question: "В каком формате приходит результат?",
     answer:
-      "Тендерный лист в формате Word: структурированный разбор закупки с ключевыми условиями, рисками, вопросами заказчику и практическими выводами по каждому блоку документации.",
+      "Результат приходит как структурированный разбор закупки: ключевые условия, риски, вопросы заказчику и практические выводы по каждому блоку документации.",
   },
   {
     question: "Заменяет ли анализ юридическую проверку?",
@@ -69,56 +80,56 @@ const faqItems = [
 ];
 
 export default function ProcurementAnalysisPage() {
-  const schemaFaq = {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    mainEntity: faqItems.map((item) => ({
-      "@type": "Question",
-      name: item.question,
-      acceptedAnswer: {
-        "@type": "Answer",
-        text: item.answer,
-      },
-    })),
-  };
-
-  const schemaHowTo = {
-    "@context": "https://schema.org",
-    "@type": "HowTo",
+  const schemaBreadcrumb = buildBreadcrumbJsonLd([
+    { name: "TenderLex", path: "/" },
+    { name: "Анализ закупочной документации", path: pagePath },
+  ]);
+  const schemaService = buildServiceJsonLd({
+    name: "Анализ закупочной документации",
+    description:
+      "TenderLex разбирает закупочную документацию, выделяет условия участия, сроки, обеспечение, оплату, поставку, риски договора, нацрежим и вопросы заказчику.",
+    path: pagePath,
+    serviceType: "Procurement documentation analysis",
+  });
+  const schemaFaq = buildFaqJsonLd(faqItems);
+  const schemaHowTo = buildHowToJsonLd({
     name: "Как анализировать закупочную документацию с TenderLex",
     description:
-      "Автоматический разбор тендерной документации: от загрузки до готового тендерного листа с рисками и выводами.",
-    step: [
+      "Автоматический разбор тендерной документации: от загрузки до готовой карты закупки с рисками и выводами.",
+    steps: [
       {
-        "@type": "HowToStep",
         name: "Укажите закупку",
-        text: "Введите номер извещения, вставьте ссылку с ЕИС или загрузите комплект документов (PDF, Word, ZIP).",
+        text: "Введите номер извещения, вставьте ссылку или загрузите комплект документов.",
       },
       {
-        "@type": "HowToStep",
         name: "TenderLex загружает документацию",
         text: "Сервис автоматически скачивает файлы с ЕИС или читает загруженные документы и извлекает текстовое содержимое.",
       },
       {
-        "@type": "HowToStep",
-        name: "AI разбирает условия по блокам",
+        name: "TenderLex разбирает условия по блокам",
         text: "Анализируются требования к участнику, сроки, обеспечение, оплата, поставка, штрафы, нацрежим и другие ключевые блоки.",
       },
       {
-        "@type": "HowToStep",
-        name: "Формируется тендерный лист",
+        name: "Формируется структурированный разбор",
         text: "Готовится структурированный документ: ключевые условия, выявленные риски, вопросы заказчику и практические выводы.",
       },
       {
-        "@type": "HowToStep",
         name: "Скачайте результат",
-        text: "Тендерный лист в формате Word доступен для скачивания в личном кабинете или через Telegram-бот.",
+        text: "Структурированный разбор доступен для скачивания в личном кабинете или через Telegram-бот.",
       },
     ],
-  };
+  });
 
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }}
+      />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }}
@@ -134,7 +145,7 @@ export default function ProcurementAnalysisPage() {
           </a>
           <h1>Анализ закупочной документации</h1>
           <p className="legal-date">
-            Для тендерных отделов, поставщиков и руководителей продаж
+            Для тендерных отделов, поставщиков и руководителей продаж. Обновлено {commercialPageLastUpdated}.
           </p>
 
           <section>
@@ -171,13 +182,13 @@ export default function ProcurementAnalysisPage() {
           <section>
             <h2>Что получает пользователь</h2>
             <p>
-              В результате команда получает рабочую карту закупки — тендерный лист в формате Word:
+              В результате команда получает рабочую карту закупки:
               ключевые условия, риски до подачи заявки, вопросы заказчику, спорные формулировки,
               практические выводы и ориентир, где нужно дополнительно проверить цену, логистику,
               документы качества или юридические обязательства.
             </p>
             <p style={{ marginTop: 14 }}>
-              Тендерный лист структурирован по разделам и готов к передаче коллегам: юристу, финансисту,
+              Разбор структурирован по разделам и готов к передаче коллегам: юристу, финансисту,
               логисту или руководителю. Не нужно пересказывать содержимое документации — все нужные
               данные уже выделены и сформулированы.
             </p>
@@ -249,8 +260,7 @@ export default function ProcurementAnalysisPage() {
               <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
                 Telegram-бот TenderLex
               </a>
-              . Новые пользователи могут попробовать один анализ бесплатно. Если нужно обсудить
-              индивидуальные условия или объём — напишите нам напрямую.
+              . Если нужно обсудить индивидуальные условия или объём — напишите нам напрямую.
             </p>
           </section>
         </article>

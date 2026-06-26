@@ -53,7 +53,7 @@ const fallbackTariffs: PublicTariff[] = [
     units: 1,
     price_kopeks: 10000,
     price_rub: 100,
-    description: "Разовый подбор релевантных компаний и контактов для запроса КП.",
+    description: "Разовый подбор релевантных компаний и контактов для запроса цены.",
     sort_order: 100,
   },
   {
@@ -64,7 +64,7 @@ const fallbackTariffs: PublicTariff[] = [
     units: 10,
     price_kopeks: 100000,
     price_rub: 1000,
-    description: "Пакет для регулярного подбора поставщиков под разные товары и ТЗ.",
+    description: "Пакет для регулярного подбора поставщиков под разные товары и спецификации.",
     sort_order: 100,
   },
   {
@@ -117,9 +117,9 @@ const fallbackData: PublicSitePayload = {
   site: {
     name: "TenderLex",
     domain: "https://tenderlex.ru",
-    headline: "Анализ закупок и подбор поставщиков на сайте и в Telegram",
+    headline: "Поиск поставщиков под спецификацию на сайте и в Telegram",
     description:
-      "TenderLex помогает разобрать закупочную документацию, увидеть риски и подобрать поставщиков для запроса КП на сайте или в Telegram.",
+      "TenderLex помогает подобрать компании для запроса цены, проверить контакты и разобрать закупочную документацию на сайте или в Telegram.",
   },
   contacts: {
     email: "snab@dealpartner.ru",
@@ -183,5 +183,5 @@ export function tariffDescription(tariff: PublicTariff) {
   if (tariff.kind === "procurement_report") {
     return "Анализ закупочной документации: требования, условия, риски и вопросы заказчику.";
   }
-  return "Подбор релевантных компаний и контактов для запроса КП под вашу закупочную задачу.";
+  return "Подбор релевантных компаний и контактов для запроса цены под вашу закупочную задачу.";
 }
