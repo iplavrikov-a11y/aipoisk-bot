@@ -42,22 +42,32 @@
   fetches are no-store, and active job polling is intentionally more frequent
   than idle polling.
 
-## Manual Top-Up
+## Manual Balance Correction
 
 1. Open the admin panel.
 2. Go to `Клиенты`.
 3. Find the client by website email.
 4. Open the client card.
-5. In `Баланс`, choose:
+5. In `Баланс`, choose the action:
+   - `Начислить` to add runs after payment or approval.
+   - `Списать` to remove runs that were granted to the wrong client or need a
+     manual correction.
+6. Choose the function:
    - `Поставщики` for supplier search runs.
    - `Анализ документации` for procurement analysis runs.
-6. Enter the number of runs, use `+1`, `+10`, `+50`, or choose a tariff template.
-7. Click `Начислить`.
-8. Ask the customer to refresh the cabinet.
+7. Enter the number of runs.
+   - For grants, use `+1`, `+10`, `+50`, or choose a tariff template.
+   - For debits, use `-1`, `-10`, `-50`, or enter an exact amount manually.
+8. Click `Начислить` or `Списать`.
+9. Ask the customer to refresh the cabinet.
 
 Notes:
 
 - Use the customer's website email to find web-cabinet clients.
+- Manual debits are ledger operations named `manual_debit`. They reduce the
+  available balance but do not count as customer job spend.
+- The admin API rejects debits larger than the currently available balance.
+- Tariff templates are grant-only; use manual amount entry for debits.
 - Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
 - Do not merge website users into Telegram customers unless the owner explicitly decides to change the billing/account model.
 - Until YooKassa is enabled, payment confirmation happens outside the site and the owner grants runs manually.

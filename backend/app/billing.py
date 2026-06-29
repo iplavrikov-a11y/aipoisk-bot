@@ -15,6 +15,7 @@ OP_GRANT = "grant"
 OP_RESERVE = "reserve"
 OP_CHARGE = "charge"
 OP_RELEASE = "release"
+OP_MANUAL_DEBIT = "manual_debit"
 
 STATUS_AWAITING_CUSTOMER_CONFIRMATION = "awaiting_customer_confirmation"
 STATUS_CUSTOMER_DECLINED = "customer_declined"
@@ -87,13 +88,15 @@ def _ledger_counter(db: Session, client_id: str, kind: str) -> dict:
     )
     totals = {operation: int(total or 0) for operation, total in rows}
     granted = totals.get(OP_GRANT, 0)
+    manual_debited = totals.get(OP_MANUAL_DEBIT, 0)
     reserved_total = totals.get(OP_RESERVE, 0)
     released = totals.get(OP_RELEASE, 0)
     charged = totals.get(OP_CHARGE, 0)
     reserved = max(0, reserved_total - released - charged)
-    available = max(0, granted + released - reserved_total)
+    available = max(0, granted + released - reserved_total - manual_debited)
     return {
         "granted": granted,
+        "manual_debited": manual_debited,
         "available": available,
         "reserved": reserved,
         "spent": charged,
@@ -114,6 +117,7 @@ def _legacy_counter(db: Session, client: Client, kind: str, *, exclude_job_id: s
     available = None if unlimited else max(0, limit - used)
     return {
         "granted": limit,
+        "manual_debited": 0,
         "available": available,
         "reserved": 0,
         "spent": used,
@@ -362,6 +366,41 @@ def grant_package_units(
     return transaction
 
 
+def debit_package_units(
+    db: Session,
+    client: Client,
+    *,
+    kind: str,
+    units: int,
+    note: str = "",
+    created_by: str = "admin",
+) -> BillingTransaction:
+    if kind not in VALID_BILLING_KINDS:
+        raise BillingError("Unknown billing kind")
+    safe_units = int(units or 0)
+    if safe_units <= 0:
+        raise BillingError("Units must be positive")
+    _initialize_legacy_balance_if_needed(db, client)
+    counter = balance_counter(db, client, kind)
+    available = int(counter.get("available") or 0)
+    if counter.get("unlimited"):
+        raise BillingError("Manual debit is not supported for unlimited legacy balances")
+    if available < safe_units:
+        raise BillingError(f"Недостаточно доступных генераций для списания: доступно {available}, нужно {safe_units}")
+    transaction = BillingTransaction(
+        client_id=client.id,
+        kind=kind,
+        operation=OP_MANUAL_DEBIT,
+        units=safe_units,
+        note=note or "Ручное списание пакета",
+        created_by=created_by,
+    )
+    db.add(transaction)
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
 def list_tariffs(db: Session, *, active_only: bool = False) -> list[TariffPackage]:
     query = db.query(TariffPackage)
     if active_only:
@@ -408,6 +447,7 @@ def operation_label(operation: str) -> str:
         OP_RESERVE: "резерв",
         OP_CHARGE: "списание",
         OP_RELEASE: "возврат резерва",
+        OP_MANUAL_DEBIT: "ручное списание",
     }
     return labels.get(operation, operation)
 

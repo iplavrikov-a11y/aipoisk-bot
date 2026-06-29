@@ -15,6 +15,7 @@ from app.billing import (
     charge_job_reservation,
     client_balance_summary,
     client_uses_trial_access,
+    debit_package_units,
     expire_stale_confirmations,
     grant_package_units,
     job_has_unsettled_reservation,
@@ -67,6 +68,24 @@ class BillingLedgerTests(unittest.TestCase):
 
             self.assertTrue(client.is_trial)
             self.assertFalse(client_uses_trial_access(db, client))
+        finally:
+            db.close()
+
+    def test_manual_debit_reduces_available_without_counting_as_job_spend(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="100")
+            db.add(client)
+            db.commit()
+
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=5)
+            debit_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=2, note="wrong client correction")
+            counter = balance_counter(db, client, KIND_SUPPLIER_SEARCH)
+
+            self.assertEqual(counter["granted"], 5)
+            self.assertEqual(counter["manual_debited"], 2)
+            self.assertEqual(counter["available"], 3)
+            self.assertEqual(counter["spent"], 0)
         finally:
             db.close()
 

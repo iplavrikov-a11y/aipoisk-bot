@@ -17,6 +17,7 @@ import {
   Loader2,
   LogIn,
   MemoryStick,
+  Minus,
   Play,
   Plus,
   RefreshCw,
@@ -84,6 +85,7 @@ type UsageCounter = {
   reserved: number
   spent: number
   granted: number
+  manual_debited: number
   source: string
   low: boolean
 }
@@ -148,6 +150,7 @@ type GrantDraft = {
   kind: string
   units: string
   note: string
+  operation: 'grant' | 'debit'
 }
 
 type Job = {
@@ -338,7 +341,7 @@ type BotAnalytics = {
     daily: Array<{ date: string; supplier_search: number; procurement_report: number; analysis_and_suppliers: number; total: number }>
   }
   billing: {
-    period: Array<{ kind: string; label: string; granted: number; reserved: number; charged: number; released: number }>
+    period: Array<{ kind: string; label: string; granted: number; reserved: number; charged: number; released: number; manual_debited: number }>
     payment_provider: string
     yookassa_ready: boolean
   }
@@ -472,7 +475,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   clients: {
     title: 'Клиенты',
-    description: 'Клиенты из Telegram и сайта, баланс генераций и ручные начисления.',
+    description: 'Клиенты из Telegram и сайта, баланс генераций и ручные корректировки.',
   },
   jobs: {
     title: 'Задачи',
@@ -480,7 +483,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   billing: {
     title: 'Тарифы',
-    description: 'Пакеты как витрина и произвольные начисления клиентам.',
+    description: 'Пакеты как витрина и произвольные ручные корректировки клиентам.',
   },
   settings: {
     title: 'Настройки',
@@ -1327,7 +1330,7 @@ function ClientsView({
     })
   }
   function grantDraft(client: Client) {
-    return grantForms[client.id] || { package_id: '', kind: 'supplier_search', units: '1', note: '' }
+    return grantForms[client.id] || { package_id: '', kind: 'supplier_search', units: '1', note: '', operation: 'grant' }
   }
   function setGrantDraft(client: Client, patch: Partial<GrantDraft>) {
     const current = grantDraft(client)
@@ -1339,27 +1342,32 @@ function ClientsView({
     setGrantForms({
       ...grantForms,
       [client.id]: selected
-        ? { ...current, package_id: packageId, kind: selected.kind, units: String(selected.units) }
+        ? { ...current, package_id: packageId, kind: selected.kind, units: String(selected.units), operation: 'grant' }
         : { ...current, package_id: '' },
     })
   }
-  function quickGrant(client: Client, kind: string, units: number) {
+  function quickGrant(client: Client, kind: string, units: number, operation: 'grant' | 'debit' = 'grant') {
     setGrantForms({
       ...grantForms,
-      [client.id]: { package_id: '', kind, units: String(units), note: '' },
+      [client.id]: { package_id: '', kind, units: String(units), note: '', operation },
     })
   }
   async function grantUnits(client: Client) {
     const draft = grantDraft(client)
-    const selected = activeTariffs.find(item => item.id === draft.package_id)
+    const selected = draft.operation === 'grant' ? activeTariffs.find(item => item.id === draft.package_id) : undefined
     const units = Math.floor(Number(draft.units))
     if (!Number.isFinite(units) || units < 1) return
     const packageId = selected && selected.kind === draft.kind && selected.units === units ? selected.id : ''
+    if (draft.operation === 'debit') {
+      const available = availableBillingUnits(client, draft.kind)
+      if (available !== null && units > available) return
+      if (!window.confirm(`Списать ${units} ${humanBillingKind(draft.kind).toLowerCase()} у клиента «${clientDisplayName(client)}»?`)) return
+    }
     await api(`/api/clients/${client.id}/billing/grants`, {
       method: 'POST',
-      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: '' }),
+      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: '', operation: draft.operation }),
     })
-    setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '' } })
+    setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '', operation: draft.operation } })
     await onChange()
   }
   async function verifyWebUserEmail(client: Client, user: WebUser) {
@@ -1449,6 +1457,7 @@ function ClientsView({
           const webUsers = client.web_users?.length ? client.web_users : []
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
+          const debitAvailable = availableBillingUnits(client, grant.kind)
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
           return (
@@ -1545,6 +1554,13 @@ function ClientsView({
                   )}
                   <div className="manual-grant-panel">
                     <label className="mini-field">
+                      <span>Действие</span>
+                      <select value={grant.operation} onChange={e => setGrantDraft(client, { operation: e.target.value as 'grant' | 'debit', package_id: '' })}>
+                        <option value="grant">Начислить</option>
+                        <option value="debit">Списать</option>
+                      </select>
+                    </label>
+                    <label className="mini-field">
                       <span>Тип</span>
                       <select value={grant.kind} onChange={e => setGrantDraft(client, { kind: e.target.value, package_id: '' })}>
                         <option value="supplier_search">Поставщики</option>
@@ -1556,18 +1572,30 @@ function ClientsView({
                       <input type="number" min={1} step={1} value={grant.units} onChange={e => setGrantDraft(client, { units: e.target.value, package_id: '' })} />
                     </label>
                     <div className="quick-grants">
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 1)}>+1</button>
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 10)}>+10</button>
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 50)}>+50</button>
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 1, grant.operation)}>{grant.operation === 'debit' ? '-1' : '+1'}</button>
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 10, grant.operation)}>{grant.operation === 'debit' ? '-10' : '+10'}</button>
+                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 50, grant.operation)}>{grant.operation === 'debit' ? '-50' : '+50'}</button>
                     </div>
-                    <label className="mini-field grant-package-field">
-                      <span>Пакет</span>
-                      <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
-                        <option value="">Вручную</option>
-                        {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
-                      </select>
-                    </label>
-                    <button onClick={() => void grantUnits(client)} disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1}><Plus size={16} />Начислить</button>
+                    {grant.operation === 'grant' && (
+                      <label className="mini-field grant-package-field">
+                        <span>Пакет</span>
+                        <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
+                          <option value="">Вручную</option>
+                          {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    {grant.operation === 'debit' && debitAvailable !== null && (
+                      <div className="inline-note grant-available-note">Доступно для списания: {debitAvailable}</div>
+                    )}
+                    <button
+                      className={grant.operation === 'debit' ? 'danger' : undefined}
+                      onClick={() => void grantUnits(client)}
+                      disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1 || (grant.operation === 'debit' && debitAvailable !== null && Number(grant.units) > debitAvailable)}
+                    >
+                      {grant.operation === 'debit' ? <Minus size={16} /> : <Plus size={16} />}
+                      {grant.operation === 'debit' ? 'Списать' : 'Начислить'}
+                    </button>
                   </div>
                 </div>
 
@@ -1673,12 +1701,17 @@ function usageSummaryText(counter: UsageCounter) {
   return `${counter.available ?? 'без лимита'} доступно`
 }
 
+function availableBillingUnits(client: Client, kind: string) {
+  const counter = kind === 'procurement_report' ? client.usage?.procurement_report : client.usage?.supplier_search
+  return counter?.available ?? null
+}
+
 function BalanceLine({ counter }: { counter: UsageCounter }) {
   return (
     <div className={counter.low ? 'balance-line warning' : 'balance-line'}>
       <div>
         <strong>{counter.label}</strong>
-        <small>начислено {counter.granted} · списано {counter.spent} · резерв {counter.reserved}</small>
+        <small>начислено {counter.granted} · списано {counter.spent} · коррекция {counter.manual_debited || 0} · резерв {counter.reserved}</small>
       </div>
       <span>{counter.available ?? 'без лимита'}</span>
     </div>

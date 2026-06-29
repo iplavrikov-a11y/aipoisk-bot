@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-26
+Date: 2026-06-29
 
 ## Current Production State
 
@@ -103,12 +103,18 @@ Current admin capabilities:
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
 - customer cards show real linked Telegram accounts, available balance,
-  reserved units, spent units, manual grants, and collapsed billing history;
+  reserved units, spent units, manual grants, manual balance debits, and
+  collapsed billing history;
 - website-cabinet service markers such as `web:<id>` and website-trial notes are
   hidden from the owner-facing client card;
 - the owner can create clients by Telegram username before the real Telegram ID
   is known, edit linked Telegram accounts, grant arbitrary units by function,
-  and delete extra Telegram accounts;
+  debit wrongly granted available units by function, and delete extra Telegram
+  accounts;
+- manual balance debits are stored as `manual_debit` ledger rows. They reduce
+  available balance, are visible in billing history, are rejected when the debit
+  would exceed the current available balance, and do not count as customer job
+  spend;
 - if a manager first used the bot as a separate trial customer, the owner can
   move that existing Telegram account into the correct customer card after
   explicit confirmation. A single-account trial customer is merged with its job

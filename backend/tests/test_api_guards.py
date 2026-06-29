@@ -747,6 +747,44 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(result["transaction"]["units"], 1012)
         self.assertEqual(result["client"]["usage"]["supplier_search"]["available"], 1012)
 
+    def test_manual_billing_debit_reduces_available_and_rejects_overdraft(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="778"), db=db)
+            grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="procurement_report", units=4),
+                db=db,
+            )
+            result = grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="procurement_report", units=2, operation="debit", note="wrong client correction"),
+                db=db,
+            )
+            with self.assertRaises(HTTPException) as raised:
+                grant_client_billing_units(
+                    client_payload["id"],
+                    BillingGrantCreate(kind="procurement_report", units=3, operation="debit"),
+                    db=db,
+                )
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transaction"]["operation"], "manual_debit")
+        self.assertEqual(result["transaction"]["operation_label"], "ручное списание")
+        self.assertEqual(result["client"]["usage"]["procurement_report"]["available"], 2)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Недостаточно доступных генераций", str(raised.exception.detail))
+
     def test_delete_client_removes_client_without_history(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker

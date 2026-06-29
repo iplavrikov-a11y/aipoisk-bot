@@ -500,6 +500,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 }
 .manual-grant-panel .grant-package-field,
 .manual-grant-panel > button { grid-column: 1 / -1; }
+.manual-grant-panel .grant-available-note { grid-column: 1 / -1; }
 .manual-grant-panel input,
 .manual-grant-panel select { min-height: 34px; padding: 6px 8px; font-size: 12px; }
 .manual-grant-panel button { justify-content: center; width: 100%; }

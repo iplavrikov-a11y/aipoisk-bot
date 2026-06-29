@@ -27,6 +27,7 @@ from .billing import (
     charge_job_reservation,
     client_balance_summary,
     client_uses_trial_access,
+    debit_package_units,
     expire_stale_confirmations,
     grant_package_units,
     release_job_reservation,
@@ -888,22 +889,40 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     package = db.get(TariffPackage, data.package_id) if data.package_id else None
+    operation = (data.operation or "grant").strip().lower()
+    if operation not in {"grant", "debit", "manual_debit"}:
+        raise HTTPException(status_code=400, detail="Unknown billing operation")
     if data.package_id and not package:
         raise HTTPException(status_code=404, detail="Tariff package not found")
+    if package and operation != "grant":
+        raise HTTPException(status_code=400, detail="Tariff package can only be used for grants")
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
     if kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown billing kind")
-    note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
-    transaction = grant_package_units(
-        db,
-        client,
-        kind=kind,
-        units=units,
-        package_id=package.id if package else data.package_id,
-        note=note,
-        created_by="admin",
-    )
+    try:
+        if operation == "grant":
+            note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
+            transaction = grant_package_units(
+                db,
+                client,
+                kind=kind,
+                units=units,
+                package_id=package.id if package else data.package_id,
+                note=note,
+                created_by="admin",
+            )
+        else:
+            transaction = debit_package_units(
+                db,
+                client,
+                kind=kind,
+                units=units,
+                note=data.note or "Ручное списание пакета",
+                created_by="admin",
+            )
+    except BillingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.refresh(client)
     return {
         "success": True,
@@ -1850,7 +1869,7 @@ def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict
         kind = str(item.kind or "")
         row = rows.setdefault(
             kind,
-            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0},
+            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0, "manual_debited": 0},
         )
         units = int(item.units or 0)
         if item.operation == "grant":
@@ -1861,6 +1880,8 @@ def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict
             row["charged"] += units
         elif item.operation == "release":
             row["released"] += units
+        elif item.operation == "manual_debit":
+            row["manual_debited"] += units
     return sorted(rows.values(), key=lambda item: item["label"])
 
 
@@ -2710,15 +2731,17 @@ def client_usage_summary(db: Session, client: Client) -> dict:
 
 def usage_counter_from_balance(counter: dict) -> dict:
     granted = int(counter.get("granted") or 0)
+    manual_debited = int(counter.get("manual_debited") or 0)
     spent = int(counter.get("spent") or 0)
     available = counter.get("available")
     reserved = int(counter.get("reserved") or 0)
     unlimited = bool(counter.get("unlimited"))
-    percent = 0 if unlimited or granted <= 0 else min(100, round((spent + reserved) * 100 / granted))
+    effective_limit = max(0, granted - manual_debited)
+    percent = 0 if unlimited or effective_limit <= 0 else min(100, round((spent + reserved) * 100 / effective_limit))
     return {
         "label": counter.get("label") or billing_kind_label(str(counter.get("kind") or "")),
         "used": spent,
-        "limit": granted,
+        "limit": effective_limit,
         "remaining": available,
         "unlimited": unlimited,
         "percent": percent,
@@ -2726,6 +2749,7 @@ def usage_counter_from_balance(counter: dict) -> dict:
         "reserved": reserved,
         "spent": spent,
         "granted": granted,
+        "manual_debited": manual_debited,
         "source": counter.get("source") or "ledger",
         "low": bool(counter.get("low")),
     }

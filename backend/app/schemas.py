@@ -181,3 +181,4 @@ class BillingGrantCreate(BaseModel):
     units: int = Field(default=1, ge=1, le=100000)
     package_id: str = ""
     note: str = ""
+    operation: str = "grant"
