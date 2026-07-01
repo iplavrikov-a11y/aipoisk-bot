@@ -29,7 +29,9 @@ BLOCKED_DOMAINS = {
     "allbiz.ru",
     "all-pribors.ru",
     "alibaba.com",
+    "analitikamed.ru",
     "avito.ru",
+    "awindex.ru",
     "b2b.house",
     "b2b-postavki.ru",
     "barahla.net",
@@ -39,6 +41,7 @@ BLOCKED_DOMAINS = {
     "cntd.ru",
     "edufire37.ru",
     "dprom.online",
+    "dzen.ru",
     "eb24.ru",
     "exportv.ru",
     "flagma.ru",
@@ -65,6 +68,7 @@ BLOCKED_DOMAINS = {
     "ozon.ru",
     "paluba.media",
     "opt-union.ru",
+    "poisktenderov.ru",
     "poleznayamodel.ru",
     "prostanki.com",
     "pulscen.ru",
@@ -74,6 +78,7 @@ BLOCKED_DOMAINS = {
     "qrrussia.ru",
     "rostender.info",
     "rts-tender.ru",
+    "ruscable.ru",
     "rutube.ru",
     "reestrinform.ru",
     "rusprofile.ru",
@@ -90,7 +95,11 @@ BLOCKED_DOMAINS = {
     "tenderguru.ru",
     "tebiz.ru",
     "tektorg.ru",
+    "tenderer.ru",
+    "tenderhq.ru",
+    "tendermedia.ru",
     "tiu.ru",
+    "torgs.ru",
     "tradedir.ru",
     "tgko.ru",
     "wildberries.ru",
@@ -102,6 +111,7 @@ BLOCKED_DOMAINS = {
     "yandex.ru",
     "ya.ru",
     "zakupki.gov.ru",
+    "zakupki44fz.ru",
     "zakupki360.ru",
     "b2b-center.ru",
     "bicotender.ru",
@@ -148,6 +158,7 @@ class ProcurementItem:
     id: str
     name: str
     aliases: tuple[str, ...] = ()
+    okpd2_codes: tuple[str, ...] = ()
     category_terms: tuple[str, ...] = ()
     exact_terms: tuple[str, ...] = ()
     required_terms: tuple[str, ...] = ()
@@ -184,6 +195,16 @@ class MinpromRegistryContext:
     entries: tuple[dict, ...] = ()
     status: str = "not_required"
     error: str = ""
+
+
+SUPPLIER_POLICY_NORMAL = "normal"
+SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
+SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
+VALID_SUPPLIER_SEARCH_POLICIES = {
+    SUPPLIER_POLICY_NORMAL,
+    SUPPLIER_POLICY_MINPROM_ONLY,
+    SUPPLIER_POLICY_MINPROM_PRIORITY,
+}
 
 
 def base_domain(url_or_domain: str) -> str:
@@ -238,6 +259,7 @@ async def assess_minprom_registry_requirement(settings: SystemSettings, context:
 Правило:
 - required=true только если документы прямо указывают действующий запрет или обязательную поставку товара из реестра российской промышленной продукции / ГИСП / Минпромторга;
 - required=false при ограничении, преимуществе, неприменении меры или если требование не найдено;
+- если при запрете указаны ОКПД2, ПП 719, совокупное количество баллов, реестровая запись или выписка из реестра российской промышленной продукции, это существенные признаки required=true;
 - не делай вывод по одному слову "Минпромторг" без практического требования к заявке/товару.
 
 Ответ строго JSON:
@@ -306,11 +328,18 @@ async def build_minprom_registry_queries(
 ) -> list[str]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for Minprom registry query generation")
+    code_queries = _build_minprom_registry_code_queries(profile)
     prompt = f"""Сформируй запросы для поиска товара/производителей в реестре российской промышленной продукции Минпромторга/ГИСП.
 
 Нужно искать номенклатуру и производителей, а не номер закупки и не площадку.
+Используй несколько опор: полное наименование товара, очищенную товарную группу, модель/марку, производителя, ИНН/ОГРН, а также ОКПД2.
+Если в профиле есть ОКПД2, добавляй запросы по полному коду и родительским уровням кода, потому что требования ПП 719 могут быть заданы на уровне вида, подгруппы, группы или подкласса.
+Если для товара в ПП 719 есть балльная система, запросы должны помогать найти запись с совокупным количеством баллов и актуальным сроком действия.
 Ответ строго JSON:
 {{"queries": ["короткий запрос 1", "короткий запрос 2"]}}
+
+Обязательные кодовые запросы, которые уже нужно учесть:
+{json.dumps(code_queries, ensure_ascii=False)}
 
 Основание требования:
 {json.dumps(_minprom_requirement_to_dict(requirement), ensure_ascii=False)}
@@ -330,15 +359,18 @@ async def build_minprom_registry_queries(
         timeout_seconds=90,
     )
     parsed = parse_json_object(raw)
-    queries = [str(item).strip() for item in parsed.get("queries", []) if str(item).strip()]
-    return list(dict.fromkeys(queries))[:8]
+    ai_queries = [str(item).strip() for item in parsed.get("queries", []) if str(item).strip()]
+    return _clean_supplier_queries(code_queries + ai_queries)[:16]
 
 
 async def search_minprom_registry_entries(queries: list[str], *, max_results: int = 25) -> list[dict]:
     entries: list[dict] = []
     seen: set[str] = set()
     for query in queries[:8]:
-        found = await _search_gisp_registry_page(query, max_results=max_results)
+        try:
+            found = await _search_gisp_registry_page(query, max_results=max_results)
+        except Exception as exc:
+            raise RuntimeError(f"GISP registry search failed for query {query!r}: {_exception_summary(exc)}") from exc
         for item in found:
             key = "|".join(str(item.get(field) or "").lower() for field in ("registry_number", "manufacturer", "product"))
             if key in seen:
@@ -356,28 +388,25 @@ async def _search_gisp_registry_page(query: str, *, max_results: int) -> list[di
     try:
         from playwright.async_api import async_playwright  # type: ignore
     except ImportError:
-        return []
-    try:
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-            try:
-                page = await browser.new_page(user_agent="TenderLex minprom registry parser")
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(2000)
-                inputs = await page.query_selector_all("input")
-                for input_el in inputs[:5]:
-                    try:
-                        await input_el.fill(query)
-                        await page.keyboard.press("Enter")
-                        await page.wait_for_timeout(2500)
-                        break
-                    except Exception:
-                        continue
-                page_text = await page.evaluate("document.body.innerText")
-            finally:
-                await browser.close()
-    except Exception:
-        return []
+        raise RuntimeError("Playwright is required for GISP registry search") from None
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            page = await browser.new_page(user_agent="TenderLex minprom registry parser")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+            inputs = await page.query_selector_all("input")
+            for input_el in inputs[:5]:
+                try:
+                    await input_el.fill(query)
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(2500)
+                    break
+                except Exception:
+                    continue
+            page_text = await page.evaluate("document.body.innerText")
+        finally:
+            await browser.close()
     return _parse_gisp_registry_text(page_text, query=query, source_url=url, max_results=max_results)
 
 
@@ -432,6 +461,7 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
       "id": "item-1",
       "name": "основная закупаемая позиция",
       "aliases": ["марки, модели, русские/английские варианты, аналоги"],
+      "okpd2_codes": ["ОКПД2 коды из ТЗ/карточки, если есть"],
       "category_terms": ["широкая товарная группа/номенклатура для поиска производителей и поставщиков"],
       "exact_terms": ["точные размеры, ГОСТ, тип, марка, модель, артикул, если они важны"],
       "required_terms": ["термины, которые помогают подтвердить соответствие сайта"],
@@ -536,6 +566,7 @@ async def discover_suppliers(
     *,
     progress_callback: ProgressCallback | None = None,
     excluded_suppliers: list[dict] | None = None,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -543,15 +574,33 @@ async def discover_suppliers(
     await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
     profile = await build_procurement_profile(settings, context)
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
+    policy = normalize_supplier_search_policy(supplier_search_policy)
     await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
-    minprom_requirement = await assess_minprom_registry_requirement(settings, context)
+    if policy == SUPPLIER_POLICY_NORMAL:
+        minprom_requirement = await assess_minprom_registry_requirement(settings, context)
+    else:
+        minprom_requirement = MinpromRegistryRequirement(
+            required=True,
+            measure_type="prohibition" if policy == SUPPLIER_POLICY_MINPROM_ONLY else "restriction",
+            evidence="Ручной выбор клиента",
+            reason="Клиент выбрал режим поиска с учетом реестровой записи Минпромторга.",
+            raw={"manual_policy": policy},
+        )
     if minprom_requirement.required:
         await _emit_progress(progress_callback, 41, "Ищу подтверждения в реестре промышленной продукции")
         minprom_context = await discover_minprom_registry_context(settings, context, profile, minprom_requirement)
     else:
         minprom_context = MinpromRegistryContext(requirement=minprom_requirement, status="not_required")
+    registry_unavailable = policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY} and minprom_context.status == "error"
     await _emit_progress(progress_callback, 42, "Подбираю поисковые запросы")
-    queries = await build_supplier_queries(settings, context, target, profile=profile)
+    general_queries = await build_supplier_queries(settings, context, target, profile=profile)
+    minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context)
+    if registry_unavailable:
+        queries = []
+    elif policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        queries = minprom_supplier_queries
+    else:
+        queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries)
     await _emit_progress(progress_callback, 50, f"Ищу сайты поставщиков: поисковых запросов {len(queries)}")
     candidates, search_meta = await discover_candidates(
         settings,
@@ -562,7 +611,7 @@ async def discover_suppliers(
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
     candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(target * 5, 60)]
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
-    rerank = await ai_rerank_candidates(settings, profile, candidates, target)
+    rerank = await ai_rerank_candidates(settings, profile, candidates, target, registry_context=minprom_context)
     candidates = rerank.candidates
     await _emit_progress(progress_callback, 72, f"Проверяю сайты и контакты: кандидатов {len(candidates)}")
     accepted, reviewed, review_meta = await _review_candidates_until_target(
@@ -620,6 +669,7 @@ async def discover_suppliers(
                     profile,
                     recovery_candidates,
                     max(1, target - len(accepted)),
+                    registry_context=minprom_context,
                 )
                 recovery_accepted, recovery_reviewed, recovery_review_meta = await _review_candidates_until_target(
                     settings,
@@ -662,6 +712,8 @@ async def discover_suppliers(
         recovery_rounds.append(recovery_round)
         # Merge recovery queries into main list so next round generates different queries
         queries = queries + recovery_queries
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
 
     evidence = {
@@ -676,6 +728,8 @@ async def discover_suppliers(
         ],
         "acceptance_policy": "Supplier rows are accepted only after AI verifier returns action=accept with verified evidence.",
         "target": target,
+        "supplier_search_policy": policy,
+        "registry_unavailable_no_charge": bool(registry_unavailable),
         "excluded_suppliers": {
             "count": len(excluded_suppliers or []),
             "domains": sorted(excluded_domains),
@@ -683,6 +737,7 @@ async def discover_suppliers(
         },
         "procurement_profile": _profile_to_dict(profile),
         "minprom_registry": _minprom_context_to_dict(minprom_context),
+        "minprom_supplier_queries": minprom_supplier_queries,
         "search_provider": "multi",
         "search": search_meta,
         "candidate_rerank": rerank.meta,
@@ -707,6 +762,36 @@ async def discover_suppliers(
     return accepted, evidence
 
 
+def normalize_supplier_search_policy(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in VALID_SUPPLIER_SEARCH_POLICIES else SUPPLIER_POLICY_NORMAL
+
+
+def _filter_minprom_verified_suppliers(accepted: list[dict], registry_context: MinpromRegistryContext) -> list[dict]:
+    if registry_context.status != "ok" or not registry_context.entries:
+        return []
+    return [item for item in accepted if _supplier_has_minprom_registry_evidence(item, registry_context)]
+
+
+def _supplier_has_minprom_registry_evidence(item: dict, registry_context: MinpromRegistryContext) -> bool:
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("name", "company", "site", "product", "comments", "inn")
+    ).lower()
+    if not haystack:
+        return False
+    if re.search(r"минпромторг|гисп|реестров", haystack):
+        return True
+    for entry in registry_context.entries:
+        manufacturer = str(entry.get("manufacturer") or "").strip().lower()
+        registry_number = str(entry.get("registry_number") or "").strip().lower()
+        inn = str(entry.get("inn") or "").strip().lower()
+        for token in (manufacturer, registry_number, inn):
+            if token and len(token) >= 5 and token in haystack:
+                return True
+    return False
+
+
 async def extract_supplier_search_context(settings: SystemSettings, context: str) -> str:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search context extraction")
@@ -716,6 +801,7 @@ async def extract_supplier_search_context(settings: SystemSettings, context: str
 - техническое задание, описание объекта закупки, спецификацию или товарную таблицу;
 - наименования закупаемых товаров/номенклатуры;
 - характеристики, размеры, ГОСТ/ТУ/марки/модели/бренды, если они важны для проверки;
+- ОКПД2, КТРУ, реестровые номера, сведения о баллах Минпромторга и сроке действия записи как внутренние признаки для поиска;
 - единицы измерения и количества;
 - требования к Минпромторгу/ГИСП/реестровым записям, если они есть;
 - краткий предмет закупки.
@@ -794,6 +880,13 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 id=item_id,
                 name=name[:220],
                 aliases=_clean_profile_terms(item.get("aliases")),
+                okpd2_codes=_clean_okpd2_codes(
+                    item.get("okpd2_codes")
+                    or item.get("okpd2")
+                    or item.get("okpd_codes")
+                    or item.get("classification_codes")
+                    or f"{name} {' '.join(str(value) for value in item.values())}"
+                ),
                 category_terms=_clean_profile_terms(
                     item.get("category_terms") or item.get("nomenclature_terms") or item.get("supplier_category_terms")
                 ),
@@ -826,6 +919,50 @@ def _clean_profile_terms(value: object) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _clean_okpd2_codes(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (list, tuple, set)):
+        text = " ".join(str(item) for item in value)
+    else:
+        text = str(value or "")
+    result: list[str] = []
+    for match in re.finditer(r"\b\d{2}(?:\.\d{1,3}){1,3}\b", text):
+        code = match.group(0).strip(".")
+        if code and code not in result:
+            result.append(code)
+    return tuple(result)
+
+
+def _okpd2_hierarchy_codes(code: str) -> tuple[str, ...]:
+    parts = [part for part in str(code or "").split(".") if part]
+    if len(parts) < 2 or not all(part.isdigit() for part in parts):
+        return ()
+    candidates: list[str] = [".".join(parts)]
+    if len(parts) >= 3:
+        candidates.append(".".join(parts[:3]))
+        if len(parts[2]) > 1:
+            candidates.append(".".join([parts[0], parts[1], parts[2][0]]))
+    candidates.append(".".join(parts[:2]))
+    if len(parts[1]) > 1:
+        candidates.append(".".join([parts[0], parts[1][0]]))
+    result: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in result:
+            result.append(candidate)
+    return tuple(result)
+
+
+def _profile_okpd2_hierarchy_codes(profile: ProcurementProfile) -> list[str]:
+    result: list[str] = []
+    for item in profile.items:
+        for code in item.okpd2_codes:
+            for candidate in _okpd2_hierarchy_codes(code):
+                if candidate not in result:
+                    result.append(candidate)
+    return result
+
+
 def _profile_to_dict(profile: ProcurementProfile) -> dict:
     return {
         "summary": profile.summary,
@@ -834,6 +971,7 @@ def _profile_to_dict(profile: ProcurementProfile) -> dict:
                 "id": item.id,
                 "name": item.name,
                 "aliases": list(item.aliases),
+                "okpd2_codes": list(item.okpd2_codes),
                 "category_terms": list(item.category_terms),
                 "exact_terms": list(item.exact_terms),
                 "required_terms": list(item.required_terms),
@@ -863,6 +1001,182 @@ def _minprom_context_to_dict(context: MinpromRegistryContext) -> dict:
         "entries": list(context.entries)[:20],
         "error": context.error,
     }
+
+
+def _build_minprom_registry_code_queries(profile: ProcurementProfile, *, limit: int = 10) -> list[str]:
+    queries: list[str] = []
+    primary_terms = _minprom_profile_query_terms(profile)[:2]
+    for code in _profile_okpd2_hierarchy_codes(profile)[:8]:
+        queries.extend(
+            [
+                f"ОКПД2 {code} реестр Минпромторга",
+                f'"{code}" ПП 719 баллы',
+                f'"{code}" реестр российской промышленной продукции',
+            ]
+        )
+        if primary_terms:
+            queries.append(f'"{primary_terms[0]}" ОКПД2 {code} ГИСП')
+    return _clean_supplier_queries(queries)[:limit]
+
+
+def _build_minprom_supplier_code_queries(profile: ProcurementProfile, *, limit: int = 8) -> list[str]:
+    queries: list[str] = []
+    primary_terms = _minprom_profile_query_terms(profile)[:2]
+    for code in _profile_okpd2_hierarchy_codes(profile)[:6]:
+        queries.extend(
+            [
+                f"ОКПД2 {code} \"реестр Минпромторга\" производитель",
+                f'"{code}" "реестровая запись" производитель',
+                f'"{code}" "ПП 719" производитель',
+            ]
+        )
+        if primary_terms:
+            queries.append(f'"{primary_terms[0]}" ОКПД2 {code} производитель')
+    return _clean_supplier_queries(queries)[:limit]
+
+
+def _build_minprom_supplier_queries(
+    profile: ProcurementProfile,
+    registry_context: MinpromRegistryContext,
+    *,
+    limit: int = 14,
+) -> list[str]:
+    if not registry_context.requirement.required:
+        return []
+
+    queries: list[str] = []
+    for entry in registry_context.entries[:8]:
+        manufacturer = _clean_minprom_query_term(entry.get("manufacturer"))
+        product = _clean_minprom_query_term(entry.get("product"))
+        registry_number = _clean_minprom_query_term(entry.get("registry_number"))
+        if manufacturer:
+            queries.extend(
+                [
+                    f'"{manufacturer}" официальный сайт',
+                    f'"{manufacturer}" производитель',
+                    f'"{manufacturer}" Минпромторг',
+                ]
+            )
+            if product:
+                queries.append(f'"{manufacturer}" "{product}"')
+        if product:
+            queries.extend(
+                [
+                    f'"{product}" реестр Минпромторга',
+                    f'"{product}" ГИСП поставщик',
+                    f'"{product}" производитель',
+                ]
+            )
+        if registry_number:
+            queries.append(f'"{registry_number}" Минпромторг')
+
+    code_queries_inserted = False
+    for term in _minprom_profile_query_terms(profile)[:8]:
+        queries.extend(
+            [
+                f'"{term}" "реестр Минпромторга" производитель',
+                f'"{term}" "реестровая запись" производитель',
+                f"{term} российский производитель",
+                f'"{term}" официальный сайт',
+                f'"{term}" ГИСП производитель',
+            ]
+        )
+        if not code_queries_inserted:
+            queries.extend(_build_minprom_supplier_code_queries(profile))
+            code_queries_inserted = True
+    if not code_queries_inserted:
+        queries.extend(_build_minprom_supplier_code_queries(profile))
+    return _clean_supplier_queries(queries)[:limit]
+
+
+def _merge_supplier_query_tracks(general_queries: list[str], minprom_queries: list[str]) -> list[str]:
+    if not minprom_queries:
+        return general_queries
+    # Put a small Minprom-focused track first so provider query limits do not hide it behind generic searches.
+    prioritized = minprom_queries[:6] + general_queries + minprom_queries[6:]
+    return _clean_supplier_queries(prioritized)[:36]
+
+
+def _minprom_profile_query_terms(profile: ProcurementProfile) -> list[str]:
+    terms: list[str] = []
+    for item in profile.items:
+        candidates = (
+            *item.category_terms,
+            *item.aliases,
+            *item.exact_terms,
+            *item.required_terms,
+            item.name,
+        )
+        for candidate in candidates:
+            term = _clean_minprom_query_term(candidate)
+            if term and term.lower() not in [existing.lower() for existing in terms]:
+                terms.append(term)
+    summary = _clean_minprom_query_term(profile.summary)
+    if summary and summary.lower() not in [existing.lower() for existing in terms]:
+        terms.append(summary)
+    return terms
+
+
+def _clean_minprom_query_term(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" .,:;\"'")
+    if not text:
+        return ""
+    text = _normalize_procurement_title_for_minprom_query(text)
+    text = re.sub(
+        r"^(?:наименование|продукция|товар|производитель|изготовитель|реестровая запись|номер записи)\s*[:№-]\s*",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" .,:;\"'")
+    if " | " in text:
+        parts = [part.strip(" .,:;\"'") for part in text.split(" | ")]
+        product_like = [
+            part
+            for part in parts
+            if 4 <= len(part) <= 140
+            and not re.search(r"\b(?:инн|огрн|реестр|запись|дата|номер)\b", part, re.I)
+        ]
+        if product_like:
+            text = product_like[0]
+    if len(text) < 4 or len(text) > 140:
+        return ""
+    if _is_generic_supplier_anchor(text.lower()):
+        return ""
+    return text
+
+
+def _normalize_procurement_title_for_minprom_query(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip(" .,:;\"'")
+    normalized = re.sub(
+        r"^(?:эа\s+|ок\s+|зк\s+)?(?:на\s+)?(?:поставка|поставку|приобретение|закупка)\s+",
+        "",
+        normalized,
+        flags=re.I,
+    ).strip(" .,:;\"'")
+    normalized = re.sub(r"^\d{4}[-/]\d+\s*[=-]\s*", "", normalized).strip(" .,:;\"'")
+    purpose_match = re.search(
+        r"\s+(?:для|в рамках|по адресу)\s+(?:нужд|гбоу|мбоу|гкоу|фгбоу|фку|суд|оснащения|реализации|обеспечения|пункта|заказчик|заказчика|адрес)",
+        normalized,
+        flags=re.I,
+    )
+    if purpose_match:
+        normalized = normalized[: purpose_match.start()].strip(" .,:;\"'")
+    return normalized
+
+
+def _minprom_rerank_context(registry_context: MinpromRegistryContext | None) -> tuple[str, dict]:
+    if not registry_context or not registry_context.requirement.required:
+        return "", {}
+    payload = _minprom_context_to_dict(registry_context)
+    guidance = (
+        "Для этой закупки действует запрет, поэтому реестровая запись Минпромторга/ГИСП важна. "
+        "Выше ранжируй производителей и официальных дилеров, если title/snippet/query совпадают с найденной "
+        "реестровой записью, производителем, товаром или прямо содержат сигналы 'реестр Минпромторга', 'ГИСП', "
+        "'реестровая запись'. Не выбирай сами госреестры, справочники и тендерные страницы. "
+        "Если записей ГИСП в контексте нет, не отклоняй всех поставщиков только из-за отсутствия сигнала в сниппете: "
+        "оставляй релевантных производителей/дилеров для финального аудита."
+    )
+    return guidance, payload
 
 
 def _queries_need_broadening(profile: ProcurementProfile, queries: list[str], target: int) -> bool:
@@ -1029,6 +1343,8 @@ async def ai_rerank_candidates(
     profile: ProcurementProfile,
     candidates: list[Candidate],
     target: int,
+    *,
+    registry_context: MinpromRegistryContext | None = None,
 ) -> CandidateRerank:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier candidate reranking")
@@ -1048,6 +1364,7 @@ async def ai_rerank_candidates(
         for index, candidate in enumerate(candidates[:limit])
     ]
     desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
+    minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
     prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
 
 Нужно выбрать широкий пул кандидатов для дальнейшей ИИ-проверки сайтов и контактов, а не только точные товарные страницы.
@@ -1056,6 +1373,7 @@ async def ai_rerank_candidates(
 Для цели {target} поставщиков желательно оставить до {desired_review_count} кандидатов, если они похожи на сайты компаний.
 Понижай или отклоняй маркетплейсы, агрегаторы, тендеры, реестры, справочники, статьи, видео, учебные страницы и страницы профессий.
 Для multi-item закупки сохрани покрытие разных позиций, если в выдаче есть подходящие кандидаты.
+{minprom_guidance}
 
 Ответ строго JSON:
 {{
@@ -1072,6 +1390,9 @@ async def ai_rerank_candidates(
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Контекст Минпромторга:
+{json.dumps(minprom_payload, ensure_ascii=False)}
 
 Кандидаты:
 {json.dumps(payload_candidates, ensure_ascii=False)}"""
@@ -1106,6 +1427,7 @@ async def ai_rerank_candidates(
                     seen_domains,
                     desired_review_count - len(kept),
                     target,
+                    registry_context=registry_context,
                 )
                 if expanded:
                     kept.extend(expanded)
@@ -1188,6 +1510,8 @@ async def _expand_candidate_rerank_with_ai(
     seen_domains: set[str],
     needed: int,
     target: int,
+    *,
+    registry_context: MinpromRegistryContext | None = None,
 ) -> list[Candidate]:
     remaining = [
         item
@@ -1196,14 +1520,19 @@ async def _expand_candidate_rerank_with_ai(
     ]
     if not remaining or needed <= 0:
         return []
+    minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
     prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
 
 Выбери дополнительно до {needed} сайтов компаний для финального ИИ-аудита.
 Расширяй пул за счет производителей, заводов, дилеров, дистрибьюторов и B2B-поставщиков товарной группы/номенклатуры, даже если в сниппете нет точного размера, ГОСТ, артикула или модели.
 Не выбирай маркетплейсы, агрегаторы, тендеры, реестры, справочники, статьи, видео, учебные и госстраницы.
+{minprom_guidance}
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Контекст Минпромторга:
+{json.dumps(minprom_payload, ensure_ascii=False)}
 
 Кандидаты для дополнительного отбора:
 {json.dumps(remaining, ensure_ascii=False)}
@@ -2050,6 +2379,10 @@ async def verify_candidate(
                 "search_query": candidate.query,
                 "comments": "ИИ-аудит не подтвердил опубликованный телефон или email поставщика.",
             }
+    comments = _sanitize_minprom_comment_claims(
+        (decision.get("comments") or match.reason or "Официальный сайт открыт, релевантность и контакты проверены.") + contact_warning,
+        registry_context,
+    )
     result = {
         "company_name": decision.get("company_name") or candidate.domain,
         "region": decision.get("region") or "",
@@ -2061,7 +2394,7 @@ async def verify_candidate(
         "site": site_url,
         "evidence_url": evidence_url,
         "contact_url": contact_url,
-        "comments": (decision.get("comments") or match.reason or "Официальный сайт открыт, релевантность и контакты проверены.") + contact_warning,
+        "comments": comments,
         "evidence_status": "verified",
         "match_level": _ai_match_level(decision, match.level),
         "procurement_item_id": str(decision.get("procurement_item_id") or candidate.procurement_item_id or ""),
@@ -2080,6 +2413,27 @@ async def verify_candidate(
     result["quality_score"] = score
     result["quality_tier"] = _supplier_quality_tier(score)
     return result
+
+
+def _sanitize_minprom_comment_claims(comment: str, registry_context: MinpromRegistryContext | None) -> str:
+    value = re.sub(r"\s+", " ", str(comment or "")).strip()
+    if not value or not registry_context or not registry_context.requirement.required:
+        return value
+    if registry_context.status == "ok" and registry_context.entries:
+        return value
+    parts = re.split(r"(?<=[.!?])\s+", value)
+    kept = [
+        part.strip()
+        for part in parts
+        if part.strip()
+        and not re.search(
+            r"(?:минпромторг\w*|гисп|реестр\w*|реестров\w*|национальн\w+\s+режим|требован\w+\s+национальн\w+\s+режим)",
+            part,
+            flags=re.I,
+        )
+    ]
+    cleaned = " ".join(kept).strip()
+    return cleaned or "Официальный сайт открыт, релевантность и контакты проверены."
 
 
 async def collect_pages(url: str) -> list[dict]:
@@ -2311,8 +2665,9 @@ async def ai_verify(
 
 Если minprom_registry.required=true:
 - учитывай найденные записи ГИСП/Минпромторга как важное подтверждение товара российского производства;
-- если сайт кандидата является производителем и совпадает с реестровой записью по названию/товару/ИНН, укажи это кратко в comments;
-- если кандидат является дилером/дистрибьютором, принимай его только при релевантном товаре и контактах, но в comments кратко напиши, что нужно запросить подтверждение реестровой записи по товару;
+- положительное подтверждение Минпромторга можно писать только если minprom_registry.status="ok", minprom_registry.entries_count > 0 и сайт кандидата совпадает с конкретной записью по названию/товару/ИНН;
+- если minprom_registry.status="empty" или "error", либо entries_count=0, считай реестровую запись непроверенной: не пиши, что товар включен в реестр, соответствует национальному режиму или что требование Минпромторга выполнено;
+- если кандидат является дилером/дистрибьютором, принимай его только при релевантном товаре и контактах; не пиши в comments повторяющийся отрицательный статус вроде "выписки нет" или "нужно запросить подтверждение" для каждой строки;
 - запрещено писать, что требование Минпромторга выполнено, если связи с записью нет.
 
 	Отклоняй, если совпадение только по комплектующей, стандарту, форме документа, служебному коду, адресу, условиям поставки, новостной/справочной статье или странице без доказательства поставки закупаемого предмета.
@@ -2383,14 +2738,16 @@ def _ai_rejection_reason(decision: dict) -> str:
     confidence_thresholds = {
         "exact": 45,
         "analog": 40,
-        "category": 35,
-        "profile": 50,
+        "category": 55,
+        "profile": 65,
     }
     min_confidence = confidence_thresholds.get(product_fit, 45)
     if normalized_confidence < min_confidence:
         return f"ИИ-аудит отклонил кандидата: низкая уверенность ({normalized_confidence}) для {product_fit} (порог {min_confidence})."
-    # evidence_snippet and contact_evidence_snippet are no longer blocking —
-    # missing snippets will be noted in comments but won't reject the candidate
+    if product_fit in {"category", "profile"}:
+        evidence_snippet = re.sub(r"\s+", " ", str(decision.get("evidence_snippet") or "")).strip()
+        if len(evidence_snippet) < 20:
+            return "ИИ-аудит отклонил кандидата: для профильного совпадения нет фрагмента сайта с подтверждением категории."
     return ""
 
 
@@ -2857,11 +3214,19 @@ def _is_useful_query(query: str) -> bool:
     )
     if any(fragment in lowered for fragment in generic_fragments):
         return False
-    if _contains_blocked_supplier_code(lowered):
+    if _contains_blocked_supplier_code(lowered) and not _is_minprom_okpd_query(lowered):
         return False
     if re.search(r"\b(?:page|table|of|тз)[-\s]?\d+\b", lowered, re.I):
         return False
     return True
+
+
+def _is_minprom_okpd_query(value: str) -> bool:
+    lowered = str(value or "").lower()
+    return "окпд" in lowered and any(
+        marker in lowered
+        for marker in ("реестр минпромторга", "реестр российской промышленной продукции", "пп 719", "гисп")
+    )
 
 
 def _contains_blocked_supplier_code(value: str) -> bool:

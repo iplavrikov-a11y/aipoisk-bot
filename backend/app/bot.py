@@ -36,6 +36,9 @@ from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
+    SUPPLIER_POLICY_MINPROM_ONLY,
+    SUPPLIER_POLICY_MINPROM_PRIORITY,
+    SUPPLIER_POLICY_NORMAL,
     TERMINAL_JOB_STATUSES,
     cleanup_expired_jobs,
     cancel_running_job,
@@ -50,6 +53,7 @@ from .repository import client_access_error, get_or_create_settings, get_or_crea
 
 router = Router()
 PENDING_MODES: dict[int, str] = {}
+PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
@@ -84,16 +88,14 @@ AI_HELP_NOTE = (
     "и технические условия лучше дополнительно сверять по официальным документам."
 )
 INDIVIDUAL_TERMS_NOTE = (
-    "Возможен индивидуальный подход: если нужен больший лимит поставщиков, больше компаний "
-    "в одном поиске или другой объём генераций, напишите нам — настроим условия под вашу задачу."
+    "Возможен индивидуальный подход: стоимость поиска, анализа и добора можно настроить под вашу задачу."
 )
 BOT_PAYMENT_INSTRUCTIONS = (
-    "🧾 Чтобы купить пакет:\n"
-    "1. Выберите нужный пакет в списке выше.\n"
+    "🧾 Чтобы пополнить баланс:\n"
+    "1. Посмотрите стоимость функций выше.\n"
     "2. Напишите владельцу сервиса в Telegram или на email.\n"
-    "3. Укажите название пакета и ваш Telegram ID.\n"
-    "4. После подтверждения оплаты генерации будут начислены вручную.\n\n"
-    "✅ Пакеты не сгорают и действуют до полного исчерпания."
+    "3. Укажите сумму пополнения и ваш Telegram ID.\n"
+    "4. После подтверждения оплаты деньги будут зачислены на баланс."
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
@@ -105,6 +107,7 @@ class PendingBatch:
     mode: str
     files: list[tuple[str, bytes]]
     sources: list[dict] = field(default_factory=list)
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL
 
 
 @dataclass
@@ -133,6 +136,41 @@ def _pending_input_count(pending: PendingBatch) -> int:
 
 def _scenario_accepts_source_links(scenario: str) -> bool:
     return scenario in {SCENARIO_REPORT, SCENARIO_ANALYSIS_AND_SUPPLIERS}
+
+
+def _scenario_uses_supplier_policy(scenario: str) -> bool:
+    return scenario in {SCENARIO_SUPPLIERS, SCENARIO_ANALYSIS_AND_SUPPLIERS}
+
+
+def _supplier_policy_for_chat(chat_id: int) -> str:
+    return PENDING_SUPPLIER_POLICIES.get(chat_id, SUPPLIER_POLICY_NORMAL)
+
+
+def _supplier_policy_label(policy: str) -> str:
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        return "Только реестр"
+    if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
+        return "Реестр в приоритете"
+    return "Обычный поиск"
+
+
+def supplier_policy_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
+            [InlineKeyboardButton(text="Только реестр", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
+            [InlineKeyboardButton(text="Реестр в приоритете", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
+        ]
+    )
+
+
+def _supplier_policy_prompt_text(scenario: str) -> str:
+    prefix = "📄🔎 Анализ + поиск" if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS else "🔎 Поставщики по ТЗ"
+    return (
+        f"{prefix}\n\n"
+        "Выберите режим поиска поставщиков по реестру Минпромторга. "
+        "Если не выбирать, будет обычный поиск."
+    )
 
 
 def _source_link_rejection_text() -> str:
@@ -636,7 +674,7 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
                 _friendly_stage_text(snapshot.message),
                 f"Прошло: {elapsed}",
                 "",
-                "Я не отправлю файл и не спишу генерацию без вашего согласия.",
+                "Я не отправлю файл и не спишу деньги без вашего согласия.",
             ]
         )
     if snapshot.status == STATUS_CUSTOMER_DECLINED:
@@ -713,7 +751,10 @@ def _format_launch_progress(snapshot: JobProgressSnapshot, accepted_text: str) -
 
 
 def _accepted_batch_text(pending: PendingBatch) -> str:
-    return f"✅ Принято: файлов {len(pending.files)}, источников {len(pending.sources)}"
+    details = f"✅ Принято: файлов {len(pending.files)}, источников {len(pending.sources)}"
+    if pending.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        details += f"\nРежим поиска: {_supplier_policy_label(pending.supplier_search_policy)}"
+    return details
 
 
 def _accepted_single_tz_text(*, from_text: bool = False) -> str:
@@ -1024,6 +1065,8 @@ def _contact_message_options() -> dict:
 
 
 def _balance_line(counter: dict) -> str:
+    if int(counter.get("price_kopeks") or 0) > 0:
+        return f"{counter['label']}: {_price_text(counter['price_kopeks'])}"
     return (
         f"{counter['label']}: доступно {counter['available']}, "
         f"в обработке {counter['reserved']}, списано {counter['spent']}"
@@ -1038,11 +1081,14 @@ def _cabinet_text(db, client: Client, settings) -> str:
         f"Статус: {'включён' if client.is_active else 'выключен'}",
         f"Тип: {'бесплатный доступ' if client_uses_trial_access(db, client) else 'клиент'}",
         "",
-        "Баланс генераций:",
+        f"Баланс: {_money_text(balances['money']['available_kopeks'])}",
+        "",
+        "Стоимость функций:",
         _balance_line(balances["supplier_search"]),
         _balance_line(balances["procurement_report"]),
+        _balance_line(balances["supplier_search_extra"]),
     ]
-    low = [item["label"] for item in balances.values() if item.get("low")]
+    low = [item["label"] for item in balances.values() if isinstance(item, dict) and item.get("label") and item.get("low")]
     if low:
         lines.extend(["", f"⚠️ Заканчивается баланс: {', '.join(low)}."])
     lines.extend(["", f"Пополнить пакет можно в разделе «{BUTTON_TARIFFS}»."])
@@ -1064,24 +1110,36 @@ def _price_text(price_kopeks: int) -> str:
     return f"{rubles:,.2f} ₽".replace(",", " ")
 
 
+def _money_text(amount_kopeks: int) -> str:
+    rubles = int(amount_kopeks or 0) / 100
+    if rubles.is_integer():
+        return f"{int(rubles):,} ₽".replace(",", " ")
+    return f"{rubles:,.2f} ₽".replace(",", " ")
+
+
 def _tariffs_text(db, settings) -> str:
     packages = [tariff_to_dict(item) for item in list_tariffs(db, active_only=True)]
     supplier = [item for item in packages if item["kind"] == "supplier_search"]
     reports = [item for item in packages if item["kind"] == "procurement_report"]
+    extra = [item for item in packages if item["kind"] == "supplier_search_extra"]
     lines = [
         "💳 Тарифы и оплата",
         "",
-        "Пакеты не сгорают и действуют до полного исчерпания.",
+        "Пополнение зачисляется на баланс, функции списываются по действующей цене.",
     ]
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
         for item in supplier:
-            lines.append(f"• {html_escape(item['name'])} — {item['units']} генераций, {_price_text(item['price_kopeks'])}")
+            lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
     if reports:
         lines.extend(["", "📄 Анализ документации:"])
         for item in reports:
-            lines.append(f"• {html_escape(item['name'])} — {item['units']} генераций, {_price_text(item['price_kopeks'])}")
-    if not supplier and not reports:
+            lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
+    if extra:
+        lines.extend(["", "🔎 Добор поставщиков:"])
+        for item in extra:
+            lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
+    if not supplier and not reports and not extra:
         lines.extend(["", "Тарифы пока не настроены в админ-панели."])
     lines.extend(["", _bot_payment_instructions(settings)])
     lines.extend(["", INDIVIDUAL_TERMS_NOTE])
@@ -1103,7 +1161,7 @@ def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
         "⚠️ Найдено меньше поставщиков, чем обычно удаётся подготовить по отчёту.\n\n"
         "Я проверил сайты и контакты. В файл попали только подтверждённые компании.\n\n"
         f"Результат: {_friendly_stage_text(snapshot.message)}.\n\n"
-        "Могу отправить отчёт, но после успешной отправки будет списана генерация из пакета.\n\n"
+        "Могу отправить отчёт, но после успешной отправки будет списана стоимость результата.\n\n"
         "Отправить отчёт?"
     )
 
@@ -1141,7 +1199,7 @@ def _find_more_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
 def _find_more_suppliers_confirmation_text() -> str:
     return (
         "Найти ещё поставщиков по этому ТЗ?\n\n"
-        "Будет списана 1 генерация поиска поставщиков. "
+        "Будет списана стоимость добора поставщиков. "
         "Новый поиск исключит уже найденные компании."
     )
 
@@ -1150,7 +1208,7 @@ def _find_more_suppliers_confirmation_keyboard(job_id: str) -> InlineKeyboardMar
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Да, списать 1 генерацию", callback_data=f"find_more_yes:{job_id}"),
+                InlineKeyboardButton(text="✅ Да, запустить добор", callback_data=f"find_more_yes:{job_id}"),
             ],
             [
                 InlineKeyboardButton(text="❌ Отмена", callback_data=f"find_more_no:{job_id}"),
@@ -1261,6 +1319,8 @@ async def supplier_mode(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
     PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS
+    PENDING_SUPPLIER_POLICIES[message.chat.id] = SUPPLIER_POLICY_NORMAL
+    await message.answer(_supplier_policy_prompt_text(SCENARIO_SUPPLIERS), reply_markup=supplier_policy_keyboard())
     await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
 
 
@@ -1315,12 +1375,36 @@ async def analysis_and_suppliers_button(message: Message) -> None:
     if await _reject_trial_restricted_scenario(message, SCENARIO_ANALYSIS_AND_SUPPLIERS):
         return
     PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
+    PENDING_SUPPLIER_POLICIES[message.chat.id] = SUPPLIER_POLICY_NORMAL
+    await message.answer(_supplier_policy_prompt_text(SCENARIO_ANALYSIS_AND_SUPPLIERS), reply_markup=supplier_policy_keyboard())
     await message.answer(
         "📄🔎 Анализ + поиск\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
         "Результат: анализ закупки и отдельный список поставщиков по найденному ТЗ.",
         reply_markup=batch_menu(),
     )
+
+
+@router.callback_query(F.data.startswith("supplier_policy:"))
+async def supplier_policy_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    policy = str(callback.data or "").split(":", 1)[1]
+    if policy not in {SUPPLIER_POLICY_NORMAL, SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY}:
+        await callback.answer("Неизвестный режим.", show_alert=True)
+        return
+    chat_id = int(callback.message.chat.id)
+    scenario = PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS)
+    if not _scenario_uses_supplier_policy(scenario):
+        await callback.answer("Для этого сценария режим не нужен.", show_alert=True)
+        return
+    PENDING_SUPPLIER_POLICIES[chat_id] = policy
+    pending = PENDING_UPLOADS.get(chat_id)
+    if pending:
+        pending.supplier_search_policy = policy
+    await callback.answer("Режим выбран.")
+    await callback.message.answer(f"Режим поиска: {_supplier_policy_label(policy)}.", reply_markup=batch_menu())
 
 
 @router.message(F.text == BUTTON_STATUS)
@@ -1454,6 +1538,7 @@ async def run_batch_button(message: Message) -> None:
                     target_suppliers=target_suppliers,
                     files=files,
                     sources=[],
+                    supplier_search_policy=pending.supplier_search_policy,
                 )
                 reserve_error = _reserve_created_job(db, client, created)
                 if reserve_error:
@@ -1472,6 +1557,7 @@ async def run_batch_button(message: Message) -> None:
                 target_suppliers=target_suppliers,
                 files=pending.files,
                 sources=pending.sources,
+                supplier_search_policy=pending.supplier_search_policy,
             )
             reserve_error = _reserve_created_job(db, client, job)
             if reserve_error:
@@ -1481,6 +1567,7 @@ async def run_batch_button(message: Message) -> None:
             job_id = str(job.id)
         PENDING_UPLOADS.pop(message.chat.id, None)
         PENDING_MODES.pop(message.chat.id, None)
+        PENDING_SUPPLIER_POLICIES.pop(message.chat.id, None)
         launch_started = True
         if batch_jobs:
             launch_message = await message.answer(
@@ -1608,7 +1695,7 @@ async def _send_job_outputs(
 def _after_delivery_balance_text(db, client: Client) -> str:
     balances = client_balance_summary(db, client)
     lines = ["✅ Результат отправлен. Баланс обновлён."]
-    low = [item["label"] for item in balances.values() if item.get("low")]
+    low = [item["label"] for item in balances.values() if isinstance(item, dict) and item.get("label") and item.get("low")]
     if low:
         lines.append(f"⚠️ Заканчивается баланс: {', '.join(low)}.")
     lines.extend(["", AI_CUSTOMER_NOTE])
@@ -1963,7 +2050,12 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             PENDING_UPLOADS.pop(message.chat.id, None)
             pending = None
         if not pending:
-            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            pending = PendingBatch(
+                telegram_id=telegram_id,
+                mode=mode,
+                files=[],
+                supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+            )
             PENDING_UPLOADS[message.chat.id] = pending
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
@@ -2008,7 +2100,12 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
             PENDING_UPLOADS.pop(message.chat.id, None)
             pending = None
         if not pending:
-            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            pending = PendingBatch(
+                telegram_id=telegram_id,
+                mode=mode,
+                files=[],
+                supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+            )
             PENDING_UPLOADS[message.chat.id] = pending
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_menu())
@@ -2048,7 +2145,12 @@ async def _handle_source_text(message: Message) -> bool:
             PENDING_UPLOADS.pop(message.chat.id, None)
             pending = None
         if not pending:
-            pending = PendingBatch(telegram_id=telegram_id, mode=mode, files=[])
+            pending = PendingBatch(
+                telegram_id=telegram_id,
+                mode=mode,
+                files=[],
+                supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
+            )
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
         await message.answer(_source_added_text(pending), reply_markup=batch_menu())

@@ -28,8 +28,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Manual customer access management from the admin panel, including several
   Telegram manager accounts under one customer.
 - Shared customer limits for all linked Telegram accounts.
-- Separate commercial limits for supplier reports and procurement-document
-  analyses. `📄🔎 Анализ + поиск` consumes one unit from each limit.
+- Customer access is based on a money balance. Each function has an effective
+  price: supplier search, procurement-document analysis, and additional
+  supplier search (`Найти ещё` / добор поставщиков). `📄🔎 Анализ + поиск`
+  reserves and charges the supplier-search and analysis prices together.
 - Batch jobs for supplier search and procurement Word reports.
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a
@@ -47,11 +49,13 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   and AI providers.
 - Admin statistics for the Telegram bot funnel: customer count, linked
   Telegram accounts, active users, task usage, trial follow-up candidates, top
-  customers, and payment-readiness indicators.
+  customers, and manual top-up indicators.
 - AI settings separate documentation-analysis models from one cheaper/faster
   supplier-search model used by the whole supplier-search flow.
-- YooKassa settings foundation is present for future checkout integration, but
-  payments are still handled manually until the cashier account is connected.
+- Online checkout is not enabled. Customers top up through the manager, and the
+  owner credits only a money amount in the admin client card. Legacy YooKassa
+  fields remain in the backend schema for a future integration, but they are
+  not the active payment workflow.
 - Public TenderLex site with no blog: supplier-search-led landing page,
   pricing, contact blocks, Telegram CTAs, SEO scenario pages, and authenticated
   customer cabinet at `/cabinet`.
@@ -68,7 +72,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   available analysis data. The customer can preview/copy it and download DOCX
   from the website cabinet; Telegram receives it as an additional job output
   when available.
-- Public site data comes from `GET /api/public/site`; only active tariffs, safe contacts, trial counters, and public copy are exposed.
+- Public site data comes from `GET /api/public/site`; only active tariffs,
+  safe contacts, free-period settings, and public copy are exposed.
 - Telegram links are intentionally split: `bot_telegram` is the bot used for Telegram work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.
 - OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints,
   OpenRouter, Gemini, and Polza.
@@ -80,11 +85,15 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   dates, bid-submission deadlines, auction/trading starts, and other critical
   timing conflicts.
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
-- Supplier search automatically checks whether the procurement context requires
-  a Minpromtorg/GISP registry extract. It searches the registry only when the
-  documents indicate an active prohibition or another mandatory registry
-  requirement; restrictions, preferences, non-application, or generic mentions
-  do not trigger registry lookup.
+- Supplier search supports three registry modes selected by the customer before
+  launch in the site cabinet and Telegram bot:
+  `Обычный поиск`, `Только реестр`, and `Реестр в приоритете`.
+  `Только реестр` is for strict prohibition cases where suppliers must have a
+  Minpromtorg/GISP registry record. `Реестр в приоритете` searches registry
+  candidates first, then continues with the ordinary supplier search. In
+  ordinary mode the AI can still detect a mandatory registry requirement from
+  the procurement context, but customer-selected registry modes do not require
+  the system to infer the legal regime from uploaded supplier documents.
 
 ## Telegram customer UX
 
@@ -97,6 +106,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   description of the procurement object. If the customer sends a notice number
   or procurement link in these modes, the bot must show a clear warning instead
   of silently starting analysis.
+- `🔎 Поставщики по ТЗ` and `📄🔎 Анализ + поиск` let the customer choose the
+  supplier registry mode before launch: ordinary search, registry-only, or
+  registry-priority.
 - `📄 Анализ закупки` and `📄🔎 Анализ + поиск` accept uploaded files, archives,
   procurement links, and notice numbers.
 - While any job is pending or running for the chat, the bot shows only
@@ -117,7 +129,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Website cabinet operations, manual top-up, password recovery, and product smoke checks are documented in `docs/TENDERLEX_WEB_CABINET_RUNBOOK.md`.
 - For public-site copy changes, verify both positive copy and stale-copy
   checks from `docs/TENDERLEX_SITE.md` before reporting the site as live.
-- Latest billing, Telegram UX, admin client deletion, tariff/payment, and button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
+- Earlier billing, Telegram UX, admin client deletion, tariff/payment, and
+  button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 
 ## Local development

@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from app.billing import (
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     OP_GRANT,
     OP_RESERVE,
     OP_CHARGE,
@@ -40,7 +41,7 @@ from app.main import (
     download_customer_quote_request_docx_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
-from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, SystemSettings, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
+from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
 from app.schemas import WebEmailChangeRequest, WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
 from app.web_auth import (
     CSRF_HEADER,
@@ -84,6 +85,10 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     trial_file_limit=5,
                 )
             )
+            db.add_all([
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Базовый поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Базовый анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
             db.commit()
 
             user = create_web_user(db, email="Buyer@Example.COM", password="StrongPass123", name="Buyer")
@@ -95,6 +100,15 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(user.client.is_trial)
             self.assertEqual(user.client.monthly_supplier_search_limit, 2)
             self.assertEqual(user.client.monthly_procurement_report_limit, 1)
+            self.assertEqual(user.client.money_balance_kopeks, 22_000)
+            self.assertEqual(
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == user.client.id)
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .filter(BillingTransaction.created_by == "system")
+                .count(),
+                2,
+            )
             self.assertEqual(user.client.monthly_file_limit, 5)
             self.assertTrue(user.client.allowed_procurement_report)
             self.assertFalse(user.is_email_verified)
@@ -880,6 +894,150 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reserve.kind, KIND_SUPPLIER_SEARCH)
             self.assertEqual(reserve.units, 1)
             self.assertIn("pump.example", exclusions_text)
+        finally:
+            jobs.job_dir = original_job_dir
+            main_module.enqueue_job = original_enqueue
+            db.close()
+
+    def test_customer_find_more_suppliers_uses_extra_tariff_when_configured(self) -> None:
+        import app.jobs as jobs
+        import app.main as main_module
+
+        original_job_dir = jobs.job_dir
+        original_enqueue = main_module.enqueue_job
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1, default_supplier_target=25))
+            db.add(TariffPackage(kind=KIND_SUPPLIER_SEARCH_EXTRA, name="Добор", units=1, price_kopeks=3_000, is_active=True))
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=2, money_balance_kopeks=3_000)
+            db.add(client)
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH_EXTRA,
+                    operation=OP_GRANT,
+                    units=1,
+                    amount_kopeks=3_000,
+                    balance_after_kopeks=3_000,
+                    created_by="admin",
+                )
+            )
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                main_module.enqueue_job = lambda _job_id: None
+                source_path = root / "previous-tz.txt"
+                source_path.write_text("ТЗ: нужны поставщики промышленных насосов", encoding="utf-8")
+                original = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="completed",
+                    title="Промышленные насосы",
+                    target_suppliers=25,
+                    verified_count=25,
+                    file_count=1,
+                )
+                db.add(original)
+                db.add(JobFile(job_id=original.id, original_filename="tz.txt", stored_path=str(source_path)))
+                db.add(SupplierResult(job_id=original.id, company_name="ООО Насос", site="https://pump.example", evidence_status="verified"))
+                db.commit()
+
+                payload = create_additional_supplier_search_api(
+                    original.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                new_job = db.get(Job, payload["job"]["id"])
+
+            reserve = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == new_job.id)
+                .filter(BillingTransaction.operation == OP_RESERVE)
+                .one()
+            )
+            db.refresh(client)
+            self.assertEqual(reserve.kind, KIND_SUPPLIER_SEARCH_EXTRA)
+            self.assertEqual(reserve.units, 1)
+            self.assertEqual(reserve.amount_kopeks, 3_000)
+            self.assertEqual(client.money_reserved_kopeks, 3_000)
+        finally:
+            jobs.job_dir = original_job_dir
+            main_module.enqueue_job = original_enqueue
+            db.close()
+
+    def test_repeated_find_more_suppliers_keeps_previous_exclusions(self) -> None:
+        import app.jobs as jobs
+        import app.main as main_module
+
+        original_job_dir = jobs.job_dir
+        original_enqueue = main_module.enqueue_job
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1, default_supplier_target=25))
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=10)
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-chain@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                main_module.enqueue_job = lambda _job_id: None
+                source_path = root / "previous-tz.txt"
+                source_path.write_text("ТЗ: нужны поставщики промышленных насосов", encoding="utf-8")
+                original = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="completed",
+                    title="Промышленные насосы",
+                    target_suppliers=25,
+                    verified_count=25,
+                    file_count=1,
+                )
+                db.add(original)
+                db.add(JobFile(job_id=original.id, original_filename="tz.txt", stored_path=str(source_path)))
+                db.add(SupplierResult(job_id=original.id, company_name="ООО Насос", site="https://pump.example", evidence_status="verified"))
+                db.commit()
+
+                first_payload = create_additional_supplier_search_api(
+                    original.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                first_more = db.get(Job, first_payload["job"]["id"])
+                first_more.status = "completed"
+                first_more.verified_count = 1
+                db.add(SupplierResult(job_id=first_more.id, company_name="ООО Арматура", site="https://valve.example", evidence_status="verified"))
+                db.commit()
+
+                second_payload = create_additional_supplier_search_api(
+                    first_more.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                second_more = db.get(Job, second_payload["job"]["id"])
+                exclusions_path = jobs.job_dir(second_more.id) / "input" / "excluded_suppliers.json"
+                exclusions_text = exclusions_path.read_text(encoding="utf-8")
+
+            self.assertIn("pump.example", exclusions_text)
+            self.assertIn("valve.example", exclusions_text)
         finally:
             jobs.job_dir = original_job_dir
             main_module.enqueue_job = original_enqueue

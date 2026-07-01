@@ -28,6 +28,7 @@ import {
 
 type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
 type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
+type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 
 type BalanceCounter = {
   label: string;
@@ -36,6 +37,8 @@ type BalanceCounter = {
   spent: number;
   granted: number;
   low: boolean;
+  price_kopeks?: number;
+  price_rub?: number;
 };
 
 type Tariff = {
@@ -59,6 +62,16 @@ type SessionPayload = {
   balance?: {
     supplier_search: BalanceCounter;
     procurement_report: BalanceCounter;
+    supplier_search_extra?: BalanceCounter;
+    money?: {
+      balance_kopeks: number;
+      reserved_kopeks: number;
+      available_kopeks: number;
+      balance_rub: number;
+      reserved_rub: number;
+      available_rub: number;
+    };
+    effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>;
   };
   limits?: {
     max_upload_mb: number;
@@ -68,6 +81,7 @@ type SessionPayload = {
   tariff_groups?: {
     supplier_search: Tariff[];
     procurement_report: Tariff[];
+    supplier_search_extra?: Tariff[];
   };
   contacts?: {
     email: string;
@@ -136,7 +150,7 @@ const scenarioOptions: Array<{ id: Scenario; label: string; description: string;
   {
     id: "supplier_search",
     label: "Поиск поставщиков",
-    description: "ТЗ файлом, текстом или архивом",
+    description: "техническое задание файлом, текстом или архивом",
     icon: Search,
   },
   {
@@ -167,12 +181,12 @@ const modeCopy: Record<Scenario, {
 }> = {
   supplier_search: {
     mode: "supplier_search",
-    uploadTitle: "Загрузите ТЗ",
+    uploadTitle: "Загрузите техническое задание",
     uploadText: "Каждый отдельный файл даст отдельный поиск поставщиков.",
     multipleFiles: true,
-    textLabel: "Или вставьте ТЗ текстом",
-    textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса КП.",
-    hint: "Если одно ТЗ состоит из нескольких файлов, объедините их в архив и загрузите одним файлом. Разные ТЗ загружайте отдельными файлами.",
+    textLabel: "Или вставьте техническое задание текстом",
+    textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса коммерческого предложения.",
+    hint: "Если одно техническое задание состоит из нескольких файлов, объедините их в архив и загрузите одним файлом. Разные технические задания загружайте отдельными файлами.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
@@ -187,15 +201,33 @@ const modeCopy: Record<Scenario, {
   },
   analysis_and_suppliers: {
     mode: "analysis_and_suppliers",
-    uploadTitle: "Приложите документы закупки или ТЗ",
-    uploadText: "Можно перетащить материалы закупки, ТЗ или архив.",
+    uploadTitle: "Приложите документы закупки или техническое задание",
+    uploadText: "Можно перетащить материалы закупки, техническое задание или архив.",
     multipleFiles: true,
     sourceLabel: "Номер извещения или ссылка",
     sourcePlaceholder: "Например: номер извещения или ссылка на закупку",
-    hint: "Результат: анализ закупки и поставщики по найденному ТЗ.",
+    hint: "Результат: анализ закупки и поставщики по найденному техническому заданию.",
     submit: "Запустить анализ + поиск",
   },
 };
+
+const supplierPolicyOptions: Array<{ id: SupplierSearchPolicy; label: string; description: string }> = [
+  {
+    id: "normal",
+    label: "Обычный поиск",
+    description: "без обязательного фильтра по реестру",
+  },
+  {
+    id: "minprom_registry_only",
+    label: "Только реестр",
+    description: "для закупок с запретом",
+  },
+  {
+    id: "minprom_registry_priority",
+    label: "Реестр в приоритете",
+    description: "для закупок с ограничением",
+  },
+];
 
 const statusClasses: Record<string, string> = {
   pending: "pending",
@@ -235,6 +267,10 @@ function formatRubles(kopeks: number) {
   return `${new Intl.NumberFormat("ru-RU").format(Math.round(kopeks / 100))} ₽`;
 }
 
+function formatBalanceRubles(kopeks: number) {
+  return `${new Intl.NumberFormat("ru-RU").format(Math.round((kopeks || 0) / 100))} ₽`;
+}
+
 function balanceValue(counter?: BalanceCounter) {
   if (!counter) return "0";
   return counter.available === null ? "без лимита" : String(counter.available);
@@ -242,6 +278,21 @@ function balanceValue(counter?: BalanceCounter) {
 
 function accessValue(counter?: BalanceCounter) {
   return balanceValue(counter);
+}
+
+function priceOrAccessValue(counter?: BalanceCounter) {
+  if (counter?.price_kopeks) return formatRubles(counter.price_kopeks);
+  return accessValue(counter);
+}
+
+function extraSupplierPriceOrAccessValue(balance?: SessionPayload["balance"]) {
+  if (balance?.supplier_search_extra?.price_kopeks) {
+    return formatRubles(balance.supplier_search_extra.price_kopeks);
+  }
+  if (balance?.supplier_search?.price_kopeks) {
+    return formatRubles(balance.supplier_search.price_kopeks);
+  }
+  return accessValue(balance?.supplier_search_extra);
 }
 
 function tariffDisplayName(tariff: Tariff) {
@@ -365,8 +416,8 @@ function quoteMarkdownToHtml(markdown: string) {
       html.push(`<h2>${formatInlineMarkdown(trimmed.slice(3))}</h2>`);
     } else if (trimmed.startsWith("# ")) {
       html.push(`<h2>${formatInlineMarkdown(trimmed.slice(2))}</h2>`);
-    } else if (trimmed.toUpperCase() === "ЗАПРОС КП") {
-      html.push(`<h2>${formatInlineMarkdown(trimmed)}</h2>`);
+    } else if (trimmed.toUpperCase() === "ЗАПРОС КП" || trimmed.toUpperCase() === "ЗАПРОС КОММЕРЧЕСКОГО ПРЕДЛОЖЕНИЯ") {
+      html.push(`<h2>${formatInlineMarkdown("Запрос коммерческого предложения")}</h2>`);
     } else {
       html.push(`<p>${formatInlineMarkdown(trimmed)}</p>`);
     }
@@ -531,6 +582,7 @@ export function CabinetClient() {
   const [emailDraft, setEmailDraft] = useState("");
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("supplier_search");
+  const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -622,6 +674,7 @@ export function CabinetClient() {
 
   function selectScenario(next: Scenario) {
     setScenario(next);
+    if (next === "procurement_report") setSupplierSearchPolicy("normal");
     setText("");
     setSourceUrls("");
     clearSelectedFiles();
@@ -822,6 +875,7 @@ export function CabinetClient() {
     try {
       const form = new FormData();
       form.append("mode", selectedMode);
+      form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
       form.append("text", acceptsText ? text : "");
       form.append("source_urls", acceptsSources ? sourceUrls : "");
       form.append("target_suppliers", "0");
@@ -889,7 +943,7 @@ export function CabinetClient() {
       setQuoteRequestModal({
         job,
         html: quoteMarkdownToHtml(payload.content || ""),
-        filename: payload.filename || file.filename || "Запрос КП.docx",
+        filename: payload.filename || file.filename || "Запрос коммерческого предложения.docx",
         copied: false,
       });
     } catch (err) {
@@ -912,7 +966,7 @@ export function CabinetClient() {
         body: JSON.stringify({ content, filename: quoteRequestModal.filename }),
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
-      downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос КП.docx"));
+      downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос коммерческого предложения.docx"));
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1047,7 +1101,7 @@ export function CabinetClient() {
               <article>
                 <Search size={18} aria-hidden="true" />
                 <strong>Поиск поставщиков</strong>
-                <span>контакты компаний для запроса КП</span>
+                <span>контакты компаний для запроса коммерческого предложения</span>
               </article>
               <article>
                 <CheckCircle2 size={18} aria-hidden="true" />
@@ -1196,18 +1250,44 @@ export function CabinetClient() {
             <span>загрузка до {session?.limits?.max_upload_mb || 50} МБ</span>
           </div>
           <div className="scenario-grid" role="radiogroup" aria-label="Сценарий">
-            {scenarioOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className={scenario === option.id ? "active" : ""}
-                onClick={() => selectScenario(option.id)}
-              >
-                <option.icon size={18} aria-hidden="true" />
-                <strong>{option.label}</strong>
-                <span>{option.description}</span>
-              </button>
-            ))}
+            {scenarioOptions.map((option) => {
+              const optionActive = scenario === option.id;
+              const optionUsesSupplierPolicy = option.id !== "procurement_report";
+              return (
+                <article key={option.id} className={`scenario-card ${optionActive ? "active" : ""}`}>
+                  <button
+                    type="button"
+                    className="scenario-main"
+                    aria-pressed={optionActive}
+                    onClick={() => selectScenario(option.id)}
+                  >
+                    <option.icon size={18} aria-hidden="true" />
+                    <strong>{option.label}</strong>
+                    <span>{option.description}</span>
+                  </button>
+                  {optionActive && optionUsesSupplierPolicy ? (
+                    <div className="scenario-policy" role="radiogroup" aria-label="Режим поиска поставщиков">
+                      <span>Режим поиска</span>
+                      <div>
+                        {supplierPolicyOptions.map((policy) => (
+                          <label key={policy.id} className={supplierSearchPolicy === policy.id ? "active" : ""}>
+                            <input
+                              type="radio"
+                              name="supplier_search_policy"
+                              value={policy.id}
+                              checked={supplierSearchPolicy === policy.id}
+                              onChange={() => setSupplierSearchPolicy(policy.id)}
+                            />
+                            <strong>{policy.label}</strong>
+                            <small>{policy.description}</small>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
 
           <label
@@ -1270,7 +1350,7 @@ export function CabinetClient() {
           <p className="task-hint">{selectedCopy.hint}</p>
           {supplierMultiFileWarning ? (
             <p className="task-hint task-hint-warning">
-              Выбрано {selectedFiles.length} {pluralizeRu(selectedFiles.length, ["файл", "файла", "файлов"])}. Они будут обработаны как отдельные ТЗ. Если это части одного ТЗ, объедините их в архив и загрузите одним файлом.
+              Выбрано {selectedFiles.length} {pluralizeRu(selectedFiles.length, ["файл", "файла", "файлов"])}. Они будут обработаны как отдельные технические задания. Если это части одного технического задания, объедините их в архив и загрузите одним файлом.
             </p>
           ) : null}
           {!emailVerified ? <p className="task-hint">Подтвердите email, чтобы запускать задачи.</p> : null}
@@ -1289,18 +1369,32 @@ export function CabinetClient() {
               <h2>Доступно</h2>
               {session?.user?.is_trial ? <span>пробный доступ</span> : null}
             </div>
+            <div className="balance-row balance-row-money">
+              <Receipt size={18} aria-hidden="true" />
+              <div>
+                <span>Баланс</span>
+                <strong>{formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}</strong>
+              </div>
+            </div>
             <div className="balance-row">
               <Search size={18} aria-hidden="true" />
               <div>
                 <span>Поиск поставщиков</span>
-                <strong>{accessValue(session?.balance?.supplier_search)}</strong>
+                <strong>{priceOrAccessValue(session?.balance?.supplier_search)}</strong>
               </div>
             </div>
             <div className="balance-row">
               <FileText size={18} aria-hidden="true" />
               <div>
                 <span>Анализ закупки</span>
-                <strong>{accessValue(session?.balance?.procurement_report)}</strong>
+                <strong>{priceOrAccessValue(session?.balance?.procurement_report)}</strong>
+              </div>
+            </div>
+            <div className="balance-row">
+              <Search size={18} aria-hidden="true" />
+              <div>
+                <span>Добор поставщиков</span>
+                <strong>{extraSupplierPriceOrAccessValue(session?.balance)}</strong>
               </div>
             </div>
           </section>
@@ -1311,12 +1405,18 @@ export function CabinetClient() {
               <span>через менеджера</span>
             </div>
             <div className="payment-copy">
-              <p>Выберите пакет ниже и напишите в Telegram: укажите email кабинета и нужный пакет. После подтверждения мы начислим доступ.</p>
-              <p>Возможен индивидуальный подход: если нужен больший лимит поставщиков, больше компаний в одном поиске или другой объём генераций, напишите нам — настроим условия под вашу задачу.</p>
+              <p>Выберите нужную услугу ниже и напишите в Telegram: укажите email кабинета и сумму пополнения. После подтверждения мы зачислим деньги на баланс.</p>
+              <p>Возможен индивидуальный подход: стоимость поиска, анализа и добора можно настроить под вашу задачу.</p>
             </div>
             <div className="payment-tariffs">
               <TariffList title="Поиск поставщиков" tariffs={session?.tariff_groups?.supplier_search || []} />
               <TariffList title="Анализ закупки" tariffs={session?.tariff_groups?.procurement_report || []} />
+              <TariffList
+                title="Добор поставщиков"
+                tariffs={session?.tariff_groups?.supplier_search_extra || []}
+                fallbackLabel="1 добор поставщиков"
+                fallbackPriceKopeks={session?.balance?.supplier_search_extra?.price_kopeks || session?.balance?.supplier_search?.price_kopeks || 0}
+              />
             </div>
             <div className="contact-actions">
               {session?.contacts?.telegram_url ? (
@@ -1371,7 +1471,7 @@ export function CabinetClient() {
         </div>
         {hasFindMoreSuppliers ? (
           <p className="jobs-help">
-            В готовом поиске кнопка «Найти ещё» запускает новый платный добор по тому же ТЗ: списывается одна генерация, а уже найденные компании исключаются из результата.
+            В готовом поиске кнопка «Найти ещё» запускает новый платный добор по тому же техническому заданию: применяется отдельная цена добора, а уже найденные компании исключаются из результата.
           </p>
         ) : null}
         <div className="jobs-table">
@@ -1447,7 +1547,7 @@ export function CabinetClient() {
                           className="secondary-action"
                           onClick={() => setFindMoreConfirmJob(job)}
                           disabled={busy}
-                          title="Новый поиск поставщиков списывает одну генерацию"
+                          title="Добор поставщиков списывается по отдельной цене"
                         >
                           <Search size={16} aria-hidden="true" />
                           Найти ещё
@@ -1493,7 +1593,7 @@ export function CabinetClient() {
           <section className="quote-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
             <header className="quote-dialog-header">
               <div>
-                <h2 id="quote-request-title">Запрос КП</h2>
+                <h2 id="quote-request-title">Запрос коммерческого предложения</h2>
                 <span>{quoteRequestModal.job.human_title}</span>
               </div>
               <button type="button" className="quote-close" onClick={() => setQuoteRequestModal(null)} disabled={busy} aria-label="Закрыть">
@@ -1511,7 +1611,7 @@ export function CabinetClient() {
                   setQuoteRequestModal({ ...quoteRequestModal, html: quoteEditorRef.current?.innerHTML || quoteRequestModal.html, copied: false });
                 }
               }}
-              aria-label="Текст запроса КП"
+              aria-label="Текст запроса коммерческого предложения"
             />
             <div className="quote-actions">
               <button type="button" className="confirm-cancel" onClick={() => setQuoteRequestModal(null)} disabled={busy}>
@@ -1543,7 +1643,7 @@ export function CabinetClient() {
             </div>
             <div>
               <h2 id="find-more-confirm-title">Найти ещё поставщиков?</h2>
-              <p id="find-more-confirm-copy">Спишется 1 генерация поиска поставщиков. Уже найденные компании не попадут в новый результат.</p>
+              <p id="find-more-confirm-copy">С баланса спишется стоимость добора поставщиков. Уже найденные компании не попадут в новый результат.</p>
               <span>{findMoreConfirmJob.human_title}</span>
             </div>
             <div className="confirm-actions">
@@ -1562,7 +1662,18 @@ export function CabinetClient() {
   );
 }
 
-function TariffList({ title, tariffs }: { title: string; tariffs: Tariff[] }) {
+function TariffList({
+  title,
+  tariffs,
+  fallbackLabel = "",
+  fallbackPriceKopeks = 0,
+}: {
+  title: string;
+  tariffs: Tariff[];
+  fallbackLabel?: string;
+  fallbackPriceKopeks?: number;
+}) {
+  const fallbackVisible = !tariffs.length && fallbackLabel && fallbackPriceKopeks > 0;
   return (
     <div className="mini-tariffs">
       <span>{title}</span>
@@ -1572,6 +1683,12 @@ function TariffList({ title, tariffs }: { title: string; tariffs: Tariff[] }) {
           <b>{formatRubles(tariff.price_kopeks)}</b>
         </div>
       ))}
+      {fallbackVisible ? (
+        <div>
+          <strong>{fallbackLabel}</strong>
+          <b>{formatRubles(fallbackPriceKopeks)}</b>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -40,6 +40,7 @@ export type PublicSitePayload = {
   tariff_groups: {
     supplier_search: PublicTariff[];
     procurement_report: PublicTariff[];
+    supplier_search_extra: PublicTariff[];
   };
   updated_at: string | null;
 };
@@ -144,6 +145,7 @@ const fallbackData: PublicSitePayload = {
   tariff_groups: {
     supplier_search: fallbackTariffs.filter((item) => item.kind === "supplier_search"),
     procurement_report: fallbackTariffs.filter((item) => item.kind === "procurement_report"),
+    supplier_search_extra: fallbackTariffs.filter((item) => item.kind === "supplier_search_extra"),
   },
   updated_at: null,
 };

@@ -208,8 +208,8 @@ class ReportBuilderTests(unittest.TestCase):
             comment = ws["E4"].value
             wb.close()
 
-        self.assertIn("Профильный поставщик.", comment)
-        self.assertIn("Уточните", comment)
+        self.assertIn("Профиль компании подходит.", comment)
+        self.assertIn("Наличие товара уточнить", comment)
         self.assertNotIn("полностью соответствует", comment.lower())
 
     def test_supplier_xlsx_uses_short_exact_comment(self) -> None:
@@ -238,9 +238,38 @@ class ReportBuilderTests(unittest.TestCase):
             comment = ws["E4"].value
             wb.close()
 
-        self.assertIn("Точный товар:", comment)
-        self.assertIn("Контакты найдены на сайте", comment)
+        self.assertIn("Точное соответствие:", comment)
         self.assertLessEqual(len(comment), 260)
+
+    def test_supplier_xlsx_does_not_expose_minprom_notes_in_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "category",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "comments": (
+                            "Нужно запросить подтверждение реестровой записи Минпромторга. "
+                            "Поставщик релевантен по промышленной категории."
+                        ),
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            comment = ws["E4"].value
+            wb.close()
+
+        self.assertIn("Категория совпадает", comment)
+        self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров")
 
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

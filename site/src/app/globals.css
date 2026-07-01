@@ -1202,7 +1202,7 @@ select {
   z-index: 40;
   display: grid;
   min-height: 68px;
-  grid-template-columns: auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
   justify-content: space-between;
   align-items: center;
   gap: 24px;
@@ -1243,6 +1243,7 @@ select {
 
 .account-chip {
   min-width: 0;
+  max-width: min(420px, 52vw);
   justify-content: flex-end;
   padding: 7px 8px 7px 12px;
   border: 1px solid var(--line);
@@ -1254,7 +1255,8 @@ select {
 }
 
 .account-chip span {
-  max-width: 220px;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1445,25 +1447,38 @@ select {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  align-items: start;
 }
 
-.scenario-grid button {
+.scenario-card {
+  display: grid;
+  align-self: start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfc;
+  overflow: hidden;
+}
+
+.scenario-card.active {
+  border-color: rgba(7, 91, 99, 0.34);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.scenario-main {
   display: grid;
   min-height: 112px;
   grid-template-rows: 22px auto 1fr;
   gap: 7px;
   padding: 13px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #fbfcfc;
+  border: 0;
+  background: transparent;
   color: var(--ink);
   cursor: pointer;
   text-align: left;
 }
 
-.scenario-grid button.active {
-  border-color: rgba(7, 91, 99, 0.34);
-  background: var(--accent-soft);
+.scenario-card.active .scenario-main {
   color: var(--accent);
 }
 
@@ -1482,6 +1497,72 @@ select {
   font-size: 12px;
   font-weight: 700;
   line-height: 1.3;
+}
+
+.scenario-policy {
+  display: grid;
+  gap: 7px;
+  padding: 0 13px 13px;
+}
+
+.scenario-policy > span {
+  padding-top: 10px;
+  border-top: 1px solid rgba(7, 91, 99, 0.14);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.scenario-policy > div {
+  display: grid;
+  gap: 6px;
+}
+
+.scenario-policy label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-areas:
+    "radio title"
+    "radio text";
+  align-items: center;
+  gap: 2px 8px;
+  min-height: 42px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.scenario-policy label.active {
+  border-color: rgba(7, 91, 99, 0.42);
+  background: #e5f4f3;
+}
+
+.scenario-policy input {
+  grid-area: radio;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.scenario-policy strong {
+  grid-area: title;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.scenario-policy small {
+  grid-area: text;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .upload-zone {
@@ -1686,15 +1767,28 @@ select {
 
 .balance-row {
   display: grid;
-  grid-template-columns: 30px 1fr;
-  gap: 10px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
+  min-width: 0;
   padding: 9px 0 0;
   border-top: 1px solid var(--line);
 }
 
+.balance-row-money {
+  grid-column: 1 / -1;
+}
+
 .balance-row svg {
   color: var(--accent);
+}
+
+.balance-row div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
 }
 
 .balance-row span,
@@ -1708,11 +1802,13 @@ select {
 
 .balance-row strong {
   display: block;
-  margin-top: 4px;
   color: var(--ink);
-  font-size: 28px;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
   font-weight: 950;
   line-height: 1.1;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .mini-tariffs {
@@ -3341,6 +3437,10 @@ select {
   .email-verify-banner,
   .submit-row {
     grid-template-columns: 1fr;
+  }
+
+  .scenario-main {
+    min-height: 96px;
   }
 
   .email-verify-actions {

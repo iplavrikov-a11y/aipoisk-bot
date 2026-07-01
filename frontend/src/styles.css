@@ -363,7 +363,8 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   grid-template-columns: minmax(0, 1fr) 408px;
   grid-template-areas:
     "telegram balance"
-    "settings balance"
+    "search balance"
+    "merge balance"
     "history balance";
   gap: 14px;
   margin-top: 14px;
@@ -376,7 +377,8 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .client-web-section { grid-area: web; }
 .client-telegram-section { grid-area: telegram; }
 .client-balance-section { grid-area: balance; }
-.client-settings-section { grid-area: settings; }
+.client-search-section { grid-area: search; }
+.client-merge-section { grid-area: merge; }
 .client-section label.mini-field { display: grid; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .section-head span {
@@ -490,7 +492,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   gap: 8px;
   align-items: center;
 }
-.manual-grant-panel {
+.price-settings-panel {
   display: grid;
   grid-template-columns: minmax(125px, 1fr) 108px;
   gap: 8px;
@@ -498,20 +500,36 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   padding-top: 8px;
   border-top: 1px solid #e2e8f0;
 }
-.manual-grant-panel .grant-package-field,
-.manual-grant-panel > button { grid-column: 1 / -1; }
-.manual-grant-panel .grant-available-note { grid-column: 1 / -1; }
-.manual-grant-panel input,
-.manual-grant-panel select { min-height: 34px; padding: 6px 8px; font-size: 12px; }
-.manual-grant-panel button { justify-content: center; width: 100%; }
-.quick-grants {
+.price-settings-panel input { min-height: 34px; padding: 6px 8px; font-size: 12px; }
+.balance-topup-panel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 154px;
+  gap: 8px;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
 }
-.quick-grants button { width: 100%; min-height: 30px; }
-.supplier-target-input { max-width: 96px; }
+.balance-topup-panel input {
+  min-height: 38px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+.balance-topup-panel button {
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+}
+.price-override-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 6px;
+  align-items: center;
+}
+.price-override-row .icon-button.small {
+  width: 34px;
+  min-height: 34px;
+}
+.supplier-target-input { max-width: 160px; }
 .merge-client-details summary {
   cursor: pointer;
   color: #334155;
@@ -936,14 +954,15 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .top-actions { width: 100%; flex-wrap: wrap; }
   .content-grid, .settings-grid, .ops-grid, .analytics-grid, .ai-top-grid { grid-template-columns: 1fr; }
   .wide-panel, .form-panel.full { grid-column: auto; }
-  .toolbar-panel, .client-create-grid, .password-reset-row, .provider-row, .model-row, .provider-row-head, .model-row-head, .function-route-list, .function-route-row, .search-source-grid, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .manual-grant-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid, .analytics-client-row { grid-template-columns: 1fr; }
+  .toolbar-panel, .client-create-grid, .password-reset-row, .provider-row, .model-row, .provider-row-head, .model-row-head, .function-route-list, .function-route-row, .search-source-grid, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .price-settings-panel, .balance-topup-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid, .analytics-client-row { grid-template-columns: 1fr; }
   .daily-bars { grid-template-columns: repeat(15, minmax(12px, 1fr)); }
   .ai-settings .provider-row, .ai-settings .model-row, .ai-settings .provider-row-head, .ai-settings .model-row-head, .function-route-row { grid-template-columns: 1fr; }
   .client-card-grid {
     grid-template-areas:
       "telegram"
       "balance"
-      "settings"
+      "search"
+      "merge"
       "history";
   }
   .client-card-head, .job-main, .list-toolbar { flex-direction: column; align-items: stretch; }

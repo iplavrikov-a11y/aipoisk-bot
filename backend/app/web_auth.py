@@ -18,6 +18,7 @@ import httpx
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
+from .billing import grant_trial_balance
 from .config import config
 from .db import db_session
 from .models import Client, WebEmailVerificationToken, WebSession, WebUser, new_id, now_utc
@@ -119,6 +120,13 @@ def create_web_user(
         )
         db.add(client)
         db.flush()
+        if trial_enabled:
+            grant_trial_balance(
+                db,
+                client,
+                supplier_search_units=supplier_limit,
+                procurement_report_units=report_limit,
+            )
     user = WebUser(
         client_id=client.id,
         email=normalized_email,

@@ -59,6 +59,16 @@ MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
+SUPPLIER_POLICY_NORMAL = "normal"
+SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
+SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
+VALID_SUPPLIER_SEARCH_POLICIES = {
+    SUPPLIER_POLICY_NORMAL,
+    SUPPLIER_POLICY_MINPROM_ONLY,
+    SUPPLIER_POLICY_MINPROM_PRIORITY,
+}
+SUPPLIER_RUN_INITIAL = "initial"
+SUPPLIER_RUN_ADDITIONAL = "additional"
 RESULT_STEM_MAX_BYTES = 150
 RESULT_STEM_MAX_CHARS = 56
 SUPPLIER_EXCLUSIONS_FILENAME = "excluded_suppliers.json"
@@ -83,6 +93,8 @@ def create_job(
     target_suppliers: int,
     files: list[tuple[str, bytes]],
     sources: list[dict] | None = None,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    supplier_search_run_type: str = SUPPLIER_RUN_INITIAL,
 ) -> Job:
     normalized_sources = _normalized_job_sources(sources or [])
     if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
@@ -90,12 +102,16 @@ def create_job(
             "Режим поиска поставщиков принимает только файл или текст ТЗ. "
             "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
         )
+    normalized_policy = normalize_supplier_search_policy(supplier_search_policy)
+    normalized_run_type = SUPPLIER_RUN_ADDITIONAL if str(supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL else SUPPLIER_RUN_INITIAL
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
         client_id=client_id,
         created_by_telegram_id=str(created_by_telegram_id or ""),
         mode=mode,
+        supplier_search_policy=normalized_policy,
+        supplier_search_run_type=normalized_run_type,
         title=title,
         target_suppliers=target_suppliers,
         status="pending",
@@ -125,6 +141,13 @@ def create_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+def normalize_supplier_search_policy(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_SUPPLIER_SEARCH_POLICIES:
+        return normalized
+    return SUPPLIER_POLICY_NORMAL
 
 
 def _normalized_job_sources(sources: list[dict]) -> list[dict]:
@@ -159,7 +182,7 @@ def write_supplier_exclusions(job: Job, *, previous_job_id: str, suppliers: list
     return path
 
 
-def _load_supplier_exclusions(job: Job) -> list[dict]:
+def read_supplier_exclusions(job: Job) -> list[dict]:
     path = job_dir(job.id) / "input" / SUPPLIER_EXCLUSIONS_FILENAME
     if not path.exists():
         return []
@@ -168,6 +191,10 @@ def _load_supplier_exclusions(job: Job) -> list[dict]:
     if not isinstance(suppliers, list):
         return []
     return [item for item in suppliers if isinstance(item, dict)]
+
+
+def _load_supplier_exclusions(job: Job) -> list[dict]:
+    return read_supplier_exclusions(job)
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -829,6 +856,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             job.target_suppliers,
             progress_callback=progress_callback,
             excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         )
     )
     _check_cancelled(job.id)
@@ -1000,7 +1028,13 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         _set_job(db, job, status="running", progress=mapped_progress, message=message)
 
     accepted, supplier_evidence = asyncio.run(
-        discover_suppliers(settings, supplier_context, job.target_suppliers, progress_callback=progress_callback)
+        discover_suppliers(
+            settings,
+            supplier_context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        )
     )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=96, message="Сохраняю анализ и поставщиков")

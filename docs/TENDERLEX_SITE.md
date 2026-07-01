@@ -35,7 +35,8 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 ## Public Data Contract
 
 - `GET /api/public/site` is the only public backend endpoint used by the site.
-- It exposes safe site metadata, active tariffs, grouped tariff lists, trial counters, public contact links, and the Telegram bot link.
+- It exposes safe site metadata, active tariffs, grouped tariff lists,
+  free-period settings, public contact links, and the Telegram bot link.
 - It must not expose admin endpoints, customers, jobs, billing history, uploaded files, report files, AI provider keys, or other secrets.
 - `bot.telegram_url` is used for the Telegram work CTA such as "Попробовать в Telegram".
 - `contacts.telegram_url` is used for owner/contact and purchase CTAs such as "Выбрать пакет".
@@ -68,7 +69,11 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
   page size is 15 tasks.
 - Supplier-search results that can be extended expose an additional action for
   finding more suppliers. The customer must confirm the paid extra run before
-  the backend creates the additional supplier-search job.
+  the backend creates the additional supplier-search job; this run debits the
+  additional-supplier-search price, not the full first-search price.
+- Supplier search and combined analysis-plus-search carry the customer-selected
+  supplier registry mode: `Обычный поиск`, `Только реестр`, or
+  `Реестр в приоритете`.
 - `GET /api/customer/jobs` and `/api/customer/auth/session` must not be cached.
   The cabinet uses no-store fetches and a shorter polling interval while active
   jobs exist so Telegram/API-side cancellation appears in the website task list
@@ -80,13 +85,19 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 The existing admin panel controls public business data without giving customers
 access to the admin panel.
 
-- Tariffs are managed from the tariff/package section.
+- Global prices and visible packages are managed from the tariff/package
+  section.
+- Per-customer effective prices for supplier search, procurement analysis, and
+  additional supplier search are managed in each admin customer card.
 - `bot_telegram` is labelled "Telegram-бот для пробного запуска и работы".
 - `contact_telegram` is labelled "Telegram для связи и оплаты".
 - `contact_max`, `contact_max_link`, `contact_email`, `contact_website`, and
   payment instructions remain existing contact/payment settings.
-- Trial counters come from existing free-period settings: supplier search limit, procurement report limit, and file limit.
-- Website access is topped up manually from the admin customer card until online payment is enabled.
+- Trial setup credits money according to the active base prices for the trial
+  supplier-search and procurement-analysis allowances.
+- Website access is topped up manually by crediting a money amount from the
+  admin customer card. The owner UI does not expose manual run grants, action
+  type, or package selection for normal balance operations.
 - Password recovery requests from `/cabinet` are handled by the admin customer tools; public responses must not reveal whether an email exists.
 
 ## Frontend Structure

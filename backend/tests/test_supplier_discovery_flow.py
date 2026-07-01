@@ -48,6 +48,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                   "id": "main",
                   "name": "Сварочный полуавтомат",
                   "aliases": ["MIG/MAG"],
+                  "okpd2_codes": ["28.29.70.110"],
                   "category_terms": ["сварочное оборудование"],
                   "exact_terms": ["500А"],
                   "required_terms": ["500А"]
@@ -70,6 +71,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.summary, "Поставка двух товарных групп")
         self.assertEqual([item.id for item in profile.items], ["main", "item-2"])
         self.assertEqual(profile.items[0].aliases, ("MIG/MAG",))
+        self.assertEqual(profile.items[0].okpd2_codes, ("28.29.70.110",))
         self.assertEqual(profile.items[0].category_terms, ("сварочное оборудование",))
         self.assertEqual(profile.items[0].exact_terms, ("500А",))
         self.assertEqual(profile.excluded_terms, ("ТОРГ-12",))
@@ -109,6 +111,136 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 "Требуются реестровые записи Минпромторга.",
             )
 
+    async def test_discover_minprom_registry_context_reports_source_errors(self) -> None:
+        originals = {
+            "build_minprom_registry_queries": supplier_search.build_minprom_registry_queries,
+            "search_minprom_registry_entries": supplier_search.search_minprom_registry_entries,
+        }
+
+        async def fake_queries(*args, **kwargs):
+            return ["канат стальной"]
+
+        async def fake_search(*args, **kwargs):
+            raise RuntimeError("GISP registry search failed: browser unavailable")
+
+        supplier_search.build_minprom_registry_queries = fake_queries
+        supplier_search.search_minprom_registry_entries = fake_search
+        try:
+            context = await supplier_search.discover_minprom_registry_context(
+                SimpleNamespace(has_active_ai_provider=True),
+                "ТЗ: запрет, требуется реестровая запись",
+                ProcurementProfile(summary="Канат", items=(ProcurementItem(id="item-1", name="Канат стальной"),)),
+                supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            )
+        finally:
+            for name, original in originals.items():
+                setattr(supplier_search, name, original)
+
+        self.assertEqual(context.status, "error")
+        self.assertIn("GISP registry search failed", context.error)
+
+    def test_minprom_supplier_queries_are_only_for_required_prohibition(self) -> None:
+        profile = ProcurementProfile(
+            summary="Канат стальной",
+            items=(ProcurementItem(id="item-1", name="Канат стальной", category_terms=("стальные канаты",)),),
+        )
+        required = supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition")
+        not_required = supplier_search.MinpromRegistryRequirement(required=False, measure_type="restriction")
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=required,
+            entries=(
+                {
+                    "registry_number": "123",
+                    "manufacturer": "Канатный завод",
+                    "product": "Канат стальной",
+                },
+            ),
+            status="ok",
+        )
+
+        queries = supplier_search._build_minprom_supplier_queries(profile, registry_context)
+        skipped = supplier_search._build_minprom_supplier_queries(
+            profile,
+            supplier_search.MinpromRegistryContext(requirement=not_required, status="not_required"),
+        )
+
+        self.assertEqual(skipped, [])
+        self.assertTrue(any("Канатный завод" in query for query in queries))
+        self.assertTrue(any("реестр Минпромторга" in query or "ГИСП" in query for query in queries))
+
+    def test_minprom_supplier_queries_prioritize_product_terms_over_procurement_titles(self) -> None:
+        profile = ProcurementProfile(
+            summary="Поставка функциональной мебели для ГБОУ школа № 353",
+            items=(
+                ProcurementItem(
+                    id="item-1",
+                    name="Поставка функциональной мебели для ГБОУ школа № 353",
+                    category_terms=("функциональная мебель", "школьная мебель"),
+                ),
+            ),
+        )
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            status="error",
+            error="GISP timeout",
+        )
+
+        queries = supplier_search._build_minprom_supplier_queries(profile, registry_context, limit=6)
+
+        self.assertTrue(queries[0].startswith('"функциональная мебель"'))
+        self.assertIn("производитель", queries[0])
+        self.assertTrue(any("школьная мебель" in query for query in queries))
+        self.assertFalse(any("для ГБОУ" in query for query in queries[:4]))
+
+    def test_minprom_queries_use_okpd2_hierarchy_and_points(self) -> None:
+        profile = ProcurementProfile(
+            summary="Поставка мебели",
+            items=(
+                ProcurementItem(
+                    id="item-1",
+                    name="Стол обеденный",
+                    okpd2_codes=("31.09.12.131",),
+                    category_terms=("стол обеденный",),
+                ),
+            ),
+        )
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            status="error",
+            error="GISP timeout",
+        )
+
+        registry_queries = supplier_search._build_minprom_registry_code_queries(profile, limit=20)
+        supplier_queries = supplier_search._build_minprom_supplier_queries(profile, registry_context, limit=14)
+
+        self.assertIn("ОКПД2 31.09.12.131 реестр Минпромторга", registry_queries)
+        self.assertIn('"31.09.12.131" ПП 719 баллы', registry_queries)
+        self.assertIn("ОКПД2 31.09.12 реестр Минпромторга", registry_queries)
+        self.assertTrue(any("31.09.1" in query for query in registry_queries))
+        self.assertTrue(any("31.09.12.131" in query and "производитель" in query for query in supplier_queries))
+
+    def test_minprom_comment_claims_are_removed_without_registry_entries(self) -> None:
+        context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            status="error",
+            error="GISP timeout",
+        )
+
+        comment = supplier_search._sanitize_minprom_comment_claims(
+            (
+                "Поставщик предлагает релевантный товар. "
+                "Модель включена в реестр Минпромторга РФ, что удовлетворяет требованиям национального режима."
+            ),
+            context,
+        )
+
+        self.assertIn("Поставщик предлагает релевантный товар", comment)
+        self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров|национальн")
+
+    def test_supplier_search_blocks_tender_and_registry_mirror_domains(self) -> None:
+        for domain in ("poisktenderov.ru", "awindex.ru", "torgs.ru", "ruscable.ru", "zakupki44fz.ru", "dzen.ru"):
+            self.assertTrue(supplier_search.is_blocked(domain), domain)
+
     async def test_discover_suppliers_passes_required_minprom_registry_context_to_review(self) -> None:
         originals = {
             "build_procurement_profile": supplier_search.build_procurement_profile,
@@ -145,6 +277,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
             return ["стальные канаты производитель"]
 
         async def fake_discover(*args, **kwargs):
+            captured["queries"] = list(args[1])
             return [candidate], {"reports": [{"provider": "test", "status": "ok"}]}
 
         async def fake_rerank(*args, **kwargs):
@@ -193,8 +326,11 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(accepted), 1)
         self.assertIs(captured["registry_context"], registry_context)
+        self.assertIn('"Канатный завод" официальный сайт', captured["queries"][:6])
+        self.assertIn("стальные канаты производитель", captured["queries"])
         self.assertTrue(evidence["minprom_registry"]["required"])
         self.assertEqual(evidence["minprom_registry"]["entries_count"], 1)
+        self.assertTrue(any("Канатный завод" in query for query in evidence["minprom_supplier_queries"]))
 
     async def test_ai_rerank_candidates_keeps_ai_ranked_supplier_candidates(self) -> None:
         original_call_llm = supplier_search.call_llm
@@ -227,6 +363,42 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([candidate.domain for candidate in rerank.candidates], ["good.example"])
         self.assertEqual(rerank.candidates[0].procurement_item_id, "item-1")
         self.assertEqual(rerank.candidates[0].ai_rank_confidence, 91)
+
+    async def test_ai_rerank_candidates_receives_minprom_context_when_required(self) -> None:
+        original_call_llm = supplier_search.call_llm
+        prompts: list[str] = []
+
+        async def fake_call_llm(*args, **kwargs) -> str:
+            prompts.append(str(args[1]))
+            return """
+            {
+              "ranked": [
+                {"id": "0", "keep": true, "confidence": 0.9, "procurement_item_id": "item-1", "reason": "производитель с реестровым сигналом"}
+              ]
+            }
+            """
+
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            entries=({"registry_number": "123", "manufacturer": "Канатный завод", "product": "Канат стальной"},),
+            status="ok",
+        )
+        supplier_search.call_llm = fake_call_llm
+        try:
+            rerank = await supplier_search.ai_rerank_candidates(
+                SimpleNamespace(has_active_ai_provider=True),
+                ProcurementProfile(summary="Канат стальной", items=(ProcurementItem(id="item-1", name="Канат стальной"),)),
+                [Candidate(url="https://kanat.example", domain="kanat.example", title="Канатный завод")],
+                target=1,
+                registry_context=registry_context,
+            )
+        finally:
+            supplier_search.call_llm = original_call_llm
+
+        self.assertEqual([candidate.domain for candidate in rerank.candidates], ["kanat.example"])
+        self.assertIn("Контекст Минпромторга", prompts[0])
+        self.assertIn("Канатный завод", prompts[0])
+        self.assertIn("реестр Минпромторга", prompts[0])
 
     async def test_ai_rerank_candidates_uses_ai_expansion_when_initial_pool_is_too_small(self) -> None:
         original_call_llm = supplier_search.call_llm
@@ -734,6 +906,39 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(profile_score, 80)
         self.assertLess(analog_score, 80)
 
+    def test_ai_rejection_reason_requires_stronger_category_fit(self) -> None:
+        low_confidence = supplier_search._ai_rejection_reason(
+            {
+                "action": "accept",
+                "confidence": 50,
+                "site_type": "supplier",
+                "product_fit": "category",
+                "evidence_snippet": "Поставщик сварочного оборудования",
+            }
+        )
+        missing_snippet = supplier_search._ai_rejection_reason(
+            {
+                "action": "accept",
+                "confidence": 80,
+                "site_type": "supplier",
+                "product_fit": "profile",
+                "evidence_snippet": "",
+            }
+        )
+        accepted = supplier_search._ai_rejection_reason(
+            {
+                "action": "accept",
+                "confidence": 70,
+                "site_type": "supplier",
+                "product_fit": "category",
+                "evidence_snippet": "Каталог: сварочные полуавтоматы, источники MIG/MAG и расходные материалы",
+            }
+        )
+
+        self.assertIn("низкая уверенность", low_confidence)
+        self.assertIn("нет фрагмента сайта", missing_snippet)
+        self.assertEqual(accepted, "")
+
     async def test_discover_suppliers_returns_already_reviewed_verified_results_above_minimum(self) -> None:
         original_build = supplier_search.build_supplier_queries
         original_profile = supplier_search.build_procurement_profile
@@ -769,7 +974,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 {"provider_order": ["test"], "reports": []},
             )
 
-        async def fake_rerank(settings, profile: ProcurementProfile, candidates: list[Candidate], target: int) -> CandidateRerank:
+        async def fake_rerank(settings, profile: ProcurementProfile, candidates: list[Candidate], target: int, **kwargs) -> CandidateRerank:
             return CandidateRerank(candidates=candidates, meta={"status": "test", "kept_count": len(candidates)})
 
         async def fake_assess(settings, context: str):
@@ -873,7 +1078,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 ]
             return candidates, {"provider_order": ["test"], "reports": [{"provider": "test", "status": "ok"}]}
 
-        async def fake_rerank(settings, profile: ProcurementProfile, candidates: list[Candidate], target: int) -> CandidateRerank:
+        async def fake_rerank(settings, profile: ProcurementProfile, candidates: list[Candidate], target: int, **kwargs) -> CandidateRerank:
             return CandidateRerank(candidates=candidates, meta={"status": "test", "kept_count": len(candidates)})
 
         async def fake_assess(settings, context: str):

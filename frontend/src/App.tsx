@@ -17,7 +17,6 @@ import {
   Loader2,
   LogIn,
   MemoryStick,
-  Minus,
   Play,
   Plus,
   RefreshCw,
@@ -72,6 +71,16 @@ type Client = {
 type ClientUsage = {
   supplier_search: UsageCounter
   procurement_report: UsageCounter
+  supplier_search_extra: UsageCounter
+  money?: {
+    balance_kopeks: number
+    reserved_kopeks: number
+    available_kopeks: number
+    balance_rub: number
+    reserved_rub: number
+    available_rub: number
+  }
+  effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>
 }
 
 type UsageCounter = {
@@ -88,6 +97,8 @@ type UsageCounter = {
   manual_debited: number
   source: string
   low: boolean
+  price_kopeks?: number
+  price_rub?: number
 }
 
 type UsageEntry = {
@@ -146,11 +157,7 @@ type AccountDraft = {
 }
 
 type GrantDraft = {
-  package_id: string
-  kind: string
-  units: string
-  note: string
-  operation: 'grant' | 'debit'
+  amount_rub: string
 }
 
 type Job = {
@@ -309,6 +316,8 @@ type BillingTransaction = {
   operation: string
   operation_label: string
   units: number
+  amount_kopeks: number
+  amount_rub: number
   note: string
   created_by: string
   created_at: string | null
@@ -475,7 +484,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   clients: {
     title: 'Клиенты',
-    description: 'Клиенты из Telegram и сайта, баланс генераций и ручные корректировки.',
+    description: 'Клиенты из Telegram и сайта, денежный баланс, цены списания и привязанные аккаунты.',
   },
   jobs: {
     title: 'Задачи',
@@ -483,11 +492,11 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   billing: {
     title: 'Тарифы',
-    description: 'Пакеты как витрина и произвольные ручные корректировки клиентам.',
+    description: 'Глобальные цены услуг и тарифные пакеты для клиентского кабинета.',
   },
   settings: {
     title: 'Настройки',
-    description: 'Контакты, ручная оплата, бесплатный период, хранение файлов и поиск поставщиков.',
+    description: 'Контакты, пополнение через менеджера, триал, хранение файлов и источники поиска.',
   },
   ai: {
     title: 'ИИ-модели',
@@ -906,7 +915,7 @@ export function App() {
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
         {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
-        {isReady && view === 'clients' && <ClientsView clients={clients} tariffs={tariffs} passwordResets={passwordResets} onChange={loadAll} />}
+        {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
@@ -1000,7 +1009,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
         <div className="rule-list">
           <div><Bot size={17} />В боте работают только включённые клиенты и их менеджеры.</div>
           <div><Search size={17} />В отчёт попадают только поставщики, проверенные ИИ.</div>
-          <div><Settings size={17} />Лимиты задаются вручную: отдельно поиск поставщиков и анализ документации.</div>
+          <div><Settings size={17} />Клиенту пополняется денежный баланс, списание идёт по ценам услуг.</div>
           <div><KeyRound size={17} />Модели ИИ выбираются в разделе «ИИ-модели».</div>
         </div>
       </div>
@@ -1008,7 +1017,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
         <h2>Текущая конфигурация</h2>
         <div className="settings-summary">
           <span>Домен: {settings?.public_base_url || 'не задан'}</span>
-          <span>Минимум поставщиков: {settings?.default_supplier_target || 25}</span>
+          <span>Поставщиков в выдаче: {settings?.default_supplier_target || 25}</span>
           <span>Логистика: {settings?.logistics_enabled ? 'включена' : 'отключена'}</span>
           <span>Частичные отчёты: {settings?.allow_partial_supplier_reports ? 'разрешены' : 'запрещены'}</span>
           <span>Бесплатный период: {settings?.trial_enabled ? 'включён' : 'выключен'}</span>
@@ -1074,14 +1083,13 @@ function AnalyticsView({ analytics }: { analytics: BotAnalytics | null }) {
         <div className="form-panel">
           <h2>Оплата</h2>
           <div className="kv-list">
-            <div><span>Текущий режим</span><strong>{paymentProviderLabel(analytics.billing.payment_provider)}</strong></div>
-            <div><span>YooKassa</span><strong>{analytics.billing.yookassa_ready ? 'готова' : 'не готова'}</strong></div>
+            <div><span>Пополнение</span><strong>через менеджера</strong></div>
           </div>
           <div className="billing-mini-list">
             {analytics.billing.period.map(item => (
               <div key={item.kind}>
                 <strong>{item.label}</strong>
-                <span>начислено {item.granted} · списано {item.charged} · резерв {item.reserved}</span>
+                <span>{billingPeriodSummaryText(item)}</span>
               </div>
             ))}
             {!analytics.billing.period.length && <span className="inline-note">Начислений за период нет.</span>}
@@ -1142,8 +1150,11 @@ function analyticsBalance(client: AnalyticsClient) {
   return `баланс: ${client.supplier_available ?? 'без лимита'} / ${client.report_available ?? 'без лимита'}`
 }
 
-function paymentProviderLabel(provider: string) {
-  return provider === 'yookassa' ? 'YooKassa' : 'ручная оплата'
+function billingPeriodSummaryText(item: BotAnalytics['billing']['period'][number]) {
+  const parts = [`начислено ${item.granted}`, `списано ${item.charged}`]
+  if (item.reserved > 0) parts.push(`в работе ${item.reserved}`)
+  if (item.manual_debited > 0) parts.push(`коррекция ${item.manual_debited}`)
+  return parts.join(' · ')
 }
 
 function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
@@ -1213,12 +1224,10 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
 
 function ClientsView({
   clients,
-  tariffs,
   passwordResets,
   onChange,
 }: {
   clients: Client[]
-  tariffs: TariffPackage[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
 }) {
@@ -1228,9 +1237,9 @@ function ClientsView({
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
   const [mergeForms, setMergeForms] = useState<Record<string, string>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
+  const [priceForms, setPriceForms] = useState<Record<string, string>>({})
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
-  const activeTariffs = tariffs.filter(item => item.is_active)
   async function createClient() {
     const usernames = parseTelegramUsernames(form.telegram_usernames)
     await api('/api/clients', {
@@ -1330,44 +1339,51 @@ function ClientsView({
     })
   }
   function grantDraft(client: Client) {
-    return grantForms[client.id] || { package_id: '', kind: 'supplier_search', units: '1', note: '', operation: 'grant' }
+    return grantForms[client.id] || { amount_rub: '' }
   }
   function setGrantDraft(client: Client, patch: Partial<GrantDraft>) {
     const current = grantDraft(client)
     setGrantForms({ ...grantForms, [client.id]: { ...current, ...patch } })
   }
-  function applyGrantTemplate(client: Client, packageId: string) {
-    const selected = activeTariffs.find(item => item.id === packageId)
-    const current = grantDraft(client)
-    setGrantForms({
-      ...grantForms,
-      [client.id]: selected
-        ? { ...current, package_id: packageId, kind: selected.kind, units: String(selected.units), operation: 'grant' }
-        : { ...current, package_id: '' },
-    })
+  function priceDraftKey(client: Client, kind: string) {
+    return `${client.id}:${kind}`
   }
-  function quickGrant(client: Client, kind: string, units: number, operation: 'grant' | 'debit' = 'grant') {
-    setGrantForms({
-      ...grantForms,
-      [client.id]: { package_id: '', kind, units: String(units), note: '', operation },
-    })
+  function priceDraftValue(client: Client, kind: string, fallbackKopeks: number) {
+    return priceForms[priceDraftKey(client, kind)] ?? String(kopeksToRubles(fallbackKopeks))
   }
-  async function grantUnits(client: Client) {
+  function setPriceDraftValue(client: Client, kind: string, value: string) {
+    setPriceForms({ ...priceForms, [priceDraftKey(client, kind)]: value })
+  }
+  async function topUpClientBalance(client: Client) {
     const draft = grantDraft(client)
-    const selected = draft.operation === 'grant' ? activeTariffs.find(item => item.id === draft.package_id) : undefined
-    const units = Math.floor(Number(draft.units))
-    if (!Number.isFinite(units) || units < 1) return
-    const packageId = selected && selected.kind === draft.kind && selected.units === units ? selected.id : ''
-    if (draft.operation === 'debit') {
-      const available = availableBillingUnits(client, draft.kind)
-      if (available !== null && units > available) return
-      if (!window.confirm(`Списать ${units} ${humanBillingKind(draft.kind).toLowerCase()} у клиента «${clientDisplayName(client)}»?`)) return
-    }
+    const amountRub = Number(draft.amount_rub || 0)
+    const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
+    if (amountKopeks <= 0) return
     await api(`/api/clients/${client.id}/billing/grants`, {
       method: 'POST',
-      body: JSON.stringify({ kind: draft.kind, package_id: packageId, units, note: '', operation: draft.operation }),
+      body: JSON.stringify({
+        kind: 'money',
+        package_id: '',
+        units: 1,
+        amount_kopeks: amountKopeks,
+        note: 'Ручное пополнение баланса',
+        operation: 'grant',
+      }),
     })
-    setGrantForms({ ...grantForms, [client.id]: { package_id: '', kind: draft.kind, units: '1', note: '', operation: draft.operation } })
+    setGrantForms({ ...grantForms, [client.id]: { amount_rub: '' } })
+    await onChange()
+  }
+  async function saveClientTariffOverride(client: Client, kind: string, fallbackKopeks: number) {
+    const key = priceDraftKey(client, kind)
+    const valueRub = Number(priceForms[key] ?? kopeksToRubles(fallbackKopeks))
+    if (!Number.isFinite(valueRub) || valueRub < 0) return
+    await api(`/api/clients/${client.id}/tariff-overrides/${kind}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ kind, price_kopeks: rublesToKopeks(valueRub), is_enabled: valueRub > 0, note: '' }),
+    })
+    const nextForms = { ...priceForms }
+    delete nextForms[key]
+    setPriceForms(nextForms)
     await onChange()
   }
   async function verifyWebUserEmail(client: Client, user: WebUser) {
@@ -1457,7 +1473,8 @@ function ClientsView({
           const webUsers = client.web_users?.length ? client.web_users : []
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
-          const debitAvailable = availableBillingUnits(client, grant.kind)
+          const grantAmountRub = Number(grant.amount_rub || 0)
+          const grantAmountValid = Number.isFinite(grantAmountRub) && grantAmountRub > 0
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
           return (
@@ -1481,8 +1498,7 @@ function ClientsView({
                   {webUsers[0]?.email && <span>{webUsers[0].email}</span>}
                   <span>Telegram: {connectedCount}</span>
                   {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
-                  <span>Поставщики: {client.usage ? usageSummaryText(client.usage.supplier_search) : 'нет данных'}</span>
-                  <span>Анализ: {client.usage ? usageSummaryText(client.usage.procurement_report) : 'нет данных'}</span>
+                  {client.usage?.money && <span>Баланс: {formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
                 <div className="client-state">
                   {!client.is_active && <StatusBadge status="disabled" />}
@@ -1548,96 +1564,109 @@ function ClientsView({
                   </div>
                   {client.usage && (
                     <div className="balance-compact-list">
-                      <BalanceLine counter={client.usage.supplier_search} />
-                      <BalanceLine counter={client.usage.procurement_report} />
+                      {client.usage.money && (
+                        <div className="balance-line">
+                          <div>
+                            <strong>Баланс</strong>
+                            {client.usage.money.reserved_kopeks > 0 && (
+                              <small title="Средства удержаны под задачи в работе">В обработке {formatMoney(client.usage.money.reserved_kopeks)}</small>
+                            )}
+                          </div>
+                          <span>{formatMoney(client.usage.money.available_kopeks)}</span>
+                        </div>
+                      )}
                     </div>
                   )}
-                  <div className="manual-grant-panel">
-                    <label className="mini-field">
-                      <span>Действие</span>
-                      <select value={grant.operation} onChange={e => setGrantDraft(client, { operation: e.target.value as 'grant' | 'debit', package_id: '' })}>
-                        <option value="grant">Начислить</option>
-                        <option value="debit">Списать</option>
-                      </select>
-                    </label>
-                    <label className="mini-field">
-                      <span>Тип</span>
-                      <select value={grant.kind} onChange={e => setGrantDraft(client, { kind: e.target.value, package_id: '' })}>
-                        <option value="supplier_search">Поставщики</option>
-                        <option value="procurement_report">Анализ документации</option>
-                      </select>
-                    </label>
-                    <label className="mini-field">
-                      <span>Кол-во</span>
-                      <input type="number" min={1} step={1} value={grant.units} onChange={e => setGrantDraft(client, { units: e.target.value, package_id: '' })} />
-                    </label>
-                    <div className="quick-grants">
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 1, grant.operation)}>{grant.operation === 'debit' ? '-1' : '+1'}</button>
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 10, grant.operation)}>{grant.operation === 'debit' ? '-10' : '+10'}</button>
-                      <button className="ghost small-text" onClick={() => quickGrant(client, grant.kind, 50, grant.operation)}>{grant.operation === 'debit' ? '-50' : '+50'}</button>
+                  {client.usage?.effective_prices && (
+                    <div className="price-settings-panel">
+                      {(['supplier_search', 'procurement_report', 'supplier_search_extra'] as const).map(kind => {
+                        const price = client.usage?.effective_prices?.[kind]
+                        const fallbackKopeks = price?.price_kopeks || 0
+                        return (
+                          <label className="mini-field" key={kind}>
+                            <span>{priceBillingLabel(kind)}, ₽</span>
+                            <div className="price-override-row">
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={priceDraftValue(client, kind, fallbackKopeks)}
+                                onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
+                                }}
+                              />
+                              <button className="icon-button small" type="button" title="Сохранить цену" onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}>
+                                <Save size={14} />
+                              </button>
+                            </div>
+                          </label>
+                        )
+                      })}
                     </div>
-                    {grant.operation === 'grant' && (
-                      <label className="mini-field grant-package-field">
-                        <span>Пакет</span>
-                        <select value={grant.package_id} onChange={e => applyGrantTemplate(client, e.target.value)}>
-                          <option value="">Вручную</option>
-                          {activeTariffs.map(item => <option key={item.id} value={item.id}>{tariffOptionLabel(item)}</option>)}
-                        </select>
-                      </label>
-                    )}
-                    {grant.operation === 'debit' && debitAvailable !== null && (
-                      <div className="inline-note grant-available-note">Доступно для списания: {debitAvailable}</div>
-                    )}
-                    <button
-                      className={grant.operation === 'debit' ? 'danger' : undefined}
-                      onClick={() => void grantUnits(client)}
-                      disabled={!Number.isFinite(Number(grant.units)) || Number(grant.units) < 1 || (grant.operation === 'debit' && debitAvailable !== null && Number(grant.units) > debitAvailable)}
-                    >
-                      {grant.operation === 'debit' ? <Minus size={16} /> : <Plus size={16} />}
-                      {grant.operation === 'debit' ? 'Списать' : 'Начислить'}
+                  )}
+                  <div className="balance-topup-panel">
+                    <label className="mini-field">
+                      <span>Пополнить баланс, ₽</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        placeholder="Сумма"
+                        value={grant.amount_rub}
+                        onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
+                        }}
+                      />
+                    </label>
+                    <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
+                      <Plus size={16} />Пополнить
                     </button>
                   </div>
                 </div>
 
-                <div className="client-section client-settings-section">
-                  <h3>Настройки</h3>
+                <div className="client-section client-search-section">
+                  <h3>Поиск</h3>
                   <label className="mini-field">
-                    <span>Мин. поставщиков</span>
+                    <span>Поставщиков в выдаче</span>
                     <input
                       className="supplier-target-input"
                       type="number"
                       min={0}
                       max={100}
                       step={1}
-                      defaultValue={client.supplier_target_min || 0}
+                      placeholder="по умолчанию"
+                      defaultValue={client.supplier_target_min || ''}
                       onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
                     />
                   </label>
-                  <details className="merge-client-details">
-                    <summary>Объединение</summary>
-                    <div className="merge-client-panel">
-                      <label className="mini-field">
-                        <span>Кого присоединить</span>
-                        <select
-                          value={mergeForms[client.id] || ''}
-                          onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
-                        >
-                          <option value="">Выберите клиента</option>
-                          {clients.filter(item => item.id !== client.id).map(item => (
-                            <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        className="small-text"
-                        onClick={() => void mergeClientIntoTarget(client)}
-                        disabled={!mergeForms[client.id]}
-                      >
-                        <Users size={14} />Объединить
-                      </button>
-                    </div>
-                  </details>
                 </div>
+
+                <details className="client-section client-merge-section merge-client-details">
+                  <summary>Объединение клиентов</summary>
+                  <div className="merge-client-panel">
+                    <label className="mini-field">
+                      <span>Кого присоединить</span>
+                      <select
+                        value={mergeForms[client.id] || ''}
+                        onChange={event => setMergeForms({ ...mergeForms, [client.id]: event.target.value })}
+                      >
+                        <option value="">Выберите клиента</option>
+                        {clients.filter(item => item.id !== client.id).map(item => (
+                          <option key={item.id} value={item.id}>{clientDisplayName(item)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className="small-text"
+                      onClick={() => void mergeClientIntoTarget(client)}
+                      disabled={!mergeForms[client.id]}
+                    >
+                      <Users size={14} />Объединить
+                    </button>
+                  </div>
+                </details>
 
                 <details className="client-section billing-history-details">
                   <summary>
@@ -1651,7 +1680,7 @@ function ClientsView({
                           <strong>{item.operation_label}: {item.kind_label}</strong>
                           <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
                         </div>
-                        <span>{item.units}</span>
+                        <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
                       </div>
                     ))}
                     {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
@@ -1697,38 +1726,23 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
   return 'Telegram-аккаунты ожидают подключения'
 }
 
-function usageSummaryText(counter: UsageCounter) {
-  return `${counter.available ?? 'без лимита'} доступно`
-}
-
-function availableBillingUnits(client: Client, kind: string) {
-  const counter = kind === 'procurement_report' ? client.usage?.procurement_report : client.usage?.supplier_search
-  return counter?.available ?? null
-}
-
-function BalanceLine({ counter }: { counter: UsageCounter }) {
-  return (
-    <div className={counter.low ? 'balance-line warning' : 'balance-line'}>
-      <div>
-        <strong>{counter.label}</strong>
-        <small>начислено {counter.granted} · списано {counter.spent} · коррекция {counter.manual_debited || 0} · резерв {counter.reserved}</small>
-      </div>
-      <span>{counter.available ?? 'без лимита'}</span>
-    </div>
-  )
-}
-
-function tariffOptionLabel(item: TariffPackage) {
-  return `${humanBillingKind(item.kind)} · ${item.name} · ${item.units} ед. · ${formatPrice(item.price_kopeks)}`
-}
-
 function humanBillingKind(kind: string) {
+  if (kind === 'supplier_search_extra') return 'Добор поставщиков'
   return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
+}
+
+function priceBillingLabel(kind: string) {
+  if (kind === 'supplier_search_extra') return 'Добор'
+  return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
 function formatPrice(priceKopeks: number) {
   if (!priceKopeks) return 'цена не указана'
   return `${new Intl.NumberFormat('ru-RU').format(priceKopeks / 100)} ₽`
+}
+
+function formatMoney(amountKopeks: number) {
+  return `${new Intl.NumberFormat('ru-RU').format(Number(amountKopeks || 0) / 100)} ₽`
 }
 
 function kopeksToRubles(priceKopeks: number) {
@@ -1986,6 +2000,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
   }
   const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
   const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
+  const extraSupplierTariffs = tariffs.filter(item => item.kind === 'supplier_search_extra')
   return (
     <section className="stack">
       <div className="form-panel full-width-panel">
@@ -1996,6 +2011,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
             <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
               <option value="supplier_search">Поставщики</option>
               <option value="procurement_report">Анализ документации</option>
+              <option value="supplier_search_extra">Добор поставщиков</option>
             </select>
           </label>
           <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
@@ -2009,6 +2025,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
 
       <TariffGroup title="Поставщики" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
       <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
     </section>
   )
 }
@@ -2041,22 +2058,19 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
-  const [yookassaSecret, setYookassaSecret] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string; yookassa_secret_key?: string }>('/api/settings/keys')
+    void api<{ supplier_search_adapter_api_key?: string; yandex_search_api_key?: string; google_search_api_key?: string }>('/api/settings/keys')
       .then(data => {
         setAdapterKey(data.supplier_search_adapter_api_key || '')
         setYandexKey(data.yandex_search_api_key || '')
         setGoogleKey(data.google_search_api_key || '')
-        setYookassaSecret(data.yookassa_secret_key || '')
       })
       .catch(() => {
         setAdapterKey('')
         setYandexKey('')
         setGoogleKey('')
-        setYookassaSecret('')
       })
   }, [])
   async function save() {
@@ -2067,9 +2081,6 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
       google_search_api_key: googleKey,
       supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex,google,tavily,ddgs',
     }
-    if (yookassaSecret.trim() || !settings.yookassa_secret_key_set) {
-      payload.yookassa_secret_key = yookassaSecret
-    }
     await api('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -2079,7 +2090,7 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
   return (
     <section className="settings-grid">
       <div className="form-panel full">
-        <h2>Контакты и ручная оплата</h2>
+        <h2>Контакты и пополнение</h2>
         <div className="settings-grid compact-grid">
           <TextField label="Telegram-бот для работы" value={draft.bot_telegram} onChange={value => setDraft({ ...draft, bot_telegram: value })} />
           <TextField label="Telegram для связи и оплаты" value={draft.contact_telegram} onChange={value => setDraft({ ...draft, contact_telegram: value })} />
@@ -2088,24 +2099,8 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
           <TextField label="MAX ссылка из приложения" value={draft.contact_max_link} onChange={value => setDraft({ ...draft, contact_max_link: value })} />
           <TextField label="Сайт" value={draft.contact_website} onChange={value => setDraft({ ...draft, contact_website: value })} />
         </div>
-        <p className="field-help">Приоритетная связь для клиентов — Telegram. Для рабочей кнопки MAX вставьте ссылку, скопированную в приложении MAX через профиль, QR или приглашение; телефон используется только как текст рядом с контактом.</p>
-        <TextArea className="payment-textarea" label="Инструкция ручной оплаты" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
-      </div>
-      <div className="form-panel full">
-        <h2>YooKassa</h2>
-        <div className="settings-grid compact-grid">
-          <label className="field">
-            <span>Режим оплаты</span>
-            <select value={draft.payment_provider} onChange={e => setDraft({ ...draft, payment_provider: e.target.value })}>
-              <option value="manual">Ручная оплата</option>
-              <option value="yookassa">YooKassa</option>
-            </select>
-          </label>
-          <TextField label="Shop ID" value={draft.yookassa_shop_id} onChange={value => setDraft({ ...draft, yookassa_shop_id: value })} />
-          <TextField label="Return URL" value={draft.yookassa_return_url} onChange={value => setDraft({ ...draft, yookassa_return_url: value })} />
-          <SecretField label="Secret key" value={yookassaSecret} onChange={setYookassaSecret} />
-        </div>
-        <p className="field-help">Пока YooKassa не подключена, клиентам показываются ручная инструкция, Telegram, MAX, email и сайт. Реквизиты не подставляются автоматически.</p>
+        <p className="field-help">Telegram — основной контакт. MAX-кнопка работает только по ссылке.</p>
+        <TextArea className="payment-textarea" label="Инструкция для пополнения" value={draft.payment_instructions} onChange={value => setDraft({ ...draft, payment_instructions: value })} />
       </div>
       <div className="form-panel">
         <h2>Бот и хранение</h2>
@@ -2124,7 +2119,7 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
       </div>
       <div className="form-panel">
         <h2>Отчёты</h2>
-        <NumberField label="Мин. поставщиков по ТЗ" value={draft.default_supplier_target} onChange={value => setDraft({ ...draft, default_supplier_target: value })} />
+        <NumberField label="Поставщиков в выдаче" value={draft.default_supplier_target} onChange={value => setDraft({ ...draft, default_supplier_target: value })} />
         <label className="switch-row"><input type="checkbox" checked={draft.allow_partial_supplier_reports} onChange={e => setDraft({ ...draft, allow_partial_supplier_reports: e.target.checked })} />Разрешить частичные отчёты</label>
       </div>
       <div className="form-panel full">
@@ -2148,7 +2143,7 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
             </div>
           )}
         </div>
-        <p className="field-help">Приоритет поиска: Яндекс, Google, затем вспомогательные источники. Tavily используется только как дополнительный резерв.</p>
+        <p className="field-help">Приоритет поиска: Яндекс, Google, затем вспомогательные источники. Tavily используется как запасной источник.</p>
         <details className="service-panel">
           <summary>Расширенные параметры источников</summary>
           <div className="search-source-grid">

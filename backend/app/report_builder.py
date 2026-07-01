@@ -101,21 +101,21 @@ def _client_supplier_comment(row: dict) -> str:
     detail = _short_product_or_comment(product, raw_comment)
     if product_fit == "exact":
         if detail:
-            return _truncate_comment(f"Точный товар: {detail}. Контакты найдены на сайте.", COMMENT_LIMIT)
-        return "Точный товар. Контакты найдены на сайте."
+            return _truncate_comment(f"Точное соответствие: {detail}.", COMMENT_LIMIT)
+        return "Точное соответствие."
     if product_fit == "analog":
         if detail:
-            return _truncate_comment(f"Возможный аналог: {detail}. Уточните характеристики по ТЗ.", COMMENT_LIMIT)
-        return "Возможный аналог. Уточните характеристики по ТЗ."
+            return _truncate_comment(f"Возможный аналог: {detail}. Сверить характеристики.", COMMENT_LIMIT)
+        return "Возможный аналог. Сверить характеристики."
     if product_fit == "category":
         if detail:
-            return _truncate_comment(f"Профильная категория: {detail}. Уточните конкретный товар по ТЗ.", COMMENT_LIMIT)
-        return "Профильная категория. Уточните конкретный товар по ТЗ."
+            return _truncate_comment(f"Категория совпадает: {detail}. Конкретный товар не подтвержден.", COMMENT_LIMIT)
+        return "Категория совпадает. Конкретный товар не подтвержден."
     if product_fit == "profile":
-        return "Профильный поставщик. Уточните наличие конкретного товара по ТЗ."
+        return "Профиль компании подходит. Наличие товара уточнить."
     if detail:
-        return _truncate_comment(f"Поставщик релевантен: {detail}.", COMMENT_LIMIT)
-    return "Поставщик релевантен предмету закупки. Контакты найдены на сайте."
+        return _truncate_comment(f"Соответствие требует уточнения: {detail}.", COMMENT_LIMIT)
+    return "Соответствие требует уточнения."
 
 
 def _supplier_report_heading(title: str, subject: str = "") -> str:
@@ -137,7 +137,9 @@ def _short_product_or_comment(product: str, comment: str) -> str:
         return _truncate_comment(product, 130).rstrip(".")
     if not comment:
         return ""
-    softened = _soften_supplier_claims(comment)
+    softened = _remove_registry_comment_fragments(_soften_supplier_claims(comment))
+    if not softened:
+        return ""
     first_sentence = re.split(r"(?<=[.!?])\s+", softened, maxsplit=1)[0]
     return _truncate_comment(first_sentence, 130).rstrip(".")
 
@@ -150,6 +152,19 @@ def _soften_supplier_claims(comment: str) -> str:
     value = re.sub(r"полностью\s+соответствует", "релевантно", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip()
     return value
+
+
+def _remove_registry_comment_fragments(comment: str) -> str:
+    value = re.sub(r"\s+", " ", str(comment or "")).strip()
+    if not value:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", value)
+    kept = [
+        part.strip()
+        for part in parts
+        if part.strip() and not re.search(r"(?:минпромторг\w*|гисп|реестр\w*|реестров\w*)", part, flags=re.I)
+    ]
+    return " ".join(kept)
 
 
 def _truncate_comment(comment: str, limit: int = 500) -> str:

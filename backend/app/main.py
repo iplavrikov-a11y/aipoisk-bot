@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from .ai import call_llm
 from .billing import (
     BillingError,
+    KIND_MONEY,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
     VALID_BILLING_KINDS,
@@ -29,6 +30,7 @@ from .billing import (
     client_uses_trial_access,
     debit_package_units,
     expire_stale_confirmations,
+    grant_money_balance,
     grant_package_units,
     release_job_reservation,
     list_tariffs,
@@ -43,7 +45,10 @@ from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
+    SUPPLIER_POLICY_NORMAL,
+    SUPPLIER_RUN_ADDITIONAL,
     TERMINAL_JOB_STATUSES,
+    VALID_SUPPLIER_SEARCH_POLICIES,
     VALID_JOB_MODES,
     cancel_running_job,
     cleanup_expired_jobs,
@@ -51,10 +56,11 @@ from .jobs import (
     enqueue_job,
     package_job_output_items,
     package_job_outputs,
+    read_supplier_exclusions,
     recover_interrupted_jobs,
     write_supplier_exclusions,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
+from .models import BillingTransaction, Client, ClientTariffOverride, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -80,6 +86,7 @@ from .schemas import (
     ClientPatch,
     ClientTelegramAccountCreate,
     ClientTelegramAccountPatch,
+    ClientTariffOverridePatch,
     BillingGrantCreate,
     LoginRequest,
     ManualJobCreate,
@@ -473,6 +480,7 @@ def customer_jobs_api(
 async def customer_create_job_route(
     request: Request,
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
+    supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -483,6 +491,7 @@ async def customer_create_job_route(
     require_customer_csrf(request, context)
     return await create_customer_job_api(
         mode=mode,
+        supplier_search_policy=supplier_search_policy,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -898,6 +907,25 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         raise HTTPException(status_code=400, detail="Tariff package can only be used for grants")
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
+    if kind == KIND_MONEY:
+        if package or operation != "grant":
+            raise HTTPException(status_code=400, detail="Money balance can only be topped up directly")
+        try:
+            transaction = grant_money_balance(
+                db,
+                client,
+                amount_kopeks=data.amount_kopeks,
+                note=data.note or "Ручное пополнение баланса",
+                created_by="admin",
+            )
+        except BillingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.refresh(client)
+        return {
+            "success": True,
+            "transaction": transaction_to_dict(transaction),
+            "client": client_to_dict(client, db=db),
+        }
     if kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown billing kind")
     try:
@@ -908,6 +936,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 client,
                 kind=kind,
                 units=units,
+                amount_kopeks=data.amount_kopeks,
                 package_id=package.id if package else data.package_id,
                 note=note,
                 created_by="admin",
@@ -918,7 +947,8 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 client,
                 kind=kind,
                 units=units,
-                note=data.note or "Ручное списание пакета",
+                amount_kopeks=data.amount_kopeks,
+                note=data.note or "Ручное списание с баланса",
                 created_by="admin",
             )
     except BillingError as exc:
@@ -929,6 +959,37 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         "transaction": transaction_to_dict(transaction),
         "client": client_to_dict(client, db=db),
     }
+
+
+@app.patch("/api/clients/{client_id}/tariff-overrides/{kind}", dependencies=[Depends(require_admin)])
+def patch_client_tariff_override(
+    client_id: str,
+    kind: str,
+    data: ClientTariffOverridePatch,
+    db: Session = Depends(db_session),
+) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    normalized_kind = str(kind or data.kind or "").strip()
+    if normalized_kind not in VALID_BILLING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    override = (
+        db.query(ClientTariffOverride)
+        .filter(ClientTariffOverride.client_id == client.id)
+        .filter(ClientTariffOverride.kind == normalized_kind)
+        .first()
+    )
+    if not override:
+        override = ClientTariffOverride(client_id=client.id, kind=normalized_kind)
+        db.add(override)
+    override.price_kopeks = int(data.price_kopeks or 0)
+    override.is_enabled = bool(data.is_enabled)
+    override.note = data.note or ""
+    override.updated_at = now_utc()
+    db.commit()
+    db.refresh(client)
+    return {"success": True, "client": client_to_dict(client, db=db)}
 
 
 @app.post("/api/clients/{client_id}/web-users/{user_id}/verify-email", dependencies=[Depends(require_admin)])
@@ -2012,6 +2073,7 @@ def public_site_payload(db: Session) -> dict:
         "tariff_groups": {
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+            "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
@@ -2087,6 +2149,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         "tariff_groups": {
             "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
             "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
+            "supplier_search_extra": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search_extra"],
         },
         "contacts": {
             "email": settings.contact_email,
@@ -2125,6 +2188,8 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "client_id": job.client_id,
         "mode": job.mode,
         "mode_label": mode_label(job.mode),
+        "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
         "status": job.status,
         "status_label": human_status_label(job.status),
         "progress": job.progress,
@@ -2184,6 +2249,7 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
 async def create_customer_job_api(
     *,
     mode: str,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -2195,6 +2261,7 @@ async def create_customer_job_api(
         raise HTTPException(status_code=400, detail="Неизвестный режим обработки.")
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     settings = get_or_create_settings(db)
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:
@@ -2240,6 +2307,7 @@ async def create_customer_job_api(
                     target_suppliers=safe_target,
                     files=job_files,
                     sources=[],
+                    supplier_search_policy=normalized_policy,
                 )
                 reserve_job_units(db, client, job)
                 enqueue_job(job.id)
@@ -2256,6 +2324,7 @@ async def create_customer_job_api(
             target_suppliers=safe_target,
             files=payload,
             sources=sources,
+            supplier_search_policy=normalized_policy,
         )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         enqueue_job(job.id)
@@ -2285,6 +2354,13 @@ def _customer_supplier_job_specs(mode: str, payload: list[tuple[str, bytes]]) ->
     if mode != MODE_SUPPLIER_SEARCH:
         return []
     return [(_clean_customer_job_subject(Path(filename).stem) or "ТЗ", [(filename, content)]) for filename, content in payload]
+
+
+def _normalize_supplier_search_policy_for_job(mode: str, policy: str) -> str:
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        return SUPPLIER_POLICY_NORMAL
+    normalized = str(policy or "").strip().lower()
+    return normalized if normalized in VALID_SUPPLIER_SEARCH_POLICIES else SUPPLIER_POLICY_NORMAL
 
 
 def _customer_initial_job_title(mode: str, payload: list[tuple[str, bytes]], sources: list[dict]) -> str:
@@ -2453,7 +2529,7 @@ def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContex
 
     return {
         "success": True,
-        "message": "Запущен дополнительный поиск поставщиков. Он резервирует 1 генерацию и исключает уже найденные компании.",
+        "message": "Запущен дополнительный поиск поставщиков. Он резервирует стоимость добора и исключает уже найденные компании.",
         "job": customer_job_to_dict(job),
     }
 
@@ -2483,6 +2559,7 @@ def create_additional_supplier_search_for_client(
         MODE_SUPPLIER_SEARCH,
         incoming_file_count=len(input_files),
         supplier_search_count=1,
+        supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
@@ -2499,6 +2576,11 @@ def create_additional_supplier_search_for_client(
             target_suppliers=target_suppliers,
             files=input_files,
             sources=[],
+            supplier_search_policy=_normalize_supplier_search_policy_for_job(
+                MODE_SUPPLIER_SEARCH,
+                getattr(original_job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            ),
+            supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         write_supplier_exclusions(job, previous_job_id=original_job.id, suppliers=excluded_suppliers)
@@ -2582,6 +2664,7 @@ def _supplier_context_from_job_evidence(job: Job) -> str:
 
 
 def _supplier_exclusions_from_job(job: Job) -> list[dict]:
+    existing_exclusions = read_supplier_exclusions(job)
     suppliers = [
         _supplier_result_exclusion(item)
         for item in getattr(job, "suppliers", []) or []
@@ -2589,17 +2672,17 @@ def _supplier_exclusions_from_job(job: Job) -> list[dict]:
     ]
     suppliers = [item for item in suppliers if item.get("company_name") or item.get("site")]
     if suppliers:
-        return suppliers
+        return _dedupe_supplier_exclusions(existing_exclusions + suppliers)
     try:
         evidence = read_job_evidence_payload(job)
     except HTTPException:
-        return []
+        return _dedupe_supplier_exclusions(existing_exclusions)
     accepted = evidence.get("accepted")
     if not isinstance(accepted, list) and isinstance(evidence.get("supplier_search"), dict):
         accepted = evidence["supplier_search"].get("accepted")
     if not isinstance(accepted, list):
-        return []
-    return [
+        return _dedupe_supplier_exclusions(existing_exclusions)
+    evidence_suppliers = [
         {
             "company_name": str(item.get("company_name") or ""),
             "site": str(item.get("site") or ""),
@@ -2611,6 +2694,34 @@ def _supplier_exclusions_from_job(job: Job) -> list[dict]:
         for item in accepted
         if isinstance(item, dict) and (item.get("company_name") or item.get("site"))
     ]
+    return _dedupe_supplier_exclusions(existing_exclusions + evidence_suppliers)
+
+
+def _dedupe_supplier_exclusions(suppliers: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in suppliers:
+        if not isinstance(item, dict):
+            continue
+        domain = _supplier_exclusion_domain(item)
+        company = " ".join(str(item.get("company_name") or "").lower().split())
+        key = domain or company
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _supplier_exclusion_domain(item: dict) -> str:
+    for key in ("site", "evidence_url", "contact_url"):
+        value = str(item.get(key) or "").strip()
+        if not value:
+            continue
+        match = re.search(r"(?i)^(?:https?://)?(?:www\.)?([^/\s?#]+)", value)
+        if match:
+            return match.group(1).lower()
+    return ""
 
 
 def _supplier_result_exclusion(item: SupplierResult) -> dict:
@@ -2726,6 +2837,9 @@ def client_usage_summary(db: Session, client: Client) -> dict:
     return {
         "supplier_search": usage_counter_from_balance(balances["supplier_search"]),
         "procurement_report": usage_counter_from_balance(balances["procurement_report"]),
+        "supplier_search_extra": usage_counter_from_balance(balances["supplier_search_extra"]),
+        "money": balances["money"],
+        "effective_prices": balances["effective_prices"],
     }
 
 
@@ -2752,6 +2866,8 @@ def usage_counter_from_balance(counter: dict) -> dict:
         "manual_debited": manual_debited,
         "source": counter.get("source") or "ledger",
         "low": bool(counter.get("low")),
+        "price_kopeks": int(counter.get("price_kopeks") or 0),
+        "price_rub": round(int(counter.get("price_kopeks") or 0) / 100, 2),
     }
 
 

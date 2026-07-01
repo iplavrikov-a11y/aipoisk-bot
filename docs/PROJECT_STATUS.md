@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-29
+Date: 2026-07-01
 
 ## Current Production State
 
@@ -26,7 +26,7 @@ Date: 2026-06-29
   landing intent and metadata where useful; the homepage uses buyer-facing
   language such as "спецификация", "запрос цены", "письмо поставщику", and
   "список компаний".
-- Latest live site verification on 2026-06-26 passed
+- Live site verification on 2026-06-26 passed
   `scripts/deploy_tenderlex_live.sh`, `scripts/check_tenderlex_seo.sh
   https://tenderlex.ru`, and direct live HTML checks for the root title,
   description, H1, and homepage stale-copy phrases.
@@ -58,11 +58,11 @@ Current runtime note:
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
 
-## Commercial Access And Limits
+## Commercial Access And Billing
 
-Commercial limits are customer-level, not Telegram-account-level. One customer
+Commercial access is customer-level, not Telegram-account-level. One customer
 can have several Telegram manager accounts; all linked accounts spend the same
-customer limits.
+customer money balance and job history.
 
 Website cabinet users are intentionally separate from Telegram users. Web users
 sign in by email/password and appear in admin flows by website email. Internal
@@ -71,27 +71,37 @@ UI must not show those markers as Telegram accounts or Telegram IDs. Telegram
 access remains tied to real Telegram accounts unless the owner explicitly
 changes the account model.
 
-There are exactly two commercial counters:
+The active paid model is money balance plus effective per-function prices:
 
-- supplier reports;
-- procurement-document analyses.
+- supplier search;
+- procurement-document analysis;
+- additional supplier search (`Найти ещё` / добор поставщиков).
 
 Mode accounting:
 
-- `🔎 Поставщики по ТЗ` spends one supplier-report unit per independent ТЗ;
+- `🔎 Поставщики по ТЗ` reserves and charges the supplier-search price per
+  independent ТЗ;
 - when several supplier-search inputs are collected before launch, each
-  independent ТЗ spends one supplier-report unit;
-- `📄 Анализ закупки` spends one documentation-analysis unit;
-- `📄🔎 Анализ + поиск` spends one supplier-report unit and one
-  documentation-analysis unit.
+  independent ТЗ reserves and charges its own supplier-search price;
+- `📄 Анализ закупки` reserves and charges the documentation-analysis price;
+- `📄🔎 Анализ + поиск` reserves and charges both the supplier-search and
+  documentation-analysis prices;
+- `Найти ещё` after a completed supplier search reserves and charges the
+  additional-supplier-search price and excludes already found companies.
 
 Free-period customers can be enabled from admin settings. Trial access has
 separate supplier and documentation-analysis limits. Trial customers cannot use
 mass supplier processing or `📄🔎 Анализ + поиск`; they must run analysis and
-supplier search separately when both functions are available.
+supplier search separately when both functions are available. Trial setup grants
+money according to the current base prices for the configured free supplier and
+analysis runs.
 
-Until YooKassa checkout is implemented, website cabinet access is granted
-manually from the admin customer card after external payment or approval.
+Online checkout is not enabled. Website cabinet and Telegram access are topped
+up manually from the admin customer card after external payment or approval.
+The admin top-up form accepts only a money amount; subsequent job reservations
+and charges use the customer's effective prices. Money shown as "in processing"
+is temporarily reserved for running jobs and is hidden from the owner UI when it
+is zero.
 
 ## Admin Console
 
@@ -102,19 +112,19 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show real linked Telegram accounts, available balance,
-  reserved units, spent units, manual grants, manual balance debits, and
-  collapsed billing history;
+- customer cards show real linked Telegram accounts, money balance, per-client
+  prices for supplier search, analysis, and additional supplier search, a
+  single money top-up field, search target override, merge tools, and collapsed
+  billing history;
 - website-cabinet service markers such as `web:<id>` and website-trial notes are
   hidden from the owner-facing client card;
 - the owner can create clients by Telegram username before the real Telegram ID
-  is known, edit linked Telegram accounts, grant arbitrary units by function,
-  debit wrongly granted available units by function, and delete extra Telegram
-  accounts;
-- manual balance debits are stored as `manual_debit` ledger rows. They reduce
-  available balance, are visible in billing history, are rejected when the debit
-  would exceed the current available balance, and do not count as customer job
-  spend;
+  is known, edit linked Telegram accounts, set per-client prices, top up the
+  customer's money balance, tune the supplier count for that customer, merge
+  duplicate customers, and delete extra Telegram accounts;
+- old manual unit debit support remains in the backend for compatibility, but
+  the current owner UI intentionally does not expose action/type/package fields:
+  the owner credits money only, and jobs debit money according to tariffs;
 - if a manager first used the bot as a separate trial customer, the owner can
   move that existing Telegram account into the correct customer card after
   explicit confirmation. A single-account trial customer is merged with its job
@@ -136,8 +146,8 @@ Current admin capabilities:
   configured API services without inventing balances;
 - statistics show the Telegram-bot business funnel for the last 30 days:
   clients, Telegram accounts, active users, task volume, trial usage,
-  conversion to manual grants, top customers, and trial users who used the bot
-  but have not received paid/manual grants yet;
+  conversion to paid/manual top-ups, top customers, and trial users who used the
+  bot but have not received paid/manual top-ups yet;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
 - AI model settings are compact and split into section-scoped saves.
@@ -152,10 +162,11 @@ Current admin capabilities:
   each selector. Provider rows and available model rows can be added, deleted,
   and moved up/down; empty model rows are ignored on save. Free-form model
   comments and API-key status hints are not shown in selectors.
-- Tariff settings keep the current manual payment flow and include a YooKassa
-  settings foundation: provider mode, Shop ID, Secret key, and Return URL. This
-  does not create payment links yet; checkout creation remains a future
-  integration step after the YooKassa account is connected.
+- Tariff settings keep global prices and active packages for the customer
+  cabinet. The main owner settings screen exposes contacts and manual top-up
+  instructions. Legacy YooKassa fields still exist in the backend schema for a
+  future checkout integration, but they are not the active owner workflow and
+  do not create payment links.
 
 AI provider defaults currently used by the admin UI:
 
@@ -256,8 +267,8 @@ Telegram supplier input and navigation contract:
   not an owner-alert state.
 - after a completed or accepted supplier-search result, Telegram can offer
   `Найти ещё`. Starting that additional search requires explicit confirmation
-  that one supplier-search generation will be spent and already found companies
-  will be excluded.
+  that the additional-supplier-search price will be charged and already found
+  companies will be excluded.
 - completed supplier-search, procurement-analysis, and combined analysis jobs
   can include an additional `Запрос КП` output. It is built from the original
   customer materials plus available AI analysis/procurement profile data and is
@@ -412,14 +423,31 @@ Hard contract:
 
 ## Minpromtorg And GISP Registry Handling
 
-Minpromtorg/GISP registry logic is AI-gated and applies only when the
-procurement documents actually require a registry extract, registry record, or
-delivery of goods from the Russian industrial products registry.
+Minpromtorg/GISP registry logic can be selected manually by the customer before
+supplier search starts. The same mode is available in the website cabinet and
+Telegram bot for standalone supplier search and combined analysis plus search.
+
+Supplier registry modes:
+
+- `Обычный поиск`: ordinary supplier search. The AI can still detect a
+  mandatory registry requirement from the procurement context.
+- `Только реестр`: strict mode for prohibition cases. The search prioritizes
+  registry-derived queries and final supplier rows must have registry linkage
+  evidence when registry data is available.
+- `Реестр в приоритете`: restriction/priority mode. Registry-derived suppliers
+  are searched first, then the ordinary supplier search continues to avoid
+  underfilling the report.
+
+In ordinary mode, AI-gated registry logic applies only when the procurement
+documents actually require a registry extract, registry record, or delivery of
+goods from the Russian industrial products registry.
 
 Registry contract:
 
 - AI decides whether the requirement is mandatory, not applied, only a
   preference, or ambiguous;
+- customer-selected strict/priority modes override the need to infer the legal
+  regime from attached documents before registry-aware supplier search starts;
 - registry search is skipped when AI finds no mandatory requirement;
 - when mandatory, AI generates registry-oriented queries for the procurement
   item and the worker searches GISP/Minpromtorg context;
@@ -485,13 +513,16 @@ without polluting the customer's XLSX report.
   the DOCX analysis, then uses a separate AI step to extract the ТЗ/ООЗ/product
   specification context for supplier search. Supplier discovery does not search
   against the noisy full documentation bundle.
-- Supplier discovery classifies the extracted context for Minpromtorg/GISP
-  requirements before ordinary supplier query generation. It searches the GISP
+- Supplier discovery receives the customer-selected supplier registry mode.
+  In ordinary mode it classifies the extracted context for Minpromtorg/GISP
+  requirements before ordinary supplier query generation and searches the GISP
   registry only when the context indicates an active prohibition or another
-  mandatory registry/extract requirement. Restrictions, preferences,
-  non-application, and generic mentions are treated as not requiring registry
-  lookup. The final `evidence.json` records the `minprom_registry` decision,
-  registry queries, entries count, status, and any registry-search error.
+  mandatory registry/extract requirement. In strict/priority modes it performs
+  registry-aware supplier search without requiring that automatic legal-regime
+  inference first. The final `evidence.json` records the supplier search
+  policy, `minprom_registry` decision, registry queries, entries count, status,
+  registry-search errors, and whether an unavailable registry caused a no-charge
+  strict search.
 - In `📄🔎 Анализ + поиск`, the supplier-context extraction step must preserve
   Minpromtorg/GISP/registry-record requirements from the procurement
   documentation so the later supplier-discovery step can make that decision on
@@ -513,7 +544,22 @@ without polluting the customer's XLSX report.
 
 ## Verification Snapshot
 
-Fresh checks from the website cabinet parity and landing-copy pass:
+Fresh checks from the money-balance billing, supplier registry modes,
+additional-search pricing, and admin cleanup pass:
+
+- Full backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests -q` -> `348 passed`, `2` warnings, `46` subtests passed.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- Site typecheck/build and live deploy were completed through
+  `./scripts/deploy_tenderlex_live.sh`; API, worker, bot, and site services
+  were active after deployment.
+- Live behavior verified the current admin owner model: top up money only,
+  per-customer function prices, no visible run counters for customers, and no
+  zero-value reserve line in normal balance display.
+- Customer cabinet and Telegram supplier workflows carry the selected registry
+  mode through search and analysis-plus-search.
+
+Earlier checks from the website cabinet parity and landing-copy pass:
 
 - Site typecheck: `cd site && npm run typecheck` -> OK.
 - Site production build: `cd site && npm run build` -> OK.
@@ -530,12 +576,12 @@ Fresh checks from the website cabinet parity and landing-copy pass:
   cabinet functions, and confirmed no invented analysis fields or file-format
   marketing labels were visible.
 
-Latest task evidence: current AI-settings/statistics/YooKassa foundation pass
-in git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the
-earlier Telegram UX and admin-button pass.
+Earlier task evidence: AI-settings/statistics/legacy YooKassa-settings pass in
+git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the earlier
+Telegram UX and admin-button pass.
 
-Fresh checks from the latest AI model separation, bot statistics, and YooKassa
-settings pass:
+Earlier checks from the AI model separation, bot statistics, and legacy
+YooKassa-settings pass:
 
 - Targeted backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
   backend/tests/test_ai.py backend/tests/test_access_limits.py
@@ -547,7 +593,7 @@ settings pass:
 - Local health endpoint: `curl -fsS http://127.0.0.1:8088/api/health` ->
   `ok=true`, `domain=https://tenderlex.ru`, `logistics_enabled=false`.
 
-Fresh checks from the latest Telegram keyboard, source-input, and
+Earlier checks from the Telegram keyboard, source-input, and
 procurement-report guardrail pass:
 
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
@@ -578,8 +624,9 @@ Earlier billing, Telegram, and admin-button pass:
   `32` checks passed, `0` failed API responses, `0` console errors, `0` page
   errors.
 - Live admin button coverage included login, navigation, client create/open,
-  client disable/enable, Telegram account add/save/delete, manual grant, delete
-  new temporary client, confirm old `Тестовый клиент` is absent, job evidence,
+  client disable/enable, Telegram account add/save/delete, the then-current
+  manual balance action, delete new temporary client, confirm old
+  `Тестовый клиент` is absent, job evidence,
   job download, job retry on a temporary job, tariff create/edit/toggle/delete,
   contact save, settings save, AI model check/save, and refresh.
 - Production services after verification: `aipoisk-api.service`,
@@ -634,8 +681,8 @@ Load-test boundary:
   in `job_sources`, and are included in source context for AI report/combined
   analysis.
 - Generic procurement links are supported alongside EIS links.
-- AI-gated Minpromtorg/GISP registry handling is covered by supplier discovery
-  flow tests and evidence payloads.
+- Manual and AI-gated Minpromtorg/GISP registry handling is covered by supplier
+  discovery flow tests and evidence payloads.
 - Regression from job `186d6788fd3244f995fbaab9061386cc` was diagnosed:
   Telegram had accepted a zip with an EIS link in the caption, but saved
   `sources=0`; after the fix, caption links are collected for documentation
@@ -649,7 +696,7 @@ Load-test boundary:
 - AI contact placeholders are blocked from customer reports; extracted site
   contacts are used when available, otherwise the supplier is downgraded or
   rejected.
-- Latest reprocessed failed supplier job `06532a2fc4f9442cbf6085e638720693`
+- Reprocessed failed supplier job `06532a2fc4f9442cbf6085e638720693`
   finished as `partial`, `13/15`, with `ai_required=true`, `ai_used=true`, and
   no invalid contact placeholders in the XLSX.
 - Supplier search now separates broad товарная группа / номенклатура from exact
@@ -662,7 +709,7 @@ Load-test boundary:
   paid batch is run after the minimum is reached, but already AI-verified extra
   rows from the active batch stay in the XLSX.
 
-Detailed task evidence for the latest admin UI / limits / provider-settings pass
+Detailed task evidence for an earlier admin UI / limits / provider-settings pass
 is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.
 
 ## Safe GitHub Rules

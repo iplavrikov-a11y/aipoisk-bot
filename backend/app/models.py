@@ -167,6 +167,8 @@ class Client(Base):
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_file_limit: Mapped[int] = mapped_column(Integer, default=300)
+    money_balance_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    money_reserved_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     supplier_target_min: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -295,6 +297,8 @@ class Job(Base):
     client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     created_by_telegram_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
+    supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
+    supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
@@ -341,12 +345,28 @@ class BillingTransaction(Base):
     kind: Mapped[str] = mapped_column(String(40), index=True)
     operation: Mapped[str] = mapped_column(String(40), index=True)
     units: Mapped[int] = mapped_column(Integer, default=0)
+    amount_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    balance_after_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_after_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
     client: Mapped[Client] = relationship(back_populates="billing_transactions")
     job: Mapped[Job | None] = relationship(back_populates="billing_transactions")
+
+
+class ClientTariffOverride(Base):
+    __tablename__ = "client_tariff_overrides"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
 
 class JobFile(Base):

@@ -268,7 +268,7 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertEqual(context, "context")
             return "ТЗ: сварочный полуавтомат MIG/MAG"
 
-        async def fake_suppliers(_settings, _context: str, _target: int, *, progress_callback=None):
+        async def fake_suppliers(_settings, _context: str, _target: int, *, progress_callback=None, supplier_search_policy="normal"):
             self.assertEqual(_context, "ТЗ: сварочный полуавтомат MIG/MAG")
             if progress_callback:
                 await progress_callback(50, "Проверяю сайты и контакты")
@@ -394,7 +394,7 @@ class JobRecoveryTests(unittest.TestCase):
         original_suppliers = jobs.discover_suppliers
         original_job_dir = jobs.job_dir
 
-        async def fake_suppliers(_settings, context: str, _target: int, *, progress_callback=None, excluded_suppliers=None):
+        async def fake_suppliers(_settings, context: str, _target: int, *, progress_callback=None, excluded_suppliers=None, supplier_search_policy="normal"):
             self.assertIn("канат", context.lower())
             self.assertEqual(excluded_suppliers, [])
             if progress_callback:

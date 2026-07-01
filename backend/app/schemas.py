@@ -179,6 +179,14 @@ class TariffPackagePatch(BaseModel):
 class BillingGrantCreate(BaseModel):
     kind: str
     units: int = Field(default=1, ge=1, le=100000)
+    amount_kopeks: int = Field(default=0, ge=0, le=1000000000)
     package_id: str = ""
     note: str = ""
     operation: str = "grant"
+
+
+class ClientTariffOverridePatch(BaseModel):
+    kind: str
+    price_kopeks: int = Field(default=0, ge=0, le=1000000000)
+    is_enabled: bool = True
+    note: str = ""

@@ -785,6 +785,34 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("Недостаточно доступных генераций", str(raised.exception.detail))
 
+    def test_admin_money_top_up_credits_only_money_balance(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="779"), db=db)
+            result = grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="money", amount_kopeks=25_000, note="manual topup"),
+                db=db,
+            )
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transaction"]["kind"], "money")
+        self.assertEqual(result["transaction"]["kind_label"], "Баланс")
+        self.assertEqual(result["transaction"]["units"], 0)
+        self.assertEqual(result["client"]["usage"]["money"]["available_kopeks"], 25_000)
+        self.assertEqual(result["client"]["usage"]["supplier_search"]["available"], 0)
+        self.assertEqual(result["client"]["usage"]["procurement_report"]["available"], 0)
+
     def test_delete_client_removes_client_without_history(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker

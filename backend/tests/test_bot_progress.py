@@ -237,7 +237,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         text = _partial_confirmation_text(snapshot)
 
         self.assertIn("Отправить отчёт?", text)
-        self.assertIn("будет списана генерация", text)
+        self.assertIn("будет списана стоимость результата", text)
         self.assertIn("только подтверждённые компании", text)
         self.assertNotIn("target", text.lower())
 
@@ -335,7 +335,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Найти ещё", keyboard.inline_keyboard[0][0].text)
         self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "find_more_prompt:job-1")
         self.assertIn("дополнительный поиск", offer_text)
-        self.assertIn("Будет списана 1 генерация", confirmation_text)
+        self.assertIn("Будет списана стоимость добора поставщиков", confirmation_text)
         self.assertIn("исключит уже найденные компании", confirmation_text)
 
     def test_start_text_uses_tenderlex_brand(self) -> None:

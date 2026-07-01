@@ -101,11 +101,21 @@ def _ensure_schema() -> None:
         "is_trial": "BOOLEAN DEFAULT 0",
         "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
         "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
+        "money_balance_kopeks": "INTEGER DEFAULT 0",
+        "money_reserved_kopeks": "INTEGER DEFAULT 0",
         "supplier_target_min": "INTEGER DEFAULT 0",
     }
     jobs_existing = _existing_columns(inspector, "jobs")
     job_additions = {
         "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
+        "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
+        "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
+    }
+    billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
+    billing_transaction_additions = {
+        "amount_kopeks": "INTEGER DEFAULT 0",
+        "balance_after_kopeks": "INTEGER DEFAULT 0",
+        "reserved_after_kopeks": "INTEGER DEFAULT 0",
     }
     web_users_existing = _existing_columns(inspector, "web_users")
     web_user_additions = {
@@ -173,6 +183,9 @@ def _ensure_schema() -> None:
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
+        for column, definition in billing_transaction_additions.items():
+            if billing_transactions_existing and column not in billing_transactions_existing:
+                connection.execute(text(f"ALTER TABLE billing_transactions ADD COLUMN {column} {definition}"))
         for column, definition in web_user_additions.items():
             if web_users_existing and column not in web_users_existing:
                 connection.execute(text(f"ALTER TABLE web_users ADD COLUMN {column} {definition}"))

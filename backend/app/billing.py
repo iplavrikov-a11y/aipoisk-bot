@@ -5,11 +5,13 @@ from datetime import timedelta
 from sqlalchemy import and_, func, not_, or_
 from sqlalchemy.orm import Session
 
-from .models import BillingTransaction, Client, Job, TariffPackage, now_utc
+from .models import BillingTransaction, Client, ClientTariffOverride, Job, TariffPackage, now_utc
 
 KIND_SUPPLIER_SEARCH = "supplier_search"
 KIND_PROCUREMENT_REPORT = "procurement_report"
-VALID_BILLING_KINDS = {KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT}
+KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
+KIND_MONEY = "money"
+VALID_BILLING_KINDS = {KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA}
 
 OP_GRANT = "grant"
 OP_RESERVE = "reserve"
@@ -44,26 +46,69 @@ class BillingError(Exception):
 
 
 def billing_kind_label(kind: str) -> str:
+    if kind == KIND_MONEY:
+        return "Баланс"
     if kind == KIND_PROCUREMENT_REPORT:
         return "Анализ документации"
+    if kind == KIND_SUPPLIER_SEARCH_EXTRA:
+        return "Добор поставщиков"
     return "Поставщики"
 
 
 def requested_billing_units(mode: str, *, supplier_search_count: int = 1) -> dict[str, int]:
     supplier_units = max(1, int(supplier_search_count or 1))
     if mode == MODE_SUPPLIER_SEARCH:
-        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0}
+        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0}
     if mode == MODE_PROCUREMENT_REPORT:
-        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1}
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0}
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1}
-    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0}
+        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0}
+    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0}
+
+
+def requested_billing_kinds(mode: str, *, supplier_search_count: int = 1, supplier_search_run_type: str = "initial") -> dict[str, int]:
+    units = requested_billing_units(mode, supplier_search_count=supplier_search_count)
+    if mode == MODE_SUPPLIER_SEARCH and str(supplier_search_run_type or "") == "additional":
+        units[KIND_SUPPLIER_SEARCH_EXTRA] = units.get(KIND_SUPPLIER_SEARCH, 0)
+        units[KIND_SUPPLIER_SEARCH] = 0
+    return units
+
+
+def resolve_requested_billing_kinds(
+    db: Session,
+    client: Client,
+    mode: str,
+    *,
+    supplier_search_count: int = 1,
+    supplier_search_run_type: str = "initial",
+) -> dict[str, int]:
+    units = requested_billing_kinds(
+        mode,
+        supplier_search_count=supplier_search_count,
+        supplier_search_run_type=supplier_search_run_type,
+    )
+    if (
+        mode == MODE_SUPPLIER_SEARCH
+        and str(supplier_search_run_type or "") == "additional"
+        and units.get(KIND_SUPPLIER_SEARCH_EXTRA, 0) > 0
+        and effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH_EXTRA) <= 0
+        and not _has_billing_transactions(db, client.id, KIND_SUPPLIER_SEARCH_EXTRA)
+    ):
+        return requested_billing_units(mode, supplier_search_count=supplier_search_count)
+    return units
 
 
 def client_balance_summary(db: Session, client: Client) -> dict:
+    money = money_balance_summary(db, client)
     return {
         KIND_SUPPLIER_SEARCH: balance_counter(db, client, KIND_SUPPLIER_SEARCH),
         KIND_PROCUREMENT_REPORT: balance_counter(db, client, KIND_PROCUREMENT_REPORT),
+        KIND_SUPPLIER_SEARCH_EXTRA: balance_counter(db, client, KIND_SUPPLIER_SEARCH_EXTRA),
+        "money": money,
+        "effective_prices": {
+            kind: effective_price_to_dict(db, client, kind)
+            for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA)
+        },
     }
 
 
@@ -75,7 +120,84 @@ def balance_counter(db: Session, client: Client, kind: str) -> dict:
     counter["kind"] = kind
     counter["label"] = billing_kind_label(kind)
     counter["low"] = not counter["unlimited"] and counter["available"] <= LOW_BALANCE_THRESHOLD
+    price = effective_price_kopeks(db, client, kind)
+    counter["price_kopeks"] = price
+    counter["price_rub"] = round(price / 100, 2)
     return counter
+
+
+def money_balance_summary(db: Session, client: Client) -> dict:
+    balance = max(0, int(getattr(client, "money_balance_kopeks", 0) or 0))
+    reserved = max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0))
+    available = max(0, balance - reserved)
+    return {
+        "balance_kopeks": balance,
+        "reserved_kopeks": reserved,
+        "available_kopeks": available,
+        "balance_rub": round(balance / 100, 2),
+        "reserved_rub": round(reserved / 100, 2),
+        "available_rub": round(available / 100, 2),
+        "source": "money_ledger",
+        "low": available <= _lowest_active_function_price(db, client),
+    }
+
+
+def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int:
+    if kind not in VALID_BILLING_KINDS:
+        return 0
+    if client:
+        override = (
+            db.query(ClientTariffOverride)
+            .filter(ClientTariffOverride.client_id == client.id)
+            .filter(ClientTariffOverride.kind == kind)
+            .order_by(ClientTariffOverride.updated_at.desc())
+            .first()
+        )
+        if override:
+            if not override.is_enabled:
+                return 0
+            return max(0, int(override.price_kopeks or 0))
+    package = (
+        db.query(TariffPackage)
+        .filter(TariffPackage.kind == kind)
+        .filter(TariffPackage.is_active.is_(True))
+        .order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc())
+        .first()
+    )
+    if not package:
+        return 0
+    units = max(1, int(package.units or 1))
+    return max(0, round(int(package.price_kopeks or 0) / units))
+
+
+def effective_price_to_dict(db: Session, client: Client | None, kind: str) -> dict:
+    override = None
+    if client:
+        override = (
+            db.query(ClientTariffOverride)
+            .filter(ClientTariffOverride.client_id == client.id)
+            .filter(ClientTariffOverride.kind == kind)
+            .order_by(ClientTariffOverride.updated_at.desc())
+            .first()
+        )
+    price = effective_price_kopeks(db, client, kind)
+    return {
+        "kind": kind,
+        "label": billing_kind_label(kind),
+        "price_kopeks": price,
+        "price_rub": round(price / 100, 2),
+        "source": "client_override" if override else "global",
+        "enabled": price > 0,
+    }
+
+
+def _lowest_active_function_price(db: Session, client: Client) -> int:
+    prices = [
+        effective_price_kopeks(db, client, kind)
+        for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA)
+    ]
+    active = [price for price in prices if price > 0]
+    return min(active) if active else 1
 
 
 def _ledger_counter(db: Session, client_id: str, kind: str) -> dict:
@@ -110,6 +232,9 @@ def _legacy_counter(db: Session, client: Client, kind: str, *, exclude_job_id: s
     if kind == KIND_PROCUREMENT_REPORT:
         limit = int(client.monthly_procurement_report_limit or 0)
         used = report_used
+    elif kind == KIND_SUPPLIER_SEARCH_EXTRA:
+        limit = 0
+        used = 0
     else:
         limit = int(client.monthly_supplier_search_limit or 0)
         used = supplier_used
@@ -207,13 +332,22 @@ def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -
 
 def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_count: int = 1) -> None:
     _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
-    units = requested_billing_units(job.mode, supplier_search_count=supplier_search_count)
+    units = resolve_requested_billing_kinds(
+        db,
+        client,
+        job.mode,
+        supplier_search_count=supplier_search_count,
+        supplier_search_run_type=getattr(job, "supplier_search_run_type", "initial"),
+    )
     error = access_error_for_units(db, client, units)
     if error:
         raise BillingError(error)
     for kind, count in units.items():
         if count <= 0 or _job_has_operation(db, job.id, kind, OP_RESERVE):
             continue
+        amount = _reservable_amount_for_kind(db, client, kind, count)
+        if amount > 0:
+            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
         db.add(
             BillingTransaction(
                 client_id=client.id,
@@ -221,20 +355,58 @@ def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_
                 kind=kind,
                 operation=OP_RESERVE,
                 units=count,
-                note="Резерв перед запуском задачи",
+                amount_kopeks=amount,
+                balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                note="Резерв средств перед запуском задачи" if amount > 0 else "Резерв перед запуском задачи",
                 created_by="system",
             )
         )
     db.commit()
 
 
+def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: int) -> int:
+    price = effective_price_kopeks(db, client, kind)
+    amount = price * max(0, int(count or 0))
+    if amount <= 0:
+        return 0
+    if _kind_money_available_kopeks(db, client.id, kind) < amount:
+        return 0
+    available_total = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+    if available_total < amount:
+        return 0
+    return amount
+
+
+def _kind_money_available_kopeks(db: Session, client_id: str, kind: str) -> int:
+    rows = (
+        db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.amount_kopeks), 0))
+        .filter(BillingTransaction.client_id == client_id)
+        .filter(BillingTransaction.kind == kind)
+        .filter(BillingTransaction.amount_kopeks > 0)
+        .group_by(BillingTransaction.operation)
+        .all()
+    )
+    totals = {operation: int(total or 0) for operation, total in rows}
+    granted = totals.get(OP_GRANT, 0)
+    manual_debited = totals.get(OP_MANUAL_DEBIT, 0)
+    reserved_total = totals.get(OP_RESERVE, 0)
+    released = totals.get(OP_RELEASE, 0)
+    return max(0, granted + released - reserved_total - manual_debited)
+
+
 def charge_job_reservation(db: Session, job: Job, *, note: str = "Результат отправлен клиенту") -> None:
     if not job.client_id:
         return
+    client = db.get(Client, job.client_id)
     for kind in VALID_BILLING_KINDS:
         remaining = _job_reserved_remaining(db, job.id, kind)
-        if remaining <= 0 or _job_has_operation(db, job.id, kind, OP_CHARGE):
+        remaining_amount = _job_reserved_amount_remaining(db, job.id, kind)
+        if (remaining <= 0 and remaining_amount <= 0) or _job_has_operation(db, job.id, kind, OP_CHARGE):
             continue
+        if client and remaining_amount > 0:
+            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - remaining_amount)
+            client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - remaining_amount)
         db.add(
             BillingTransaction(
                 client_id=job.client_id,
@@ -242,6 +414,9 @@ def charge_job_reservation(db: Session, job: Job, *, note: str = "Результ
                 kind=kind,
                 operation=OP_CHARGE,
                 units=remaining,
+                amount_kopeks=remaining_amount,
+                balance_after_kopeks=max(0, int(getattr(client, "money_balance_kopeks", 0) or 0)) if client else 0,
+                reserved_after_kopeks=max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0)) if client else 0,
                 note=note,
                 created_by="system",
             )
@@ -252,7 +427,10 @@ def charge_job_reservation(db: Session, job: Job, *, note: str = "Результ
 def job_has_unsettled_reservation(db: Session, job: Job) -> bool:
     if not job.client_id:
         return False
-    return any(_job_reserved_remaining(db, job.id, kind) > 0 for kind in VALID_BILLING_KINDS)
+    return any(
+        _job_reserved_remaining(db, job.id, kind) > 0 or _job_reserved_amount_remaining(db, job.id, kind) > 0
+        for kind in VALID_BILLING_KINDS
+    )
 
 
 def release_job_reservation(db: Session, job: Job, *, note: str = "Резерв возвращён") -> None:
@@ -272,8 +450,12 @@ def release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str 
 
 def _release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str) -> None:
     remaining = _job_reserved_remaining(db, job.id, kind)
-    if remaining <= 0:
+    remaining_amount = _job_reserved_amount_remaining(db, job.id, kind)
+    if remaining <= 0 and remaining_amount <= 0:
         return
+    client = db.get(Client, job.client_id) if job.client_id else None
+    if client and remaining_amount > 0:
+        client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - remaining_amount)
     db.add(
         BillingTransaction(
             client_id=job.client_id,
@@ -281,6 +463,9 @@ def _release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str
             kind=kind,
             operation=OP_RELEASE,
             units=remaining,
+            amount_kopeks=remaining_amount,
+            balance_after_kopeks=max(0, int(getattr(client, "money_balance_kopeks", 0) or 0)) if client else 0,
+            reserved_after_kopeks=max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0)) if client else 0,
             note=note,
             created_by="system",
         )
@@ -290,6 +475,19 @@ def _release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str
 def _job_reserved_remaining(db: Session, job_id: str, kind: str) -> int:
     rows = (
         db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.units), 0))
+        .filter(BillingTransaction.job_id == job_id)
+        .filter(BillingTransaction.kind == kind)
+        .filter(BillingTransaction.operation.in_([OP_RESERVE, OP_CHARGE, OP_RELEASE]))
+        .group_by(BillingTransaction.operation)
+        .all()
+    )
+    totals = {operation: int(total or 0) for operation, total in rows}
+    return max(0, totals.get(OP_RESERVE, 0) - totals.get(OP_CHARGE, 0) - totals.get(OP_RELEASE, 0))
+
+
+def _job_reserved_amount_remaining(db: Session, job_id: str, kind: str) -> int:
+    rows = (
+        db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.amount_kopeks), 0))
         .filter(BillingTransaction.job_id == job_id)
         .filter(BillingTransaction.kind == kind)
         .filter(BillingTransaction.operation.in_([OP_RESERVE, OP_CHARGE, OP_RELEASE]))
@@ -342,6 +540,7 @@ def grant_package_units(
     *,
     kind: str,
     units: int,
+    amount_kopeks: int = 0,
     package_id: str = "",
     note: str = "",
     created_by: str = "admin",
@@ -351,12 +550,18 @@ def grant_package_units(
     safe_units = int(units or 0)
     if safe_units <= 0:
         raise BillingError("Units must be positive")
+    amount = max(0, int(amount_kopeks or 0)) or _grant_amount_kopeks(db, client, kind, safe_units, package_id=package_id)
+    if amount > 0:
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
     transaction = BillingTransaction(
         client_id=client.id,
         package_id=package_id,
         kind=kind,
         operation=OP_GRANT,
         units=safe_units,
+        amount_kopeks=amount,
+        balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+        reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
         note=note or "Ручное пополнение пакета",
         created_by=created_by,
     )
@@ -366,12 +571,83 @@ def grant_package_units(
     return transaction
 
 
+def grant_money_balance(
+    db: Session,
+    client: Client,
+    *,
+    amount_kopeks: int,
+    note: str = "",
+    created_by: str = "admin",
+) -> BillingTransaction:
+    amount = max(0, int(amount_kopeks or 0))
+    if amount <= 0:
+        raise BillingError("Amount must be positive")
+    client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
+    transaction = BillingTransaction(
+        client_id=client.id,
+        kind=KIND_MONEY,
+        operation=OP_GRANT,
+        units=0,
+        amount_kopeks=amount,
+        balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+        reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+        note=note or "Ручное пополнение баланса",
+        created_by=created_by,
+    )
+    db.add(transaction)
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
+def grant_trial_balance(
+    db: Session,
+    client: Client,
+    *,
+    supplier_search_units: int,
+    procurement_report_units: int,
+    note: str = "Стартовый баланс триала",
+) -> None:
+    db.flush()
+    for kind, units in (
+        (KIND_SUPPLIER_SEARCH, supplier_search_units),
+        (KIND_PROCUREMENT_REPORT, procurement_report_units),
+    ):
+        safe_units = max(0, int(units or 0))
+        if safe_units <= 0 or _has_billing_transactions(db, client.id, kind):
+            continue
+        amount = effective_price_kopeks(db, client, kind) * safe_units
+        if amount > 0:
+            client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
+        db.add(
+            BillingTransaction(
+                client_id=client.id,
+                kind=kind,
+                operation=OP_GRANT,
+                units=safe_units,
+                amount_kopeks=amount,
+                balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                note=note,
+                created_by="system",
+            )
+        )
+
+
+def _grant_amount_kopeks(db: Session, client: Client, kind: str, units: int, *, package_id: str = "") -> int:
+    package = db.get(TariffPackage, package_id) if package_id else None
+    if package:
+        return max(0, int(package.price_kopeks or 0))
+    return effective_price_kopeks(db, client, kind) * max(1, int(units or 1))
+
+
 def debit_package_units(
     db: Session,
     client: Client,
     *,
     kind: str,
     units: int,
+    amount_kopeks: int = 0,
     note: str = "",
     created_by: str = "admin",
 ) -> BillingTransaction:
@@ -381,18 +657,36 @@ def debit_package_units(
     if safe_units <= 0:
         raise BillingError("Units must be positive")
     _initialize_legacy_balance_if_needed(db, client)
-    counter = balance_counter(db, client, kind)
-    available = int(counter.get("available") or 0)
-    if counter.get("unlimited"):
-        raise BillingError("Manual debit is not supported for unlimited legacy balances")
-    if available < safe_units:
-        raise BillingError(f"Недостаточно доступных генераций для списания: доступно {available}, нужно {safe_units}")
+    explicit_amount = max(0, int(amount_kopeks or 0))
+    amount = 0
+    if explicit_amount > 0:
+        available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+        if available_money < explicit_amount:
+            raise BillingError(f"Недостаточно денег для списания: доступно {available_money / 100:.2f} ₽, нужно {explicit_amount / 100:.2f} ₽")
+        amount = explicit_amount
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - amount)
+    else:
+        counter = balance_counter(db, client, kind)
+        available = int(counter.get("available") or 0)
+        if counter.get("unlimited"):
+            raise BillingError("Manual debit is not supported for unlimited legacy balances")
+        if available < safe_units:
+            raise BillingError(f"Недостаточно доступных генераций для списания: доступно {available}, нужно {safe_units}")
+        requested_amount = effective_price_kopeks(db, client, kind) * safe_units
+        if requested_amount > 0 and _kind_money_available_kopeks(db, client.id, kind) >= requested_amount:
+            available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+            if available_money >= requested_amount:
+                amount = requested_amount
+                client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - amount)
     transaction = BillingTransaction(
         client_id=client.id,
         kind=kind,
         operation=OP_MANUAL_DEBIT,
         units=safe_units,
-        note=note or "Ручное списание пакета",
+        amount_kopeks=amount,
+        balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+        reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+        note=note or "Ручное списание с баланса",
         created_by=created_by,
     )
     db.add(transaction)
@@ -435,6 +729,10 @@ def transaction_to_dict(transaction: BillingTransaction) -> dict:
         "operation": transaction.operation,
         "operation_label": operation_label(transaction.operation),
         "units": transaction.units,
+        "amount_kopeks": transaction.amount_kopeks,
+        "amount_rub": round(int(transaction.amount_kopeks or 0) / 100, 2),
+        "balance_after_kopeks": transaction.balance_after_kopeks,
+        "reserved_after_kopeks": transaction.reserved_after_kopeks,
         "note": transaction.note,
         "created_by": transaction.created_by,
         "created_at": transaction.created_at.isoformat() if transaction.created_at else None,
