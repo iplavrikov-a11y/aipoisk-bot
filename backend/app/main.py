@@ -127,7 +127,14 @@ from .web_auth import (
     validate_email,
     verify_email_token,
 )
-from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
+from .supplier_search import (
+    _google_credentials,
+    _provider_order,
+    _tavily_key_candidates,
+    _yandex_credentials,
+    get_minprom_registry_cache_status,
+    store_minprom_registry_xlsx_cache,
+)
 
 ANALYTICS_EXCLUDED_WEB_EMAILS = {"79210629909@ya.ru"}
 ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES = {"lexelence", "lexs"}
@@ -672,6 +679,21 @@ def supplier_quality_ops(db: Session = Depends(db_session)) -> dict:
         .all()
     )
     return build_supplier_quality_snapshot(jobs)
+
+
+@app.get("/api/ops/minprom-registry", dependencies=[Depends(require_admin)])
+def minprom_registry_status_ops() -> dict:
+    return get_minprom_registry_cache_status()
+
+
+@app.post("/api/ops/minprom-registry/upload", dependencies=[Depends(require_admin)])
+async def minprom_registry_upload_ops(file: UploadFile = File(...)) -> dict:
+    filename = str(file.filename or "")
+    payload = await file.read()
+    try:
+        return store_minprom_registry_xlsx_cache(payload, filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/analytics/bot", dependencies=[Depends(require_admin)])

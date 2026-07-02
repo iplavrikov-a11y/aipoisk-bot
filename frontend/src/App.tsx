@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  Upload,
   Users,
   XCircle,
 } from 'lucide-react'
@@ -425,6 +426,28 @@ type OpsStatus = {
   warnings: string[]
 }
 
+type MinpromRegistryStatus = {
+  xlsx_exists: boolean
+  xlsx_path: string
+  xlsx_size_bytes: number
+  index_exists: boolean
+  index_path: string
+  index_size_bytes: number
+  sqlite_exists: boolean
+  sqlite_path: string
+  sqlite_size_bytes: number
+  sqlite_ready: boolean
+  sqlite_fresh: boolean
+  sqlite_entry_count: number
+  sqlite_fts_count: number
+  sqlite_integrity: string
+  sqlite_schema_version?: string
+  source_url: string
+  filename?: string
+  index_count?: number
+  sqlite_count?: number
+}
+
 type CustomProvider = {
   id: string
   name: string
@@ -544,13 +567,16 @@ const modelRoleLabels: Record<string, string> = {
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
     credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
+    headers: isFormData
+      ? { ...(init.headers || {}) }
+      : {
+          'Content-Type': 'application/json',
+          ...(init.headers || {}),
+        },
   })
   if (!response.ok) {
     throw new Error(await response.text())
@@ -751,6 +777,7 @@ export function App() {
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
+  const [minpromRegistry, setMinpromRegistry] = useState<MinpromRegistryStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
   const [tariffs, setTariffs] = useState<TariffPackage[]>([])
@@ -766,11 +793,12 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, opsStatusData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, opsStatusData, minpromRegistryData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<Job[]>('/api/jobs?include_internal=true&limit=500'),
         api<OpsStatus>('/api/ops/system-status'),
+        api<MinpromRegistryStatus>('/api/ops/minprom-registry'),
         api<SettingsPayload>('/api/settings'),
         api<BotAnalytics>('/api/analytics/bot?period_days=30'),
         api<TariffPackage[]>('/api/tariffs'),
@@ -780,6 +808,7 @@ export function App() {
       setClients(clientsData)
       setJobs(jobsData)
       setOpsStatus(opsStatusData)
+      setMinpromRegistry(minpromRegistryData)
       setSettings(settingsData)
       setAnalytics(analyticsData)
       setTariffs(tariffData)
@@ -818,6 +847,7 @@ export function App() {
     setClients([])
     setJobs([])
     setOpsStatus(null)
+    setMinpromRegistry(null)
     setSettings(null)
     setAnalytics(null)
     setTariffs([])
@@ -918,7 +948,7 @@ export function App() {
         {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
-        {isReady && view === 'settings' && settings && <SettingsView settings={settings} onChange={loadAll} />}
+        {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
       </main>
     </div>
@@ -988,6 +1018,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
     { label: 'Готово', value: dashboard?.completed_jobs ?? 0, note: `${dashboard?.failed_jobs ?? 0} ошибок`, icon: CheckCircle2 },
     { label: 'Поставщиков', value: dashboard?.suppliers ?? 0, note: 'проверенных строк', icon: Search },
   ]
+  const attentionItems = dashboardAttentionItems(dashboard, opsStatus)
   return (
     <section className="content-grid">
       {stats.map(item => {
@@ -1003,6 +1034,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
           </div>
         )
       })}
+      <DashboardAttentionPanel items={attentionItems} />
       <SystemStatusPanel opsStatus={opsStatus} />
       <div className="wide-panel">
         <h2>Рабочие правила</h2>
@@ -1024,6 +1056,58 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
         </div>
       </div>
     </section>
+  )
+}
+
+function dashboardAttentionItems(dashboard: Dashboard | null, opsStatus: OpsStatus | null) {
+  const items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode }> = []
+  const failedJobs = dashboard?.failed_jobs || opsStatus?.queue.failed || 0
+  const runningJobs = dashboard?.running_jobs || opsStatus?.queue.running || 0
+  const pendingJobs = opsStatus?.queue.pending || 0
+  const unconfiguredServices = opsStatus?.services.filter(service => !service.configured) || []
+
+  if (failedJobs > 0) {
+    items.push({ title: 'Ошибки задач', detail: `${failedJobs} задач требуют разбора или перезапуска`, tone: 'critical', icon: <XCircle size={18} /> })
+  }
+  if (pendingJobs > 0) {
+    items.push({ title: 'Очередь', detail: `${pendingJobs} задач ждут обработки`, tone: pendingJobs >= 50 ? 'critical' : 'warning', icon: <Server size={18} /> })
+  }
+  if (runningJobs > 0) {
+    items.push({ title: 'В обработке', detail: `${runningJobs} задач сейчас занимают worker`, tone: 'warning', icon: <Loader2 size={18} /> })
+  }
+  if (opsStatus?.warnings.length) {
+    items.push({ title: 'Сервер', detail: opsStatus.warnings[0], tone: 'warning', icon: <HardDrive size={18} /> })
+  }
+  if (unconfiguredServices.length) {
+    items.push({ title: 'Интеграции', detail: `Не настроено: ${unconfiguredServices.map(service => service.label).slice(0, 3).join(', ')}`, tone: 'warning', icon: <Settings size={18} /> })
+  }
+  if (!items.length) {
+    items.push({ title: 'Критичных сигналов нет', detail: 'Очередь, сервисы и последние задачи выглядят штатно', tone: 'ok', icon: <ShieldCheck size={18} /> })
+  }
+  return items.slice(0, 5)
+}
+
+function DashboardAttentionPanel({ items }: { items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode }> }) {
+  return (
+    <div className="attention-panel full-width-panel">
+      <div className="panel-heading">
+        <h2>Что требует внимания</h2>
+        <span className={items.some(item => item.tone === 'critical') ? 'status failed' : items.some(item => item.tone === 'warning') ? 'status warning' : 'status active'}>
+          {items.some(item => item.tone === 'critical') ? 'есть критичные' : items.some(item => item.tone === 'warning') ? 'проверить' : 'в норме'}
+        </span>
+      </div>
+      <div className="attention-grid">
+        {items.map(item => (
+          <div className={`attention-item ${item.tone}`} key={`${item.title}-${item.detail}`}>
+            {item.icon}
+            <div>
+              <strong>{item.title}</strong>
+              <span>{item.detail}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -1745,6 +1829,15 @@ function formatMoney(amountKopeks: number) {
   return `${new Intl.NumberFormat('ru-RU').format(Number(amountKopeks || 0) / 100)} ₽`
 }
 
+function formatBytes(value: number) {
+  const bytes = Number(value || 0)
+  if (bytes <= 0) return '0 Б'
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} ГБ`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} КБ`
+  return `${bytes} Б`
+}
+
 function kopeksToRubles(priceKopeks: number) {
   return Math.round(Number(priceKopeks || 0)) / 100
 }
@@ -1964,6 +2057,7 @@ function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?
   const sources = details.sources || []
   return (
     <div className="job-detail-panel">
+      <JobTimeline job={job} hasInput={files.length > 0 || sources.length > 0} />
       {(files.length > 0 || sources.length > 0) && (
         <div className="job-detail-section">
           <strong>Что загрузил клиент</strong>
@@ -1979,6 +2073,27 @@ function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?
       )}
       {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
       {job.error && <div className="job-detail-error">{job.error}</div>}
+    </div>
+  )
+}
+
+function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
+  const failed = job.status === 'failed' || Boolean(job.error)
+  const completed = job.status === 'completed' || job.has_result || (job.result_files?.length || 0) > 0
+  const steps = [
+    { label: 'Создана', state: 'done' },
+    { label: 'Входные данные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
+    { label: 'ИИ-проверка', state: failed ? 'error' : completed || job.progress >= 70 ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
+    { label: 'Результат', state: failed ? 'error' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
+  ]
+  return (
+    <div className="job-timeline" aria-label="Этапы обработки задачи">
+      {steps.map(step => (
+        <div className={`job-timeline-step ${step.state}`} key={step.label}>
+          <span />
+          <strong>{step.label}</strong>
+        </div>
+      ))}
     </div>
   )
 }
@@ -2053,11 +2168,22 @@ function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tar
   )
 }
 
-function SettingsView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
+function SettingsView({
+  settings,
+  minpromRegistry,
+  onChange,
+}: {
+  settings: SettingsPayload
+  minpromRegistry: MinpromRegistryStatus | null
+  onChange: () => Promise<void>
+}) {
   const [draft, setDraft] = useState(settings)
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
+  const [registryFile, setRegistryFile] = useState<File | null>(null)
+  const [registryUploadBusy, setRegistryUploadBusy] = useState(false)
+  const [registryUploadMessage, setRegistryUploadMessage] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
@@ -2086,6 +2212,26 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
       body: JSON.stringify(payload),
     })
     await onChange()
+  }
+  async function uploadMinpromRegistry() {
+    if (!registryFile) return
+    setRegistryUploadBusy(true)
+    setRegistryUploadMessage('')
+    try {
+      const form = new FormData()
+      form.append('file', registryFile)
+      const status = await api<MinpromRegistryStatus>('/api/ops/minprom-registry/upload', {
+        method: 'POST',
+        body: form,
+      })
+      setRegistryUploadMessage(`Загружено: ${new Intl.NumberFormat('ru-RU').format(status.sqlite_entry_count || status.sqlite_count || 0)} записей.`)
+      setRegistryFile(null)
+      await onChange()
+    } catch (err) {
+      setRegistryUploadMessage(formatError(err))
+    } finally {
+      setRegistryUploadBusy(false)
+    }
   }
   return (
     <section className="settings-grid">
@@ -2144,6 +2290,35 @@ function SettingsView({ settings, onChange }: { settings: SettingsPayload; onCha
           )}
         </div>
         <p className="field-help">Приоритет поиска: Яндекс, Google, затем вспомогательные источники. Tavily используется как запасной источник.</p>
+        <div className={minpromRegistry?.sqlite_ready ? 'registry-panel ready' : 'registry-panel warning'}>
+          <div className="registry-heading">
+            <div>
+              <h3>Реестр Минпромторга</h3>
+              <p>{minpromRegistry?.sqlite_ready ? 'Локальный SQLite-индекс готов для ручных режимов поиска.' : 'Для ручных режимов загрузите актуальный XLSX реестра.'}</p>
+            </div>
+            <span className={minpromRegistry?.sqlite_ready ? 'status active' : 'status warning'}>
+              {minpromRegistry?.sqlite_ready ? 'готов' : 'не готов'}
+            </span>
+          </div>
+          <div className="registry-metrics">
+            <div><span>Записей</span><strong>{new Intl.NumberFormat('ru-RU').format(minpromRegistry?.sqlite_entry_count || 0)}</strong></div>
+            <div><span>XLSX</span><strong>{formatBytes(minpromRegistry?.xlsx_size_bytes || 0)}</strong></div>
+            <div><span>JSONL</span><strong>{formatBytes(minpromRegistry?.index_size_bytes || 0)}</strong></div>
+            <div><span>SQLite</span><strong>{formatBytes(minpromRegistry?.sqlite_size_bytes || 0)}</strong></div>
+          </div>
+          <div className="registry-upload-row">
+            <input
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={event => setRegistryFile(event.currentTarget.files?.[0] || null)}
+            />
+            <button onClick={() => void uploadMinpromRegistry()} disabled={!registryFile || registryUploadBusy}>
+              {registryUploadBusy ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
+              Загрузить XLSX
+            </button>
+          </div>
+          {registryUploadMessage && <p className={registryUploadMessage.includes('Загружено') ? 'registry-message ok' : 'registry-message error'}>{registryUploadMessage}</p>}
+        </div>
         <details className="service-panel">
           <summary>Расширенные параметры источников</summary>
           <div className="search-source-grid">

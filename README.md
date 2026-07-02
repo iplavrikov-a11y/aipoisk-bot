@@ -16,6 +16,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Public site SEO and verification wiring live in the site app and the `tenderlex-site.service.d/seo.conf` drop-in; Google Search Console uses DNS TXT, Yandex Webmaster uses the public HTML verification file, and Yandex Metrika is enabled by env.
 - Nginx redirects HTTP to HTTPS, serves `aipoisk.lexelence.ru` from `/root/projects/aipoisk-bot/frontend/dist`, and proxies `/api/` to `127.0.0.1:8088`.
+- Minpromtorg/GISP registry runtime cache lives under
+  `data/minprom_registry/` as XLSX, JSONL, and SQLite FTS files. It is used for
+  manual registry supplier modes and is intentionally not stored in git.
 - TenderLex deploy files are in `deploy/nginx/tenderlex.ru.conf`, `deploy/nginx/tenderlex.ru.http-only.conf`, and `deploy/systemd/tenderlex-site.service`.
 - HTTPS follows this server's existing stream layout: public `443` is routed by nginx `stream` to HTTP SSL vhosts on `4443`.
 - DNS must contain an explicit `A` record for `aipoisk.lexelence.ru -> 202.71.13.57`. The wildcard/apex Jino parking record (`81.177.141.15`) is not the production server.
@@ -94,6 +97,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   ordinary mode the AI can still detect a mandatory registry requirement from
   the procurement context, but customer-selected registry modes do not require
   the system to infer the legal regime from uploaded supplier documents.
+- Registry lookup for those modes uses the local Minpromtorg/GISP cache, not
+  Playwright. Admin settings expose cache status and XLSX upload. If the local
+  cache is not ready, manual registry modes are rejected before job creation
+  and before balance reservation.
 
 ## Telegram customer UX
 

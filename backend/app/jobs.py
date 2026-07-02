@@ -38,7 +38,7 @@ from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
 from .report_builder import write_evidence, write_procurement_docx, write_quote_request_docx, write_supplier_xlsx, zip_paths
-from .supplier_search import discover_suppliers, extract_supplier_search_context
+from .supplier_search import discover_suppliers, extract_supplier_search_context, minprom_registry_preflight_error
 from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
 
 _RUNNING: set[str] = set()
@@ -103,6 +103,10 @@ def create_job(
             "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
         )
     normalized_policy = normalize_supplier_search_policy(supplier_search_policy)
+    if mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        registry_error = minprom_registry_preflight_error(normalized_policy)
+        if registry_error:
+            raise ValueError(registry_error)
     normalized_run_type = SUPPLIER_RUN_ADDITIONAL if str(supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL else SUPPLIER_RUN_INITIAL
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)

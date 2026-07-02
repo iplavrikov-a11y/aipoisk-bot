@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-07-01
+Date: 2026-07-02
 
 ## Current Production State
 
@@ -36,6 +36,11 @@ Date: 2026-07-01
   favicon URLs for re-crawl.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
+- Minpromtorg/GISP registry search uses a local runtime snapshot under
+  `data/minprom_registry/`: source XLSX, JSONL index, and SQLite FTS index. The
+  current live snapshot is independent from EmailAgent storage and contains
+  496,790 registry entries. This runtime data is intentionally not stored in
+  git.
 
 Current runtime note:
 
@@ -57,6 +62,10 @@ Current runtime note:
   back to `running`;
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
+- customer-selected Minprom registry modes require the local registry cache to
+  be ready before a supplier-search job is created. If the XLSX/JSONL/SQLite
+  cache is missing or stale, the job is rejected early with an admin-actionable
+  error instead of creating a pending job or charging/reserving funds.
 
 ## Commercial Access And Billing
 
@@ -150,6 +159,9 @@ Current admin capabilities:
   bot but have not received paid/manual top-ups yet;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
+- supplier-search settings also show the local Minpromtorg registry cache
+  status and allow the owner to upload a fresh XLSX snapshot. Upload builds the
+  JSONL and SQLite indexes atomically before replacing the active cache;
 - AI model settings are compact and split into section-scoped saves.
   Documentation analysis has an owner-selected primary model and fast model.
   Supplier search has one separate owner-selected model for the whole supplier
@@ -200,6 +212,12 @@ The web discovery layer is multi-source:
 - DDGS web source
 
 The default provider order is `yandex,google,tavily,ddgs`. Tavily can exhaust its free quota quickly, so it must remain non-blocking. Yandex and Google are currently the stronger primary sources for this project.
+
+Minpromtorg/GISP registry lookup is local-first and does not use Playwright.
+The backend reads the runtime XLSX snapshot only to build indexes, then serves
+searches from SQLite FTS. JSONL is a build/fallback artifact, not the normal
+query path. When SQLite is ready, an empty SQLite result remains empty and must
+not trigger a full JSONL scan.
 
 Supplier candidates are verified before they reach the final report:
 

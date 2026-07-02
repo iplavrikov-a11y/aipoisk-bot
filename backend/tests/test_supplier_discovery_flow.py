@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import io
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
 
@@ -110,6 +115,197 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(has_active_ai_provider=False),
                 "Требуются реестровые записи Минпромторга.",
             )
+
+    async def test_minprom_registry_search_uses_local_jsonl_index(self) -> None:
+        with TemporaryDirectory() as tmp:
+            index_path = Path(tmp) / "registry.jsonl"
+            sqlite_path = Path(tmp) / "registry.sqlite"
+            rows = [
+                {
+                    "manufacturer": 'АО "Катайский насосный завод"',
+                    "product": "Насос центробежный типа Д",
+                    "inn": "4509000018",
+                    "registry_number": "РПП-НАСОС",
+                    "source_url": "https://gisp.gov.ru/pp719v2/pub/prod/",
+                    "evidence": "Производитель: АО Катайский насосный завод",
+                    "row_text": "Насос центробежный типа Д РПП-НАСОС",
+                },
+                {
+                    "manufacturer": 'ООО "Шум"',
+                    "product": "Металлическая мебель",
+                    "inn": "7700000000",
+                    "registry_number": "РПП-ШУМ",
+                    "row_text": "Металлическая мебель РПП-ШУМ",
+                },
+            ]
+            index_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(index_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(sqlite_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(Path(tmp) / "missing.xlsx")
+            try:
+                entries = await supplier_search.search_minprom_registry_entries(["насос центробежный"], max_results=5)
+                self.assertEqual(entries[0]["registry_number"], "РПП-НАСОС")
+                self.assertEqual(entries[0]["source"], "minprom_registry_local_sqlite")
+                self.assertTrue(sqlite_path.is_file())
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    async def test_minprom_registry_search_reports_missing_local_index(self) -> None:
+        with TemporaryDirectory() as tmp:
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(Path(tmp) / "missing.jsonl")
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(Path(tmp) / "missing.sqlite")
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(Path(tmp) / "missing.xlsx")
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    await supplier_search.search_minprom_registry_entries(["насос центробежный"], max_results=5)
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        self.assertIn("локальный индекс реестра Минпромторга отсутствует", str(raised.exception))
+
+    async def test_minprom_registry_preflight_requires_ready_local_indexes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            xlsx_path = Path(tmp) / "registry.xlsx"
+            index_path = Path(tmp) / "registry.jsonl"
+            sqlite_path = Path(tmp) / "registry.sqlite"
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(index_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(sqlite_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(xlsx_path)
+            try:
+                self.assertIn(
+                    "Локальный реестр Минпромторга не готов",
+                    supplier_search.minprom_registry_preflight_error(supplier_search.SUPPLIER_POLICY_MINPROM_ONLY),
+                )
+                xlsx_path.write_bytes(b"PK\x03\x04")
+                index_path.write_text(
+                    json.dumps(
+                        {
+                            "manufacturer": 'АО "Катайский насосный завод"',
+                            "product": "Насос центробежный типа Д",
+                            "inn": "4509000018",
+                            "registry_number": "РПП-НАСОС",
+                            "row_text": "Насос центробежный типа Д РПП-НАСОС",
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                await supplier_search.search_minprom_registry_entries(["насос центробежный"], max_results=5)
+                self.assertEqual(
+                    supplier_search.minprom_registry_preflight_error(supplier_search.SUPPLIER_POLICY_MINPROM_PRIORITY),
+                    "",
+                )
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    async def test_minprom_registry_sqlite_empty_result_does_not_scan_jsonl_fallback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            index_path = Path(tmp) / "registry.jsonl"
+            sqlite_path = Path(tmp) / "registry.sqlite"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "manufacturer": 'АО "Катайский насосный завод"',
+                        "product": "Насос центробежный типа Д",
+                        "registry_number": "РПП-НАСОС",
+                        "row_text": "Насос центробежный типа Д РПП-НАСОС",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            original_jsonl = supplier_search._search_minprom_registry_jsonl
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(index_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(sqlite_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(Path(tmp) / "missing.xlsx")
+            try:
+                await supplier_search.search_minprom_registry_entries(["насос центробежный"], max_results=5)
+                supplier_search._search_minprom_registry_jsonl = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("JSONL fallback must not run when SQLite is ready")
+                )
+                entries = await supplier_search.search_minprom_registry_entries(["персональный компьютер"], max_results=5)
+            finally:
+                supplier_search._search_minprom_registry_jsonl = original_jsonl
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        self.assertEqual(entries, [])
+
+    async def test_minprom_registry_xlsx_upload_builds_local_indexes(self) -> None:
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Предприятие-изготовитель", "Продукция", "ИНН", "Реестровый номер", "Срок действия"])
+        sheet.append(['АО "Катайский насосный завод"', "Насос центробежный типа Д", "4509000018", "РПП-НАСОС", "31.12.2028"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+
+        with TemporaryDirectory() as tmp:
+            xlsx_path = Path(tmp) / "registry.xlsx"
+            index_path = Path(tmp) / "registry.jsonl"
+            sqlite_path = Path(tmp) / "registry.sqlite"
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(index_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(sqlite_path)
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(xlsx_path)
+            try:
+                status = supplier_search.store_minprom_registry_xlsx_cache(buffer.getvalue(), filename="registry.xlsx")
+                entries = await supplier_search.search_minprom_registry_entries(["насос центробежный"], max_results=5)
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        self.assertTrue(status["xlsx_exists"])
+        self.assertTrue(status["index_exists"])
+        self.assertTrue(status["sqlite_ready"])
+        self.assertEqual(status["index_count"], 1)
+        self.assertEqual(entries[0]["registry_number"], "РПП-НАСОС")
 
     async def test_discover_minprom_registry_context_reports_source_errors(self) -> None:
         originals = {
@@ -237,6 +433,69 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Поставщик предлагает релевантный товар", comment)
         self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров|национальн")
 
+    def test_minprom_registry_match_annotates_supplier_origin(self) -> None:
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            entries=(
+                {
+                    "registry_number": "РПП-НАСОС",
+                    "manufacturer": 'АО "Катайский насосный завод"',
+                    "product": "Насос центробежный типа Д",
+                    "inn": "4509000018",
+                    "evidence": "Производитель: АО Катайский насосный завод",
+                },
+            ),
+            status="ok",
+        )
+        accepted = [
+            {
+                "company_name": 'АО "Катайский насосный завод"',
+                "product": "Насосы центробежные",
+                "site": "https://knz.example",
+                "comments": "Официальный сайт производителя.",
+                "evidence_status": "verified",
+                "quality_score": 90,
+            }
+        ]
+
+        supplier_search._annotate_minprom_registry_matches(
+            accepted,
+            registry_context,
+            supplier_search.SUPPLIER_POLICY_MINPROM_ONLY,
+        )
+
+        self.assertEqual(accepted[0]["supplier_search_origin"], "minprom_registry")
+        self.assertTrue(accepted[0]["minprom_registry_match"]["matched"])
+        self.assertIn(accepted[0]["minprom_registry_match"]["method"], {"manufacturer", "manufacturer_product"})
+
+    def test_minprom_registry_filter_rejects_generic_registry_claim_without_entry_match(self) -> None:
+        registry_context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            entries=(
+                {
+                    "registry_number": "РПП-КАНАТ",
+                    "manufacturer": "Канатный завод",
+                    "product": "Канат стальной",
+                    "inn": "7700000001",
+                },
+            ),
+            status="ok",
+        )
+        accepted = [
+            {
+                "company_name": "Посторонний поставщик",
+                "product": "Канат стальной",
+                "comments": "Есть реестровая запись Минпромторга.",
+                "site": "https://supplier.example",
+                "evidence_status": "verified",
+                "quality_score": 90,
+            }
+        ]
+
+        filtered = supplier_search._filter_minprom_verified_suppliers(accepted, registry_context)
+
+        self.assertEqual(filtered, [])
+
     def test_supplier_search_blocks_tender_and_registry_mirror_domains(self) -> None:
         for domain in ("poisktenderov.ru", "awindex.ru", "torgs.ru", "ruscable.ru", "zakupki44fz.ru", "dzen.ru"):
             self.assertTrue(supplier_search.is_blocked(domain), domain)
@@ -325,6 +584,9 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 setattr(supplier_search, name, original)
 
         self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["supplier_search_origin"], "minprom_registry")
+        self.assertTrue(accepted[0]["minprom_registry_match"]["matched"])
+        self.assertEqual(accepted[0]["minprom_registry_match"]["method"], "manufacturer")
         self.assertIs(captured["registry_context"], registry_context)
         self.assertIn('"Канатный завод" официальный сайт', captured["queries"][:6])
         self.assertIn("стальные канаты производитель", captured["queries"])

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from functools import lru_cache
+from datetime import datetime, timezone
 import json
 import os
 import re
+import sqlite3
+import uuid
 from dataclasses import dataclass, replace
 from html import unescape
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
 
@@ -205,6 +209,34 @@ VALID_SUPPLIER_SEARCH_POLICIES = {
     SUPPLIER_POLICY_MINPROM_ONLY,
     SUPPLIER_POLICY_MINPROM_PRIORITY,
 }
+GISP_PRODUCT_REGISTRY_URL = "https://gisp.gov.ru/pp719v2/pub/prod/"
+MINPROM_REGISTRY_CACHE_FILENAME = "minprom_registry.xlsx"
+MINPROM_REGISTRY_INDEX_FILENAME = "minprom_registry.jsonl"
+MINPROM_REGISTRY_SQLITE_FILENAME = "minprom_registry.sqlite"
+MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION = "2"
+REGISTRY_CANDIDATE_QUERY_STOPWORDS = {
+    "гисп",
+    "окпд",
+    "окпд2",
+    "реестр",
+    "реестра",
+    "реестровая",
+    "реестровой",
+    "запись",
+    "минпромторг",
+    "минпромторга",
+    "производитель",
+    "поставщик",
+    "официальный",
+    "сайт",
+    "продукция",
+    "российская",
+    "российской",
+    "гост",
+    "ту",
+    "пп",
+    "719",
+}
 
 
 def base_domain(url_or_domain: str) -> str:
@@ -364,82 +396,786 @@ async def build_minprom_registry_queries(
 
 
 async def search_minprom_registry_entries(queries: list[str], *, max_results: int = 25) -> list[dict]:
-    entries: list[dict] = []
-    seen: set[str] = set()
-    for query in queries[:8]:
+    if not queries:
+        return []
+    try:
+        return await asyncio.to_thread(
+            _search_minprom_registry_entries_local,
+            queries[:8],
+            max_results=max_results,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Local Minprom registry search failed: {_exception_summary(exc)}") from exc
+
+
+def get_minprom_registry_cache_status() -> dict[str, Any]:
+    xlsx_path = _minprom_registry_xlsx_path()
+    index_path = _minprom_registry_index_path()
+    sqlite_path = _minprom_registry_sqlite_path()
+    sqlite_meta = _minprom_registry_sqlite_meta(sqlite_path)
+    return {
+        "xlsx_exists": xlsx_path.is_file(),
+        "xlsx_path": str(xlsx_path),
+        "xlsx_size_bytes": xlsx_path.stat().st_size if xlsx_path.is_file() else 0,
+        "index_exists": index_path.is_file(),
+        "index_path": str(index_path),
+        "index_size_bytes": index_path.stat().st_size if index_path.is_file() else 0,
+        "sqlite_exists": sqlite_path.is_file(),
+        "sqlite_path": str(sqlite_path),
+        "sqlite_size_bytes": sqlite_path.stat().st_size if sqlite_path.is_file() else 0,
+        "source_url": GISP_PRODUCT_REGISTRY_URL,
+        **sqlite_meta,
+    }
+
+
+def minprom_registry_preflight_error(policy: str) -> str:
+    normalized_policy = normalize_supplier_search_policy(policy)
+    if normalized_policy not in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY}:
+        return ""
+
+    status = get_minprom_registry_cache_status()
+    if not status.get("xlsx_exists"):
+        return "Локальный реестр Минпромторга не готов: загрузите XLSX реестра в админке."
+    if not status.get("index_exists"):
+        return "Локальный реестр Минпромторга не готов: JSONL-индекс отсутствует, загрузите XLSX реестра заново."
+    if not status.get("sqlite_ready"):
+        return "Локальный реестр Минпромторга не готов: SQLite-индекс отсутствует или устарел, загрузите XLSX реестра заново."
+    if int(status.get("sqlite_entry_count") or 0) <= 0:
+        return "Локальный реестр Минпромторга не готов: индекс не содержит записей, загрузите корректный XLSX реестра."
+    return ""
+
+
+def store_minprom_registry_xlsx_cache(payload: bytes, *, filename: str = "") -> dict[str, Any]:
+    if not payload:
+        raise ValueError("Файл реестра Минпромторга пустой")
+    if payload[:2] != b"PK":
+        raise ValueError("Файл реестра Минпромторга должен быть XLSX")
+    xlsx_path = _minprom_registry_xlsx_path()
+    index_path = _minprom_registry_index_path()
+    sqlite_path = _minprom_registry_sqlite_path()
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = f"{os.getpid()}.{uuid.uuid4().hex}"
+    tmp_xlsx = xlsx_path.with_name(f"{xlsx_path.stem}.{suffix}.tmp{xlsx_path.suffix or '.xlsx'}")
+    tmp_index = index_path.with_name(f"{index_path.name}.{suffix}.tmp")
+    tmp_sqlite = sqlite_path.with_name(f"{sqlite_path.name}.{suffix}.tmp")
+    try:
+        tmp_xlsx.write_bytes(payload)
+        index_count = _build_minprom_registry_jsonl_index(tmp_xlsx, tmp_index)
+        if index_count <= 0:
+            raise ValueError("В XLSX не найдены строки реестра Минпромторга")
+        sqlite_count = _build_minprom_registry_sqlite_index(tmp_index, tmp_sqlite)
+        if sqlite_count <= 0:
+            raise ValueError("SQLite-индекс реестра Минпромторга не построен")
+        os.replace(tmp_xlsx, xlsx_path)
+        os.replace(tmp_index, index_path)
+        os.replace(tmp_sqlite, sqlite_path)
+    finally:
+        tmp_xlsx.unlink(missing_ok=True)
+        tmp_index.unlink(missing_ok=True)
+        tmp_sqlite.unlink(missing_ok=True)
+    status = get_minprom_registry_cache_status()
+    status.update({"filename": filename, "index_count": index_count, "sqlite_count": sqlite_count})
+    return status
+
+
+def _minprom_registry_cache_dir() -> Path:
+    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_CACHE_DIR", "").strip()
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[2] / "data" / "minprom_registry"
+
+
+def _minprom_registry_xlsx_path() -> Path:
+    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return _minprom_registry_cache_dir() / MINPROM_REGISTRY_CACHE_FILENAME
+
+
+def _minprom_registry_index_path() -> Path:
+    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return _minprom_registry_cache_dir() / MINPROM_REGISTRY_INDEX_FILENAME
+
+
+def _minprom_registry_sqlite_path() -> Path:
+    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return _minprom_registry_cache_dir() / MINPROM_REGISTRY_SQLITE_FILENAME
+
+
+def _minprom_registry_sqlite_meta(sqlite_path: Path | None = None) -> dict[str, Any]:
+    path = sqlite_path or _minprom_registry_sqlite_path()
+    if not path.is_file():
+        return {
+            "sqlite_ready": False,
+            "sqlite_fresh": False,
+            "sqlite_entry_count": 0,
+            "sqlite_fts_count": 0,
+            "sqlite_integrity": "missing",
+        }
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
-            found = await _search_gisp_registry_page(query, max_results=max_results)
-        except Exception as exc:
-            raise RuntimeError(f"GISP registry search failed for query {query!r}: {_exception_summary(exc)}") from exc
-        for item in found:
-            key = "|".join(str(item.get(field) or "").lower() for field in ("registry_number", "manufacturer", "product"))
+            rows = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+            entry_count = int(conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0] or 0)
+            fts_count = int(conn.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0] or 0)
+        finally:
+            conn.close()
+        index_path = _minprom_registry_index_path()
+        fresh = False
+        if index_path.is_file():
+            stat = index_path.stat()
+            fresh = (
+                rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
+                and rows.get("source_jsonl_size") == str(stat.st_size)
+                and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+            )
+        return {
+            "sqlite_ready": bool(entry_count and entry_count == fts_count and fresh),
+            "sqlite_fresh": fresh,
+            "sqlite_entry_count": entry_count,
+            "sqlite_fts_count": fts_count,
+            "sqlite_integrity": "not_checked",
+            "sqlite_schema_version": rows.get("schema_version"),
+        }
+    except Exception as exc:
+        return {
+            "sqlite_ready": False,
+            "sqlite_fresh": False,
+            "sqlite_entry_count": 0,
+            "sqlite_fts_count": 0,
+            "sqlite_integrity": "error",
+            "sqlite_error": str(exc)[:500],
+        }
+
+
+def _search_minprom_registry_entries_local(queries: list[str], *, max_results: int) -> list[dict]:
+    index_path = _ensure_minprom_registry_jsonl_index()
+    if not index_path:
+        raise RuntimeError(
+            "локальный индекс реестра Минпромторга отсутствует; "
+            "загрузите XLSX-снимок или JSONL/SQLite индекс"
+        )
+    if _ensure_minprom_registry_sqlite_index():
+        return _search_minprom_registry_sqlite(queries, max_results=max_results)
+    return _search_minprom_registry_jsonl(queries, max_results=max_results)
+
+
+def _ensure_minprom_registry_jsonl_index() -> Path | None:
+    index_path = _minprom_registry_index_path()
+    if index_path.is_file() and index_path.stat().st_size > 0:
+        return index_path
+    xlsx_path = _minprom_registry_xlsx_path()
+    if not xlsx_path.is_file():
+        return None
+    count = _build_minprom_registry_jsonl_index(xlsx_path, index_path)
+    return index_path if count else None
+
+
+def _ensure_minprom_registry_sqlite_index() -> Path | None:
+    index_path = _ensure_minprom_registry_jsonl_index()
+    if not index_path:
+        return None
+    sqlite_path = _minprom_registry_sqlite_path()
+    if _minprom_registry_sqlite_is_fresh(index_path, sqlite_path):
+        return sqlite_path
+    count = _build_minprom_registry_sqlite_index(index_path, sqlite_path)
+    return sqlite_path if count else None
+
+
+def _minprom_registry_sqlite_is_fresh(index_path: Path, sqlite_path: Path) -> bool:
+    if not index_path.is_file() or not sqlite_path.is_file():
+        return False
+    try:
+        stat = index_path.stat()
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            rows = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        finally:
+            conn.close()
+        return (
+            rows.get("source_jsonl_mtime_ns") == str(stat.st_mtime_ns)
+            and rows.get("source_jsonl_size") == str(stat.st_size)
+            and rows.get("schema_version") == MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION
+        )
+    except Exception:
+        return False
+
+
+def _build_minprom_registry_jsonl_index(xlsx_path: Path, index_path: Path) -> int:
+    from openpyxl import load_workbook
+
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = index_path.with_suffix(".jsonl.tmp")
+    count = 0
+    workbook = load_workbook(xlsx_path, data_only=True, read_only=True)
+    try:
+        with tmp_path.open("w", encoding="utf-8") as output:
+            for sheet in workbook.worksheets:
+                rows = sheet.iter_rows(values_only=True)
+                header_row: tuple[Any, ...] | None = None
+                for row in rows:
+                    values = [" ".join(str(value or "").split()).strip() for value in row]
+                    lowered = " ".join(values).lower()
+                    if "инн" in lowered and "продук" in lowered and "реестр" in lowered:
+                        header_row = row
+                        break
+                if not header_row:
+                    continue
+                headers = [" ".join(str(value or "").split()).strip() for value in header_row]
+                manufacturer_idx = _first_index(
+                    _header_index(headers, "предприят"),
+                    _header_index(headers, "производ"),
+                    _header_index(headers, "изготов"),
+                    _header_index(headers, "наименование"),
+                )
+                product_idx = _header_index(headers, "продук")
+                inn_idx = _header_index(headers, "инн")
+                registry_idx = _first_index(
+                    _header_index(headers, "реестров", "номер"),
+                    _header_index(headers, "регистрацион", "номер", "реестров"),
+                    _header_index(headers, "первич", "регистрацион"),
+                )
+                valid_until_idx = _first_index(
+                    _header_index(headers, "срок"),
+                    _header_index(headers, "действ"),
+                    _header_index(headers, "заключ"),
+                )
+                for row in rows:
+                    entry, row_text = _registry_entry_from_row(
+                        row,
+                        headers,
+                        manufacturer_idx=manufacturer_idx,
+                        product_idx=product_idx,
+                        inn_idx=inn_idx,
+                        registry_idx=registry_idx,
+                        valid_until_idx=valid_until_idx,
+                    )
+                    if not entry:
+                        continue
+                    output.write(json.dumps({**entry, "row_text": row_text[:5000]}, ensure_ascii=False) + "\n")
+                    count += 1
+        if count:
+            os.replace(tmp_path, index_path)
+        return count
+    finally:
+        workbook.close()
+        tmp_path.unlink(missing_ok=True)
+
+
+def _build_minprom_registry_sqlite_index(index_path: Path, sqlite_path: Path) -> int:
+    if not index_path.is_file():
+        return 0
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = sqlite_path.with_name(f"{sqlite_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path.unlink(missing_ok=True)
+    count = 0
+    conn = sqlite3.connect(str(tmp_path))
+    replace_ready = False
+    try:
+        conn.execute("PRAGMA journal_mode=OFF")
+        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute(
+            """
+            CREATE TABLE entries (
+                id INTEGER PRIMARY KEY,
+                manufacturer TEXT NOT NULL DEFAULT '',
+                product TEXT NOT NULL DEFAULT '',
+                inn TEXT NOT NULL DEFAULT '',
+                registry_number TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '',
+                row_text TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute("CREATE INDEX idx_entries_inn ON entries(inn)")
+        conn.execute("CREATE INDEX idx_entries_registry_number ON entries(registry_number)")
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE entries_fts USING fts5(
+                product,
+                manufacturer,
+                row_text,
+                content='entries',
+                content_rowid='id',
+                tokenize='unicode61'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        batch_entries: list[tuple[str, str, str, str, str, str, str]] = []
+        batch_fts: list[tuple[int, str, str, str]] = []
+
+        def flush() -> None:
+            nonlocal batch_entries, batch_fts
+            if not batch_entries:
+                return
+            conn.executemany(
+                """
+                INSERT INTO entries (
+                    manufacturer,
+                    product,
+                    inn,
+                    registry_number,
+                    source_url,
+                    evidence,
+                    row_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch_entries,
+            )
+            conn.executemany(
+                """
+                INSERT INTO entries_fts(rowid, product, manufacturer, row_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                batch_fts,
+            )
+            batch_entries = []
+            batch_fts = []
+
+        with index_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                entry = _registry_entry_from_payload(payload)
+                if not entry:
+                    continue
+                count += 1
+                row_text = _registry_payload_row_text(payload, entry)
+                batch_entries.append(
+                    (
+                        entry["manufacturer"],
+                        entry["product"],
+                        entry["inn"],
+                        entry["registry_number"],
+                        entry["source_url"],
+                        entry["evidence"],
+                        row_text[:5000],
+                    )
+                )
+                batch_fts.append((count, entry["product"], entry["manufacturer"], row_text[:5000]))
+                if len(batch_entries) >= 5000:
+                    flush()
+                    conn.commit()
+        flush()
+        stat = index_path.stat()
+        conn.executemany(
+            "INSERT INTO meta(key, value) VALUES (?, ?)",
+            [
+                ("source_jsonl_path", str(index_path)),
+                ("source_jsonl_mtime_ns", str(stat.st_mtime_ns)),
+                ("source_jsonl_size", str(stat.st_size)),
+                ("entry_count", str(count)),
+                ("schema_version", MINPROM_REGISTRY_SQLITE_SCHEMA_VERSION),
+                ("built_at", datetime.now(timezone.utc).isoformat()),
+            ],
+        )
+        if count:
+            conn.execute("INSERT INTO entries_fts(entries_fts) VALUES ('optimize')")
+        conn.commit()
+        replace_ready = True
+    finally:
+        conn.close()
+        if tmp_path.exists() and not replace_ready:
+            tmp_path.unlink(missing_ok=True)
+    os.replace(tmp_path, sqlite_path)
+    return count
+
+
+def _search_minprom_registry_sqlite(queries: list[str], *, max_results: int) -> list[dict]:
+    sqlite_path = _ensure_minprom_registry_sqlite_index()
+    if not sqlite_path:
+        return []
+    scored_entries: list[tuple[float, int, int, dict]] = []
+    seen: set[tuple[str, str, str]] = set()
+    order = 0
+    conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    try:
+        for _, _, terms in _registry_query_specs(tuple(queries)):
+            match_expression = _fts_match_expression(terms)
+            if not match_expression:
+                continue
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        e.manufacturer,
+                        e.product,
+                        e.inn,
+                        e.registry_number,
+                        e.source_url,
+                        e.evidence,
+                        e.row_text
+                    FROM entries_fts
+                    JOIN entries e ON e.id = entries_fts.rowid
+                    WHERE entries_fts MATCH ?
+                    ORDER BY bm25(entries_fts)
+                    LIMIT ?
+                    """,
+                    (match_expression, max(50, min(300, max_results * 4))),
+                ).fetchall()
+            except sqlite3.Error:
+                continue
+            for manufacturer, product, inn, registry_number, source_url, evidence, row_text in rows:
+                entry = {
+                    "registry_number": str(registry_number or ""),
+                    "manufacturer": str(manufacturer or ""),
+                    "product": str(product or ""),
+                    "inn": str(inn or ""),
+                    "source": "minprom_registry_local_sqlite",
+                    "source_url": str(source_url or GISP_PRODUCT_REGISTRY_URL),
+                    "evidence": str(evidence or "")[:1000],
+                }
+                key = _registry_entry_key(entry)
+                if key in seen:
+                    continue
+                query_scores = _registry_candidate_query_scores(str(row_text or product or ""), queries)
+                if not query_scores:
+                    continue
+                seen.add(key)
+                for query_index, score in query_scores:
+                    scored_entries.append((score, order, query_index, entry))
+                order += 1
+    finally:
+        conn.close()
+    return _rank_minprom_registry_candidates(scored_entries, max_results=max_results, query_count=len(queries))
+
+
+def _search_minprom_registry_jsonl(queries: list[str], *, max_results: int) -> list[dict]:
+    index_path = _ensure_minprom_registry_jsonl_index()
+    if not index_path:
+        return []
+    scored_entries: list[tuple[float, int, int, dict]] = []
+    seen: set[tuple[str, str, str]] = set()
+    order = 0
+    with index_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            entry = _registry_entry_from_payload(payload)
+            if not entry:
+                continue
+            key = _registry_entry_key(entry)
             if key in seen:
                 continue
+            row_text = _registry_payload_row_text(payload, entry)
+            query_scores = _registry_candidate_query_scores(row_text, queries)
+            if not query_scores:
+                continue
             seen.add(key)
-            entries.append(item)
-            if len(entries) >= max_results:
-                return entries
-    return entries
+            entry["source"] = "minprom_registry_local_jsonl"
+            for query_index, score in query_scores:
+                scored_entries.append((score, order, query_index, entry))
+            order += 1
+    return _rank_minprom_registry_candidates(scored_entries, max_results=max_results, query_count=len(queries))
 
 
-async def _search_gisp_registry_page(query: str, *, max_results: int) -> list[dict]:
-    url = "https://gisp.gov.ru/pp719v2/pub/prod/"
-    page_text = ""
-    try:
-        from playwright.async_api import async_playwright  # type: ignore
-    except ImportError:
-        raise RuntimeError("Playwright is required for GISP registry search") from None
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-        try:
-            page = await browser.new_page(user_agent="TenderLex minprom registry parser")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
-            inputs = await page.query_selector_all("input")
-            for input_el in inputs[:5]:
-                try:
-                    await input_el.fill(query)
-                    await page.keyboard.press("Enter")
-                    await page.wait_for_timeout(2500)
-                    break
-                except Exception:
-                    continue
-            page_text = await page.evaluate("document.body.innerText")
-        finally:
-            await browser.close()
-    return _parse_gisp_registry_text(page_text, query=query, source_url=url, max_results=max_results)
+def _registry_entry_from_payload(payload: dict) -> dict | None:
+    entry = {
+        "registry_number": str(payload.get("registry_number") or "")[:80],
+        "manufacturer": str(payload.get("manufacturer") or "")[:240],
+        "product": str(payload.get("product") or "")[:300],
+        "inn": str(payload.get("inn") or "")[:20],
+        "source": str(payload.get("source") or "minprom_registry_local"),
+        "source_url": str(payload.get("source_url") or GISP_PRODUCT_REGISTRY_URL),
+        "evidence": str(payload.get("evidence") or "")[:1000],
+    }
+    if not any((entry["registry_number"], entry["manufacturer"], entry["product"], entry["inn"])):
+        return None
+    return entry
 
 
-def _parse_gisp_registry_text(text: str, *, query: str, source_url: str, max_results: int) -> list[dict]:
-    entries: list[dict] = []
-    query_terms = [term.lower() for term in re.findall(r"[А-Яа-яЁёA-Za-z0-9\-]{4,}", query)]
-    lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
-    for index, line in enumerate(lines):
-        lowered = line.lower()
-        if query_terms and not any(term in lowered for term in query_terms):
-            continue
-        window = " | ".join(lines[max(0, index - 3) : min(len(lines), index + 6)])
-        registry_match = re.search(r"\b(?:РЭ|РП|Реестр(?:овая)?\s*запись)?\s*№?\s*([0-9]{3,}[\-/0-9]*)", window, re.IGNORECASE)
-        inn_match = re.search(r"\bИНН[:\s]*(\d{10,12})\b", window, re.IGNORECASE)
-        entries.append(
-            {
-                "registry_number": registry_match.group(1) if registry_match else "",
-                "manufacturer": _extract_registry_company_name(window),
-                "product": line[:300],
-                "inn": inn_match.group(1) if inn_match else "",
-                "source": "gisp",
-                "source_url": source_url,
-                "evidence": window[:900],
-            }
+def _registry_payload_row_text(payload: dict, entry: dict) -> str:
+    return " ".join(
+        part
+        for part in (
+            entry.get("manufacturer"),
+            entry.get("product"),
+            entry.get("registry_number"),
+            entry.get("evidence"),
+            payload.get("row_text"),
         )
-        if len(entries) >= max_results:
+        if part
+    )
+
+
+def _registry_entry_key(entry: dict) -> tuple[str, str, str]:
+    return (
+        str(entry.get("manufacturer") or "").lower(),
+        str(entry.get("product") or "").lower(),
+        str(entry.get("inn") or entry.get("registry_number") or "").lower(),
+    )
+
+
+@lru_cache(maxsize=4096)
+def _registry_candidate_terms(query: str) -> tuple[str, ...]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    normalized = str(query or "").lower().replace("ё", "е")
+    for raw_part in normalized.split():
+        token = raw_part.strip(" \t\r\n.,;:!?()[]{}<>\"'«»")
+        if not token or token in REGISTRY_CANDIDATE_QUERY_STOPWORDS:
+            continue
+        if token.isdigit() or len(token) < 3:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+        if len(terms) >= 8:
             break
-    return entries
+    return tuple(terms)
 
 
-def _extract_registry_company_name(text: str) -> str:
-    match = re.search(r"\b(?:ООО|АО|ЗАО|ПАО|НПО|НПП)\s+[«\"A-Za-zА-Яа-яЁё0-9][^|,\n]{2,90}", text)
-    return match.group(0).strip() if match else ""
+@lru_cache(maxsize=4096)
+def _normalize_registry_text(value: str) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+@lru_cache(maxsize=4096)
+def _registry_query_specs(queries: tuple[str, ...]) -> tuple[tuple[int, str, tuple[str, ...]], ...]:
+    specs: list[tuple[int, str, tuple[str, ...]]] = []
+    for query_index, query in enumerate(queries):
+        specs.append((query_index, _normalize_registry_text(query), _registry_candidate_terms(query)))
+    return tuple(specs)
+
+
+@lru_cache(maxsize=4096)
+def _registry_query_term_union(queries: tuple[str, ...]) -> tuple[str, ...]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for _, _, query_terms in _registry_query_specs(queries):
+        for term in query_terms:
+            if term in seen:
+                continue
+            seen.add(term)
+            terms.append(term)
+    terms.sort(key=len, reverse=True)
+    return tuple(terms)
+
+
+@lru_cache(maxsize=4096)
+def _registry_term_has_digit(term: str) -> bool:
+    return any(char.isdigit() for char in term)
+
+
+def _registry_term_matches(term: str, lowered_row_text: str) -> bool:
+    if term in lowered_row_text:
+        return True
+    if _registry_term_has_digit(term):
+        return False
+    if len(term) < 6:
+        return False
+    stem = term[: max(4, len(term) - 2)]
+    return stem in lowered_row_text
+
+
+def _registry_candidate_score_against_spec(
+    lowered: str,
+    normalized_query: str,
+    terms: tuple[str, ...],
+    matched_terms: set[str] | None = None,
+) -> float:
+    best_score = 0.0
+    if normalized_query and len(normalized_query) >= 4 and normalized_query in lowered:
+        best_score = max(best_score, 2.0)
+    if not terms:
+        return best_score
+    if matched_terms is None:
+        matched = sum(1 for term in terms if _registry_term_matches(term, lowered))
+    else:
+        matched = sum(1 for term in terms if term in matched_terms)
+    if matched == len(terms):
+        best_score = max(best_score, 1.0 + matched / max(1, len(terms)))
+    elif matched >= 2 and matched / len(terms) >= 0.6:
+        best_score = max(best_score, matched / len(terms))
+    return best_score
+
+
+def _registry_candidate_query_scores(row_text: str, queries: list[str]) -> list[tuple[int, float]]:
+    if not queries:
+        return [(0, 1.0)]
+    lowered = _normalize_registry_text(str(row_text or ""))
+    if not lowered:
+        return []
+    matched_terms = {
+        term for term in _registry_query_term_union(tuple(queries)) if _registry_term_matches(term, lowered)
+    }
+    scores: list[tuple[int, float]] = []
+    for query_index, normalized_query, terms in _registry_query_specs(tuple(queries)):
+        if terms and not any(term in matched_terms for term in terms):
+            continue
+        score = _registry_candidate_score_against_spec(lowered, normalized_query, terms, matched_terms)
+        if score > 0:
+            scores.append((query_index, score))
+    return scores
+
+
+def _rank_minprom_registry_candidates(
+    scored_entries: list[tuple[float, int, int, dict]],
+    *,
+    max_results: int,
+    query_count: int,
+) -> list[dict]:
+    if max_results <= 0:
+        return []
+    selected: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add_entry(entry: dict) -> bool:
+        key = _registry_entry_key(entry)
+        if key in seen:
+            return False
+        seen.add(key)
+        selected.append(entry)
+        return True
+
+    effective_query_count = max(1, query_count)
+    per_query_limit = max(4, min(20, (max_results + effective_query_count - 1) // effective_query_count + 1))
+    for query_index in range(effective_query_count):
+        query_matches = [item for item in scored_entries if item[2] == query_index]
+        query_matches.sort(key=lambda item: (-item[0], item[1]))
+        picked_for_query = 0
+        for _, _, _, entry in query_matches:
+            if add_entry(entry):
+                picked_for_query += 1
+            if len(selected) >= max_results or picked_for_query >= per_query_limit:
+                break
+        if len(selected) >= max_results:
+            return selected
+
+    for _, _, _, entry in sorted(scored_entries, key=lambda item: (-item[0], item[1])):
+        add_entry(entry)
+        if len(selected) >= max_results:
+            break
+    return selected
+
+
+def _header_index(headers: list[str], *markers: str) -> int | None:
+    for index, header in enumerate(headers):
+        lowered = header.lower()
+        if all(marker in lowered for marker in markers):
+            return index
+    return None
+
+
+def _first_index(*values: int | None) -> int | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _cell(row: tuple[Any, ...], index: int | None) -> str:
+    if index is None or index >= len(row):
+        return ""
+    return " ".join(str(row[index] or "").split()).strip()
+
+
+def _registry_entry_from_row(
+    row: tuple[Any, ...],
+    headers: list[str],
+    *,
+    manufacturer_idx: int | None,
+    product_idx: int | None,
+    inn_idx: int | None,
+    registry_idx: int | None,
+    valid_until_idx: int | None,
+) -> tuple[dict | None, str]:
+    manufacturer = _cell(row, manufacturer_idx)
+    product = _cell(row, product_idx)
+    inn = _cell(row, inn_idx)
+    registry_number = _cell(row, registry_idx)
+    if not any((manufacturer, product, inn, registry_number)):
+        return None, ""
+    valid_until = _cell(row, valid_until_idx)
+    evidence_parts = [
+        f"Производитель: {manufacturer}" if manufacturer else "",
+        f"Продукция: {product}" if product else "",
+        f"ИНН: {inn}" if inn else "",
+        f"Реестровый номер: {registry_number}" if registry_number else "",
+        f"Срок действия/заключение: {valid_until}" if valid_until else "",
+    ]
+    return (
+        {
+            "registry_number": registry_number[:80],
+            "manufacturer": manufacturer[:240],
+            "product": product[:300],
+            "inn": inn[:20],
+            "source": "minprom_registry_local_xlsx",
+            "source_url": GISP_PRODUCT_REGISTRY_URL,
+            "evidence": "; ".join(part for part in evidence_parts if part)[:1000],
+        },
+        " ".join(part for part in (manufacturer, product, registry_number, valid_until) if part),
+    )
+
+
+def _fts_token_parts(value: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    current: list[str] = []
+    for char in str(value or "").lower().replace("ё", "е"):
+        if char.isalnum():
+            current.append(char)
+        elif current:
+            part = "".join(current)
+            if len(part) >= 2:
+                parts.append(part)
+            current = []
+    if current:
+        part = "".join(current)
+        if len(part) >= 2:
+            parts.append(part)
+    return tuple(parts)
+
+
+def _fts_term_clause(term: str) -> str:
+    parts = _fts_token_parts(term)
+    if not parts:
+        return ""
+    clauses: list[str] = []
+    has_digit = _registry_term_has_digit(term)
+    for part in parts[:3]:
+        if has_digit or len(part) < 5:
+            clauses.append(f'"{part}"')
+        else:
+            clauses.append(f"{part}*")
+    if not clauses:
+        return ""
+    if len(clauses) == 1:
+        return clauses[0]
+    return "(" + " AND ".join(clauses) + ")"
+
+
+def _fts_match_expression(terms: tuple[str, ...]) -> str:
+    clauses: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        clause = _fts_term_clause(term)
+        if not clause or clause in seen:
+            continue
+        seen.add(clause)
+        clauses.append(clause)
+        if len(clauses) >= 8:
+            break
+    return " OR ".join(clauses)
 
 
 async def build_procurement_profile(settings: SystemSettings, context: str) -> ProcurementProfile:
@@ -712,6 +1448,7 @@ async def discover_suppliers(
         recovery_rounds.append(recovery_round)
         # Merge recovery queries into main list so next round generates different queries
         queries = queries + recovery_queries
+    _annotate_minprom_registry_matches(accepted, minprom_context, policy)
     if policy == SUPPLIER_POLICY_MINPROM_ONLY:
         accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
@@ -770,26 +1507,111 @@ def normalize_supplier_search_policy(value: str) -> str:
 def _filter_minprom_verified_suppliers(accepted: list[dict], registry_context: MinpromRegistryContext) -> list[dict]:
     if registry_context.status != "ok" or not registry_context.entries:
         return []
-    return [item for item in accepted if _supplier_has_minprom_registry_evidence(item, registry_context)]
+    return [item for item in accepted if _supplier_minprom_registry_match(item, registry_context).get("matched")]
 
 
 def _supplier_has_minprom_registry_evidence(item: dict, registry_context: MinpromRegistryContext) -> bool:
+    return bool(_supplier_minprom_registry_match(item, registry_context).get("matched"))
+
+
+def _annotate_minprom_registry_matches(
+    accepted: list[dict],
+    registry_context: MinpromRegistryContext,
+    policy: str,
+) -> None:
+    if not registry_context.requirement.required:
+        for item in accepted:
+            item.setdefault("supplier_search_origin", "ordinary")
+        return
+    for item in accepted:
+        match = _supplier_minprom_registry_match(item, registry_context)
+        item["minprom_registry_match"] = match
+        if match.get("matched"):
+            item["supplier_search_origin"] = "minprom_registry"
+        elif policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
+            item["supplier_search_origin"] = "ordinary_fallback"
+        else:
+            item["supplier_search_origin"] = "ordinary"
+
+
+def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegistryContext) -> dict:
+    empty = {
+        "matched": False,
+        "method": "",
+        "confidence": 0.0,
+        "registry_number": "",
+        "manufacturer": "",
+        "product": "",
+        "inn": "",
+        "source_url": "",
+        "evidence": "",
+    }
+    if registry_context.status != "ok" or not registry_context.entries:
+        return empty
     haystack = " ".join(
         str(item.get(key) or "")
-        for key in ("name", "company", "site", "product", "comments", "inn")
-    ).lower()
-    if not haystack:
-        return False
-    if re.search(r"минпромторг|гисп|реестров", haystack):
-        return True
+        for key in (
+            "company_name",
+            "name",
+            "company",
+            "site",
+            "product",
+            "comments",
+            "inn",
+            "evidence_snippet",
+            "ai_rank_reason",
+        )
+    )
+    lowered = _normalize_registry_text(haystack)
+    company_key = _normalize_company_key(str(item.get("company_name") or item.get("name") or item.get("company") or ""))
+    item_inn_values = [re.sub(r"\D+", "", str(item.get("inn") or ""))]
+    item_inn_values.extend(match.group(1) for match in re.finditer(r"\bИНН[:\s]*(\d{10,12})\b", haystack, re.I))
+    item_inn = " ".join(value for value in item_inn_values if value)
+    best: dict | None = None
+    best_score = 0.0
+
     for entry in registry_context.entries:
-        manufacturer = str(entry.get("manufacturer") or "").strip().lower()
-        registry_number = str(entry.get("registry_number") or "").strip().lower()
-        inn = str(entry.get("inn") or "").strip().lower()
-        for token in (manufacturer, registry_number, inn):
-            if token and len(token) >= 5 and token in haystack:
-                return True
-    return False
+        manufacturer = str(entry.get("manufacturer") or "").strip()
+        product = str(entry.get("product") or "").strip()
+        registry_number = str(entry.get("registry_number") or "").strip()
+        inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
+        method = ""
+        score = 0.0
+        if inn and len(inn) >= 10 and inn in item_inn:
+            method = "inn"
+            score = 1.0
+        elif registry_number and _normalize_registry_text(registry_number) in lowered:
+            method = "registry_number"
+            score = 0.98
+        else:
+            manufacturer_key = _normalize_company_key(manufacturer)
+            manufacturer_matched = bool(
+                manufacturer_key
+                and len(manufacturer_key) >= 5
+                and (manufacturer_key in company_key or manufacturer_key in _normalize_company_key(haystack))
+            )
+            product_matched = bool(product and _registry_candidate_query_scores(haystack, [product]))
+            if manufacturer_matched and product_matched:
+                method = "manufacturer_product"
+                score = 0.9
+            elif manufacturer_matched:
+                method = "manufacturer"
+                score = 0.78
+        if score <= best_score:
+            continue
+        best_score = score
+        best = {
+            "matched": True,
+            "method": method,
+            "confidence": score,
+            "registry_number": registry_number,
+            "manufacturer": manufacturer[:240],
+            "product": product[:300],
+            "inn": inn,
+            "source_url": str(entry.get("source_url") or GISP_PRODUCT_REGISTRY_URL),
+            "evidence": str(entry.get("evidence") or "")[:500],
+        }
+    return best or empty
 
 
 async def extract_supplier_search_context(settings: SystemSettings, context: str) -> str:

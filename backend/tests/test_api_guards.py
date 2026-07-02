@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -932,6 +935,49 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["contact_max_link"], "https://max.ru/invite/owner")
         self.assertEqual(payload["contact_website"], "https://aipoisk.example")
         self.assertEqual(payload["payment_instructions"], DEFAULT_PAYMENT_INSTRUCTIONS)
+
+    def test_minprom_registry_upload_ops_builds_indexes(self) -> None:
+        from openpyxl import Workbook
+
+        class FakeUpload:
+            filename = "registry.xlsx"
+
+            def __init__(self, content: bytes) -> None:
+                self._content = content
+
+            async def read(self) -> bytes:
+                return self._content
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Предприятие-изготовитель", "Продукция", "ИНН", "Реестровый номер"])
+        sheet.append(['АО "Катайский насосный завод"', "Насос центробежный типа Д", "4509000018", "РПП-НАСОС"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_env = {
+                "SUPPLIER_MINPROM_REGISTRY_INDEX_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"),
+                "SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH": os.environ.get("SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"),
+            }
+            os.environ["SUPPLIER_MINPROM_REGISTRY_INDEX_PATH"] = str(Path(tmp) / "registry.jsonl")
+            os.environ["SUPPLIER_MINPROM_REGISTRY_SQLITE_PATH"] = str(Path(tmp) / "registry.sqlite")
+            os.environ["SUPPLIER_MINPROM_REGISTRY_XLSX_CACHE_PATH"] = str(Path(tmp) / "registry.xlsx")
+            try:
+                status = asyncio.run(main.minprom_registry_upload_ops(FakeUpload(buffer.getvalue())))
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        self.assertTrue(status["xlsx_exists"])
+        self.assertTrue(status["index_exists"])
+        self.assertTrue(status["sqlite_ready"])
+        self.assertEqual(status["sqlite_count"], 1)
 
     def test_bot_analytics_exposes_funnel_trial_followups_and_payment_readiness(self) -> None:
         from sqlalchemy import create_engine

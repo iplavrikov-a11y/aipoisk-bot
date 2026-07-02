@@ -89,6 +89,65 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .wide-panel h2, .form-panel h2 { margin: 0 0 14px; font-size: 18px; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .panel-heading h2 { margin: 0; }
+.attention-panel {
+  grid-column: 1 / -1;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
+.attention-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.attention-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.attention-item svg {
+  color: #0f766e;
+}
+.attention-item strong,
+.attention-item span {
+  display: block;
+}
+.attention-item strong {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.2;
+}
+.attention-item span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.attention-item.warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.attention-item.warning svg,
+.attention-item.warning strong {
+  color: #92400e;
+}
+.attention-item.critical {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.attention-item.critical svg,
+.attention-item.critical strong {
+  color: #991b1b;
+}
 .rule-list, .settings-summary { display: grid; gap: 10px; color: #334155; }
 .rule-list div { display: flex; align-items: center; gap: 9px; }
 .rule-list svg { color: #0f766e; }
@@ -647,6 +706,54 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   border-radius: 8px;
   background: #f8fafc;
 }
+.job-timeline {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.job-timeline-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  min-height: 32px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+.job-timeline-step span {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+}
+.job-timeline-step strong {
+  overflow-wrap: anywhere;
+}
+.job-timeline-step.done {
+  color: #166534;
+}
+.job-timeline-step.done span {
+  border-color: #16a34a;
+  background: #dcfce7;
+}
+.job-timeline-step.current {
+  color: #0f766e;
+}
+.job-timeline-step.current span {
+  border-color: #0f766e;
+  background: #ccfbf1;
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, .12);
+}
+.job-timeline-step.error {
+  color: #991b1b;
+}
+.job-timeline-step.error span {
+  border-color: #dc2626;
+  background: #fee2e2;
+}
 .job-detail-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -796,6 +903,47 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .source-status.active { border-color: #99f6e4; background: #f0fdfa; }
 .source-status strong { font-size: 14px; }
 .source-status span { color: #64748b; font-size: 13px; }
+.registry-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+}
+.registry-panel.ready { border-color: #99f6e4; background: #f0fdfa; }
+.registry-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.registry-heading h3 { margin: 0; font-size: 15px; }
+.registry-heading p { margin: 4px 0 0; color: #64748b; font-size: 13px; }
+.registry-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.registry-metrics div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+.registry-metrics span { color: #64748b; font-size: 12px; font-weight: 750; }
+.registry-metrics strong { color: #0f172a; font-size: 17px; overflow-wrap: anywhere; }
+.registry-upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.registry-message { margin: 0; font-size: 13px; font-weight: 700; }
+.registry-message.ok { color: #166534; }
+.registry-message.error { color: #991b1b; }
 .service-panel {
   display: grid;
   gap: 12px;
@@ -952,9 +1100,9 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .main { padding: 18px; }
   .topbar { flex-direction: column; }
   .top-actions { width: 100%; flex-wrap: wrap; }
-  .content-grid, .settings-grid, .ops-grid, .analytics-grid, .ai-top-grid { grid-template-columns: 1fr; }
+  .content-grid, .settings-grid, .ops-grid, .analytics-grid, .ai-top-grid, .attention-grid { grid-template-columns: 1fr; }
   .wide-panel, .form-panel.full { grid-column: auto; }
-  .toolbar-panel, .client-create-grid, .password-reset-row, .provider-row, .model-row, .provider-row-head, .model-row-head, .function-route-list, .function-route-row, .search-source-grid, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .price-settings-panel, .balance-topup-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid, .analytics-client-row { grid-template-columns: 1fr; }
+  .toolbar-panel, .client-create-grid, .password-reset-row, .provider-row, .model-row, .provider-row-head, .model-row-head, .function-route-list, .function-route-row, .search-source-grid, .registry-metrics, .registry-upload-row, .client-card-grid, .usage-history-row, .system-metrics-grid, .api-service-list, .provider-config-grid, .grant-panel, .price-settings-panel, .balance-topup-panel, .tariff-form-grid, .tariff-row, .settings-grid.compact-grid, .analytics-client-row { grid-template-columns: 1fr; }
   .daily-bars { grid-template-columns: repeat(15, minmax(12px, 1fr)); }
   .ai-settings .provider-row, .ai-settings .model-row, .ai-settings .provider-row-head, .ai-settings .model-row-head, .function-route-row { grid-template-columns: 1fr; }
   .client-card-grid {
@@ -975,7 +1123,8 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   .job-output-list,
   .job-detail-panel { grid-column: 1; }
   .job-detail-grid,
-  .job-detail-section.compact-list { grid-template-columns: 1fr; }
+  .job-detail-section.compact-list,
+  .job-timeline { grid-template-columns: 1fr; }
   .list-pagination {
     justify-content: stretch;
     flex-wrap: wrap;

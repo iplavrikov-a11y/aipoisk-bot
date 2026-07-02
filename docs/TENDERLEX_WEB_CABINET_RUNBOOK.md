@@ -68,6 +68,26 @@ Notes:
 - Until online checkout is implemented, payment confirmation happens outside the
   site and the owner tops up the money balance manually.
 
+## Minpromtorg Registry Cache
+
+The manual registry modes depend on the local Minpromtorg/GISP cache.
+
+Admin path:
+
+1. Open the admin panel.
+2. Go to `Настройки`.
+3. In `Поиск поставщиков`, check `Реестр Минпромторга`.
+4. Confirm the status is `готов` and the entry count is non-zero.
+5. To refresh the cache, upload the current XLSX registry snapshot.
+
+Operational notes:
+
+- upload accepts XLSX only;
+- the backend builds JSONL and SQLite indexes before replacing the active cache;
+- `Только реестр` and `Реестр в приоритете` are blocked before job creation if
+  the local cache is missing, stale, or empty;
+- registry lookup is local SQLite search and does not use Playwright.
+
 ## Password Recovery
 
 Customer path:
@@ -118,9 +138,9 @@ Use this checklist after deploy:
     `Обычный поиск`, `Только реестр`, or `Реестр в приоритете`.
 18. For `Только реестр`, use a procurement where registry candidates are known
     or mockable. Confirm `evidence.json` records the selected supplier search
-    policy and `minprom_registry` context. If registry lookup is unavailable,
-    the strict search must fail without charging instead of returning ordinary
-    suppliers as if they had registry records.
+    policy and `minprom_registry` context. If the local registry cache is not
+    ready, job creation must fail before reservation/charge instead of returning
+    ordinary suppliers as if they had registry records.
 19. For a partial supplier-search result in Telegram, confirm there is only one
     confirmation message with send/decline buttons and no internal paths or job
     IDs.

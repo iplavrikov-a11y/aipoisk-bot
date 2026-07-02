@@ -114,6 +114,37 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertIn(MODE_ANALYSIS_AND_SUPPLIERS, VALID_JOB_MODES)
         self.assertTrue(evidence["ai_required"])
 
+    def test_create_job_blocks_manual_minprom_policy_when_registry_not_ready(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_job_dir = jobs.job_dir
+        original_preflight = jobs.minprom_registry_preflight_error
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                jobs.minprom_registry_preflight_error = lambda policy: (
+                    "Локальный реестр Минпромторга не готов" if policy == jobs.SUPPLIER_POLICY_MINPROM_ONLY else ""
+                )
+
+                with self.assertRaisesRegex(ValueError, "Локальный реестр Минпромторга не готов"):
+                    jobs.create_job(
+                        db,
+                        client_id=None,
+                        mode=MODE_SUPPLIER_SEARCH,
+                        title="ТЗ",
+                        target_suppliers=10,
+                        files=[("tz.txt", b"nasos")],
+                        supplier_search_policy=jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+                    )
+
+                self.assertEqual(db.query(Job).count(), 0)
+        finally:
+            jobs.job_dir = original_job_dir
+            jobs.minprom_registry_preflight_error = original_preflight
+            db.close()
+
     def test_result_stem_uses_subject_without_parenthesis_artifacts(self) -> None:
         job = Job(mode=MODE_SUPPLIER_SEARCH, status="completed", title="Техническое задание 1")
 
