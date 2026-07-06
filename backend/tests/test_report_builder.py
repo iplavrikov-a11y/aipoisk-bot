@@ -271,6 +271,77 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertIn("Категория совпадает", comment)
         self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров")
 
+    def test_supplier_xlsx_adds_registry_fallback_note_for_priority_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "exact",
+                        "product": "Компаратор видеоспектральный Regula 4308",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "supplier_search_policy": "minprom_registry_priority",
+                        "supplier_search_origin": "ordinary_fallback",
+                        "minprom_registry_required": True,
+                        "minprom_registry_status": "empty",
+                        "minprom_registry_match": {"matched": False},
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            comment = ws["E4"].value
+            wb.close()
+
+        self.assertIn("Точное соответствие", comment)
+        self.assertIn("Реестр: релевантная запись не найдена", comment)
+        self.assertIn("обычным поиском", comment)
+
+    def test_supplier_xlsx_adds_registry_number_in_single_comment_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Завод",
+                        "product_fit": "exact",
+                        "product": "Насос центробежный",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "supplier_search_policy": "minprom_registry_only",
+                        "supplier_search_origin": "minprom_registry",
+                        "minprom_registry_required": True,
+                        "minprom_registry_status": "ok",
+                        "minprom_registry_match": {
+                            "matched": True,
+                            "registry_number": "РПП-123",
+                            "manufacturer": 'АО "Завод"',
+                        },
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb.active
+            headers = [cell.value for cell in ws[3]]
+            comment = ws["E4"].value
+            wb.close()
+
+        self.assertEqual(headers, ["Компания", "Сайт", "Телефоны", "Email", "Комментарий"])
+        self.assertIn("Реестр: запись РПП-123", comment)
+        self.assertIn('АО "Завод"', comment)
+
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"

@@ -101,6 +101,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   Playwright. Admin settings expose cache status and XLSX upload. If the local
   cache is not ready, manual registry modes are rejected before job creation
   and before balance reservation.
+- Raw registry hits are treated only as candidates. The worker applies an AI
+  relevance filter against the extracted procurement profile before the
+  registry status becomes accepted. Supplier XLSX files keep one customer-facing
+  `Комментарий` column: matched rows include the registry record number and
+  manufacturer there, while priority-mode fallbacks say that no relevant
+  registry record was found and the supplier came from ordinary search.
 
 ## Telegram customer UX
 

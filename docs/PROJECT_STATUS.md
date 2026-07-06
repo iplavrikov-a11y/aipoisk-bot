@@ -66,6 +66,10 @@ Current runtime note:
   be ready before a supplier-search job is created. If the XLSX/JSONL/SQLite
   cache is missing or stale, the job is rejected early with an admin-actionable
   error instead of creating a pending job or charging/reserving funds.
+- Minprom registry search treats raw FTS hits as candidates. Registry context
+  reaches `ok` only after AI confirms that candidate entries match the extracted
+  procurement profile; otherwise priority mode falls back to ordinary supplier
+  search with an explicit XLSX comment.
 
 ## Commercial Access And Billing
 
@@ -469,11 +473,15 @@ Registry contract:
 - registry search is skipped when AI finds no mandatory requirement;
 - when mandatory, AI generates registry-oriented queries for the procurement
   item and the worker searches GISP/Minpromtorg context;
+- raw registry hits are filtered by AI against the extracted procurement
+  profile before they are treated as usable registry evidence;
 - supplier AI verification receives registry context and must not claim the
   requirement is fulfilled without a supplier/manufacturer linkage;
 - dealers and distributors may still be accepted as procurement leads, but the
   customer-facing comment must say to request registry confirmation when direct
-  linkage is absent.
+  linkage is absent. In priority mode, if no relevant registry entry survives
+  filtering, the comment must say that no relevant registry record was found
+  and the supplier was found by ordinary search.
 
 ## Reports And Audit Fields
 
@@ -486,6 +494,12 @@ Visible customer-facing columns only:
 - phones;
 - email;
 - short comment.
+
+The visible comment column is also the registry audit surface for customers:
+accepted registry matches include the registry record number and manufacturer
+in that same comment, and priority-mode fallbacks include a compact note that
+the relevant registry record was not found. The report must not add separate
+registry columns for this routine supplier-search output.
 
 Stored supplier rows also preserve `match_level`, `source`, `search_query`,
 `quality_score`, `quality_tier`, `procurement_item`, `ai_confidence`,
@@ -537,10 +551,12 @@ without polluting the customer's XLSX report.
   registry only when the context indicates an active prohibition or another
   mandatory registry/extract requirement. In strict/priority modes it performs
   registry-aware supplier search without requiring that automatic legal-regime
-  inference first. The final `evidence.json` records the supplier search
-  policy, `minprom_registry` decision, registry queries, entries count, status,
-  registry-search errors, and whether an unavailable registry caused a no-charge
-  strict search.
+  inference first. The registry context records raw candidate count separately
+  from AI-filtered entries, so broad text matches do not become accepted
+  registry evidence. The final `evidence.json` records the supplier search
+  policy, `minprom_registry` decision, registry queries, raw candidate count,
+  accepted entries count, status, registry-search/filter errors, and whether an
+  unavailable registry caused a no-charge strict search.
 - In `📄🔎 Анализ + поиск`, the supplier-context extraction step must preserve
   Minpromtorg/GISP/registry-record requirements from the procurement
   documentation so the later supplier-discovery step can make that decision on

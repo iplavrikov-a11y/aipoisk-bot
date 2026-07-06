@@ -99,23 +99,57 @@ def _client_supplier_comment(row: dict) -> str:
     product = _clean_comment_text(row.get("product") or row.get("procurement_item") or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
+    registry_note = _supplier_registry_note(row)
     if product_fit == "exact":
         if detail:
-            return _truncate_comment(f"Точное соответствие: {detail}.", COMMENT_LIMIT)
-        return "Точное соответствие."
+            return _join_supplier_comment(f"Точное соответствие: {detail}.", registry_note)
+        return _join_supplier_comment("Точное соответствие.", registry_note)
     if product_fit == "analog":
         if detail:
-            return _truncate_comment(f"Возможный аналог: {detail}. Сверить характеристики.", COMMENT_LIMIT)
-        return "Возможный аналог. Сверить характеристики."
+            return _join_supplier_comment(f"Возможный аналог: {detail}. Сверить характеристики.", registry_note)
+        return _join_supplier_comment("Возможный аналог. Сверить характеристики.", registry_note)
     if product_fit == "category":
         if detail:
-            return _truncate_comment(f"Категория совпадает: {detail}. Конкретный товар не подтвержден.", COMMENT_LIMIT)
-        return "Категория совпадает. Конкретный товар не подтвержден."
+            return _join_supplier_comment(f"Категория совпадает: {detail}. Конкретный товар не подтвержден.", registry_note)
+        return _join_supplier_comment("Категория совпадает. Конкретный товар не подтвержден.", registry_note)
     if product_fit == "profile":
-        return "Профиль компании подходит. Наличие товара уточнить."
+        return _join_supplier_comment("Профиль компании подходит. Наличие товара уточнить.", registry_note)
     if detail:
-        return _truncate_comment(f"Соответствие требует уточнения: {detail}.", COMMENT_LIMIT)
-    return "Соответствие требует уточнения."
+        return _join_supplier_comment(f"Соответствие требует уточнения: {detail}.", registry_note)
+    return _join_supplier_comment("Соответствие требует уточнения.", registry_note)
+
+
+def _join_supplier_comment(base: str, registry_note: str) -> str:
+    if not registry_note:
+        return _truncate_comment(base, COMMENT_LIMIT)
+    return _truncate_comment(f"{base} {registry_note}", 360)
+
+
+def _supplier_registry_note(row: dict) -> str:
+    policy = str(row.get("supplier_search_policy") or "").strip()
+    required = bool(row.get("minprom_registry_required"))
+    if policy not in {"minprom_registry_only", "minprom_registry_priority"} and not required:
+        return ""
+    match = row.get("minprom_registry_match") if isinstance(row.get("minprom_registry_match"), dict) else {}
+    if match.get("matched"):
+        registry_number = _clean_comment_text(match.get("registry_number") or "")
+        manufacturer = _clean_comment_text(match.get("manufacturer") or "")
+        if registry_number and manufacturer:
+            return f"Реестр: запись {registry_number}, производитель {manufacturer}."
+        if registry_number:
+            return f"Реестр: запись {registry_number}."
+        if manufacturer:
+            return f"Реестр: подтверждён производитель {manufacturer}."
+        return "Реестр: запись подтверждена."
+    status = str(row.get("minprom_registry_status") or "").strip().lower()
+    origin = str(row.get("supplier_search_origin") or "").strip()
+    if status == "empty":
+        if origin == "ordinary_fallback" or policy == "minprom_registry_priority":
+            return "Реестр: релевантная запись не найдена; поставщик найден обычным поиском."
+        return "Реестр: релевантная запись не найдена."
+    if status == "error":
+        return "Реестр: проверка не выполнена."
+    return ""
 
 
 def _supplier_report_heading(title: str, subject: str = "") -> str:

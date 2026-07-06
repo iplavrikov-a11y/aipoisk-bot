@@ -81,6 +81,37 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.items[0].exact_terms, ("500А",))
         self.assertEqual(profile.excluded_terms, ("ТОРГ-12",))
 
+    async def test_procurement_profile_filters_regulatory_codes_from_okpd2(self) -> None:
+        original_call_llm = supplier_search.call_llm
+
+        async def fake_call_llm(*args, **kwargs) -> str:
+            return """
+            {
+              "summary": "Поставка экологической лаборатории",
+              "items": [
+                {
+                  "id": "main",
+                  "name": "Передвижная экологическая лаборатория",
+                  "okpd2_codes": ["52.04.840", "28.99.39.190"],
+                  "exact_terms": ["РД 52.04.840-2015", "ГОСТ Р 8.589-2001"],
+                  "category_terms": ["передвижные лаборатории"]
+                }
+              ],
+              "excluded_terms": []
+            }
+            """
+
+        supplier_search.call_llm = fake_call_llm
+        try:
+            profile = await supplier_search.build_procurement_profile(
+                SimpleNamespace(has_active_ai_provider=True),
+                "Передвижная лаборатория. Требования: РД 52.04.840-2015.",
+            )
+        finally:
+            supplier_search.call_llm = original_call_llm
+
+        self.assertEqual(profile.items[0].okpd2_codes, ("28.99.39.190",))
+
     async def test_minprom_registry_requirement_is_ai_gated(self) -> None:
         original_call_llm = supplier_search.call_llm
         calls: list[dict] = []
@@ -432,6 +463,55 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Поставщик предлагает релевантный товар", comment)
         self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров|национальн")
+
+    async def test_minprom_registry_context_filters_irrelevant_raw_candidates(self) -> None:
+        original_build_queries = supplier_search.build_minprom_registry_queries
+        original_search_entries = supplier_search.search_minprom_registry_entries
+        original_call_llm = supplier_search.call_llm
+
+        async def fake_build_queries(*args, **kwargs):
+            return ["видеоспектральный компаратор", "Regula 4308"]
+
+        async def fake_search_entries(*args, **kwargs):
+            return [
+                {
+                    "manufacturer": 'АО "ВРЕМЯ-Ч"',
+                    "product": "Компаратор частотный VCH-314",
+                    "inn": "5262007965",
+                    "registry_number": "",
+                },
+                {
+                    "manufacturer": 'ООО "ВАРТОН"',
+                    "product": "Светодиодный светильник VARTON архитектурный Regula 2.0 1200",
+                    "inn": "7731470910",
+                    "registry_number": "",
+                },
+            ]
+
+        async def fake_call_llm(*args, **kwargs):
+            return '{"accepted_indexes":[]}'
+
+        supplier_search.build_minprom_registry_queries = fake_build_queries
+        supplier_search.search_minprom_registry_entries = fake_search_entries
+        supplier_search.call_llm = fake_call_llm
+        try:
+            context = await supplier_search.discover_minprom_registry_context(
+                SimpleNamespace(has_active_ai_provider=True),
+                "ТЗ: компаратор видеоспектральный Regula 4308",
+                ProcurementProfile(
+                    summary="Поставка видеоспектрального компаратора",
+                    items=(ProcurementItem(id="item-1", name="Компаратор видеоспектральный"),),
+                ),
+                supplier_search.MinpromRegistryRequirement(required=True, measure_type="restriction"),
+            )
+        finally:
+            supplier_search.build_minprom_registry_queries = original_build_queries
+            supplier_search.search_minprom_registry_entries = original_search_entries
+            supplier_search.call_llm = original_call_llm
+
+        self.assertEqual(context.status, "empty")
+        self.assertEqual(context.candidate_count, 2)
+        self.assertEqual(context.entries, ())
 
     def test_minprom_registry_match_annotates_supplier_origin(self) -> None:
         registry_context = supplier_search.MinpromRegistryContext(

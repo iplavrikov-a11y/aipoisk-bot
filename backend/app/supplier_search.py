@@ -197,6 +197,8 @@ class MinpromRegistryContext:
     requirement: MinpromRegistryRequirement
     queries: tuple[str, ...] = ()
     entries: tuple[dict, ...] = ()
+    candidate_count: int = 0
+    filter_error: str = ""
     status: str = "not_required"
     error: str = ""
 
@@ -312,6 +314,7 @@ async def assess_minprom_registry_requirement(settings: SystemSettings, context:
         routing_key="minprom_registry_requirement",
         json_mode=True,
         timeout_seconds=90,
+        response_validator=_validate_minprom_requirement_response,
     )
     parsed = parse_json_object(raw)
     measure_type = str(parsed.get("measure_type") or "").strip().lower()
@@ -337,11 +340,13 @@ async def discover_minprom_registry_context(
         return MinpromRegistryContext(requirement=requirement, status="not_required")
     try:
         queries = await build_minprom_registry_queries(settings, context, profile, requirement)
-        entries = await search_minprom_registry_entries(queries, max_results=25)
+        candidate_entries = await search_minprom_registry_entries(queries, max_results=25)
+        entries = await filter_minprom_registry_entries_for_profile(settings, profile, candidate_entries)
         return MinpromRegistryContext(
             requirement=requirement,
             queries=tuple(queries),
             entries=tuple(entries),
+            candidate_count=len(candidate_entries),
             status="ok" if entries else "empty",
         )
     except Exception as exc:
@@ -389,6 +394,7 @@ async def build_minprom_registry_queries(
         routing_key="minprom_registry_query_generation",
         json_mode=True,
         timeout_seconds=90,
+        response_validator=None if code_queries else _validate_supplier_queries_response,
     )
     parsed = parse_json_object(raw)
     ai_queries = [str(item).strip() for item in parsed.get("queries", []) if str(item).strip()]
@@ -406,6 +412,69 @@ async def search_minprom_registry_entries(queries: list[str], *, max_results: in
         )
     except Exception as exc:
         raise RuntimeError(f"Local Minprom registry search failed: {_exception_summary(exc)}") from exc
+
+
+async def filter_minprom_registry_entries_for_profile(
+    settings: SystemSettings,
+    profile: ProcurementProfile,
+    entries: list[dict],
+) -> list[dict]:
+    if not entries:
+        return []
+    if not settings.has_active_ai_provider:
+        raise RuntimeError("AI provider is required for Minprom registry relevance filtering")
+    candidates = [
+        {
+            "index": index,
+            "manufacturer": entry.get("manufacturer", ""),
+            "product": entry.get("product", ""),
+            "inn": entry.get("inn", ""),
+            "registry_number": entry.get("registry_number", ""),
+            "evidence": entry.get("evidence", ""),
+        }
+        for index, entry in enumerate(entries)
+    ]
+    prompt = f"""Проверь кандидатов из официального реестра Минпромторга/ГИСП на соответствие закупаемым товарам.
+
+Оставь только записи, которые по наименованию продукции реально могут закрывать хотя бы одну позицию закупки.
+
+Правила:
+- сравнивай смысл товара, назначение, тип, модель, технические признаки и ОКПД2, если они есть;
+- не принимай запись только по совпадению общего слова, бренда, похожей подстроки или числа модели;
+- производитель/ИНН сами по себе не доказывают соответствие товара;
+- если сомневаешься, отклони.
+
+Ответ строго JSON:
+{{"accepted_indexes":[{{"index":0,"reason":"почему подходит"}}]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Кандидаты ГИСП:
+{json.dumps(candidates, ensure_ascii=False)}
+"""
+    raw = await call_llm(
+        settings,
+        prompt,
+        system_prompt="Ты закупочный эксперт. Проверяешь только товарное соответствие записей ГИСП закупаемым позициям.",
+        tier="light",
+        routing_key="minprom_registry_relevance_filter",
+        json_mode=True,
+        timeout_seconds=90,
+    )
+    parsed = parse_json_object(raw)
+    accepted_raw = parsed.get("accepted_indexes")
+    accepted_indexes: list[int] = []
+    if isinstance(accepted_raw, list):
+        for item in accepted_raw:
+            value = item.get("index") if isinstance(item, dict) else item
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(entries) and index not in accepted_indexes:
+                accepted_indexes.append(index)
+    return [entries[index] for index in accepted_indexes]
 
 
 def get_minprom_registry_cache_status() -> dict[str, Any]:
@@ -1188,6 +1257,7 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
 Например, если ТЗ требует "канат стальной 31 мм ЛК-РО", товарная группа — "стальные канаты" / "канатная продукция", а "31 мм", "ЛК-РО", "ГОСТ" — точные характеристики для проверки и части запросов.
 Если ТЗ требует краску без конкретной торговой марки, ищи категорию "краски/лакокрасочные материалы", а не одну точную позицию.
 Если комплектующая или расходник закупаются как самостоятельная позиция, включи их отдельной позицией. Иначе добавь в excluded_terms.
+В okpd2_codes добавляй только коды, явно подписанные как ОКПД2/ОКПД. Не добавляй туда номера ГОСТ, РД, СП, СНиП, ФЗ, ТУ или методик.
 
 Ответ строго JSON:
 {{
@@ -1224,6 +1294,7 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
                 routing_key="supplier_procurement_profile",
                 json_mode=True,
                 timeout_seconds=90,
+                response_validator=_validate_procurement_profile_response,
             )
             profile = _normalize_procurement_profile(parse_json_object(raw))
             if not profile.items:
@@ -1275,11 +1346,10 @@ async def build_supplier_queries(
                 routing_key="supplier_query_generation",
                 json_mode=True,
                 timeout_seconds=90,
+                response_validator=_validate_supplier_queries_response,
             )
             parsed = parse_json_object(raw)
             queries = _clean_supplier_queries([str(item).strip() for item in parsed.get("queries", [])])
-            if not queries:
-                raise RuntimeError("AI did not return usable supplier search queries")
             if _queries_need_broadening(profile, queries, target):
                 revised = await _revise_supplier_queries_with_ai(settings, context, profile, queries, target)
                 if revised:
@@ -1521,9 +1591,17 @@ def _annotate_minprom_registry_matches(
 ) -> None:
     if not registry_context.requirement.required:
         for item in accepted:
+            item["supplier_search_policy"] = policy
+            item["minprom_registry_required"] = False
+            item["minprom_registry_status"] = registry_context.status
+            item["minprom_registry_entries_count"] = len(registry_context.entries)
             item.setdefault("supplier_search_origin", "ordinary")
         return
     for item in accepted:
+        item["supplier_search_policy"] = policy
+        item["minprom_registry_required"] = True
+        item["minprom_registry_status"] = registry_context.status
+        item["minprom_registry_entries_count"] = len(registry_context.entries)
         match = _supplier_minprom_registry_match(item, registry_context)
         item["minprom_registry_match"] = match
         if match.get("matched"):
@@ -1648,6 +1726,7 @@ async def extract_supplier_search_context(settings: SystemSettings, context: str
         routing_key="supplier_tz_context_extraction",
         json_mode=True,
         timeout_seconds=180,
+        response_validator=_validate_supplier_context_response,
     )
     parsed = parse_json_object(raw)
     supplier_context = str(parsed.get("supplier_context") or "").strip()
@@ -1696,6 +1775,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
         name = re.sub(r"\s+", " ", str(item.get("name") or item.get("title") or "")).strip(" .,:;")
         if not name:
             continue
+        item_context = f"{name} {' '.join(str(value) for value in item.values())}"
         item_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(item.get("id") or f"item-{index}")).strip("-").lower() or f"item-{index}"
         items.append(
             ProcurementItem(
@@ -1707,7 +1787,8 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                     or item.get("okpd2")
                     or item.get("okpd_codes")
                     or item.get("classification_codes")
-                    or f"{name} {' '.join(str(value) for value in item.values())}"
+                    or item_context,
+                    context_text=item_context,
                 ),
                 category_terms=_clean_profile_terms(
                     item.get("category_terms") or item.get("nomenclature_terms") or item.get("supplier_category_terms")
@@ -1741,7 +1822,7 @@ def _clean_profile_terms(value: object) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _clean_okpd2_codes(value: object) -> tuple[str, ...]:
+def _clean_okpd2_codes(value: object, *, context_text: str = "") -> tuple[str, ...]:
     if isinstance(value, str):
         text = value
     elif isinstance(value, (list, tuple, set)):
@@ -1751,9 +1832,22 @@ def _clean_okpd2_codes(value: object) -> tuple[str, ...]:
     result: list[str] = []
     for match in re.finditer(r"\b\d{2}(?:\.\d{1,3}){1,3}\b", text):
         code = match.group(0).strip(".")
+        if _looks_like_regulatory_document_code(code, context_text or text):
+            continue
         if code and code not in result:
             result.append(code)
     return tuple(result)
+
+
+def _looks_like_regulatory_document_code(code: str, context_text: str) -> bool:
+    if not code or not context_text:
+        return False
+    escaped = re.escape(code)
+    marker = r"(?:ГОСТ|РД|СП|СНиП|ФЗ|ТУ|ISO|IEC|EN|СТО|СанПиН|МУК|МУ)"
+    return bool(
+        re.search(rf"{marker}[\s№N:-]{{0,12}}{escaped}(?:[-–]\d{{2,4}})?", context_text, flags=re.I)
+        or re.search(rf"{escaped}[-–]\d{{2,4}}[\s,;:()/-]{{0,12}}{marker}", context_text, flags=re.I)
+    )
 
 
 def _okpd2_hierarchy_codes(code: str) -> tuple[str, ...]:
@@ -1805,6 +1899,41 @@ def _profile_to_dict(profile: ProcurementProfile) -> dict:
     }
 
 
+def _validate_procurement_profile_response(raw: str) -> None:
+    profile = _normalize_procurement_profile(parse_json_object(raw))
+    if not profile.items:
+        raise RuntimeError(f"AI returned profile with 0 items (raw keys: {list(parse_json_object(raw).keys())})")
+
+
+def _validate_minprom_requirement_response(raw: str) -> None:
+    parsed = parse_json_object(raw)
+    if "required" not in parsed and not str(parsed.get("measure_type") or "").strip():
+        raise RuntimeError("AI Minprom requirement response is incomplete")
+
+
+def _validate_supplier_context_response(raw: str) -> None:
+    parsed = parse_json_object(raw)
+    supplier_context = str(parsed.get("supplier_context") or "").strip()
+    supplier_context = re.sub(r"[ \t]+", " ", supplier_context)
+    supplier_context = re.sub(r"\n{3,}", "\n\n", supplier_context).strip()
+    if len(supplier_context) < 50:
+        raise RuntimeError("AI supplier search context extraction returned an empty context")
+
+
+def _validate_supplier_queries_response(raw: str) -> None:
+    parsed = parse_json_object(raw)
+    queries = _clean_supplier_queries([str(item).strip() for item in parsed.get("queries", [])])
+    if not queries:
+        raise RuntimeError("AI did not return usable supplier search queries")
+
+
+def _validate_supplier_verification_response(raw: str) -> None:
+    parsed = parse_json_object(raw)
+    action = str(parsed.get("action") or "").strip().lower()
+    if action not in {"accept", "reject"}:
+        raise RuntimeError("AI supplier verifier returned invalid action")
+
+
 def _minprom_requirement_to_dict(requirement: MinpromRegistryRequirement) -> dict:
     return {
         "required": requirement.required,
@@ -1820,7 +1949,9 @@ def _minprom_context_to_dict(context: MinpromRegistryContext) -> dict:
         "status": context.status,
         "queries": list(context.queries),
         "entries_count": len(context.entries),
+        "candidate_count": context.candidate_count,
         "entries": list(context.entries)[:20],
+        "filter_error": context.filter_error,
         "error": context.error,
     }
 
@@ -2075,6 +2206,7 @@ async def _revise_supplier_queries_with_ai(
         routing_key="supplier_query_generation",
         json_mode=True,
         timeout_seconds=90,
+        response_validator=_validate_supplier_queries_response,
     )
     parsed = parse_json_object(raw)
     queries = _clean_supplier_queries([str(item).strip() for item in parsed.get("queries", [])])
@@ -2149,6 +2281,7 @@ async def _build_supplier_recovery_queries_with_ai(
         routing_key="supplier_query_generation",
         json_mode=True,
         timeout_seconds=90,
+        response_validator=_validate_supplier_queries_response,
     )
     parsed = parse_json_object(raw)
     initial_set = {query.lower() for query in initial_queries}
@@ -2186,6 +2319,7 @@ async def ai_rerank_candidates(
         for index, candidate in enumerate(candidates[:limit])
     ]
     desired_review_count = _desired_candidate_review_count(target, len(payload_candidates))
+    by_id = {str(index): candidate for index, candidate in enumerate(candidates[:limit])}
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
     prompt = f"""Отранжируй поисковых кандидатов перед открытием сайтов.
 
@@ -2229,12 +2363,12 @@ async def ai_rerank_candidates(
                 routing_key="supplier_candidate_reranker",
                 json_mode=True,
                 timeout_seconds=90,
+                response_validator=lambda raw: _validate_candidate_rerank_response(raw, by_id),
             )
             parsed = parse_json_object(raw)
             ranked = parsed.get("ranked", [])
             if not isinstance(ranked, list):
                 raise RuntimeError("AI candidate reranker returned invalid ranked list")
-            by_id = {str(index): candidate for index, candidate in enumerate(candidates[:limit])}
             kept, seen_ids, seen_domains = _ranked_candidates_from_ai(ranked, by_id)
             if not kept:
                 raise RuntimeError("AI candidate reranker did not keep any candidates")
@@ -2324,6 +2458,21 @@ def _ranked_candidates_from_ai(
     return kept, seen_ids, domains
 
 
+def _validate_candidate_rerank_response(
+    raw: str,
+    by_id: dict[str, Candidate],
+    *,
+    seen_domains: set[str] | None = None,
+) -> None:
+    parsed = parse_json_object(raw)
+    ranked = parsed.get("ranked", [])
+    if not isinstance(ranked, list):
+        raise RuntimeError("AI candidate reranker returned invalid ranked list")
+    kept, _, _ = _ranked_candidates_from_ai(ranked, by_id, seen_domains=seen_domains)
+    if not kept:
+        raise RuntimeError("AI candidate reranker did not keep any candidates")
+
+
 async def _expand_candidate_rerank_with_ai(
     settings: SystemSettings,
     profile: ProcurementProfile,
@@ -2342,6 +2491,17 @@ async def _expand_candidate_rerank_with_ai(
     ]
     if not remaining or needed <= 0:
         return []
+    by_id = {
+        str(item.get("id") or ""): Candidate(
+            url=str(item.get("url") or ""),
+            domain=str(item.get("domain") or ""),
+            title=str(item.get("title") or ""),
+            snippet=str(item.get("snippet") or ""),
+            source=str(item.get("source") or ""),
+            query=str(item.get("query") or ""),
+        )
+        for item in remaining
+    }
     minprom_guidance, minprom_payload = _minprom_rerank_context(registry_context)
     prompt = f"""Первый ИИ-отбор оставил слишком мало кандидатов для отчёта на {target} поставщиков.
 
@@ -2370,22 +2530,12 @@ async def _expand_candidate_rerank_with_ai(
             routing_key="supplier_candidate_reranker",
             json_mode=True,
             timeout_seconds=90,
+            response_validator=lambda raw: _validate_candidate_rerank_response(raw, by_id, seen_domains=seen_domains),
         )
         parsed = parse_json_object(raw)
         ranked = parsed.get("ranked", [])
         if not isinstance(ranked, list):
             return []
-        by_id = {
-            str(item.get("id") or ""): Candidate(
-                url=str(item.get("url") or ""),
-                domain=str(item.get("domain") or ""),
-                title=str(item.get("title") or ""),
-                snippet=str(item.get("snippet") or ""),
-                source=str(item.get("source") or ""),
-                query=str(item.get("query") or ""),
-            )
-            for item in remaining
-        }
         kept, _, _ = _ranked_candidates_from_ai(ranked, by_id, seen_domains=seen_domains)
         return kept[:needed]
     except Exception:
@@ -3525,6 +3675,7 @@ async def ai_verify(
             routing_key="supplier_candidate_verifier",
             json_mode=True,
             timeout_seconds=90,
+            response_validator=_validate_supplier_verification_response,
         )
         return parse_json_object(raw)
     except Exception:
