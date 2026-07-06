@@ -29,7 +29,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 ## MVP scope
 
 - Manual customer access management from the admin panel, including several
-  Telegram manager accounts under one customer.
+  Telegram manager accounts and website logins under one customer.
 - Shared customer limits for all linked Telegram accounts.
 - Customer access is based on a money balance. Each function has an effective
   price: supplier search, procurement-document analysis, and additional
@@ -56,9 +56,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - AI settings separate documentation-analysis models from one cheaper/faster
   supplier-search model used by the whole supplier-search flow.
 - Online checkout is not enabled. Customers top up through the manager, and the
-  owner credits only a money amount in the admin client card. Legacy YooKassa
-  fields remain in the backend schema for a future integration, but they are
-  not the active payment workflow.
+  owner credits or debits only a money amount in the admin client card. Legacy
+  YooKassa fields remain in the backend schema for a future integration, but
+  they are not the active payment workflow.
 - Public TenderLex site with no blog: supplier-search-led landing page,
   pricing, contact blocks, Telegram CTAs, SEO scenario pages, and authenticated
   customer cabinet at `/cabinet`.
@@ -66,7 +66,11 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   specification. Procurement-document analysis is still available, but it is
   framed as an optional supporting check for complex tender work rather than
   the dominant first-screen message.
-- Website cabinet users are separate from Telegram users. Web clients sign in by email/password; internal `web:<id>` markers must stay hidden from the owner-facing Telegram-account UI. Telegram payments/access stay tied to real Telegram accounts.
+- Website cabinet users are separate from Telegram users. Web clients sign in by
+  email/password; internal `web:<id>` markers must stay hidden from the
+  owner-facing account UI. Admin client cards show Web and Telegram access
+  separately, and a web login can be removed without deleting the customer,
+  balance, jobs, or Telegram accounts.
 - Website cabinet exposes the same customer work scenarios as the bot:
   supplier search by ТЗ, procurement analysis, and combined analysis plus
   supplier search.

@@ -600,6 +600,38 @@ def grant_money_balance(
     return transaction
 
 
+def debit_money_balance(
+    db: Session,
+    client: Client,
+    *,
+    amount_kopeks: int,
+    note: str = "",
+    created_by: str = "admin",
+) -> BillingTransaction:
+    amount = max(0, int(amount_kopeks or 0))
+    if amount <= 0:
+        raise BillingError("Amount must be positive")
+    available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+    if available_money < amount:
+        raise BillingError(f"Недостаточно денег для списания: доступно {available_money / 100:.2f} ₽, нужно {amount / 100:.2f} ₽")
+    client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - amount)
+    transaction = BillingTransaction(
+        client_id=client.id,
+        kind=KIND_MONEY,
+        operation=OP_MANUAL_DEBIT,
+        units=0,
+        amount_kopeks=amount,
+        balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+        reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+        note=note or "Ручное списание с баланса",
+        created_by=created_by,
+    )
+    db.add(transaction)
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
 def grant_trial_balance(
     db: Session,
     client: Client,

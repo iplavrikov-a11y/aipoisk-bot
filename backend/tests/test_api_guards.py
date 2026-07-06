@@ -22,6 +22,7 @@ from app.main import (
     create_client_telegram_account,
     create_manual_job,
     delete_client,
+    delete_client_web_user,
     delete_client_telegram_account,
     grant_client_billing_units,
     job_to_dict,
@@ -34,7 +35,7 @@ from app.main import (
     upload_job,
 )
 from app.billing import client_balance_summary
-from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, WebUser, now_utc
+from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebSession, WebUser, now_utc
 from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientMergeRequest, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
 
 
@@ -169,6 +170,22 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["supplier_units"], 1)
         self.assertEqual(payload["procurement_report_units"], 1)
         self.assertEqual(payload["created_by_telegram_id"], "555")
+        self.assertEqual(payload["supplier_search_policy"], "normal")
+        self.assertEqual(payload["supplier_search_run_type"], "initial")
+
+    def test_job_to_dict_exposes_supplier_search_policy_for_admin_ui(self) -> None:
+        job = Job(
+            id="job-1",
+            mode="supplier_search",
+            title="ТЗ_насос",
+            supplier_search_policy="minprom_registry_only",
+            supplier_search_run_type="additional",
+        )
+
+        payload = job_to_dict(job)
+
+        self.assertEqual(payload["supplier_search_policy"], "minprom_registry_only")
+        self.assertEqual(payload["supplier_search_run_type"], "additional")
 
     def test_job_to_dict_marks_internal_service_jobs(self) -> None:
         job = Job(id="job-1", mode="supplier_search", title="worker_smoke_patch", message="retest")
@@ -281,6 +298,54 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(user_count, 0)
         self.assertEqual(job_count, 0)
         self.assertEqual(billing_count, 0)
+
+    def test_delete_client_web_user_removes_login_only_and_preserves_client_state(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client = Client(id="client-1", telegram_id="web:client-1", name="Marina", money_balance_kopeks=84_000)
+            db.add(client)
+            db.add(ClientTelegramAccount(client_id="client-1", telegram_id="320433711", username="lexelence", name="Алексей"))
+            db.add(WebUser(id="web-1", client_id="client-1", email="m.timoshenko@bm-corp.ru", password_hash="hash"))
+            db.add(WebSession(id="session-1", user_id="web-1", token_hash="token", expires_at=now_utc() + timedelta(days=1)))
+            db.add(WebPasswordResetRequest(id="reset-1", user_id="web-1", email="m.timoshenko@bm-corp.ru"))
+            db.add(
+                WebEmailVerificationToken(
+                    id="verify-1",
+                    user_id="web-1",
+                    email="m.timoshenko@bm-corp.ru",
+                    token_hash="verify-token",
+                    expires_at=now_utc() + timedelta(days=1),
+                )
+            )
+            db.commit()
+
+            result = delete_client_web_user("client-1", "web-1", db=db)
+            client_after = db.get(Client, "client-1")
+            telegram_accounts = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == "client-1").count()
+            web_users = db.query(WebUser).filter(WebUser.client_id == "client-1").count()
+            sessions = db.query(WebSession).count()
+            reset_requests = db.query(WebPasswordResetRequest).count()
+            verification_tokens = db.query(WebEmailVerificationToken).count()
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["client"]["web_users"], [])
+        self.assertEqual(client_after.telegram_id, "320433711")
+        self.assertEqual(client_after.money_balance_kopeks, 84_000)
+        self.assertEqual(telegram_accounts, 1)
+        self.assertEqual(web_users, 0)
+        self.assertEqual(sessions, 0)
+        self.assertEqual(reset_requests, 0)
+        self.assertEqual(verification_tokens, 0)
 
     def test_merge_client_moves_web_login_jobs_billing_and_telegram_accounts(self) -> None:
         from sqlalchemy import create_engine
@@ -815,6 +880,48 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(result["client"]["usage"]["money"]["available_kopeks"], 25_000)
         self.assertEqual(result["client"]["usage"]["supplier_search"]["available"], 0)
         self.assertEqual(result["client"]["usage"]["procurement_report"]["available"], 0)
+
+    def test_admin_money_debit_reduces_money_balance_and_rejects_overdraft(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="780"), db=db)
+            grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="money", amount_kopeks=25_000, note="manual topup"),
+                db=db,
+            )
+            result = grant_client_billing_units(
+                client_payload["id"],
+                BillingGrantCreate(kind="money", amount_kopeks=10_000, operation="debit", note="balance correction"),
+                db=db,
+            )
+            with self.assertRaises(HTTPException) as raised:
+                grant_client_billing_units(
+                    client_payload["id"],
+                    BillingGrantCreate(kind="money", amount_kopeks=20_000, operation="debit"),
+                    db=db,
+                )
+        finally:
+            db.close()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transaction"]["kind"], "money")
+        self.assertEqual(result["transaction"]["kind_label"], "Баланс")
+        self.assertEqual(result["transaction"]["operation"], "manual_debit")
+        self.assertEqual(result["transaction"]["operation_label"], "ручное списание")
+        self.assertEqual(result["transaction"]["units"], 0)
+        self.assertEqual(result["transaction"]["amount_kopeks"], 10_000)
+        self.assertEqual(result["client"]["usage"]["money"]["available_kopeks"], 15_000)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Недостаточно денег для списания", str(raised.exception.detail))
 
     def test_delete_client_removes_client_without_history(self) -> None:
         from sqlalchemy import create_engine

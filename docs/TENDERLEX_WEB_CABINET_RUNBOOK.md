@@ -6,8 +6,8 @@
 - Customer cabinet: `https://tenderlex.ru/cabinet`
 - Online payment is not enabled yet.
 - Web users and Telegram users are separate. Internal `web:<id>` markers may exist in runtime data, but the owner-facing admin UI must not show them as Telegram accounts or Telegram IDs.
-- Web access is topped up manually from the admin panel by crediting a money
-  amount. Search, analysis, and additional supplier search then debit the
+- Web access is managed manually from the admin panel by crediting or debiting a
+  money amount. Search, analysis, and additional supplier search then debit the
   customer's balance according to effective prices.
 - Linked Telegram and website accounts share the same customer job history.
   A Telegram-launched job can therefore appear in the website cabinet; this is
@@ -44,27 +44,37 @@
   fetches are no-store, and active job polling is intentionally more frequent
   than idle polling.
 
-## Manual Balance Top-Up
+## Manual Balance Adjustment
 
 1. Open the admin panel.
 2. Go to `Клиенты`.
 3. Find the client by website email.
 4. Open the client card.
-5. In `Баланс`, enter the money amount in `Пополнить баланс, ₽`.
+5. In `Финансы`, enter the money amount in `Пополнить баланс, ₽` to credit the
+   client.
 6. Click `Пополнить`.
-7. Ask the customer to refresh the cabinet if the balance is already open.
+7. To correct an accidental over-credit, enter the amount in `Списать с
+   баланса, ₽` and click `Списать`.
+8. Ask the customer to refresh the cabinet if the balance is already open.
 
 Notes:
 
 - Use the customer's website email to find web-cabinet clients.
 - The owner UI no longer grants or debits "runs" by function. It credits money
-  only; jobs reserve and charge money according to the customer's prices.
+  and can manually debit money only; jobs reserve and charge money according to
+  the customer's prices.
 - `В обработке` appears only when money is temporarily reserved for a running
   job. A zero reserve is intentionally hidden.
 - Per-client prices for `Поиск`, `Анализ`, and `Добор` are editable in the
-  same balance block. The global package list remains in `Тарифы`.
+  collapsed `Индивидуальные цены` block under `Настройки клиента`. The global
+  package list remains in `Тарифы`.
 - Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
-- Do not merge website users into Telegram customers unless the owner explicitly decides to change the billing/account model.
+- Web logins and Telegram accounts are separate access types inside one
+  customer card. Removing a web login must remove only that website access and
+  its sessions/reset tokens; it must not delete the customer, balance, jobs, or
+  Telegram accounts.
+- Do not merge website users into Telegram customers unless the owner explicitly
+  decides to change the billing/account model.
 - Until online checkout is implemented, payment confirmation happens outside the
   site and the owner tops up the money balance manually.
 

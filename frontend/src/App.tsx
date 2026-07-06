@@ -17,6 +17,8 @@ import {
   Loader2,
   LogIn,
   MemoryStick,
+  Minus,
+  MoreHorizontal,
   Play,
   Plus,
   RefreshCw,
@@ -159,6 +161,7 @@ type AccountDraft = {
 
 type GrantDraft = {
   amount_rub: string
+  debit_amount_rub?: string
 }
 
 type Job = {
@@ -169,6 +172,8 @@ type Job = {
   created_by_telegram_id: string
   mode: string
   mode_label: string
+  supplier_search_policy: string
+  supplier_search_run_type: string
   status: string
   progress: number
   message: string
@@ -745,6 +750,21 @@ function humanStatus(status: string) {
 
 function humanMode(mode: string) {
   return modeLabels[mode] || mode || 'Задача'
+}
+
+function supplierSearchPolicyLabel(job: Pick<Job, 'mode' | 'supplier_search_policy'>) {
+  if (!['supplier_search', 'analysis_and_suppliers'].includes(job.mode)) return ''
+  const labels: Record<string, string> = {
+    normal: 'Обычный поиск',
+    minprom_registry_only: 'Запрет: реестр обязателен',
+    minprom_registry_priority: 'Преимущество: реестр в приоритете',
+  }
+  return labels[job.supplier_search_policy || 'normal'] || 'Обычный поиск'
+}
+
+function supplierRunTypeLabel(job: Pick<Job, 'mode' | 'supplier_search_run_type'>) {
+  if (!['supplier_search', 'analysis_and_suppliers'].includes(job.mode)) return ''
+  return job.supplier_search_run_type === 'additional' ? 'Добор поставщиков' : ''
 }
 
 const MOSCOW_TIME_ZONE = 'Europe/Moscow'
@@ -1440,7 +1460,7 @@ function ClientsView({
   }
   async function topUpClientBalance(client: Client) {
     const draft = grantDraft(client)
-    const amountRub = Number(draft.amount_rub || 0)
+    const amountRub = Number(String(draft.amount_rub || 0).replace(',', '.'))
     const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
     if (amountKopeks <= 0) return
     await api(`/api/clients/${client.id}/billing/grants`, {
@@ -1454,7 +1474,26 @@ function ClientsView({
         operation: 'grant',
       }),
     })
-    setGrantForms({ ...grantForms, [client.id]: { amount_rub: '' } })
+    setGrantForms({ ...grantForms, [client.id]: { ...draft, amount_rub: '' } })
+    await onChange()
+  }
+  async function debitClientBalance(client: Client) {
+    const draft = grantDraft(client)
+    const amountRub = Number(String(draft.debit_amount_rub || 0).replace(',', '.'))
+    const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
+    if (amountKopeks <= 0) return
+    await api(`/api/clients/${client.id}/billing/grants`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'money',
+        package_id: '',
+        units: 1,
+        amount_kopeks: amountKopeks,
+        note: 'Ручное списание с баланса',
+        operation: 'debit',
+      }),
+    })
+    setGrantForms({ ...grantForms, [client.id]: { ...draft, debit_amount_rub: '' } })
     await onChange()
   }
   async function saveClientTariffOverride(client: Client, kind: string, fallbackKopeks: number) {
@@ -1472,6 +1511,12 @@ function ClientsView({
   }
   async function verifyWebUserEmail(client: Client, user: WebUser) {
     await api(`/api/clients/${client.id}/web-users/${user.id}/verify-email`, { method: 'POST' })
+    await onChange()
+  }
+  async function deleteWebUser(client: Client, user: WebUser) {
+    const label = user.email || user.name || 'этот web-кабинет'
+    if (!window.confirm(`Удалить web-кабинет «${label}» у клиента «${clientDisplayName(client)}»?\n\nКлиент, баланс, задачи и Telegram-аккаунты останутся. Пользователь больше не сможет входить на сайт с этим email.`)) return
+    await api(`/api/clients/${client.id}/web-users/${user.id}`, { method: 'DELETE' })
     await onChange()
   }
   async function completePasswordReset(item: PasswordResetRequest) {
@@ -1557,8 +1602,10 @@ function ClientsView({
           const webUsers = client.web_users?.length ? client.web_users : []
           const expanded = Boolean(expandedClients[client.id])
           const grant = grantDraft(client)
-          const grantAmountRub = Number(grant.amount_rub || 0)
+          const grantAmountRub = Number(String(grant.amount_rub || 0).replace(',', '.'))
           const grantAmountValid = Number.isFinite(grantAmountRub) && grantAmountRub > 0
+          const debitAmountRub = Number(String(grant.debit_amount_rub || 0).replace(',', '.'))
+          const debitAmountValid = Number.isFinite(debitAmountRub) && debitAmountRub > 0
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
           return (
@@ -1579,72 +1626,119 @@ function ClientsView({
                   </div>
                 </div>
                 <div className="client-summary-pills">
-                  {webUsers[0]?.email && <span>{webUsers[0].email}</span>}
+                  {webUsers.length > 0 && <span>Web: {webUsers.length}</span>}
                   <span>Telegram: {connectedCount}</span>
                   {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
                   {client.usage?.money && <span>Баланс: {formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
                 <div className="client-state">
                   {!client.is_active && <StatusBadge status="disabled" />}
-                  <button className="danger small-text" onClick={() => void deleteClient(client)}>
-                    <Trash2 size={14} />Удалить
-                  </button>
+                  <details className="client-actions-menu">
+                    <summary title="Действия клиента" aria-label="Действия клиента">
+                      <MoreHorizontal size={18} />
+                    </summary>
+                    <div className="client-actions-popover">
+                      <button className="danger small-text" onClick={() => void deleteClient(client)}>
+                        <Trash2 size={14} />Удалить клиента
+                      </button>
+                    </div>
+                  </details>
                 </div>
               </div>
 
               {expanded && <div className="client-card-grid">
                 <div className="client-section client-telegram-section">
                   <div className="section-head">
-                    <h3>Telegram-аккаунты</h3>
-                    <span>{accounts.length || 'нет'}</span>
+                    <h3>Доступы</h3>
+                    <span>{webUsers.length ? `Web: ${webUsers.length} · Telegram: ${accounts.length}` : accounts.length || 'нет'}</span>
                   </div>
-                  <div className="account-edit-list">
-                    {accounts.map(account => {
-                      const edit = accountEditDraft(account)
-                      return (
-                        <div className="account-edit-row" key={account.id}>
-                          <label className="mini-field">
-                            <span>Ник</span>
-                            <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
-                          </label>
-                          <label className="mini-field">
-                            <span>Telegram ID</span>
-                            <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
-                          </label>
-                          <label className="mini-field">
-                            <span>Имя</span>
-                            <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
-                          </label>
-                          <div className="account-edit-actions">
-                            {account.is_pending && <StatusBadge status="account_pending" />}
-                            {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
-                            <button className="small-text" onClick={() => void saveAccount(client, account)}>
-                              <Save size={14} />Сохранить
-                            </button>
-                            <button
-                              className="icon-button small danger"
-                              title="Удалить Telegram-аккаунт"
-                              onClick={() => void deleteAccount(client, account)}
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                  <div className="access-subsection">
+                    <div className="subsection-label">Web-доступ</div>
+                    {webUsers.length > 0 ? (
+                      <div className="web-user-list">
+                        {webUsers.map(user => (
+                          <div className="web-user-row" key={user.id}>
+                            <div>
+                              <strong>{user.email}</strong>
+                              <small>
+                                {[user.name || 'web-кабинет', user.is_email_verified ? 'email подтверждён' : 'email не подтверждён', user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было'].join(' · ')}
+                              </small>
+                            </div>
+                            <div className="web-user-actions">
+                              {!user.is_active && <StatusBadge status="disabled" />}
+                              {!user.is_email_verified && (
+                                <button className="small-text" onClick={() => void verifyWebUserEmail(client, user)}>
+                                  <CheckCircle2 size={14} />Подтвердить
+                                </button>
+                              )}
+                              <button
+                                className="icon-button small danger"
+                                title="Удалить web-кабинет"
+                                onClick={() => void deleteWebUser(client, user)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="inline-note">Web-кабинет не привязан.</div>
+                    )}
+                  </div>
+                  <div className="access-subsection">
+                    <div className="subsection-label">Telegram-аккаунты</div>
+                    <div className="account-edit-list">
+                      {accounts.map(account => {
+                        const edit = accountEditDraft(account)
+                        return (
+                          <div className="account-edit-row" key={account.id}>
+                            <label className="mini-field">
+                              <span>Ник</span>
+                              <input value={edit.username} placeholder="@manager" onChange={e => setAccountEditDraft(account, { username: e.target.value })} />
+                            </label>
+                            <label className="mini-field">
+                              <span>Telegram ID</span>
+                              <input value={edit.telegram_id} placeholder={account.is_pending ? 'Введите ID' : 'ID'} onChange={e => setAccountEditDraft(account, { telegram_id: e.target.value })} />
+                            </label>
+                            <label className="mini-field">
+                              <span>Имя</span>
+                              <input value={edit.name} placeholder="Имя менеджера" onChange={e => setAccountEditDraft(account, { name: e.target.value })} />
+                            </label>
+                            <div className="account-edit-actions">
+                              {account.is_pending && <StatusBadge status="account_pending" />}
+                              {!account.is_pending && !account.is_active && <StatusBadge status="disabled" />}
+                              <button className="small-text" onClick={() => void saveAccount(client, account)}>
+                                <Save size={14} />Сохранить
+                              </button>
+                              <button
+                                className="icon-button small danger"
+                                title="Удалить Telegram-аккаунт"
+                                onClick={() => void deleteAccount(client, account)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
+                      <details className="compact-form-details account-add-details">
+                        <summary>Добавить Telegram</summary>
+                        <div className="account-add">
+                          <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
+                          <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
+                          <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
+                          <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
                         </div>
-                      )
-                    })}
-                    {!accounts.length && <div className="inline-note">Аккаунты пока не добавлены.</div>}
-                    <div className="account-add">
-                      <input placeholder="@username" value={draft.username} onChange={e => setAccountDraft(client, { username: e.target.value })} />
-                      <input placeholder="ID вручную" value={draft.telegram_id} onChange={e => setAccountDraft(client, { telegram_id: e.target.value })} />
-                      <input placeholder="Имя" value={draft.name} onChange={e => setAccountDraft(client, { name: e.target.value })} />
-                      <button className="icon-button small" title="Добавить Telegram-аккаунт" onClick={() => void createAccount(client)} disabled={!draft.telegram_id.trim() && !draft.username.trim()}><Plus size={16} /></button>
+                      </details>
                     </div>
                   </div>
                 </div>
 
                 <div className="client-section client-balance-section">
                   <div className="section-head">
-                    <h3>Баланс</h3>
+                    <h3>Финансы</h3>
                   </div>
                   {client.usage && (
                     <div className="balance-compact-list">
@@ -1661,57 +1755,69 @@ function ClientsView({
                       )}
                     </div>
                   )}
-                  {client.usage?.effective_prices && (
-                    <div className="price-settings-panel">
-                      {(['supplier_search', 'procurement_report', 'supplier_search_extra'] as const).map(kind => {
-                        const price = client.usage?.effective_prices?.[kind]
-                        const fallbackKopeks = price?.price_kopeks || 0
-                        return (
-                          <label className="mini-field" key={kind}>
-                            <span>{priceBillingLabel(kind)}, ₽</span>
-                            <div className="price-override-row">
-                              <input
-                                type="number"
-                                min={0}
-                                step={1}
-                                value={priceDraftValue(client, kind, fallbackKopeks)}
-                                onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
-                                }}
-                              />
-                              <button className="icon-button small" type="button" title="Сохранить цену" onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}>
-                                <Save size={14} />
-                              </button>
-                            </div>
-                          </label>
-                        )
-                      })}
+                  <div className="subsection-label">Операции с балансом</div>
+                  <div className="balance-adjust-panel">
+                    <div className="balance-adjust-row">
+                      <label className="mini-field">
+                        <span>Пополнить баланс, ₽</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          placeholder="Сумма"
+                          value={grant.amount_rub}
+                          onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
+                          }}
+                        />
+                      </label>
+                      <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
+                        <Plus size={16} />Пополнить
+                      </button>
                     </div>
-                  )}
-                  <div className="balance-topup-panel">
-                    <label className="mini-field">
-                      <span>Пополнить баланс, ₽</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        placeholder="Сумма"
-                        value={grant.amount_rub}
-                        onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
-                        }}
-                      />
-                    </label>
-                    <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
-                      <Plus size={16} />Пополнить
-                    </button>
+                    <div className="balance-adjust-row">
+                      <label className="mini-field">
+                        <span>Списать с баланса, ₽</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          placeholder="Сумма"
+                          value={grant.debit_amount_rub || ''}
+                          onChange={e => setGrantDraft(client, { debit_amount_rub: e.currentTarget.value })}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && debitAmountValid) void debitClientBalance(client)
+                          }}
+                        />
+                      </label>
+                      <button className="danger" onClick={() => void debitClientBalance(client)} disabled={!debitAmountValid}>
+                        <Minus size={16} />Списать
+                      </button>
+                    </div>
                   </div>
+                  <details className="client-section billing-history-details">
+                    <summary>
+                      <span>История баланса</span>
+                      <small>{client.recent_billing?.length || 0} операций</small>
+                    </summary>
+                    <div className="usage-history">
+                      {client.recent_billing?.map(item => (
+                        <div className="usage-history-row" key={item.id}>
+                          <div>
+                            <strong>{item.operation_label}: {item.kind_label}</strong>
+                            <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
+                          </div>
+                          <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
+                        </div>
+                      ))}
+                      {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
+                    </div>
+                  </details>
                 </div>
 
-                <div className="client-section client-search-section">
-                  <h3>Поиск</h3>
+                <div className="client-section client-settings-section">
+                  <h3>Настройки клиента</h3>
                   <label className="mini-field">
                     <span>Поставщиков в выдаче</span>
                     <input
@@ -1725,11 +1831,43 @@ function ClientsView({
                       onBlur={e => patchClientSupplierTarget(client, e.currentTarget)}
                     />
                   </label>
+                  {client.usage?.effective_prices && (
+                    <details className="compact-form-details price-settings-details">
+                      <summary>Индивидуальные цены</summary>
+                      <div className="price-settings-panel">
+                        {(['supplier_search', 'procurement_report', 'supplier_search_extra'] as const).map(kind => {
+                          const price = client.usage?.effective_prices?.[kind]
+                          const fallbackKopeks = price?.price_kopeks || 0
+                          return (
+                            <label className="mini-field" key={kind}>
+                              <span>{priceBillingLabel(kind)}, ₽</span>
+                              <div className="price-override-row">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={priceDraftValue(client, kind, fallbackKopeks)}
+                                  onChange={e => setPriceDraftValue(client, kind, e.currentTarget.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') void saveClientTariffOverride(client, kind, fallbackKopeks)
+                                  }}
+                                />
+                                <button className="icon-button small" type="button" title="Сохранить цену" onClick={() => void saveClientTariffOverride(client, kind, fallbackKopeks)}>
+                                  <Save size={14} />
+                                </button>
+                              </div>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </details>
+                  )}
                 </div>
 
-                <details className="client-section client-merge-section merge-client-details">
+                <details className="client-section client-merge-section merge-client-details danger-zone-details">
                   <summary>Объединение клиентов</summary>
                   <div className="merge-client-panel">
+                    <p className="field-help">Перенесёт задачи, баланс, Telegram-аккаунты и web-кабинет выбранного клиента в эту карточку.</p>
                     <label className="mini-field">
                       <span>Кого присоединить</span>
                       <select
@@ -1749,25 +1887,6 @@ function ClientsView({
                     >
                       <Users size={14} />Объединить
                     </button>
-                  </div>
-                </details>
-
-                <details className="client-section billing-history-details">
-                  <summary>
-                    <span>История баланса</span>
-                    <small>{client.recent_billing?.length || 0} операций</small>
-                  </summary>
-                  <div className="usage-history">
-                    {client.recent_billing?.map(item => (
-                      <div className="usage-history-row" key={item.id}>
-                        <div>
-                          <strong>{item.operation_label}: {item.kind_label}</strong>
-                          <small>{formatDate(item.created_at)} · {item.note || item.created_by}</small>
-                        </div>
-                        <span>{item.amount_kopeks ? formatPrice(item.amount_kopeks) : item.units}</span>
-                      </div>
-                    ))}
-                    {!client.recent_billing?.length && <div className="inline-note">Операций по балансу пока нет.</div>}
                   </div>
                 </details>
               </div>}
@@ -1876,6 +1995,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
+        supplierSearchPolicyLabel(job),
+        supplierRunTypeLabel(job),
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
     })
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / ADMIN_JOBS_PAGE_SIZE))
@@ -1982,6 +2103,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         {visibleJobs.map(job => {
           const expanded = Boolean(expandedJobs[job.id])
           const details = jobDetails[job.id]
+          const supplierPolicyLabel = supplierSearchPolicyLabel(job)
+          const supplierRunLabel = supplierRunTypeLabel(job)
           return (
           <article className={job.is_internal ? 'job-card service' : 'job-card'} key={job.id}>
             <div className="job-main">
@@ -2001,6 +2124,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             </div>
             <div className="job-meta">
               <span>{job.mode_label || humanMode(job.mode)}</span>
+              {supplierPolicyLabel && <span className={`supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
+              {supplierRunLabel && <span className="supplier-policy additional">{supplierRunLabel}</span>}
               <span>{job.mode === 'procurement_report' ? 'Анализ документации' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
             </div>
             <Progress value={job.progress} note={job.message || humanStatus(job.status)} />
@@ -2535,36 +2660,49 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     setList(list.filter((_, itemIndex) => itemIndex !== index))
     clearSaveStatus(section)
   }
+  function fallbackTestSlot(section: string, index: number) {
+    return `fallback-${section}-${index}`
+  }
+  function savedModelTestSlot(model: SavedModel, index: number) {
+    return `saved-model-${model.id || index}`
+  }
   function renderFallbackEditor(list: FallbackEntry[], setList: (next: FallbackEntry[]) => void, section: string) {
     return (
       <div className="advanced-section">
         <button className="ghost ai-add-button" onClick={() => addFallbackItem(list, setList, section)}><Plus size={16} />Добавить модель</button>
         <p className="field-help">Пробуются по порядку, если основная модель недоступна. В конце автоматически добавляются оставшиеся бесплатные модели. Выберите из списка «Доступные модели».</p>
         {list.length > 0 && (
-          <div className="model-row-head"><span>Модель</span><span></span><span></span></div>
+          <div className="model-row-head"><span>Модель</span><span></span><span></span><span></span></div>
         )}
-        {list.map((entry, index) => (
-          <div className="model-row" key={`${entry.provider}:${entry.modelId}-${index}`}>
-            <select
-              value={entry.provider && entry.modelId ? `${entry.provider}:${entry.modelId}` : ''}
-              onChange={event => updateFallbackItem(list, setList, index, event.target.value, section)}
-            >
-              <option value="">Выберите модель</option>
-              {modelOptions.map(option => <option key={option} value={option}>{modelOptionLabel(option)}</option>)}
-            </select>
-            <span className="row-cell-badge">
-              {isPaidFallbackEntry(entry.provider, entry.modelId) ? <span className="badge-paid" title="Платная модель — используется по вашему выбору">платная</span> : null}
-            </span>
-            <RowActions
-              index={index}
-              count={list.length}
-              onMoveUp={() => moveFallbackItem(list, setList, index, -1, section)}
-              onMoveDown={() => moveFallbackItem(list, setList, index, 1, section)}
-              onRemove={() => removeFallbackItem(list, setList, index, section)}
-              removeTitle="Удалить из фолбэка"
-            />
-          </div>
-        ))}
+        {list.map((entry, index) => {
+          const slot = fallbackTestSlot(section, index)
+          return (
+            <div className="model-row-wrap" key={`${entry.provider}:${entry.modelId}-${index}`}>
+              <div className="model-row">
+                <select
+                  value={entry.provider && entry.modelId ? `${entry.provider}:${entry.modelId}` : ''}
+                  onChange={event => updateFallbackItem(list, setList, index, event.target.value, section)}
+                >
+                  <option value="">Выберите модель</option>
+                  {modelOptions.map(option => <option key={option} value={option}>{modelOptionLabel(option)}</option>)}
+                </select>
+                <span className="row-cell-badge">
+                  {isPaidFallbackEntry(entry.provider, entry.modelId) ? <span className="badge-paid" title="Платная модель — используется по вашему выбору">платная</span> : null}
+                </span>
+                {testButton(slot, entry.provider, entry.modelId)}
+                <RowActions
+                  index={index}
+                  count={list.length}
+                  onMoveUp={() => moveFallbackItem(list, setList, index, -1, section)}
+                  onMoveDown={() => moveFallbackItem(list, setList, index, 1, section)}
+                  onRemove={() => removeFallbackItem(list, setList, index, section)}
+                  removeTitle="Удалить из фолбэка"
+                />
+              </div>
+              {renderTestResult(slot)}
+            </div>
+          )
+        })}
         {list.length === 0 && (
           <p className="field-help">Список пуст — после основной модели автоматически идут оставшиеся бесплатные модели.</p>
         )}
@@ -2718,6 +2856,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
     return (
       <button
         className="icon-button small"
+        type="button"
         title="Проверить эту модель"
         onClick={() => void testAi(slot, provider, model)}
         disabled={!provider || !model || running}
@@ -2863,24 +3002,31 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
         <summary>Доступные модели</summary>
         <div className="advanced-section">
           <button className="ghost ai-add-button" onClick={addModel}><Plus size={16} />Добавить модель</button>
-          <div className="model-row-head"><span>Провайдер</span><span>Модель</span><span></span></div>
-          {savedModels.map((model, index) => (
-            <div className="model-row" key={model.id}>
-              <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
-                <option value="">Провайдер</option>
-                {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-              </select>
-              <input value={model.modelId} placeholder="например gpt-5.4" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
-              <RowActions
-                index={index}
-                count={savedModels.length}
-                onMoveUp={() => moveModel(index, -1)}
-                onMoveDown={() => moveModel(index, 1)}
-                onRemove={() => removeModel(index)}
-                removeTitle="Удалить модель"
-              />
-            </div>
-          ))}
+          <div className="model-row-head"><span>Провайдер</span><span>Модель</span><span></span><span></span></div>
+          {savedModels.map((model, index) => {
+            const slot = savedModelTestSlot(model, index)
+            return (
+              <div className="model-row-wrap" key={model.id}>
+                <div className="model-row">
+                  <select value={model.provider} onChange={e => { updateArray(savedModels, setSavedModels, index, { provider: e.target.value }); clearSaveStatus('models') }}>
+                    <option value="">Провайдер</option>
+                    {providers.map(provider => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
+                  </select>
+                  <input value={model.modelId} placeholder="например gpt-5.4" onChange={e => { updateArray(savedModels, setSavedModels, index, { modelId: e.target.value }); clearSaveStatus('models') }} />
+                  {testButton(slot, model.provider, model.modelId)}
+                  <RowActions
+                    index={index}
+                    count={savedModels.length}
+                    onMoveUp={() => moveModel(index, -1)}
+                    onMoveDown={() => moveModel(index, 1)}
+                    onRemove={() => removeModel(index)}
+                    removeTitle="Удалить модель"
+                  />
+                </div>
+                {renderTestResult(slot)}
+              </div>
+            )
+          })}
           <div className="section-actions">
             <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить модели</button>
             {sectionSaveStatus('models')}

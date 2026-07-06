@@ -28,6 +28,7 @@ from .billing import (
     charge_job_reservation,
     client_balance_summary,
     client_uses_trial_access,
+    debit_money_balance,
     debit_package_units,
     expire_stale_confirmations,
     grant_money_balance,
@@ -47,6 +48,7 @@ from .jobs import (
     MODE_SUPPLIER_SEARCH,
     SUPPLIER_POLICY_NORMAL,
     SUPPLIER_RUN_ADDITIONAL,
+    SUPPLIER_RUN_INITIAL,
     TERMINAL_JOB_STATUSES,
     VALID_SUPPLIER_SEARCH_POLICIES,
     VALID_JOB_MODES,
@@ -930,16 +932,25 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
     if kind == KIND_MONEY:
-        if package or operation != "grant":
-            raise HTTPException(status_code=400, detail="Money balance can only be topped up directly")
+        if package:
+            raise HTTPException(status_code=400, detail="Money balance can only be changed directly")
         try:
-            transaction = grant_money_balance(
-                db,
-                client,
-                amount_kopeks=data.amount_kopeks,
-                note=data.note or "Ручное пополнение баланса",
-                created_by="admin",
-            )
+            if operation == "grant":
+                transaction = grant_money_balance(
+                    db,
+                    client,
+                    amount_kopeks=data.amount_kopeks,
+                    note=data.note or "Ручное пополнение баланса",
+                    created_by="admin",
+                )
+            else:
+                transaction = debit_money_balance(
+                    db,
+                    client,
+                    amount_kopeks=data.amount_kopeks,
+                    note=data.note or "Ручное списание с баланса",
+                    created_by="admin",
+                )
         except BillingError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         db.refresh(client)
@@ -1026,6 +1037,44 @@ def admin_verify_web_user_email(client_id: str, user_id: str, db: Session = Depe
     ).update({WebEmailVerificationToken.used_at: now_utc()}, synchronize_session=False)
     db.commit()
     return {"success": True, "client": client_to_dict(user.client, db=db)}
+
+
+@app.delete("/api/clients/{client_id}/web-users/{user_id}", dependencies=[Depends(require_admin)])
+def delete_client_web_user(client_id: str, user_id: str, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    user = db.get(WebUser, user_id)
+    if not user or user.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Web user not found")
+
+    db.query(WebSession).filter(WebSession.user_id == user.id).delete(synchronize_session=False)
+    db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id == user.id).delete(synchronize_session=False)
+    db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id == user.id).delete(synchronize_session=False)
+    db.delete(user)
+    if not db.query(WebUser.id).filter(WebUser.client_id == client.id, WebUser.id != user.id).first():
+        client.telegram_id = _primary_telegram_id_after_web_delete(client)
+    db.commit()
+    db.refresh(client)
+    return {"success": True, "client": client_to_dict(client, db=db)}
+
+
+def _primary_telegram_id_after_web_delete(client: Client) -> str:
+    current_id = str(client.telegram_id or "")
+    if current_id and not current_id.startswith("web:"):
+        return current_id
+    accounts = [
+        account
+        for account in client.telegram_accounts
+        if account.telegram_id and not is_pending_telegram_id(account.telegram_id) and not str(account.telegram_id).startswith("web:")
+    ]
+    if not accounts:
+        client.username = ""
+        return new_pending_telegram_id()
+    primary = sorted(accounts, key=lambda item: item.created_at, reverse=True)[0]
+    if not client.username and primary.username:
+        client.username = primary.username
+    return primary.telegram_id
 
 
 @app.get("/api/web-password-resets", dependencies=[Depends(require_admin)])
@@ -3232,6 +3281,8 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "created_by_telegram_id": job.created_by_telegram_id,
         "mode": job.mode,
         "mode_label": mode_label(job.mode),
+        "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
+        "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
         "status": job.status,
         "progress": job.progress,
         "message": job.message,

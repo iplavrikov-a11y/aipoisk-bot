@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-07-02
+Date: 2026-07-06
 
 ## Current Production State
 
@@ -109,12 +109,12 @@ supplier search separately when both functions are available. Trial setup grants
 money according to the current base prices for the configured free supplier and
 analysis runs.
 
-Online checkout is not enabled. Website cabinet and Telegram access are topped
-up manually from the admin customer card after external payment or approval.
-The admin top-up form accepts only a money amount; subsequent job reservations
-and charges use the customer's effective prices. Money shown as "in processing"
-is temporarily reserved for running jobs and is hidden from the owner UI when it
-is zero.
+Online checkout is not enabled. Website cabinet and Telegram access are managed
+manually from the admin customer card after external payment or approval. The
+owner can credit or debit only a money amount; subsequent job reservations and
+charges use the customer's effective prices. Money shown as "in processing" is
+temporarily reserved for running jobs and is hidden from the owner UI when it is
+zero.
 
 ## Admin Console
 
@@ -125,19 +125,23 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show real linked Telegram accounts, money balance, per-client
-  prices for supplier search, analysis, and additional supplier search, a
-  single money top-up field, search target override, merge tools, and collapsed
-  billing history;
+- customer cards show a compact summary with separate Web and Telegram access
+  counts, money balance, and a low-emphasis actions menu for destructive client
+  operations;
+- expanded customer cards are split into `Доступы`, `Финансы`, and `Настройки
+  клиента`: Web logins and Telegram accounts are managed separately, balance
+  credit/debit operations sit next to collapsed billing history, and advanced
+  per-client prices plus duplicate-merge tools stay collapsed until needed;
 - website-cabinet service markers such as `web:<id>` and website-trial notes are
   hidden from the owner-facing client card;
 - the owner can create clients by Telegram username before the real Telegram ID
-  is known, edit linked Telegram accounts, set per-client prices, top up the
-  customer's money balance, tune the supplier count for that customer, merge
-  duplicate customers, and delete extra Telegram accounts;
+  is known, edit linked Telegram accounts, remove a website-cabinet login from
+  a customer without deleting the customer, set per-client prices, credit or
+  debit the customer's money balance, tune the supplier count for that customer,
+  merge duplicate customers, and delete extra Telegram accounts;
 - old manual unit debit support remains in the backend for compatibility, but
   the current owner UI intentionally does not expose action/type/package fields:
-  the owner credits money only, and jobs debit money according to tariffs;
+  the owner adjusts money only, and jobs debit money according to tariffs;
 - if a manager first used the bot as a separate trial customer, the owner can
   move that existing Telegram account into the correct customer card after
   explicit confirmation. A single-account trial customer is merged with its job
