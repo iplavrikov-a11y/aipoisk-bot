@@ -21,7 +21,7 @@ from .billing import (
     balance_counter,
     charge_job_reservation,
     client_uses_trial_access,
-    client_balance_summary,
+    client_service_balance_summary,
     expire_stale_confirmations,
     job_has_unsettled_reservation,
     list_tariffs,
@@ -1074,7 +1074,7 @@ def _balance_line(counter: dict) -> str:
 
 
 def _cabinet_text(db, client: Client, settings) -> str:
-    balances = client_balance_summary(db, client)
+    balances = client_service_balance_summary(db, client)
     lines = [
         "📊 Мой кабинет",
         "",
@@ -1083,7 +1083,7 @@ def _cabinet_text(db, client: Client, settings) -> str:
         "",
         f"Баланс: {_money_text(balances['money']['available_kopeks'])}",
         "",
-        "Стоимость функций:",
+        "Стоимость услуг:",
         _balance_line(balances["supplier_search"]),
         _balance_line(balances["procurement_report"]),
         _balance_line(balances["supplier_search_extra"]),
@@ -1125,7 +1125,7 @@ def _tariffs_text(db, settings) -> str:
     lines = [
         "💳 Тарифы и оплата",
         "",
-        "Пополнение зачисляется на баланс, функции списываются по действующей цене.",
+        "Пакеты и пополнения отображаются в кабинете. Результат списывается после выдачи по настроенной цене услуги.",
     ]
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
@@ -1139,6 +1139,10 @@ def _tariffs_text(db, settings) -> str:
         lines.extend(["", "🔎 Добор поставщиков:"])
         for item in extra:
             lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
+    elif supplier:
+        unit_price = _default_extra_supplier_price_kopeks(supplier[0])
+        lines.extend(["", "🔎 Добор поставщиков:"])
+        lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (50% от цены поиска поставщиков)")
     if not supplier and not reports and not extra:
         lines.extend(["", "Тарифы пока не настроены в админ-панели."])
     lines.extend(["", _bot_payment_instructions(settings)])
@@ -1146,6 +1150,15 @@ def _tariffs_text(db, settings) -> str:
     lines.extend(["", AI_HELP_NOTE])
     lines.extend(["", _contacts_text(settings)])
     return "\n".join(lines)
+
+
+def _tariff_unit_price_kopeks(item: dict) -> int:
+    units = max(1, int(item.get("units") or 1))
+    return max(0, round(int(item.get("price_kopeks") or 0) / units))
+
+
+def _default_extra_supplier_price_kopeks(item: dict) -> int:
+    return max(0, round(_tariff_unit_price_kopeks(item) * 0.5))
 
 
 def _bot_payment_instructions(settings) -> str:
@@ -1693,7 +1706,7 @@ async def _send_job_outputs(
 
 
 def _after_delivery_balance_text(db, client: Client) -> str:
-    balances = client_balance_summary(db, client)
+    balances = client_service_balance_summary(db, client)
     lines = ["✅ Результат отправлен. Баланс обновлён."]
     low = [item["label"] for item in balances.values() if isinstance(item, dict) and item.get("label") and item.get("low")]
     if low:

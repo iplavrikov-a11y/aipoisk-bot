@@ -27,6 +27,7 @@ from .billing import (
     billing_kind_label,
     charge_job_reservation,
     client_balance_summary,
+    client_service_balance_summary,
     client_uses_trial_access,
     debit_money_balance,
     debit_package_units,
@@ -2904,7 +2905,7 @@ def mode_label(mode: str) -> str:
 
 
 def client_usage_summary(db: Session, client: Client) -> dict:
-    balances = client_balance_summary(db, client)
+    balances = client_service_balance_summary(db, client)
     return {
         "supplier_search": usage_counter_from_balance(balances["supplier_search"]),
         "procurement_report": usage_counter_from_balance(balances["procurement_report"]),

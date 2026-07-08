@@ -1061,7 +1061,7 @@ function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboar
         <div className="rule-list">
           <div><Bot size={17} />В боте работают только включённые клиенты и их менеджеры.</div>
           <div><Search size={17} />В отчёт попадают только поставщики, проверенные ИИ.</div>
-          <div><Settings size={17} />Клиенту пополняется денежный баланс, списание идёт по ценам услуг.</div>
+          <div><Settings size={17} />Клиенту настраиваются баланс и доступные услуги, списание идёт по фактическому тарифу.</div>
           <div><KeyRound size={17} />Модели ИИ выбираются в разделе «ИИ-модели».</div>
         </div>
       </div>

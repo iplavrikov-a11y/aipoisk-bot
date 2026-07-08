@@ -70,7 +70,9 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Supplier-search results that can be extended expose an additional action for
   finding more suppliers. The customer must confirm the paid extra run before
   the backend creates the additional supplier-search job; this run debits the
-  additional-supplier-search price, not the full first-search price.
+  additional-supplier-search price, not the full first-search price. The default
+  additional-search price is 50% of the effective supplier-search price unless
+  a global dobор package or per-customer dobор override is configured.
 - Supplier search and combined analysis-plus-search carry the customer-selected
   supplier registry mode: `Обычный поиск`, `Только реестр`, or
   `Реестр в приоритете`.
@@ -88,7 +90,10 @@ access to the admin panel.
 - Global prices and visible packages are managed from the tariff/package
   section.
 - Per-customer effective prices for supplier search, procurement analysis, and
-  additional supplier search are managed in each admin customer card.
+  additional supplier search are managed in each admin customer card. The
+  customer session payload and Telegram cabinet must show the same effective
+  dobор price: explicit dobор override/package first, otherwise 50% of the
+  effective supplier-search price.
 - `bot_telegram` is labelled "Telegram-бот для пробного запуска и работы".
 - `contact_telegram` is labelled "Telegram для связи и оплаты".
 - `contact_max`, `contact_max_link`, `contact_email`, `contact_website`, and

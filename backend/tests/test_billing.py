@@ -10,13 +10,16 @@ from app.billing import (
     KIND_MONEY,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     balance_counter,
     charge_job_reservation,
     client_balance_summary,
+    client_service_balance_summary,
     client_uses_trial_access,
     debit_package_units,
+    effective_price_kopeks,
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
@@ -271,6 +274,97 @@ class BillingLedgerTests(unittest.TestCase):
             self.assertEqual(summary["money"]["available_kopeks"], 0)
             self.assertEqual(client.money_balance_kopeks, 0)
             self.assertEqual(summary[KIND_SUPPLIER_SEARCH]["available"], 3)
+        finally:
+            db.close()
+
+    def test_service_balance_summary_defaults_extra_search_to_half_supplier_price(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=9_940_000,
+            )
+            db.add_all([
+                client,
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Поиск", units=1, price_kopeks=10_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            db.commit()
+
+            raw = client_balance_summary(db, client)
+            display = client_service_balance_summary(db, client)
+
+            self.assertTrue(raw[KIND_SUPPLIER_SEARCH_EXTRA]["low"])
+            self.assertEqual(raw[KIND_SUPPLIER_SEARCH_EXTRA]["available"], 0)
+            self.assertEqual(display[KIND_SUPPLIER_SEARCH_EXTRA]["source"], "supplier_search_access_fallback")
+            self.assertEqual(display[KIND_SUPPLIER_SEARCH_EXTRA]["fallback_kind"], KIND_SUPPLIER_SEARCH)
+            self.assertEqual(display[KIND_SUPPLIER_SEARCH_EXTRA]["available"], 1000)
+            self.assertEqual(display[KIND_SUPPLIER_SEARCH_EXTRA]["price_kopeks"], 5_000)
+            self.assertFalse(display[KIND_SUPPLIER_SEARCH_EXTRA]["low"])
+            self.assertEqual(
+                display["effective_prices"][KIND_SUPPLIER_SEARCH_EXTRA]["source"],
+                "supplier_search_default_50_percent",
+            )
+        finally:
+            db.close()
+
+    def test_extra_search_override_keeps_individual_half_price_contract(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="100")
+            db.add_all([
+                client,
+                ClientTariffOverride(client_id="client-1", kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                ClientTariffOverride(client_id="client-1", kind=KIND_SUPPLIER_SEARCH_EXTRA, price_kopeks=3_000),
+            ])
+            db.commit()
+
+            self.assertEqual(effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH), 6_000)
+            self.assertEqual(effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH_EXTRA), 3_000)
+            summary = client_service_balance_summary(db, client)
+            self.assertEqual(summary["effective_prices"][KIND_SUPPLIER_SEARCH_EXTRA]["source"], "client_override")
+            self.assertEqual(summary[KIND_SUPPLIER_SEARCH_EXTRA]["price_kopeks"], 3_000)
+        finally:
+            db.close()
+
+    def test_additional_supplier_search_reserves_half_price_from_supplier_access(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-1", telegram_id="100")
+            job = Job(
+                id="job-extra",
+                client_id="client-1",
+                mode="supplier_search",
+                supplier_search_run_type="additional",
+            )
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id="client-1", kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+            ])
+            db.commit()
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=2, amount_kopeks=12_000)
+
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+            reserved = client_service_balance_summary(db, client)
+
+            self.assertEqual(reserved[KIND_SUPPLIER_SEARCH_EXTRA]["available"], 1)
+            self.assertEqual(reserved[KIND_SUPPLIER_SEARCH_EXTRA]["reserved"], 1)
+            self.assertEqual(reserved[KIND_SUPPLIER_SEARCH_EXTRA]["price_kopeks"], 3_000)
+            self.assertEqual(client.money_reserved_kopeks, 3_000)
+
+            charge_job_reservation(db, job)
+            db.refresh(client)
+            charged = client_service_balance_summary(db, client)
+
+            self.assertEqual(client.money_balance_kopeks, 9_000)
+            self.assertEqual(client.money_reserved_kopeks, 0)
+            self.assertEqual(charged[KIND_SUPPLIER_SEARCH_EXTRA]["available"], 1)
+            self.assertEqual(charged[KIND_SUPPLIER_SEARCH_EXTRA]["spent"], 1)
         finally:
             db.close()
 

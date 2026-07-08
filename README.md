@@ -35,6 +35,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   price: supplier search, procurement-document analysis, and additional
   supplier search (`Найти ещё` / добор поставщиков). `📄🔎 Анализ + поиск`
   reserves and charges the supplier-search and analysis prices together.
+  Additional supplier search defaults to 50% of the effective supplier-search
+  price when no explicit global package or per-customer override is configured;
+  per-customer `Добор` prices remain editable in the admin client card.
 - Batch jobs for supplier search and procurement Word reports.
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a

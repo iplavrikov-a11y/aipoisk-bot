@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import timedelta
 
 from sqlalchemy import and_, func, not_, or_
@@ -12,6 +13,7 @@ KIND_PROCUREMENT_REPORT = "procurement_report"
 KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
 KIND_MONEY = "money"
 VALID_BILLING_KINDS = {KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA}
+SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT = 50
 
 OP_GRANT = "grant"
 OP_RESERVE = "reserve"
@@ -112,6 +114,58 @@ def client_balance_summary(db: Session, client: Client) -> dict:
     }
 
 
+def client_service_balance_summary(db: Session, client: Client) -> dict:
+    balances = deepcopy(client_balance_summary(db, client))
+    if not _supplier_search_extra_uses_supplier_access(db, client):
+        return balances
+
+    supplier_counter = balances[KIND_SUPPLIER_SEARCH]
+    extra_counter = balances[KIND_SUPPLIER_SEARCH_EXTRA]
+    fallback_counter = _supplier_search_extra_fallback_counter(supplier_counter, extra_counter)
+    extra_counter.update(fallback_counter)
+    extra_counter["kind"] = KIND_SUPPLIER_SEARCH_EXTRA
+    extra_counter["label"] = billing_kind_label(KIND_SUPPLIER_SEARCH_EXTRA)
+    extra_counter["source"] = "supplier_search_access_fallback"
+    extra_counter["fallback_kind"] = KIND_SUPPLIER_SEARCH
+
+    return balances
+
+
+def _supplier_search_extra_falls_back_to_supplier_search(db: Session, client: Client) -> bool:
+    return (
+        effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH_EXTRA) <= 0
+        and not _has_billing_transactions(db, client.id, KIND_SUPPLIER_SEARCH_EXTRA)
+    )
+
+
+def _supplier_search_extra_uses_supplier_access(db: Session, client: Client) -> bool:
+    return not _has_billing_grants(db, client.id, KIND_SUPPLIER_SEARCH_EXTRA)
+
+
+def _supplier_search_extra_fallback_counter(supplier_counter: dict, extra_counter: dict) -> dict:
+    unlimited = bool(supplier_counter.get("unlimited"))
+    reserved = max(0, int(extra_counter.get("reserved") or 0))
+    spent = max(0, int(extra_counter.get("spent") or 0))
+    manual_debited = max(0, int(extra_counter.get("manual_debited") or 0))
+    supplier_available = supplier_counter.get("available")
+    if unlimited:
+        available = None
+    else:
+        available = max(0, int(supplier_available or 0) - reserved - spent - manual_debited)
+    price = int(extra_counter.get("price_kopeks") or 0)
+    return {
+        "granted": supplier_counter.get("granted"),
+        "manual_debited": manual_debited,
+        "available": available,
+        "reserved": reserved,
+        "spent": spent,
+        "unlimited": unlimited,
+        "price_kopeks": price,
+        "price_rub": round(price / 100, 2),
+        "low": False if unlimited else int(available or 0) <= LOW_BALANCE_THRESHOLD,
+    }
+
+
 def balance_counter(db: Session, client: Client, kind: str) -> dict:
     if _has_billing_transactions(db, client.id, kind):
         counter = _ledger_counter(db, client.id, kind)
@@ -145,14 +199,17 @@ def money_balance_summary(db: Session, client: Client) -> dict:
 def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int:
     if kind not in VALID_BILLING_KINDS:
         return 0
+    explicit_price = _explicit_effective_price_kopeks(db, client, kind)
+    if explicit_price is not None:
+        return explicit_price
+    if kind == KIND_SUPPLIER_SEARCH_EXTRA:
+        return _default_supplier_search_extra_price_kopeks(db, client)
+    return 0
+
+
+def _explicit_effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int | None:
     if client:
-        override = (
-            db.query(ClientTariffOverride)
-            .filter(ClientTariffOverride.client_id == client.id)
-            .filter(ClientTariffOverride.kind == kind)
-            .order_by(ClientTariffOverride.updated_at.desc())
-            .first()
-        )
+        override = _client_tariff_override(db, client, kind)
         if override:
             if not override.is_enabled:
                 return 0
@@ -165,30 +222,50 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
         .first()
     )
     if not package:
-        return 0
+        return None
     units = max(1, int(package.units or 1))
     return max(0, round(int(package.price_kopeks or 0) / units))
+
+
+def _default_supplier_search_extra_price_kopeks(db: Session, client: Client | None) -> int:
+    supplier_price = effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH)
+    return max(0, round(supplier_price * SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT / 100))
+
+
+def _client_tariff_override(db: Session, client: Client, kind: str) -> ClientTariffOverride | None:
+    return (
+        db.query(ClientTariffOverride)
+        .filter(ClientTariffOverride.client_id == client.id)
+        .filter(ClientTariffOverride.kind == kind)
+        .order_by(ClientTariffOverride.updated_at.desc())
+        .first()
+    )
 
 
 def effective_price_to_dict(db: Session, client: Client | None, kind: str) -> dict:
     override = None
     if client:
-        override = (
-            db.query(ClientTariffOverride)
-            .filter(ClientTariffOverride.client_id == client.id)
-            .filter(ClientTariffOverride.kind == kind)
-            .order_by(ClientTariffOverride.updated_at.desc())
-            .first()
-        )
+        override = _client_tariff_override(db, client, kind)
     price = effective_price_kopeks(db, client, kind)
+    explicit_price = _explicit_effective_price_kopeks(db, client, kind)
     return {
         "kind": kind,
         "label": billing_kind_label(kind),
         "price_kopeks": price,
         "price_rub": round(price / 100, 2),
-        "source": "client_override" if override else "global",
+        "source": _effective_price_source(kind, override=override, explicit_price=explicit_price),
         "enabled": price > 0,
     }
+
+
+def _effective_price_source(kind: str, *, override: ClientTariffOverride | None, explicit_price: int | None) -> str:
+    if override:
+        return "client_override"
+    if explicit_price is not None:
+        return "global"
+    if kind == KIND_SUPPLIER_SEARCH_EXTRA:
+        return "supplier_search_default_50_percent"
+    return "global"
 
 
 def _lowest_active_function_price(db: Session, client: Client) -> int:
@@ -298,6 +375,16 @@ def _has_billing_transactions(db: Session, client_id: str, kind: str) -> bool:
     )
 
 
+def _has_billing_grants(db: Session, client_id: str, kind: str) -> bool:
+    return bool(
+        db.query(BillingTransaction.id)
+        .filter(BillingTransaction.client_id == client_id)
+        .filter(BillingTransaction.kind == kind)
+        .filter(BillingTransaction.operation == OP_GRANT)
+        .first()
+    )
+
+
 def client_has_paid_grants(db: Session, client: Client | None) -> bool:
     if not client:
         return False
@@ -318,7 +405,7 @@ def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -
     for kind, count in units.items():
         if count <= 0:
             continue
-        counter = balance_counter(db, client, kind)
+        counter = _access_counter(db, client, kind)
         if counter["unlimited"]:
             continue
         if int(counter["available"] or 0) < count:
@@ -328,6 +415,17 @@ def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -
                 "Откройте «Тарифы и оплата», чтобы пополнить пакет."
             )
     return ""
+
+
+def _access_counter(db: Session, client: Client, kind: str) -> dict:
+    if kind == KIND_SUPPLIER_SEARCH_EXTRA and _supplier_search_extra_uses_supplier_access(db, client):
+        supplier_counter = balance_counter(db, client, KIND_SUPPLIER_SEARCH)
+        extra_counter = balance_counter(db, client, KIND_SUPPLIER_SEARCH_EXTRA)
+        counter = _supplier_search_extra_fallback_counter(supplier_counter, extra_counter)
+        counter["kind"] = KIND_SUPPLIER_SEARCH_EXTRA
+        counter["label"] = billing_kind_label(KIND_SUPPLIER_SEARCH_EXTRA)
+        return counter
+    return balance_counter(db, client, kind)
 
 
 def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_count: int = 1) -> None:
@@ -370,12 +468,21 @@ def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: i
     amount = price * max(0, int(count or 0))
     if amount <= 0:
         return 0
-    if _kind_money_available_kopeks(db, client.id, kind) < amount:
+    if _kind_money_available_for_reservation(db, client, kind) < amount:
         return 0
     available_total = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
     if available_total < amount:
         return 0
     return amount
+
+
+def _kind_money_available_for_reservation(db: Session, client: Client, kind: str) -> int:
+    if kind == KIND_SUPPLIER_SEARCH_EXTRA and _supplier_search_extra_uses_supplier_access(db, client):
+        return max(
+            _kind_money_available_kopeks(db, client.id, KIND_SUPPLIER_SEARCH_EXTRA),
+            _kind_money_available_kopeks(db, client.id, KIND_SUPPLIER_SEARCH),
+        )
+    return _kind_money_available_kopeks(db, client.id, kind)
 
 
 def _kind_money_available_kopeks(db: Session, client_id: str, kind: str) -> int:

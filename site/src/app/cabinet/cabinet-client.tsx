@@ -290,7 +290,7 @@ function extraSupplierPriceOrAccessValue(balance?: SessionPayload["balance"]) {
     return formatRubles(balance.supplier_search_extra.price_kopeks);
   }
   if (balance?.supplier_search?.price_kopeks) {
-    return formatRubles(balance.supplier_search.price_kopeks);
+    return formatRubles(Math.round(balance.supplier_search.price_kopeks * 0.5));
   }
   return accessValue(balance?.supplier_search_extra);
 }
@@ -1415,7 +1415,7 @@ export function CabinetClient() {
                 title="Добор поставщиков"
                 tariffs={session?.tariff_groups?.supplier_search_extra || []}
                 fallbackLabel="1 добор поставщиков"
-                fallbackPriceKopeks={session?.balance?.supplier_search_extra?.price_kopeks || session?.balance?.supplier_search?.price_kopeks || 0}
+                fallbackPriceKopeks={session?.balance?.supplier_search_extra?.price_kopeks || Math.round((session?.balance?.supplier_search?.price_kopeks || 0) * 0.5)}
               />
             </div>
             <div className="contact-actions">

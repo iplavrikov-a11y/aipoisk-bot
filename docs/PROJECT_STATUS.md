@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-07-06
+Date: 2026-07-08
 
 ## Current Production State
 
@@ -89,6 +89,14 @@ The active paid model is money balance plus effective per-function prices:
 - supplier search;
 - procurement-document analysis;
 - additional supplier search (`Найти ещё` / добор поставщиков).
+
+Additional supplier search has its own effective price. If the owner configures
+an active global `Добор поставщиков` package or a per-customer `Добор` override,
+that explicit price is used. Otherwise the default additional-search price is
+50% of the customer's effective supplier-search price. For legacy customers
+without separate additional-search grants, dobор availability is displayed from
+the supplier-search access balance while dobор reservations and charges remain
+separate billing rows.
 
 Mode accounting:
 

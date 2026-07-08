@@ -41,7 +41,7 @@ from app.main import (
     download_customer_quote_request_docx_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
-from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
+from app.models import BillingTransaction, Client, ClientTariffOverride, Job, JobFile, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
 from app.schemas import WebEmailChangeRequest, WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
 from app.web_auth import (
     CSRF_HEADER,
@@ -493,6 +493,81 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["balance"]["procurement_report"]["available"], 499)
         finally:
             db.close()
+
+    def test_customer_session_uses_supplier_fallback_for_extra_search_balance(self) -> None:
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1))
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=9_940_000,
+            )
+            db.add_all([
+                client,
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Поиск", units=1, price_kopeks=10_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra-fallback@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+
+            payload = customer_session_payload(db, user)
+            extra = payload["balance"][KIND_SUPPLIER_SEARCH_EXTRA]
+        finally:
+            db.close()
+
+        self.assertEqual(extra["source"], "supplier_search_access_fallback")
+        self.assertEqual(extra["available"], 1000)
+        self.assertEqual(extra["price_kopeks"], 5_000)
+        self.assertFalse(extra["low"])
+
+    def test_customer_session_keeps_individual_extra_supplier_price(self) -> None:
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1))
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                monthly_supplier_search_limit=10,
+                monthly_procurement_report_limit=10,
+                money_balance_kopeks=84_000,
+            )
+            db.add_all([
+                client,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                ClientTariffOverride(client_id=client.id, kind=KIND_PROCUREMENT_REPORT, price_kopeks=6_000),
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH_EXTRA, price_kopeks=3_000),
+            ])
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra-individual@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+
+            payload = customer_session_payload(db, user)
+            extra = payload["balance"][KIND_SUPPLIER_SEARCH_EXTRA]
+            extra_price = payload["balance"]["effective_prices"][KIND_SUPPLIER_SEARCH_EXTRA]
+        finally:
+            db.close()
+
+        self.assertEqual(extra["source"], "supplier_search_access_fallback")
+        self.assertEqual(extra["available"], 10)
+        self.assertEqual(extra["price_kopeks"], 3_000)
+        self.assertEqual(extra_price["price_kopeks"], 3_000)
+        self.assertEqual(extra_price["source"], "client_override")
 
     def test_password_reset_request_and_admin_completion(self) -> None:
         db = self.Session()

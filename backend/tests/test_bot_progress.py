@@ -34,6 +34,7 @@ from app.bot import (
     OWNER_ALERT_STATUSES,
     PendingBatch,
     _add_pending_sources,
+    _cabinet_text,
     _contacts_text,
     _edit_or_send_status,
     _find_more_suppliers_confirmation_text,
@@ -76,7 +77,7 @@ from app.bot import (
     watch_job_progress,
 )
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
-from app.models import SystemSettings, TariffPackage
+from app.models import Client, SystemSettings, TariffPackage
 
 
 class BotProgressFormattingTests(unittest.TestCase):
@@ -299,11 +300,49 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("Поставщики 20", text)
         self.assertIn("1 500 ₽", text)
+        self.assertIn("1 добор поставщиков", text)
+        self.assertIn("50% от цены поиска поставщиков", text)
         self.assertIn(BOT_PAYMENT_INSTRUCTIONS, text)
         self.assertNotIn("MAX", text)
         self.assertIn(INDIVIDUAL_TERMS_NOTE, text)
         self.assertIn(AI_HELP_NOTE, text)
         self.assertNotIn("Как купить пакет:\n🧾 Чтобы купить пакет:", text)
+
+    def test_cabinet_text_does_not_warn_about_extra_supplier_fallback_balance(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            settings = SystemSettings(id=1)
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=9_940_000,
+            )
+            db.add_all([
+                settings,
+                client,
+                TariffPackage(kind="supplier_search", name="Поиск", units=1, price_kopeks=10_000, is_active=True),
+                TariffPackage(kind="procurement_report", name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            db.commit()
+
+            text = _cabinet_text(db, client, settings)
+        finally:
+            db.close()
+
+        self.assertIn("Баланс: 99 400 ₽", text)
+        self.assertIn("Добор поставщиков: 50 ₽", text)
+        self.assertNotIn("Добор поставщиков: доступно 0", text)
+        self.assertNotIn("Заканчивается баланс: Добор поставщиков", text)
 
     def test_tariffs_text_hides_max_from_custom_bot_payment_instruction(self) -> None:
         from sqlalchemy import create_engine

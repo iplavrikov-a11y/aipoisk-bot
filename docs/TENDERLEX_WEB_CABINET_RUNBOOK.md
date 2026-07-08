@@ -38,7 +38,9 @@
   or separate owner diagnostic alerts into the customer chat.
 - Finished supplier-search jobs can offer `Найти ещё`; the customer must confirm
   that the additional-supplier-search price will be charged before the extra
-  search starts.
+  search starts. By default this price is 50% of the customer's effective
+  supplier-search price; a global dobор package or per-customer `Добор` override
+  replaces the default.
 - If a job is cancelled from Telegram, the website cabinet must show the same
   terminal `отменено` state after polling. The customer job API and cabinet
   fetches are no-store, and active job polling is intentionally more frequent
@@ -67,7 +69,8 @@ Notes:
   job. A zero reserve is intentionally hidden.
 - Per-client prices for `Поиск`, `Анализ`, and `Добор` are editable in the
   collapsed `Индивидуальные цены` block under `Настройки клиента`. The global
-  package list remains in `Тарифы`.
+  package list remains in `Тарифы`. If `Добор` is not configured explicitly, the
+  system displays and charges 50% of the effective `Поиск` price.
 - Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
 - Web logins and Telegram accounts are separate access types inside one
   customer card. Removing a web login must remove only that website access and
