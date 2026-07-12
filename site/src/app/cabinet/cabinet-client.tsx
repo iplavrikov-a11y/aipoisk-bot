@@ -1252,7 +1252,6 @@ export function CabinetClient() {
           <div className="scenario-grid" role="radiogroup" aria-label="Сценарий">
             {scenarioOptions.map((option) => {
               const optionActive = scenario === option.id;
-              const optionUsesSupplierPolicy = option.id !== "procurement_report";
               return (
                 <article key={option.id} className={`scenario-card ${optionActive ? "active" : ""}`}>
                   <button
@@ -1265,30 +1264,34 @@ export function CabinetClient() {
                     <strong>{option.label}</strong>
                     <span>{option.description}</span>
                   </button>
-                  {optionActive && optionUsesSupplierPolicy ? (
-                    <div className="scenario-policy" role="radiogroup" aria-label="Режим поиска поставщиков">
-                      <span>Режим поиска</span>
-                      <div>
-                        {supplierPolicyOptions.map((policy) => (
-                          <label key={policy.id} className={supplierSearchPolicy === policy.id ? "active" : ""}>
-                            <input
-                              type="radio"
-                              name="supplier_search_policy"
-                              value={policy.id}
-                              checked={supplierSearchPolicy === policy.id}
-                              onChange={() => setSupplierSearchPolicy(policy.id)}
-                            />
-                            <strong>{policy.label}</strong>
-                            <small>{policy.description}</small>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
                 </article>
               );
             })}
           </div>
+
+          {selectedMode !== "procurement_report" ? (
+            <div className="search-mode-panel">
+              <div className="search-mode-copy">
+                <strong>Режим поиска</strong>
+                <span>Выберите, как учитывать реестр при подборе поставщиков</span>
+              </div>
+              <div className="search-mode-buttons" role="radiogroup" aria-label="Режим поиска поставщиков">
+                {supplierPolicyOptions.map((policy) => (
+                  <label key={policy.id} className={supplierSearchPolicy === policy.id ? "active" : ""}>
+                    <input
+                      type="radio"
+                      name="supplier_search_policy"
+                      value={policy.id}
+                      checked={supplierSearchPolicy === policy.id}
+                      onChange={() => setSupplierSearchPolicy(policy.id)}
+                    />
+                    <strong>{policy.label}</strong>
+                    <small>{policy.description}</small>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <label
             className={`upload-zone ${dragActive ? "drag-active" : ""}`}
