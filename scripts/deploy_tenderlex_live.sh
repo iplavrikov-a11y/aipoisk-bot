@@ -13,10 +13,19 @@ job_gate_in=""
 job_gate_out=""
 job_gate_open=0
 services_touched=0
+deploy_scope="${AIPOISK_DEPLOY_SCOPE:-full}"
 
 log() {
   printf '[deploy] %s\n' "$*"
 }
+
+case "$deploy_scope" in
+  full|backend) ;;
+  *)
+    log "unknown AIPOISK_DEPLOY_SCOPE: $deploy_scope (expected full or backend)" >&2
+    exit 2
+    ;;
+esac
 
 curl_get() {
   curl -fsS --connect-timeout 3 --max-time 20 "$@"
@@ -124,11 +133,16 @@ cd "$ROOT_DIR"
 log "running backend tests"
 PYTHONPATH="$BACKEND_DIR" pytest backend/tests -q
 
-log "building admin frontend"
-(cd "$FRONTEND_DIR" && npm run build)
+if [[ "$deploy_scope" == "full" ]]; then
+  log "building admin frontend"
+  (cd "$FRONTEND_DIR" && npm run build)
 
-log "typechecking and building public site"
-(cd "$SITE_DIR" && npm run typecheck && npm run build)
+  log "typechecking and building public site"
+  (cd "$SITE_DIR" && npm run typecheck && npm run build)
+else
+  # A backend-only deploy must not publish unrelated, uncommitted web assets.
+  log "backend scope: leaving admin and site artifacts unchanged"
+fi
 
 if [[ -f "$DB_PATH" ]]; then
   mkdir -p "$BACKUP_DIR"
@@ -183,7 +197,9 @@ systemctl start \
   aipoisk-worker.service \
   aipoisk-bot.service
 release_job_restart_gate COMMIT
-systemctl restart tenderlex-site.service
+if [[ "$deploy_scope" == "full" ]]; then
+  systemctl restart tenderlex-site.service
+fi
 
 log "checking service state"
 systemctl is-active --quiet tender-source-service.service
@@ -206,9 +222,11 @@ wait_for_url http://127.0.0.1:3093/cabinet 30 1
 curl_head http://127.0.0.1:3093/ >/dev/null
 curl_head http://127.0.0.1:3093/cabinet >/dev/null
 
-log "checking metrika placement"
-[[ "$(curl_get http://127.0.0.1:3093/cabinet | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" == "0" ]]
-[[ "$(curl_get http://127.0.0.1:3093/ | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" != "0" ]]
+if [[ "$deploy_scope" == "full" ]]; then
+  log "checking metrika placement"
+  [[ "$(curl_get http://127.0.0.1:3093/cabinet | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" == "0" ]]
+  [[ "$(curl_get http://127.0.0.1:3093/ | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" != "0" ]]
+fi
 
 log "checking procurement resource slice placement"
 for service in \
