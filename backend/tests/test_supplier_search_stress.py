@@ -931,7 +931,9 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_ai_rerank_keeps_a_bounded_pool_for_final_verification(self) -> None:
         original_call_llm = supplier_search.call_llm
+        original_verify = supplier_search.verify_candidate
         calls = 0
+        verified_domains: list[str] = []
 
         async def fake_call_llm(*args, **kwargs) -> str:
             nonlocal calls
@@ -945,11 +947,27 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
             }
             """
 
+        async def fake_verify(settings, candidate, context, **kwargs):
+            verified_domains.append(candidate.domain)
+            return {
+                "company_name": candidate.domain,
+                "site": candidate.url,
+                "evidence_url": candidate.url,
+                "contact_url": candidate.url,
+                "phone": "+7 999 111 22 33",
+                "email": "sales@example.com",
+                "evidence_status": "verified" if candidate.domain == "first.example" else "rejected",
+                "match_level": "exact",
+                "source": candidate.source,
+                "search_query": candidate.query,
+            }
+
         candidates = [
             Candidate(url="https://first.example/catalog", domain="first.example", source="yandex"),
             Candidate(url="https://second.example/catalog", domain="second.example", source="yandex"),
         ]
         supplier_search.call_llm = fake_call_llm
+        supplier_search.verify_candidate = fake_verify
         try:
             rerank = await supplier_search.ai_rerank_candidates(
                 SimpleNamespace(has_active_ai_provider=True),
@@ -957,8 +975,15 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
                 candidates,
                 target=1,
             )
+            accepted, reviewed, _ = await supplier_search._review_candidates_until_target(
+                SimpleNamespace(has_active_ai_provider=True),
+                rerank.candidates,
+                "ТЗ",
+                target=1,
+            )
         finally:
             supplier_search.call_llm = original_call_llm
+            supplier_search.verify_candidate = original_verify
 
         self.assertEqual(calls, 2)
         self.assertEqual(
@@ -967,6 +992,9 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rerank.meta["status"], "fallback_after_empty_ai_selection")
         self.assertIn("обязательную финальную проверку", rerank.candidates[0].ai_rank_reason)
+        self.assertEqual(verified_domains, ["first.example", "second.example"])
+        self.assertEqual(len(reviewed), 2)
+        self.assertEqual([result["company_name"] for result in accepted], ["first.example"])
 
     async def test_memory_efficiency_with_large_candidate_set(self) -> None:
         """Test that large candidate sets don't cause memory issues."""
