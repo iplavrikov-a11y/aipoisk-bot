@@ -14,6 +14,10 @@ job_gate_out=""
 job_gate_open=0
 services_touched=0
 deploy_scope="${AIPOISK_DEPLOY_SCOPE:-full}"
+site_release_root=""
+site_release_dir=""
+site_next_backup=""
+site_next_promoted=0
 
 log() {
   printf '[deploy] %s\n' "$*"
@@ -68,11 +72,35 @@ release_job_restart_gate() {
   job_gate_open=0
 }
 
+cleanup_site_release() {
+  if [[ -n "$site_release_root" && "$site_release_root" == "$ROOT_DIR"/.tenderlex-site-release-* && -d "$site_release_root" ]]; then
+    rm -rf -- "$site_release_root"
+  fi
+}
+
+restore_previous_site_build() {
+  if [[ "$site_next_promoted" != "1" || -z "$site_next_backup" || ! -d "$site_next_backup" ]]; then
+    return 0
+  fi
+
+  log "restoring the previous TenderLex site build"
+  systemctl stop tenderlex-site.service || true
+  if [[ -d "$SITE_DIR/.next" ]]; then
+    mv "$SITE_DIR/.next" "$site_release_root/.next.failed-after-promotion" || true
+  fi
+  mv "$site_next_backup" "$SITE_DIR/.next"
+  site_next_promoted=0
+}
+
 on_exit() {
   local exit_code=$?
   trap - EXIT
   set +e
   release_job_restart_gate ROLLBACK
+  if [[ "$exit_code" != "0" ]]; then
+    restore_previous_site_build
+  fi
+  cleanup_site_release
   if [[ "$exit_code" != "0" && "$services_touched" == "1" ]]; then
     log "restoring TenderLex services after deploy interruption"
     systemctl start \
@@ -122,6 +150,56 @@ site_systemd_env() {
   return 0
 }
 
+validate_site_release() {
+  local next_dir="$1"
+  local required_path
+  local -a required_paths=(
+    "$next_dir/BUILD_ID"
+    "$next_dir/routes-manifest.json"
+    "$next_dir/prerender-manifest.json"
+    "$next_dir/standalone/server.js"
+    "$next_dir/standalone/.next/server/app/cabinet/page_client-reference-manifest.js"
+    "$next_dir/standalone/.next/server/app/_not-found/page_client-reference-manifest.js"
+  )
+
+  for required_path in "${required_paths[@]}"; do
+    if [[ ! -s "$required_path" ]]; then
+      log "site release is incomplete: missing $required_path" >&2
+      return 1
+    fi
+  done
+}
+
+build_site_release() {
+  site_release_root="$(mktemp -d "$ROOT_DIR/.tenderlex-site-release-$STAMP.XXXXXX")"
+  site_release_dir="$site_release_root/site"
+  mkdir -p "$site_release_dir"
+
+  # Build away from the live standalone tree so an interrupted Next build cannot break requests in flight.
+  tar -C "$SITE_DIR" --exclude='./.next*' --exclude='./node_modules' -cf - . | tar -C "$site_release_dir" -xf -
+  cp -al "$SITE_DIR/node_modules" "$site_release_dir/node_modules"
+
+  (cd "$site_release_dir" && npm run typecheck && npm run build)
+  validate_site_release "$site_release_dir/.next"
+}
+
+promote_site_release() {
+  site_next_backup="$SITE_DIR/.next.rollback-$STAMP"
+  if [[ ! -d "$SITE_DIR/.next" ]]; then
+    log "live site build is missing: $SITE_DIR/.next" >&2
+    return 1
+  fi
+  if [[ -e "$site_next_backup" ]]; then
+    log "site rollback path already exists: $site_next_backup" >&2
+    return 1
+  fi
+
+  mv "$SITE_DIR/.next" "$site_next_backup"
+  site_next_promoted=1
+  mv "$site_release_dir/.next" "$SITE_DIR/.next"
+  log "site build promoted; previous build retained at $site_next_backup"
+}
+
 export AIPOISK_SITE_API_BASE_URL="${AIPOISK_SITE_API_BASE_URL:-http://127.0.0.1:8088}"
 export NEXT_PUBLIC_SITE_URL="${NEXT_PUBLIC_SITE_URL:-https://tenderlex.ru}"
 export TENDERLEX_YANDEX_METRIKA_ID="${TENDERLEX_YANDEX_METRIKA_ID:-$(site_systemd_env TENDERLEX_YANDEX_METRIKA_ID)}"
@@ -137,8 +215,8 @@ if [[ "$deploy_scope" == "full" ]]; then
   log "building admin frontend"
   (cd "$FRONTEND_DIR" && npm run build)
 
-  log "typechecking and building public site"
-  (cd "$SITE_DIR" && npm run typecheck && npm run build)
+  log "building isolated public site release"
+  build_site_release
 else
   # A backend-only deploy must not publish unrelated, uncommitted web assets.
   log "backend scope: leaving admin and site artifacts unchanged"
@@ -198,6 +276,7 @@ systemctl start \
   aipoisk-bot.service
 release_job_restart_gate COMMIT
 if [[ "$deploy_scope" == "full" ]]; then
+  promote_site_release
   systemctl restart tenderlex-site.service
 fi
 
@@ -240,4 +319,5 @@ for service in \
 done
 
 services_touched=0
+cleanup_site_release
 log "live deploy verified"
