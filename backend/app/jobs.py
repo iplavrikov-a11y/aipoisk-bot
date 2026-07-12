@@ -38,7 +38,12 @@ from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
 from .report_builder import write_evidence, write_procurement_docx, write_quote_request_docx, write_supplier_xlsx, zip_paths
-from .supplier_search import discover_suppliers, extract_supplier_search_context, minprom_registry_preflight_error
+from .supplier_search import (
+    discover_suppliers,
+    extract_supplier_search_context,
+    minprom_registry_preflight_error,
+    supplier_search_job_context,
+)
 from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
 
 _RUNNING: set[str] = set()
@@ -853,16 +858,17 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         _set_job(db, job, status="running", progress=progress, message=message)
 
     excluded_suppliers = _load_supplier_exclusions(job)
-    accepted, evidence = asyncio.run(
-        discover_suppliers(
-            settings,
-            context,
-            job.target_suppliers,
-            progress_callback=progress_callback,
-            excluded_suppliers=excluded_suppliers,
-            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+    with supplier_search_job_context(job.id):
+        accepted, evidence = asyncio.run(
+            discover_suppliers(
+                settings,
+                context,
+                job.target_suppliers,
+                progress_callback=progress_callback,
+                excluded_suppliers=excluded_suppliers,
+                supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            )
         )
-    )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
     _persist_supplier_rows(db, job, accepted)
@@ -1031,15 +1037,16 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         mapped_progress = 45 + int(max(0, min(100, progress)) * 0.5)
         _set_job(db, job, status="running", progress=mapped_progress, message=message)
 
-    accepted, supplier_evidence = asyncio.run(
-        discover_suppliers(
-            settings,
-            supplier_context,
-            job.target_suppliers,
-            progress_callback=progress_callback,
-            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+    with supplier_search_job_context(job.id):
+        accepted, supplier_evidence = asyncio.run(
+            discover_suppliers(
+                settings,
+                supplier_context,
+                job.target_suppliers,
+                progress_callback=progress_callback,
+                supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            )
         )
-    )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=96, message="Сохраняю анализ и поставщиков")
     _persist_supplier_rows(db, job, accepted)

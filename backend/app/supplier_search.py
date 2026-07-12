@@ -2,25 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from datetime import datetime, timezone
 import json
+import logging
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, replace
 from html import unescape
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .ai import call_llm, parse_json_object
+from .config import config
 from .models import SystemSettings
+
+logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.I)
 PHONE_RE = re.compile(r"(?:\+7|8)\s*[\(\- ]?\d{3}[\)\- ]?\s*\d{3}[\- ]?\d{2}[\- ]?\d{2}")
@@ -1374,6 +1381,26 @@ async def discover_suppliers(
     excluded_suppliers: list[dict] | None = None,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
 ) -> tuple[list[dict], dict]:
+    async with _browser_pool_session():
+        return await _discover_suppliers_impl(
+            settings,
+            context,
+            target,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=supplier_search_policy,
+        )
+
+
+async def _discover_suppliers_impl(
+    settings: SystemSettings,
+    context: str,
+    target: int,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    excluded_suppliers: list[dict] | None = None,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
     excluded_domains, excluded_company_keys = _supplier_exclusion_sets(excluded_suppliers)
@@ -2561,6 +2588,83 @@ def _exception_summary(exc: Exception | None) -> str:
     return f"{type(exc).__name__}: {message}"[:500]
 
 
+class _SupplierVerificationLimiter:
+    """Process-wide capacity guard that is safe across worker threads/event loops."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def _try_acquire(self, limit: int) -> bool:
+        with self._lock:
+            if self._active >= limit:
+                return False
+            self._active += 1
+            return True
+
+    async def acquire(self, limit_provider: Callable[[], int]) -> None:
+        while not self._try_acquire(limit_provider()):
+            await asyncio.sleep(0.05)
+
+    def release(self) -> None:
+        with self._lock:
+            if self._active <= 0:
+                raise RuntimeError("supplier verification limiter released without acquire")
+            self._active -= 1
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            if self._active:
+                raise RuntimeError("cannot reset an active supplier verification limiter")
+            self._active = 0
+
+
+_supplier_verification_limiter = _SupplierVerificationLimiter()
+
+
+def _supplier_verification_limit() -> int:
+    try:
+        configured = int(config.supplier_verification_concurrency)
+    except (TypeError, ValueError):
+        configured = 8
+    return max(1, min(32, configured))
+
+
+def _supplier_verification_timeout_seconds() -> float:
+    return max(
+        1.0,
+        min(600.0, float(config.supplier_verification_timeout_seconds or 150.0)),
+    )
+
+
+async def _verify_candidate_with_limits(
+    settings: SystemSettings,
+    candidate: Candidate,
+    context: str,
+    *,
+    profile: ProcurementProfile | None = None,
+    registry_context: MinpromRegistryContext | None = None,
+) -> dict | None:
+    await _supplier_verification_limiter.acquire(_supplier_verification_limit)
+    try:
+        timeout = _supplier_verification_timeout_seconds()
+        try:
+            return await asyncio.wait_for(
+                verify_candidate(
+                    settings,
+                    candidate,
+                    context,
+                    profile=profile,
+                    registry_context=registry_context,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return None
+    finally:
+        _supplier_verification_limiter.release()
+
+
 async def _review_candidates_until_target(
     settings: SystemSettings,
     candidates: list[Candidate],
@@ -2578,7 +2682,13 @@ async def _review_candidates_until_target(
     stopped_after = 0
 
     async def review(index: int, candidate: Candidate) -> dict | None:
-        result = await verify_candidate(settings, candidate, context, profile=profile, registry_context=registry_context)
+        result = await _verify_candidate_with_limits(
+            settings,
+            candidate,
+            context,
+            profile=profile,
+            registry_context=registry_context,
+        )
         if result:
             result["_source_rank"] = index
         return result
@@ -2610,11 +2720,16 @@ async def _review_candidates_until_target(
             asyncio.create_task(review(batch_start + offset, candidate))
             for offset, candidate in enumerate(batch)
         ]
-        for task in asyncio.as_completed(tasks):
-            result = await task
-            if result:
-                reviewed.append(result)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            for task in asyncio.as_completed(tasks):
+                result = await task
+                if result:
+                    reviewed.append(result)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         stopped_after = batch_start + len(batch)
         accepted = _accepted_supplier_results(
             reviewed,
@@ -3293,7 +3408,11 @@ async def verify_candidate(
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
 ) -> dict | None:
-    pages = await collect_pages(candidate.url)
+    source_token = _supplier_search_source_context.set(str(candidate.source or "unknown")[:80])
+    try:
+        pages = await collect_pages(candidate.url)
+    finally:
+        _supplier_search_source_context.reset(source_token)
     if not pages:
         return None
     combined_text = "\n\n".join(page["text"] for page in pages)
@@ -3473,25 +3592,44 @@ def html_text_to_page(html_text: str, url: str) -> dict | None:
     return {"url": str(url), "html": html_text, "text": text[:80000]}
 
 
-async def fetch_page_with_browser(url: str) -> dict | None:
-    """Fetch a page using Playwright browser. Uses a shared browser pool for efficiency."""
+def _browser_log_url(url: str) -> str:
     try:
-        from playwright.async_api import async_playwright  # type: ignore
-    except ImportError:
-        return None
+        parsed = urlsplit(str(url))
+    except ValueError:
+        return "<invalid-url>"
+    if not parsed.scheme or not parsed.netloc:
+        return "<invalid-url>"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:500]
+
+
+def _browser_log_error(exc: BaseException) -> str:
+    summary = _exception_summary(exc)
+    summary = URL_RE.sub("<url>", summary)
+    return re.sub(r"\s+", " ", summary).strip()[:300]
+
+
+async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
+    """Fetch a page using the current supplier-search browser pool."""
     try:
-        # Use a shared browser pool to avoid launching a new Chromium for every candidate
-        browser_pool = _get_browser_pool()
-        async with browser_pool:
-            browser = await browser_pool.get_browser()
-            page = await browser.new_page(user_agent="TenderLex supplier verifier")
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=18000)
-                html_text = await page.content()
-                final_url = page.url
-            finally:
-                await page.close()
-    except Exception:
+        async with _browser_pool_session():
+            browser_pool = _get_browser_pool()
+            async with browser_pool:
+                browser = await browser_pool.get_browser()
+                page = await browser.new_page(user_agent="TenderLex supplier verifier")
+                try:
+                    await page.goto(url, wait_until="networkidle", timeout=18000)
+                    html_text = await page.content()
+                    final_url = page.url
+                finally:
+                    await page.close()
+    except Exception as exc:
+        logger.warning(
+            "supplier_browser_fetch_failed job_id=%s source=%s url=%s error=%s",
+            _supplier_search_job_id_context.get(),
+            str(source or _supplier_search_source_context.get())[:80],
+            _browser_log_url(url),
+            _browser_log_error(exc),
+        )
         return None
     return html_text_to_page(html_text[:300000], final_url)
 
@@ -3507,11 +3645,20 @@ class _BrowserPool:
 
     async def get_browser(self):
         """Get or create the shared browser instance."""
-        if self._browser is None or not self._browser.is_connected():
+        async with self._lock:
+            if self._browser is not None and self._browser.is_connected():
+                return self._browser
+            await self._close_unlocked()
             from playwright.async_api import async_playwright  # type: ignore
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-        return self._browser
+            playwright = await async_playwright().start()
+            try:
+                browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+            except BaseException:
+                await playwright.stop()
+                raise
+            self._playwright = playwright
+            self._browser = browser
+            return browser
 
     async def __aenter__(self):
         await self._semaphore.acquire()
@@ -3522,6 +3669,10 @@ class _BrowserPool:
 
     async def close(self) -> None:
         """Close the browser and playwright instances."""
+        async with self._lock:
+            await self._close_unlocked()
+
+    async def _close_unlocked(self) -> None:
         if self._browser:
             try:
                 await self._browser.close()
@@ -3536,15 +3687,53 @@ class _BrowserPool:
             self._playwright = None
 
 
-_browser_pool: _BrowserPool | None = None
+_browser_pool_context: ContextVar[_BrowserPool | None] = ContextVar(
+    "supplier_search_browser_pool",
+    default=None,
+)
+_supplier_search_job_id_context: ContextVar[str] = ContextVar(
+    "supplier_search_job_id",
+    default="unknown",
+)
+_supplier_search_source_context: ContextVar[str] = ContextVar(
+    "supplier_search_source",
+    default="unknown",
+)
+
+
+@contextmanager
+def supplier_search_job_context(job_id: str):
+    token = _supplier_search_job_id_context.set(str(job_id or "unknown")[:64])
+    try:
+        yield
+    finally:
+        _supplier_search_job_id_context.reset(token)
+
+
+@asynccontextmanager
+async def _browser_pool_session():
+    existing = _browser_pool_context.get()
+    if existing is not None:
+        yield existing
+        return
+
+    pool = _BrowserPool()
+    token = _browser_pool_context.set(pool)
+    try:
+        yield pool
+    finally:
+        try:
+            await pool.close()
+        finally:
+            _browser_pool_context.reset(token)
 
 
 def _get_browser_pool() -> _BrowserPool:
-    """Get or create the global browser pool."""
-    global _browser_pool
-    if _browser_pool is None:
-        _browser_pool = _BrowserPool()
-    return _browser_pool
+    """Return the browser pool bound to the current supplier-search job."""
+    pool = _browser_pool_context.get()
+    if pool is None:
+        raise RuntimeError("browser pool is not active")
+    return pool
 
 
 def _pages_have_contact(pages: list[dict]) -> bool:
