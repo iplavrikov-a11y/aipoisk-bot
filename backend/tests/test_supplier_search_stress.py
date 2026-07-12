@@ -929,6 +929,45 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         finally:
             supplier_search.verify_candidate = original_verify
 
+    async def test_empty_ai_rerank_keeps_a_bounded_pool_for_final_verification(self) -> None:
+        original_call_llm = supplier_search.call_llm
+        calls = 0
+
+        async def fake_call_llm(*args, **kwargs) -> str:
+            nonlocal calls
+            calls += 1
+            return """
+            {
+              "ranked": [
+                {"id": "0", "keep": false, "confidence": 90, "reason": "слишком строгий предфильтр"},
+                {"id": "1", "keep": false, "confidence": 80, "reason": "слишком строгий предфильтр"}
+              ]
+            }
+            """
+
+        candidates = [
+            Candidate(url="https://first.example/catalog", domain="first.example", source="yandex"),
+            Candidate(url="https://second.example/catalog", domain="second.example", source="yandex"),
+        ]
+        supplier_search.call_llm = fake_call_llm
+        try:
+            rerank = await supplier_search.ai_rerank_candidates(
+                SimpleNamespace(has_active_ai_provider=True),
+                ProcurementProfile(summary="ТЗ", items=(ProcurementItem(id="item-1", name="Товар"),)),
+                candidates,
+                target=1,
+            )
+        finally:
+            supplier_search.call_llm = original_call_llm
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(
+            [candidate.domain for candidate in rerank.candidates],
+            ["first.example", "second.example"],
+        )
+        self.assertEqual(rerank.meta["status"], "fallback_after_empty_ai_selection")
+        self.assertIn("обязательную финальную проверку", rerank.candidates[0].ai_rank_reason)
+
     async def test_memory_efficiency_with_large_candidate_set(self) -> None:
         """Test that large candidate sets don't cause memory issues."""
         original_verify = supplier_search.verify_candidate

@@ -2453,6 +2453,32 @@ async def ai_rerank_candidates(
                 continue
             break
     detail = _exception_summary(last_error)
+    if _is_empty_rerank_rejection(last_error):
+        fallback_candidates = _fallback_candidates_after_empty_rerank(
+            candidates[:limit],
+            desired_review_count,
+        )
+        if fallback_candidates:
+            logger.warning(
+                "supplier_candidate_reranker_fallback job_id=%s input_count=%s selected_count=%s sources=%s error=%s",
+                _supplier_search_job_id_context.get(),
+                len(candidates),
+                len(fallback_candidates),
+                _source_counts(fallback_candidates),
+                detail,
+            )
+            return CandidateRerank(
+                fallback_candidates,
+                {
+                    "status": "fallback_after_empty_ai_selection",
+                    "attempts": 2,
+                    "input_count": len(candidates),
+                    "sent_to_ai": len(payload_candidates),
+                    "desired_review_count": desired_review_count,
+                    "kept_count": len(fallback_candidates),
+                    "fallback_reason": detail,
+                },
+            )
     raise RuntimeError(f"AI candidate reranking failed after retry: {detail}") from last_error
 
 
@@ -2460,6 +2486,35 @@ def _desired_candidate_review_count(target: int, candidate_count: int) -> int:
     if candidate_count <= 0:
         return 0
     return min(candidate_count, max(target * 5, target + 20, 30))
+
+
+def _is_empty_rerank_rejection(error: Exception | None) -> bool:
+    """Only recover when AI deliberately rejected every prefilter candidate."""
+    return bool(error and "reranker did not keep any candidates" in str(error).lower())
+
+
+def _fallback_candidates_after_empty_rerank(
+    candidates: list[Candidate],
+    desired_review_count: int,
+) -> list[Candidate]:
+    """Keep a bounded local pool; final evidence verification still decides acceptance."""
+    fallback: list[Candidate] = []
+    seen_domains: set[str] = set()
+    for candidate in candidates:
+        domain = base_domain(candidate.domain or candidate.url)
+        if not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        fallback.append(
+            replace(
+                candidate,
+                ai_rank_confidence=0,
+                ai_rank_reason="ИИ-предфильтр не выбрал кандидата; направлен на обязательную финальную проверку сайта.",
+            )
+        )
+        if len(fallback) >= desired_review_count:
+            break
+    return fallback
 
 
 def _ranked_candidates_from_ai(
