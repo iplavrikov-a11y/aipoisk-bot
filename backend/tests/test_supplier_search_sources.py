@@ -48,10 +48,10 @@ class SearchSourceTests(unittest.TestCase):
         self.assertIn("sales@supplier.example", page["text"])
         self.assertIn("+79991112233", page["text"])
 
-    def test_provider_order_accepts_custom_supported_order(self) -> None:
+    def test_provider_order_keeps_yandex_primary_when_custom_fallbacks_are_configured(self) -> None:
         settings = SimpleNamespace(supplier_search_provider_order="google,unknown,yandex,ddgs")
 
-        self.assertEqual(_provider_order(settings), ["google", "yandex", "ddgs"])
+        self.assertEqual(_provider_order(settings), ["yandex", "google", "ddgs"])
 
     def test_parse_yandex_xml_builds_candidates_and_filters_blocked_domains(self) -> None:
         xml = """

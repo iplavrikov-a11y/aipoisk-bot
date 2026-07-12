@@ -64,6 +64,30 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_supplier_search_result_surplus_does_not_add_billing_units(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-surplus", telegram_id="101")
+            job = Job(
+                id="job-surplus",
+                client_id="client-surplus",
+                mode="supplier_search",
+                target_suppliers=3,
+                verified_count=12,
+            )
+            db.add_all([client, job])
+            db.commit()
+
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=1, note="paid search")
+            reserve_job_units(db, client, job)
+            charge_job_reservation(db, job)
+
+            counter = balance_counter(db, client, KIND_SUPPLIER_SEARCH)
+            self.assertEqual(counter["available"], 0)
+            self.assertEqual(counter["spent"], 1)
+        finally:
+            db.close()
+
     def test_manual_grant_lifts_trial_access_for_paid_client(self) -> None:
         db = self.Session()
         try:

@@ -34,6 +34,8 @@ PHONE_RE = re.compile(r"(?:\+7|8)\s*[\(\- ]?\d{3}[\)\- ]?\s*\d{3}[\- ]?\d{2}[\- 
 URL_RE = re.compile(r"https?://[^\s<>)\"']+", re.I)
 MIN_VERIFIED_SUPPLIER_SCORE = 55
 ProgressCallback = Callable[[int, str], Awaitable[None]]
+PRIMARY_SUPPLIER_SEARCH_PROVIDER = "yandex"
+MAX_SUPPLIER_DELIVERY_TARGET = 100
 
 BLOCKED_DOMAINS = {
     "2gis.ru",
@@ -1403,6 +1405,8 @@ async def _discover_suppliers_impl(
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
+    minimum_target = max(1, min(MAX_SUPPLIER_DELIVERY_TARGET, int(target or 0)))
+    delivery_target = _supplier_delivery_target(minimum_target)
     excluded_domains, excluded_company_keys = _supplier_exclusion_sets(excluded_suppliers)
     await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
     profile = await build_procurement_profile(settings, context)
@@ -1426,7 +1430,7 @@ async def _discover_suppliers_impl(
         minprom_context = MinpromRegistryContext(requirement=minprom_requirement, status="not_required")
     registry_unavailable = policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY} and minprom_context.status == "error"
     await _emit_progress(progress_callback, 42, "Подбираю поисковые запросы")
-    general_queries = await build_supplier_queries(settings, context, target, profile=profile)
+    general_queries = await build_supplier_queries(settings, context, minimum_target, profile=profile)
     minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context)
     if registry_unavailable:
         queries = []
@@ -1434,24 +1438,30 @@ async def _discover_suppliers_impl(
         queries = minprom_supplier_queries
     else:
         queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries)
-    await _emit_progress(progress_callback, 50, f"Ищу сайты поставщиков: поисковых запросов {len(queries)}")
+    await _emit_progress(
+        progress_callback,
+        50,
+        f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {minimum_target}, целевой результат {delivery_target}",
+    )
     candidates, search_meta = await discover_candidates(
         settings,
         queries,
-        max_results=max(target * 10, 120),
+        max_results=max(delivery_target * 10, 120),
         excluded_domains=excluded_domains,
+        primary_candidate_floor=_primary_candidate_floor(delivery_target),
+        fallback_candidate_limit=_fallback_candidate_limit(delivery_target),
     )
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(target * 5, 60)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
-    rerank = await ai_rerank_candidates(settings, profile, candidates, target, registry_context=minprom_context)
+    rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
     candidates = rerank.candidates
     await _emit_progress(progress_callback, 72, f"Проверяю сайты и контакты: кандидатов {len(candidates)}")
     accepted, reviewed, review_meta = await _review_candidates_until_target(
         settings,
         candidates,
         context,
-        target,
+        delivery_target,
         profile=profile,
         registry_context=minprom_context,
         excluded_domains=excluded_domains,
@@ -1461,7 +1471,10 @@ async def _discover_suppliers_impl(
     recovery_rounds: list[dict] = []
     max_recovery_rounds = 2
     for recovery_attempt in range(max_recovery_rounds):
-        if len(accepted) >= target:
+        # The client minimum is the completion guarantee. Extra verified rows come
+        # from the first reviewed pool; do not spend another recovery pass solely
+        # to chase the optional surplus.
+        if len(accepted) >= minimum_target:
             break
         await _emit_progress(progress_callback, 92 + recovery_attempt, f"Расширяю поиск (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
         accepted_before_recovery = len(accepted)
@@ -1472,7 +1485,7 @@ async def _discover_suppliers_impl(
             queries,
             reviewed,
             accepted,
-            target,
+            minimum_target,
         )
         recovery_round = {
             "status": "empty_queries",
@@ -1485,8 +1498,10 @@ async def _discover_suppliers_impl(
                 recovery_candidates, recovery_search_meta = await discover_candidates(
                     settings,
                     recovery_queries,
-                    max_results=max(target * 8, 80),
+                    max_results=max(minimum_target * 8, 80),
                     excluded_domains=excluded_domains,
+                    primary_candidate_floor=_primary_candidate_floor(minimum_target),
+                    fallback_candidate_limit=_fallback_candidate_limit(minimum_target),
                 )
                 seen_domains = {candidate.domain for candidate in candidates}
                 seen_domains.update(excluded_domains)
@@ -1496,19 +1511,19 @@ async def _discover_suppliers_impl(
                     for candidate in recovery_candidates
                     if candidate.domain and candidate.domain not in seen_domains
                 ]
-                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(target * 5, 60)]
+                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(minimum_target * 5, 60)]
                 recovery_rerank = await ai_rerank_candidates(
                     settings,
                     profile,
                     recovery_candidates,
-                    max(1, target - len(accepted)),
+                    max(1, minimum_target - len(accepted)),
                     registry_context=minprom_context,
                 )
                 recovery_accepted, recovery_reviewed, recovery_review_meta = await _review_candidates_until_target(
                     settings,
                     recovery_rerank.candidates,
                     context,
-                    max(1, target - len(accepted)),
+                    max(1, minimum_target - len(accepted)),
                     profile=profile,
                     registry_context=minprom_context,
                     excluded_domains=excluded_domains,
@@ -1518,7 +1533,7 @@ async def _discover_suppliers_impl(
                 reviewed.extend(recovery_reviewed)
                 accepted = _accepted_supplier_results(
                     reviewed,
-                    target,
+                    minimum_target,
                     profile=profile,
                     limit_to_target=False,
                     excluded_domains=excluded_domains,
@@ -1561,7 +1576,10 @@ async def _discover_suppliers_impl(
             "supplier_candidate_verifier",
         ],
         "acceptance_policy": "Supplier rows are accepted only after AI verifier returns action=accept with verified evidence.",
-        "target": target,
+        "target": minimum_target,
+        "minimum_target": minimum_target,
+        "delivery_target": delivery_target,
+        "delivery_policy": "minimum_plus_verified_relevant_first_pass",
         "supplier_search_policy": policy,
         "registry_unavailable_no_charge": bool(registry_unavailable),
         "excluded_suppliers": {
@@ -1572,7 +1590,7 @@ async def _discover_suppliers_impl(
         "procurement_profile": _profile_to_dict(profile),
         "minprom_registry": _minprom_context_to_dict(minprom_context),
         "minprom_supplier_queries": minprom_supplier_queries,
-        "search_provider": "multi",
+        "search_provider": "yandex_primary",
         "search": search_meta,
         "candidate_rerank": rerank.meta,
         "review": review_meta,
@@ -2820,53 +2838,134 @@ def _accepted_supplier_results(
     return accepted[:target] if limit_to_target else accepted
 
 
+def _supplier_delivery_target(minimum_target: int) -> int:
+    """Return a modest verified-result goal while preserving the configured minimum."""
+    minimum = max(1, min(MAX_SUPPLIER_DELIVERY_TARGET, int(minimum_target or 0)))
+    bonus = min(10, max(2, (minimum + 2) // 3))
+    return min(MAX_SUPPLIER_DELIVERY_TARGET, minimum + bonus)
+
+
+def _primary_candidate_floor(delivery_target: int) -> int:
+    """Enough first-party candidates to keep reserve sources out of the normal path."""
+    return max(24, min(40, max(1, int(delivery_target or 0)) * 2))
+
+
+def _fallback_candidate_limit(delivery_target: int) -> int:
+    """Cap supplemental sources when Yandex already returned candidates."""
+    return max(6, min(16, (max(1, int(delivery_target or 0)) + 1) // 2))
+
+
 async def discover_candidates(
     settings: SystemSettings,
     queries: list[str],
     max_results: int,
     *,
     excluded_domains: set[str] | None = None,
+    primary_candidate_floor: int | None = None,
+    fallback_candidate_limit: int | None = None,
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
     provider_order = _provider_order(settings)
     base_excluded_domains = set(excluded_domains or set())
+    configured_primary_floor = max_results if primary_candidate_floor is None else primary_candidate_floor
+    configured_fallback_limit = max_results if fallback_candidate_limit is None else fallback_candidate_limit
+    primary_floor = min(max_results, max(1, configured_primary_floor))
+    fallback_limit = min(max_results, max(0, configured_fallback_limit))
+    yandex_candidate_count = 0
+    fallback_candidates_added = 0
+    fallback_used = False
 
     for provider in provider_order:
         before = len(candidates)
         provider_candidates: list[Candidate] = []
+        request_limit = max_results
         status = "skipped"
         error = ""
+        is_fallback = provider != PRIMARY_SUPPLIER_SEARCH_PROVIDER
+        if is_fallback:
+            if yandex_candidate_count >= primary_floor:
+                reports.append(
+                    {
+                        "provider": provider,
+                        "status": "skipped_primary_sufficient",
+                        "added": 0,
+                        "returned": 0,
+                        "total_after": len(candidates),
+                        "requested": 0,
+                        "error": "",
+                    }
+                )
+                continue
+            if yandex_candidate_count > 0:
+                remaining_gap = max(0, primary_floor - len(candidates))
+                remaining_fallback_budget = max(0, fallback_limit - fallback_candidates_added)
+                request_limit = min(max_results - len(candidates), remaining_gap, remaining_fallback_budget)
+                if request_limit <= 0:
+                    reports.append(
+                        {
+                            "provider": provider,
+                            "status": "skipped_fallback_limit",
+                            "added": 0,
+                            "returned": 0,
+                            "total_after": len(candidates),
+                            "requested": 0,
+                            "error": "",
+                        }
+                    )
+                    continue
+            else:
+                request_limit = max(0, max_results - len(candidates))
+                if request_limit <= 0:
+                    break
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                provider_candidates = await _search_with_yandex(settings, queries, max_results, existing_domains=existing_domains)
+                provider_candidates = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
             elif provider == "google":
-                provider_candidates = await _search_with_google(settings, queries, max_results, existing_domains=existing_domains)
+                provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
             elif provider == "tavily":
-                provider_candidates = await _search_with_tavily(settings, queries, max_results, existing_domains=existing_domains)
+                provider_candidates = await _search_with_tavily(settings, queries, request_limit, existing_domains=existing_domains)
             elif provider == "ddgs":
-                provider_candidates = await _search_with_ddgs(queries, max_results, existing_domains=existing_domains)
-            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)
+                provider_candidates = await _search_with_ddgs(queries, request_limit, existing_domains=existing_domains)
+            provider_candidates = _exclude_candidates(provider_candidates, base_excluded_domains)[:request_limit]
             status = "ok" if provider_candidates else "empty"
         except Exception as exc:
             status = "error"
             error = f"{type(exc).__name__}: {str(exc)[:180]}"
+            logger.warning("Supplier candidate provider failed: provider=%s error=%s", provider, error)
         candidates = _merge_candidates(candidates, provider_candidates, max_results=max_results, excluded_domains=base_excluded_domains)
+        added = len(candidates) - before
+        if provider == PRIMARY_SUPPLIER_SEARCH_PROVIDER:
+            yandex_candidate_count = len(candidates)
+        else:
+            fallback_used = fallback_used or bool(added)
+            fallback_candidates_added += added
         reports.append(
             {
                 "provider": provider,
                 "status": status,
-                "added": len(candidates) - before,
+                "added": added,
                 "returned": len(provider_candidates),
                 "total_after": len(candidates),
+                "requested": request_limit,
                 "error": error,
             }
         )
         if len(candidates) >= max_results:
             break
 
-    return candidates[:max_results], {"provider_order": provider_order, "reports": reports}
+    return candidates[:max_results], {
+        "provider_order": provider_order,
+        "strategy": {
+            "primary_provider": PRIMARY_SUPPLIER_SEARCH_PROVIDER,
+            "primary_candidate_floor": primary_floor,
+            "fallback_candidate_limit": fallback_limit,
+            "yandex_candidate_count": yandex_candidate_count,
+            "fallback_used": fallback_used,
+        },
+        "reports": reports,
+    }
 
 
 def _provider_order(settings: SystemSettings) -> list[str]:
@@ -2874,7 +2973,10 @@ def _provider_order(settings: SystemSettings) -> list[str]:
     raw_items = [item.strip().lower() for item in configured.split(",") if item.strip()]
     supported = {"yandex", "google", "tavily", "ddgs"}
     order = [item for item in raw_items if item in supported]
-    return list(dict.fromkeys(order)) or ["yandex", "google", "tavily", "ddgs"]
+    if not order:
+        order = ["google", "tavily", "ddgs"]
+    fallbacks = [item for item in order if item != PRIMARY_SUPPLIER_SEARCH_PROVIDER]
+    return [PRIMARY_SUPPLIER_SEARCH_PROVIDER, *dict.fromkeys(fallbacks)]
 
 
 def _provider_query_limit(settings: SystemSettings, provider: str) -> int:

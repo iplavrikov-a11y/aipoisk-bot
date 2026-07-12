@@ -570,6 +570,145 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         # Target 20 -> batch size 32 (maximum)
         self.assertEqual(_candidate_review_batch_size(20), 32)
 
+    def test_delivery_target_keeps_client_minimum_as_floor(self) -> None:
+        self.assertEqual(supplier_search._supplier_delivery_target(1), 3)
+        self.assertEqual(supplier_search._supplier_delivery_target(5), 7)
+        self.assertEqual(supplier_search._supplier_delivery_target(15), 20)
+        self.assertEqual(supplier_search._supplier_delivery_target(100), 100)
+
+    async def test_yandex_primary_skips_reserve_sources_when_candidate_floor_is_met(self) -> None:
+        settings = SimpleNamespace(supplier_search_provider_order="google,tavily,ddgs")
+        calls: list[tuple[str, int]] = []
+
+        def make_candidates(source: str, count: int) -> list[Candidate]:
+            return [
+                Candidate(
+                    url=f"https://{source}-{index}.example/catalog",
+                    domain=f"{source}-{index}.example",
+                    title=f"{source} supplier {index}",
+                    snippet="supplier",
+                    source=source,
+                    query="test",
+                )
+                for index in range(count)
+            ]
+
+        async def yandex(_settings, _queries, max_results, **_kwargs):
+            calls.append(("yandex", max_results))
+            return make_candidates("yandex", 24)
+
+        async def reserve(*_args, **_kwargs):
+            raise AssertionError("reserve source must not run after sufficient Yandex candidates")
+
+        with (
+            patch.object(supplier_search, "_search_with_yandex", yandex),
+            patch.object(supplier_search, "_search_with_google", reserve),
+            patch.object(supplier_search, "_search_with_tavily", reserve),
+            patch.object(supplier_search, "_search_with_ddgs", reserve),
+        ):
+            candidates, meta = await supplier_search.discover_candidates(
+                settings,
+                ["test"],
+                max_results=60,
+                primary_candidate_floor=20,
+                fallback_candidate_limit=8,
+            )
+
+        self.assertEqual(calls, [("yandex", 60)])
+        self.assertEqual(len(candidates), 24)
+        self.assertFalse(meta["strategy"]["fallback_used"])
+        self.assertEqual(
+            [report["status"] for report in meta["reports"]],
+            ["ok", "skipped_primary_sufficient", "skipped_primary_sufficient", "skipped_primary_sufficient"],
+        )
+
+    async def test_yandex_primary_caps_reserve_candidates_when_it_is_short(self) -> None:
+        settings = SimpleNamespace(supplier_search_provider_order="google,tavily,ddgs")
+        calls: list[tuple[str, int]] = []
+
+        def make_candidates(source: str, count: int) -> list[Candidate]:
+            return [
+                Candidate(
+                    url=f"https://{source}-{index}.example/catalog",
+                    domain=f"{source}-{index}.example",
+                    title=f"{source} supplier {index}",
+                    snippet="supplier",
+                    source=source,
+                    query="test",
+                )
+                for index in range(count)
+            ]
+
+        async def yandex(_settings, _queries, max_results, **_kwargs):
+            calls.append(("yandex", max_results))
+            return make_candidates("yandex", 4)
+
+        async def google(_settings, _queries, max_results, **_kwargs):
+            calls.append(("google", max_results))
+            return make_candidates("google", 12)
+
+        async def reserve(*_args, **_kwargs):
+            raise AssertionError("reserve cap must prevent additional providers")
+
+        with (
+            patch.object(supplier_search, "_search_with_yandex", yandex),
+            patch.object(supplier_search, "_search_with_google", google),
+            patch.object(supplier_search, "_search_with_tavily", reserve),
+            patch.object(supplier_search, "_search_with_ddgs", reserve),
+        ):
+            candidates, meta = await supplier_search.discover_candidates(
+                settings,
+                ["test"],
+                max_results=60,
+                primary_candidate_floor=20,
+                fallback_candidate_limit=6,
+            )
+
+        self.assertEqual(calls, [("yandex", 60), ("google", 6)])
+        self.assertEqual(len(candidates), 10)
+        self.assertTrue(meta["strategy"]["fallback_used"])
+        self.assertEqual(
+            [report["status"] for report in meta["reports"]],
+            ["ok", "ok", "skipped_fallback_limit", "skipped_fallback_limit"],
+        )
+
+    async def test_reserve_sources_can_cover_yandex_unavailability(self) -> None:
+        settings = SimpleNamespace(supplier_search_provider_order="google")
+        calls: list[tuple[str, int]] = []
+
+        async def yandex(_settings, _queries, max_results, **_kwargs):
+            calls.append(("yandex", max_results))
+            return []
+
+        async def google(_settings, _queries, max_results, **_kwargs):
+            calls.append(("google", max_results))
+            return [
+                Candidate(
+                    url="https://fallback.example/catalog",
+                    domain="fallback.example",
+                    title="fallback supplier",
+                    snippet="supplier",
+                    source="google",
+                    query="test",
+                )
+            ]
+
+        with (
+            patch.object(supplier_search, "_search_with_yandex", yandex),
+            patch.object(supplier_search, "_search_with_google", google),
+        ):
+            candidates, meta = await supplier_search.discover_candidates(
+                settings,
+                ["test"],
+                max_results=60,
+                primary_candidate_floor=20,
+                fallback_candidate_limit=6,
+            )
+
+        self.assertEqual(calls, [("yandex", 60), ("google", 60)])
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(meta["strategy"]["fallback_used"])
+
     async def test_real_tz_polycarbonate_search(self) -> None:
         """Test supplier search with real polycarbonate TZ."""
         scenario = REAL_TZ_SCENARIOS[0]
@@ -623,13 +762,19 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
                 items=(ProcurementItem(id="item-1", name="поликарбонат монолитный прозрачный 8мм"),),
             )
 
+        query_targets: list[int] = []
+
         async def mock_build_queries(settings, context, target, profile=None):
+            query_targets.append(target)
             return ["поликарбонат монолитный поставщик", "монолитный поликарбонат производитель"]
 
         async def mock_assess(settings, context):
             return supplier_search.MinpromRegistryRequirement(required=False)
 
+        rerank_targets: list[int] = []
+
         async def mock_rerank(settings, profile, candidates, target, **kwargs):
+            rerank_targets.append(target)
             return CandidateRerank(candidates=candidates[:target * 5], meta={"status": "test"})
 
         supplier_search.verify_candidate = mock_verify
@@ -652,6 +797,9 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
 
             # Verify results
             self.assertGreaterEqual(len(accepted), scenario["target_suppliers"])
+            self.assertGreater(evidence["delivery_target"], scenario["target_suppliers"])
+            self.assertEqual(query_targets[0], scenario["target_suppliers"])
+            self.assertEqual(rerank_targets[0], evidence["delivery_target"])
             self.assertTrue(evidence["ai_required"])
             self.assertTrue(evidence["ai_used"])
             self.assertLess(elapsed, 5.0, f"Search took {elapsed:.2f}s, expected < 5s")
