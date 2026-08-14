@@ -933,11 +933,24 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
+const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'clients', 'jobs', 'billing', 'settings', 'ai'] as const
+
+function getInitialView(): View {
+  if (typeof window === 'undefined') return 'dashboard'
+  const hash = window.location.hash.replace(/^#\/?/, '').trim() as View
+  if (VALID_VIEWS.includes(hash)) return hash
+  try {
+    const saved = localStorage.getItem('aipoisk_admin_view') as View
+    if (VALID_VIEWS.includes(saved)) return saved
+  } catch {}
+  return 'dashboard'
+}
+
 export function App() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [authenticated, setAuthenticated] = useState(false)
-  const [view, setView] = useState<View>('dashboard')
+  const [view, setViewState] = useState<View>(getInitialView)
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
@@ -951,6 +964,36 @@ export function App() {
   const [loading, setLoading] = useState(false)
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
+
+  function setView(nextView: View) {
+    setViewState(nextView)
+    try {
+      localStorage.setItem('aipoisk_admin_view', nextView)
+      if (window.location.hash.replace(/^#\/?/, '') !== nextView) {
+        window.history.replaceState(null, '', '#' + nextView)
+      }
+    } catch {}
+  }
+
+  useEffect(() => {
+    function handleHashChange() {
+      const hash = window.location.hash.replace(/^#\/?/, '').trim() as View
+      if (VALID_VIEWS.includes(hash)) {
+        setViewState(hash)
+        try { localStorage.setItem('aipoisk_admin_view', hash) } catch {}
+      }
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
+  useEffect(() => {
+    if (authenticated && window.location.hash.replace(/^#\/?/, '') !== view) {
+      try {
+        window.history.replaceState(null, '', '#' + view)
+      } catch {}
+    }
+  }, [authenticated, view])
 
   useEffect(() => {
     const timer = setInterval(() => setNowTs(Date.now()), 1000)
