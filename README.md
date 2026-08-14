@@ -114,6 +114,14 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   `Комментарий` column: matched rows include the registry record number and
   manufacturer there, while priority-mode fallbacks say that no relevant
   registry record was found and the supplier came from ordinary search.
+- If strict `Только реестр` produces zero registry-linked suppliers but the same
+  run already verified ordinary suppliers, the job becomes a paid alternative
+  offer instead of a generic failure. Telegram and the website show the number
+  of verified alternatives and the exact reserved charge; the customer can
+  accept delivery or decline without a supplier-search charge. The alternative
+  report carries a prominent no-registry-confirmation warning and is built
+  without another AI/search run. A registry technical error never activates
+  this offer.
 
 ## Telegram customer UX
 

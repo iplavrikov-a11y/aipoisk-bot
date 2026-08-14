@@ -50,7 +50,7 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property.
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
 - `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
-- `robots.txt` allows public pages, keeps `/cabinet` out of indexing, and declares `Host: https://tenderlex.ru` for Yandex.
+- `robots.txt` allows public pages, keeps `/api/` and `/cabinet` out of indexing, and points crawlers to the canonical sitemap. The deprecated `Host` directive is intentionally omitted.
 - `site/src/app/layout.tsx` default metadata should align with the homepage
   positioning. The current root title is supplier-search led rather than
   documentation-analysis led.
@@ -76,6 +76,11 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Supplier search and combined analysis-plus-search carry the customer-selected
   supplier registry mode: `Обычный поиск`, `Только реестр`, or
   `Реестр в приоритете`.
+- When strict registry search has no confirmed registry linkage but has verified
+  suppliers from the same run, the cabinet shows a structured alternative
+  offer with the count, reserved charge, 24-hour deadline, accept/download, and
+  decline-without-charge actions. Terminal decision and delivery outcomes stay
+  visible; stale supplier files are not downloadable after decline or expiry.
 - `GET /api/customer/jobs` and `/api/customer/auth/session` must not be cached.
   The cabinet uses no-store fetches and a shorter polling interval while active
   jobs exist so Telegram/API-side cancellation appears in the website task list

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import unittest
 import tempfile
 from datetime import timedelta
@@ -13,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.jobs as jobs
 from app.db import Base
+from app.billing import KIND_SUPPLIER_SEARCH, KIND_SUPPLIER_SEARCH_EXTRA, OP_RELEASE, OP_RESERVE
 from app.jobs import (
     JobCancelledError,
     MODE_ANALYSIS_AND_SUPPLIERS,
@@ -35,17 +37,123 @@ from app.jobs import (
     package_job_output_files,
     should_requeue_stale_job,
 )
-from app.models import Job, JobFile, SupplierResult, now_utc
+from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, now_utc
 from app.procurement_report import ReportGenerationResult
 from app.procurement_sources import SOURCE_KIND_OFFICIAL, SourceFetchResult
 from app.tenderplan import TenderplanDownloadedFile
 
 
 class JobRecoveryTests(unittest.TestCase):
+    def test_cleanup_releases_open_reservation_and_keeps_ledger_consistent(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_job_dir = jobs.job_dir
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                client = Client(id="client-cleanup", telegram_id="cleanup-user")
+                job = Job(
+                    id="job-cleanup",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="completed",
+                    completed_at=now_utc() - timedelta(days=100),
+                    created_at=now_utc() - timedelta(days=100),
+                )
+                db.add_all(
+                    [
+                        client,
+                        job,
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=job.id,
+                            kind=KIND_SUPPLIER_SEARCH,
+                            operation=OP_RESERVE,
+                            units=1,
+                        ),
+                    ]
+                )
+                db.commit()
+
+                removed = jobs.cleanup_expired_jobs(
+                    db,
+                    SimpleNamespace(
+                        completed_job_retention_days=90,
+                        failed_job_retention_days=90,
+                        storage_retention_days=90,
+                    ),
+                )
+                transactions = db.query(BillingTransaction).order_by(BillingTransaction.created_at).all()
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(removed, 1)
+        self.assertEqual([item.operation for item in transactions], [OP_RESERVE, OP_RELEASE])
+        self.assertTrue(all(item.job_id is None for item in transactions))
+
+    def test_cleanup_does_not_delete_offer_while_decision_or_delivery_is_pending(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        old = now_utc() - timedelta(days=5)
+        try:
+            client = Client(id="client-live-offer", telegram_id="offer-user")
+            job = Job(
+                id="job-live-offer",
+                client_id=client.id,
+                mode=MODE_SUPPLIER_SEARCH,
+                status="partial",
+                confirmation_kind="registry_fallback",
+                confirmation_outcome="accepted",
+                offer_delivery_outcome="pending",
+                completed_at=old,
+                created_at=old,
+                updated_at=old,
+            )
+            db.add_all(
+                [
+                    client,
+                    job,
+                    BillingTransaction(
+                        client_id=client.id,
+                        job_id=job.id,
+                        kind=KIND_SUPPLIER_SEARCH,
+                        operation=OP_RESERVE,
+                        units=1,
+                    ),
+                ]
+            )
+            db.commit()
+
+            removed = jobs.cleanup_expired_jobs(
+                db,
+                SimpleNamespace(
+                    completed_job_retention_days=1,
+                    failed_job_retention_days=1,
+                    storage_retention_days=1,
+                ),
+            )
+
+            self.assertEqual(removed, 0)
+            self.assertIsNotNone(db.get(Job, job.id))
+            self.assertEqual(
+                [row.operation for row in db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).all()],
+                [OP_RESERVE],
+            )
+        finally:
+            db.close()
+
     def test_supplier_count_message_hides_internal_target_when_underfilled(self) -> None:
         message = _supplier_count_message("Частично готово", 8, 15)
 
-        self.assertEqual(message, "Частично готово: найдено и проверено 8")
+        self.assertEqual(
+            message,
+            "Частично готово: отобрано кандидатов 8. Уровень технического совпадения указан в отчёте",
+        )
         self.assertNotIn("8/15", message)
 
     def test_should_requeue_only_stale_running_jobs(self) -> None:
@@ -271,6 +379,63 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertEqual(len(stored_files), 1)
         self.assertEqual(stored_files[0].original_filename, "Техническое задание.docx")
 
+    def test_successful_reparse_clears_previous_file_error(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_session = jobs.SessionLocal
+        original_job_dir = jobs.job_dir
+        original_settings = jobs.get_or_create_settings
+        original_extract_text = jobs.document_parser.extract_text
+        original_process_report = jobs._process_procurement_report
+
+        def fake_extract_text(_path: str, _options: dict) -> tuple[str, str]:
+            return "Техническое задание: поставка оборудования", "ok"
+
+        def fake_process_report(db_arg, job_arg: Job, _settings, _context: str) -> None:
+            job_arg.status = "completed"
+            job_arg.progress = 100
+            job_arg.message = "Готово"
+            job_arg.completed_at = now_utc()
+            db_arg.commit()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs.SessionLocal = Session
+            jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+            jobs.get_or_create_settings = lambda _db: SimpleNamespace(document_settings_json="{}")
+            jobs.document_parser.extract_text = fake_extract_text
+            jobs._process_procurement_report = fake_process_report
+            try:
+                job = jobs.create_job(
+                    db,
+                    client_id=None,
+                    mode="procurement_report",
+                    title="Тест",
+                    target_suppliers=25,
+                    files=[("ТЗ.odt", b"broken-before")],
+                    sources=[],
+                )
+                job_id = job.id
+                stored_file = db.query(JobFile).filter(JobFile.job_id == job_id).one()
+                stored_file.parse_status = "error:OSError"
+                stored_file.error = "error:OSError: pandoc"
+                db.commit()
+
+                jobs._process_job_sync(job_id)
+                db.expire_all()
+                refreshed_file = db.query(JobFile).filter(JobFile.job_id == job_id).one()
+            finally:
+                jobs.SessionLocal = original_session
+                jobs.job_dir = original_job_dir
+                jobs.get_or_create_settings = original_settings
+                jobs.document_parser.extract_text = original_extract_text
+                jobs._process_procurement_report = original_process_report
+                db.close()
+
+        self.assertEqual(refreshed_file.parse_status, "ok")
+        self.assertEqual(refreshed_file.error, "")
+
     def test_result_stem_keeps_cyrillic_output_filename_under_filesystem_limit(self) -> None:
         long_title = "Техническое задание " + "канат стальной оцинкованный " * 12
         long_subject = "поставка канатов грузовых и такелажной продукции " * 10
@@ -282,7 +447,7 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertLessEqual(len(filename.encode("utf-8")), 255)
         self.assertTrue(stem)
 
-    def test_combined_mode_writes_analysis_and_supplier_files(self) -> None:
+    def test_combined_registry_only_mode_completes_when_underfilled(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -301,6 +466,7 @@ class JobRecoveryTests(unittest.TestCase):
 
         async def fake_suppliers(_settings, _context: str, _target: int, *, progress_callback=None, supplier_search_policy="normal"):
             self.assertEqual(_context, "ТЗ: сварочный полуавтомат MIG/MAG")
+            self.assertEqual(supplier_search_policy, jobs.SUPPLIER_POLICY_MINPROM_ONLY)
             if progress_callback:
                 await progress_callback(50, "Проверяю сайты и контакты")
             return (
@@ -331,7 +497,13 @@ class JobRecoveryTests(unittest.TestCase):
             jobs.extract_supplier_search_context = fake_supplier_context
             jobs.discover_suppliers = fake_suppliers
             try:
-                job = Job(mode=MODE_ANALYSIS_AND_SUPPLIERS, status="running", title="ТЗ сварка", target_suppliers=1)
+                job = Job(
+                    mode=MODE_ANALYSIS_AND_SUPPLIERS,
+                    status="running",
+                    title="ТЗ сварка",
+                    target_suppliers=2,
+                    supplier_search_policy=jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+                )
                 db.add(job)
                 db.commit()
                 db.refresh(job)
@@ -361,6 +533,79 @@ class JobRecoveryTests(unittest.TestCase):
         ])
         for name in output_names:
             self.assertNotRegex(name, r"_[0-9a-f]{8}(?=\\.)")
+
+    def test_combined_mode_keeps_browser_failure_reason_when_analysis_warns(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_report = jobs.generate_procurement_report
+        original_suppliers = jobs.discover_suppliers
+        original_supplier_context = jobs.extract_supplier_search_context
+        original_quote_builder = jobs.build_quote_request_markdown_with_ai
+        original_job_dir = jobs.job_dir
+
+        async def fake_report(_settings, _context: str) -> ReportGenerationResult:
+            return ReportGenerationResult(
+                report="# Анализ\nПредмет закупки: Канат стальной",
+                ai_used=True,
+                warning="Нужно проверить настройки ИИ.",
+            )
+
+        async def fake_supplier_context(_settings, _context: str) -> str:
+            return "ТЗ: канат стальной"
+
+        async def fake_suppliers(_settings, _context: str, _target: int, *, progress_callback=None, supplier_search_policy="normal"):
+            return (
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "site": "https://supplier.example",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.example",
+                        "comments": "Проверка подтвердила.",
+                        "evidence_status": "verified",
+                        "match_level": "exact",
+                        "product_fit": "exact",
+                        "product": "Канат стальной",
+                    }
+                ],
+                {
+                    "ai_used": True,
+                    "browser_failures": {"count": 1, "failures": []},
+                    "procurement_profile": {"items": []},
+                },
+            )
+
+        async def fake_quote_builder(*_args, **_kwargs) -> str:
+            return "# Запрос КП"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+            jobs.generate_procurement_report = fake_report
+            jobs.extract_supplier_search_context = fake_supplier_context
+            jobs.discover_suppliers = fake_suppliers
+            jobs.build_quote_request_markdown_with_ai = fake_quote_builder
+            try:
+                job = Job(mode=MODE_ANALYSIS_AND_SUPPLIERS, status="running", title="ТЗ канат", target_suppliers=1)
+                db.add(job)
+                db.commit()
+
+                _process_analysis_and_suppliers(db, job, SimpleNamespace(), "context")
+                db.refresh(job)
+            finally:
+                jobs.generate_procurement_report = original_report
+                jobs.discover_suppliers = original_suppliers
+                jobs.extract_supplier_search_context = original_supplier_context
+                jobs.build_quote_request_markdown_with_ai = original_quote_builder
+                jobs.job_dir = original_job_dir
+                db.close()
+
+        self.assertEqual(job.status, "needs_review")
+        self.assertIn("нужна проверка ИИ-настроек", job.message)
+        self.assertIn("Часть сайтов временно не удалось проверить", job.message)
+        self.assertIn("Нужно проверить настройки ИИ.", job.error)
+        self.assertIn("Часть сайтов не удалось проверить", job.error)
 
     def test_procurement_report_writes_analysis_and_quote_request_files(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -489,6 +734,228 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertEqual([item["kind"] for item in evidence["output_files"]], ["suppliers", "quote_request"])
         self.assertIn("ЗАПРОС КП", quote_content)
         self.assertIn("Канат стальной", quote_content)
+
+    def test_registry_only_supplier_search_completes_when_underfilled(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_suppliers = jobs.discover_suppliers
+        original_quote_builder = jobs.build_quote_request_markdown_with_ai
+        original_job_dir = jobs.job_dir
+
+        async def fake_suppliers(_settings, _context: str, _target: int, *, progress_callback=None, excluded_suppliers=None, supplier_search_policy="normal"):
+            if progress_callback:
+                await progress_callback(70, "Проверяю сайты и контакты")
+            return (
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "site": "https://supplier.example",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.example",
+                        "comments": "Проверка подтвердила.",
+                        "evidence_status": "verified",
+                        "match_level": "exact",
+                        "product_fit": "exact",
+                        "product": "Канат стальной",
+                    }
+                ],
+                {
+                    "ai_used": True,
+                    "browser_failures": {"count": 2, "failures": []},
+                    "procurement_profile": {"summary": "Канат стальной", "items": []},
+                },
+            )
+
+        async def fake_quote_builder(*_args, **_kwargs) -> str:
+            return "# Запрос КП\n\nПросим направить предложение."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+            jobs.discover_suppliers = fake_suppliers
+            jobs.build_quote_request_markdown_with_ai = fake_quote_builder
+            try:
+                results = {}
+                for policy in (jobs.SUPPLIER_POLICY_NORMAL, jobs.SUPPLIER_POLICY_MINPROM_ONLY):
+                    job = Job(
+                        mode=MODE_SUPPLIER_SEARCH,
+                        status="running",
+                        title="ТЗ канат",
+                        target_suppliers=2,
+                        supplier_search_policy=policy,
+                    )
+                    db.add(job)
+                    db.commit()
+                    db.refresh(job)
+
+                    _process_supplier_search(
+                        db,
+                        job,
+                        SimpleNamespace(has_active_ai_provider=False, allow_partial_supplier_reports=True),
+                        "ТЗ: нужен канат стальной",
+                    )
+                    db.refresh(job)
+                    results[policy] = (job.status, job.message, job.error)
+            finally:
+                jobs.discover_suppliers = original_suppliers
+                jobs.build_quote_request_markdown_with_ai = original_quote_builder
+                jobs.job_dir = original_job_dir
+                db.close()
+
+        normal_status, normal_message, normal_error = results[jobs.SUPPLIER_POLICY_NORMAL]
+        self.assertEqual(normal_status, jobs.STATUS_AWAITING_CUSTOMER_CONFIRMATION)
+        self.assertIn("Часть сайтов временно не удалось проверить", normal_message)
+        self.assertIn("временной технической ошибки", normal_error)
+
+        registry_status, registry_message, registry_error = results[jobs.SUPPLIER_POLICY_MINPROM_ONLY]
+        self.assertEqual(registry_status, "completed")
+        self.assertEqual(
+            registry_message,
+            "Готово: отобрано кандидатов 1. Уровень технического совпадения указан в отчёте",
+        )
+        self.assertEqual(registry_error, "")
+
+    def test_browser_start_failure_marks_job_failed_with_clear_safe_reason(self) -> None:
+        original_session = jobs.SessionLocal
+        original_job_dir = jobs.job_dir
+        original_settings = jobs.get_or_create_settings
+        original_extract_text = jobs.document_parser.extract_text
+        original_suppliers = jobs.discover_suppliers
+
+        async def failed_browser_search(*_args, **_kwargs):
+            raise RuntimeError("Не удалось запустить проверку сайтов. Попробуйте повторить задачу.")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = create_engine(
+                f"sqlite:///{Path(tmp) / 'jobs.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(bind=engine)
+            Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            db = Session()
+            jobs.SessionLocal = Session
+            jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+            jobs.get_or_create_settings = lambda _db: SimpleNamespace(document_settings_json="{}")
+            jobs.document_parser.extract_text = lambda _path, _options: (
+                "Техническое задание: требуется поставка каната стального оцинкованного для производственных работ.",
+                "ok",
+            )
+            jobs.discover_suppliers = failed_browser_search
+            try:
+                job = jobs.create_job(
+                    db,
+                    client_id=None,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    title="ТЗ канат",
+                    target_suppliers=1,
+                    files=[("ТЗ.txt", b"supplier search")],
+                    sources=[],
+                )
+                jobs._process_job_sync(job.id)
+                db.expire_all()
+                refreshed = db.get(Job, job.id)
+                assert refreshed is not None
+                evidence = json.loads(Path(refreshed.evidence_path).read_text(encoding="utf-8"))
+            finally:
+                jobs.SessionLocal = original_session
+                jobs.job_dir = original_job_dir
+                jobs.get_or_create_settings = original_settings
+                jobs.document_parser.extract_text = original_extract_text
+                jobs.discover_suppliers = original_suppliers
+                db.close()
+
+        self.assertEqual(refreshed.status, "failed")
+        self.assertEqual(refreshed.error, "Не удалось запустить проверку сайтов. Попробуйте повторить задачу.")
+        self.assertEqual(evidence["error"]["message"], refreshed.error)
+        self.assertNotIn("token=", refreshed.error)
+
+    def test_supplier_search_stops_blocked_discovery_after_database_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database_path = Path(tmp) / "jobs.db"
+            engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
+            Base.metadata.create_all(bind=engine)
+            Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            setup_db = Session()
+            cancel_db = Session()
+            original_suppliers = jobs.discover_suppliers
+            original_session_local = jobs.SessionLocal
+            original_job_dir = jobs.job_dir
+            discovery_started = threading.Event()
+            discovery_cancelled = threading.Event()
+            worker_cancelled = threading.Event()
+            worker_finished = threading.Event()
+            worker_errors: list[BaseException] = []
+            loop_holder: list[asyncio.AbstractEventLoop] = []
+            blocker_holder: list[asyncio.Event] = []
+            worker_thread: threading.Thread | None = None
+
+            async def blocked_discovery(_settings, _context: str, _target: int, *, progress_callback=None, excluded_suppliers=None, supplier_search_policy="normal"):
+                blocker = asyncio.Event()
+                blocker_holder.append(blocker)
+                loop_holder.append(asyncio.get_running_loop())
+                discovery_started.set()
+                try:
+                    await blocker.wait()
+                except asyncio.CancelledError:
+                    discovery_cancelled.set()
+                    raise
+                return [], {"ai_used": True, "procurement_profile": {"items": []}}
+
+            try:
+                jobs.discover_suppliers = blocked_discovery
+                jobs.SessionLocal = Session
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                job = Job(mode=MODE_SUPPLIER_SEARCH, status="running", title="ТЗ", target_suppliers=1)
+                setup_db.add(job)
+                setup_db.commit()
+                job_id = job.id
+
+                def run_worker() -> None:
+                    worker_db = Session()
+                    try:
+                        worker_job = worker_db.get(Job, job_id)
+                        assert worker_job is not None
+                        _process_supplier_search(
+                            worker_db,
+                            worker_job,
+                            SimpleNamespace(has_active_ai_provider=False, allow_partial_supplier_reports=False),
+                            "ТЗ: нужен канат стальной",
+                        )
+                    except JobCancelledError:
+                        worker_cancelled.set()
+                    except BaseException as exc:
+                        worker_errors.append(exc)
+                    finally:
+                        worker_db.close()
+                        worker_finished.set()
+
+                worker_thread = threading.Thread(target=run_worker, daemon=True)
+                worker_thread.start()
+                self.assertTrue(discovery_started.wait(1))
+
+                cancelled_job = cancel_db.get(Job, job_id)
+                assert cancelled_job is not None
+                cancelled_job.status = "cancelled"
+                cancel_db.commit()
+
+                self.assertTrue(
+                    worker_finished.wait(2),
+                    "После отмены в базе поиск должен остановиться без ожидания следующего сообщения о прогрессе.",
+                )
+                self.assertTrue(discovery_cancelled.is_set())
+                self.assertTrue(worker_cancelled.is_set())
+                self.assertEqual(worker_errors, [])
+            finally:
+                if loop_holder and blocker_holder and not loop_holder[0].is_closed():
+                    loop_holder[0].call_soon_threadsafe(blocker_holder[0].set)
+                if worker_thread is not None:
+                    worker_thread.join(timeout=2)
+                jobs.discover_suppliers = original_suppliers
+                jobs.SessionLocal = original_session_local
+                jobs.job_dir = original_job_dir
+                cancel_db.close()
+                setup_db.close()
 
     def test_claim_next_job_marks_pending_job_running_with_user_facing_message(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -674,6 +1141,215 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertEqual(first.status, "running")
             self.assertEqual(second.status, "pending")
         finally:
+            db.close()
+
+    def test_additional_registry_fallback_uses_extra_billing_kind_without_new_ai(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_suppliers = jobs.discover_suppliers
+        original_quote_builder = jobs.build_quote_request_markdown_with_ai
+        original_job_dir = jobs.job_dir
+        ai_quote_calls = 0
+
+        rows = [
+            {
+                "company_name": "Поставщик без записи",
+                "site": "https://supplier.example",
+                "phone": "+7 999 111 22 33",
+                "email": "sales@supplier.example",
+                "comments": "Проверен официальный сайт и контакты.",
+                "evidence_status": "verified",
+                "match_level": "exact",
+                "product_fit": "exact",
+                "product": "Волоконный усилитель",
+                "supplier_search_policy": jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+                "supplier_search_origin": "ordinary_fallback",
+                "minprom_registry_required": True,
+                "minprom_registry_status": "empty",
+                "minprom_registry_match": {"matched": False},
+            }
+        ]
+
+        async def fake_suppliers(*_args, **_kwargs):
+            return (
+                [],
+                {
+                    "ai_used": True,
+                    "procurement_profile": {"items": [{"name": "Волоконный усилитель"}]},
+                    "minprom_registry": {"status": "empty"},
+                    "registry_result": {"status": "empty", "verified_count": 0},
+                    "non_registry_alternative": {
+                        "available": True,
+                        "verified_count": 1,
+                        "verified_rows": rows,
+                        "reason_code": "registry_no_relevant_entries",
+                    },
+                },
+            )
+
+        async def forbidden_ai_quote(*_args, **_kwargs):
+            nonlocal ai_quote_calls
+            ai_quote_calls += 1
+            raise AssertionError("fallback must not call AI quote builder")
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                jobs.discover_suppliers = fake_suppliers
+                jobs.build_quote_request_markdown_with_ai = forbidden_ai_quote
+                client = Client(id="fallback-client", telegram_id="fallback-user")
+                job = Job(
+                    id="fallback-job",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="running",
+                    title="ТЗ",
+                    target_suppliers=10,
+                    supplier_search_policy=jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+                    supplier_search_run_type=jobs.SUPPLIER_RUN_ADDITIONAL,
+                )
+                db.add_all(
+                    [
+                        client,
+                        job,
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=job.id,
+                            kind=KIND_SUPPLIER_SEARCH_EXTRA,
+                            operation=OP_RESERVE,
+                            units=1,
+                        ),
+                    ]
+                )
+                db.commit()
+
+                _process_supplier_search(db, job, SimpleNamespace(allow_partial_supplier_reports=True), "ТЗ на усилитель")
+                db.refresh(job)
+                evidence = json.loads(Path(job.evidence_path).read_text(encoding="utf-8"))
+                supplier_rows = db.query(SupplierResult).filter(SupplierResult.job_id == job.id).all()
+                transactions = db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).all()
+
+                self.assertEqual(job.status, "awaiting_customer_confirmation")
+                self.assertEqual(job.confirmation_kind, "registry_fallback")
+                self.assertEqual(job.confirmation_outcome, "pending")
+                self.assertEqual(job.active_output_manifest, "locked_offer")
+                self.assertEqual(job.result_path, "")
+                self.assertEqual(job.verified_count, 1)
+                self.assertEqual(len(supplier_rows), 1)
+                self.assertEqual([row.operation for row in transactions], [OP_RESERVE])
+                self.assertEqual([row.kind for row in transactions], [KIND_SUPPLIER_SEARCH_EXTRA])
+                self.assertEqual(ai_quote_calls, 0)
+                self.assertTrue(Path(evidence["output_manifests"]["full"]["archive_path"]).exists())
+                self.assertEqual(
+                    evidence["output_manifests"]["full"]["entitlements"],
+                    [KIND_SUPPLIER_SEARCH_EXTRA],
+                )
+                self.assertEqual(
+                    {item["billing_kind"] for item in evidence["output_files"]},
+                    {KIND_SUPPLIER_SEARCH_EXTRA},
+                )
+                quote_text_path = next(
+                    item["content_path"] for item in evidence["output_files"] if item["kind"] == "quote_request"
+                )
+                self.assertIn("Подтверждение соответствия", Path(quote_text_path).read_text(encoding="utf-8"))
+        finally:
+            jobs.discover_suppliers = original_suppliers
+            jobs.build_quote_request_markdown_with_ai = original_quote_builder
+            jobs.job_dir = original_job_dir
+            db.close()
+
+    def test_combined_registry_fallback_prebuilds_full_and_analysis_only_manifests(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_report = jobs.generate_procurement_report
+        original_suppliers = jobs.discover_suppliers
+        original_supplier_context = jobs.extract_supplier_search_context
+        original_quote_builder = jobs.build_quote_request_markdown_with_ai
+        original_job_dir = jobs.job_dir
+
+        async def fake_report(_settings, _context: str) -> ReportGenerationResult:
+            return ReportGenerationResult(report="# Анализ\nПредмет закупки: Волоконный усилитель", ai_used=True)
+
+        async def fake_supplier_context(_settings, _context: str) -> str:
+            return "ТЗ на волоконный усилитель"
+
+        fallback_row = {
+            "company_name": "Поставщик",
+            "site": "https://supplier.example",
+            "phone": "+7 999 111 22 33",
+            "email": "sales@supplier.example",
+            "evidence_status": "verified",
+            "match_level": "exact",
+            "product_fit": "exact",
+            "product": "Волоконный усилитель",
+            "supplier_search_policy": jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+            "supplier_search_origin": "ordinary_fallback",
+            "minprom_registry_required": True,
+            "minprom_registry_status": "ok",
+            "minprom_registry_match": {"matched": False},
+        }
+
+        async def fake_suppliers(*_args, **_kwargs):
+            return (
+                [],
+                {
+                    "ai_used": True,
+                    "procurement_profile": {"items": [{"name": "Волоконный усилитель"}]},
+                    "non_registry_alternative": {
+                        "available": True,
+                        "verified_count": 1,
+                        "verified_rows": [fallback_row],
+                        "reason_code": "registry_entries_no_supplier_match",
+                    },
+                },
+            )
+
+        async def forbidden_ai_quote(*_args, **_kwargs):
+            raise AssertionError("combined fallback must not call AI quote builder")
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                jobs.generate_procurement_report = fake_report
+                jobs.extract_supplier_search_context = fake_supplier_context
+                jobs.discover_suppliers = fake_suppliers
+                jobs.build_quote_request_markdown_with_ai = forbidden_ai_quote
+                job = Job(
+                    id="combined-fallback-job",
+                    mode=MODE_ANALYSIS_AND_SUPPLIERS,
+                    status="running",
+                    title="Закупка",
+                    target_suppliers=10,
+                    supplier_search_policy=jobs.SUPPLIER_POLICY_MINPROM_ONLY,
+                )
+                db.add(job)
+                db.commit()
+
+                _process_analysis_and_suppliers(db, job, SimpleNamespace(), "context")
+                db.refresh(job)
+                evidence = json.loads(Path(job.evidence_path).read_text(encoding="utf-8"))
+
+                self.assertEqual(job.status, "awaiting_customer_confirmation")
+                self.assertEqual(job.confirmation_kind, "registry_fallback")
+                self.assertEqual(job.verified_count, 1)
+                self.assertEqual(job.result_path, "")
+                self.assertEqual(set(evidence["output_manifests"]), {"full", "analysis_only"})
+                self.assertEqual(
+                    [item["kind"] for item in evidence["output_manifests"]["analysis_only"]["files"]],
+                    ["analysis", "quote_request"],
+                )
+                self.assertTrue(Path(evidence["output_manifests"]["full"]["archive_path"]).exists())
+                self.assertTrue(Path(evidence["output_manifests"]["analysis_only"]["archive_path"]).exists())
+        finally:
+            jobs.generate_procurement_report = original_report
+            jobs.discover_suppliers = original_suppliers
+            jobs.extract_supplier_search_context = original_supplier_context
+            jobs.build_quote_request_markdown_with_ai = original_quote_builder
+            jobs.job_dir = original_job_dir
             db.close()
 
     def test_worker_concurrency_normalization_keeps_safe_default(self) -> None:

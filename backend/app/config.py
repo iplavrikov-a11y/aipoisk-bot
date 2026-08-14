@@ -15,6 +15,7 @@ class AppConfig(BaseSettings):
     public_base_url: str = "https://tenderlex.ru"
     database_url: str = "sqlite:///../data/aipoisk.db"
     storage_dir: str = "../storage"
+    minprom_registry_cache_dir: str = ""
     admin_token: str = "change-me"
     admin_username: str = "admin"
     admin_password: str = ""
@@ -37,6 +38,8 @@ class AppConfig(BaseSettings):
     default_supplier_search_provider_order: str = "yandex,google,tavily,ddgs"
     default_yandex_search_folder_id: str = ""
     default_yandex_search_api_key: str = ""
+    default_yandex_max_pages_per_query: int = 3
+    default_yandex_search_price_per_request: float = 0.04
     default_google_search_api_key: str = ""
     default_google_search_cse_id: str = ""
     default_document_settings_json: str = "{}"
@@ -64,6 +67,8 @@ class AppConfig(BaseSettings):
     email_from_email: str = ""
     customer_email_verification_hours: int = 24
     worker_concurrency: int = 1
+    supplier_verification_concurrency: int = 8
+    supplier_verification_timeout_seconds: float = 150.0
 
     @property
     def storage_path(self) -> Path:

@@ -51,6 +51,48 @@ class DocumentParserTests(unittest.TestCase):
         self.assertEqual(status, "docx_archive_archive_ok")
         self.assertIn("Огнезащитный материал", text)
 
+    def test_short_docx_extraction_uses_libreoffice_text_fallback(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_docx", return_value="\n=== TABLE 1 ==="),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value="Передвижная экологическая лаборатория") as libreoffice,
+        ):
+            text, status = document_parser.extract_text(Path("short.docx"))
+
+        self.assertEqual(status, "docx_libreoffice_ok")
+        self.assertEqual(text, "Передвижная экологическая лаборатория")
+        libreoffice.assert_called_once()
+
+    def test_broken_pandoc_does_not_block_libreoffice_fallback(self) -> None:
+        with (
+            patch.object(document_parser.shutil, "which", return_value="/usr/bin/pandoc"),
+            patch.object(document_parser.subprocess, "run", side_effect=OSError("Exec format error")),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value="Поставка устройств пробоотборных") as libreoffice,
+        ):
+            text, status = document_parser.extract_text(Path("technical.odt"))
+
+        self.assertEqual(status, "ok")
+        self.assertEqual(text, "Поставка устройств пробоотборных")
+        libreoffice.assert_called_once()
+
+
+
+    def test_sanitize_filename_preserves_extension_on_long_cyrillic_names(self) -> None:
+        long_name = "??????-???????? ????? ?????? ???????????? ?????????? ??? PUMP TYPE Z 12-205 JMW ? ?????? ????????? PUMP TYPE Z 12-125 JMW - ???????????.docx"
+        sanitized = document_parser.sanitize_filename(long_name)
+        self.assertTrue(sanitized.endswith(".docx"))
+        self.assertLessEqual(len(sanitized.encode("utf-8")), 180)
+
+    def test_extract_text_auto_detects_docx_without_extension(self) -> None:
+        from docx import Document
+        with tempfile.TemporaryDirectory() as tmp:
+            no_ext_file = Path(tmp) / "docx_file_no_ext"
+            doc = Document()
+            doc.add_paragraph("??????-???????? ????? ?????? ???????????? ?????????? ??? PUMP TYPE Z 12-205 JMW")
+            doc.save(str(no_ext_file))
+            
+            text, status = document_parser.extract_text(no_ext_file)
+            self.assertTrue(status in ("ok", "docx_libreoffice_ok"))
+            self.assertIn("??????-???????? ????? ??????", text)
 
 if __name__ == "__main__":
     unittest.main()

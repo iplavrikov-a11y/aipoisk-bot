@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import unittest
 from datetime import timedelta
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,11 +16,18 @@ from app.billing import (
     KIND_SUPPLIER_SEARCH_EXTRA,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
+    BillingError,
+    OP_CHARGE,
+    OP_GRANT,
+    OP_MANUAL_DEBIT,
+    OP_RESERVE,
+    access_error_for_units,
     balance_counter,
     charge_job_reservation,
     client_balance_summary,
     client_service_balance_summary,
     client_uses_trial_access,
+    debit_money_balance,
     debit_package_units,
     effective_price_kopeks,
     expire_stale_confirmations,
@@ -30,11 +40,191 @@ from app.billing import (
     transaction_to_dict,
 )
 from app.db import Base
-from app.models import Client, Job, TariffPackage, now_utc
+from app.models import BillingTransaction, Client, Job, TariffPackage, now_utc
 from app.models import ClientTariffOverride
 
 
 class BillingLedgerTests(unittest.TestCase):
+    def test_concurrent_jobs_cannot_reserve_the_same_last_money(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = create_engine(
+                f"sqlite:///{Path(tmp) / 'billing.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(bind=engine)
+            Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            setup = Session()
+            try:
+                client = Client(id="client-money-race", telegram_id="race", money_balance_kopeks=6_000)
+                setup.add_all(
+                    [
+                        client,
+                        Job(id="job-money-race-1", client_id=client.id, mode="supplier_search"),
+                        Job(id="job-money-race-2", client_id=client.id, mode="supplier_search"),
+                        ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                    ]
+                )
+                setup.commit()
+            finally:
+                setup.close()
+
+            barrier = threading.Barrier(2)
+            outcomes: list[str] = []
+
+            def reserve(job_id: str) -> None:
+                db = Session()
+                try:
+                    client = db.get(Client, "client-money-race")
+                    job = db.get(Job, job_id)
+                    barrier.wait(timeout=5)
+                    try:
+                        reserve_job_units(db, client, job)
+                        outcomes.append("reserved")
+                    except BillingError:
+                        outcomes.append("blocked")
+                finally:
+                    db.close()
+
+            threads = [
+                threading.Thread(target=reserve, args=(job_id,))
+                for job_id in ("job-money-race-1", "job-money-race-2")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            verify = Session()
+            try:
+                client = verify.get(Client, "client-money-race")
+                reserve_rows = (
+                    verify.query(BillingTransaction)
+                    .filter(BillingTransaction.client_id == client.id)
+                    .filter(BillingTransaction.operation == OP_RESERVE)
+                    .all()
+                )
+                reserved_money = client.money_reserved_kopeks
+            finally:
+                verify.close()
+
+        self.assertEqual(sorted(outcomes), ["blocked", "reserved"])
+        self.assertEqual(len(reserve_rows), 1)
+        self.assertEqual(reserve_rows[0].amount_kopeks, 6_000)
+        self.assertEqual(reserved_money, 6_000)
+
+    def test_concurrent_money_grants_do_not_overwrite_each_other(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = create_engine(
+                f"sqlite:///{Path(tmp) / 'billing-grants.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(bind=engine)
+            Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            setup = Session()
+            try:
+                setup.add(Client(id="client-grant-race", telegram_id="grant-race"))
+                setup.commit()
+            finally:
+                setup.close()
+
+            barrier = threading.Barrier(2)
+            errors: list[Exception] = []
+
+            def grant() -> None:
+                db = Session()
+                try:
+                    client = db.get(Client, "client-grant-race")
+                    barrier.wait(timeout=5)
+                    grant_money_balance(db, client, amount_kopeks=10_000)
+                except Exception as exc:  # pragma: no cover - failure is asserted below
+                    errors.append(exc)
+                finally:
+                    db.close()
+
+            threads = [threading.Thread(target=grant) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            verify = Session()
+            try:
+                client = verify.get(Client, "client-grant-race")
+                grants = (
+                    verify.query(BillingTransaction)
+                    .filter(BillingTransaction.client_id == client.id)
+                    .filter(BillingTransaction.kind == KIND_MONEY)
+                    .filter(BillingTransaction.operation == OP_GRANT)
+                    .all()
+                )
+                balance = client.money_balance_kopeks
+            finally:
+                verify.close()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(grants), 2)
+        self.assertEqual(balance, 20_000)
+
+    def test_concurrent_money_debits_cannot_overdraw_balance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = create_engine(
+                f"sqlite:///{Path(tmp) / 'billing-debits.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(bind=engine)
+            Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            setup = Session()
+            try:
+                setup.add(
+                    Client(
+                        id="client-debit-race",
+                        telegram_id="debit-race",
+                        money_balance_kopeks=10_000,
+                    )
+                )
+                setup.commit()
+            finally:
+                setup.close()
+
+            barrier = threading.Barrier(2)
+            outcomes: list[str] = []
+
+            def debit() -> None:
+                db = Session()
+                try:
+                    client = db.get(Client, "client-debit-race")
+                    barrier.wait(timeout=5)
+                    try:
+                        debit_money_balance(db, client, amount_kopeks=6_000)
+                        outcomes.append("debited")
+                    except BillingError:
+                        outcomes.append("blocked")
+                finally:
+                    db.close()
+
+            threads = [threading.Thread(target=debit) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            verify = Session()
+            try:
+                client = verify.get(Client, "client-debit-race")
+                debits = (
+                    verify.query(BillingTransaction)
+                    .filter(BillingTransaction.client_id == client.id)
+                    .filter(BillingTransaction.operation == OP_MANUAL_DEBIT)
+                    .all()
+                )
+                balance = client.money_balance_kopeks
+            finally:
+                verify.close()
+
+        self.assertEqual(sorted(outcomes), ["blocked", "debited"])
+        self.assertEqual(len(debits), 1)
+        self.assertEqual(balance, 4_000)
+
     def setUp(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
@@ -103,7 +293,7 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_trial_balance_uses_base_prices_and_charges_money(self) -> None:
+    def test_trial_balance_is_cash_only_and_charges_money(self) -> None:
         db = self.Session()
         try:
             client = Client(id="trial-money", telegram_id="100", is_trial=True)
@@ -120,10 +310,24 @@ class BillingLedgerTests(unittest.TestCase):
             db.commit()
             db.refresh(client)
 
+            grant_trial_balance(db, client, supplier_search_units=1, procurement_report_units=1)
+            db.commit()
+            db.refresh(client)
+
             self.assertTrue(client_uses_trial_access(db, client))
             self.assertEqual(client.money_balance_kopeks, 16_000)
-            self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 1)
-            self.assertEqual(balance_counter(db, client, KIND_PROCUREMENT_REPORT)["available"], 1)
+            trial_grants = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == client.id)
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .all()
+            )
+            self.assertEqual(len(trial_grants), 2)
+            self.assertTrue(all(item.kind == KIND_MONEY for item in trial_grants))
+            self.assertTrue(all(item.units == 0 for item in trial_grants))
+            self.assertEqual(sum(item.amount_kopeks for item in trial_grants), 16_000)
+            self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 0)
+            self.assertEqual(balance_counter(db, client, KIND_PROCUREMENT_REPORT)["available"], 0)
 
             reserve_job_units(db, client, job)
             db.refresh(client)
@@ -135,7 +339,157 @@ class BillingLedgerTests(unittest.TestCase):
             self.assertEqual(client.money_balance_kopeks, 10_000)
             self.assertEqual(client.money_reserved_kopeks, 0)
             self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 0)
-            self.assertEqual(balance_counter(db, client, KIND_PROCUREMENT_REPORT)["available"], 1)
+            self.assertEqual(balance_counter(db, client, KIND_PROCUREMENT_REPORT)["available"], 0)
+        finally:
+            db.close()
+
+    def test_paid_service_does_not_use_legacy_units_without_money(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(
+                id="client-paid-legacy",
+                telegram_id="paid-legacy",
+                monthly_supplier_search_limit=10,
+            )
+            job = Job(id="job-paid-legacy", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+            ])
+            db.commit()
+
+            error = access_error_for_units(db, client, {KIND_SUPPLIER_SEARCH: 1})
+            self.assertIn("Недостаточно средств", error)
+            with self.assertRaises(BillingError):
+                reserve_job_units(db, client, job)
+            self.assertFalse(
+                db.query(BillingTransaction.id)
+                .filter(BillingTransaction.job_id == job.id)
+                .filter(BillingTransaction.operation == OP_RESERVE)
+                .first()
+            )
+        finally:
+            db.close()
+
+    def test_unused_legacy_trial_units_are_reissued_as_money(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="trial-legacy-units", telegram_id="trial-legacy-units", is_trial=True)
+            db.add_all([
+                client,
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_GRANT,
+                    units=1,
+                    amount_kopeks=0,
+                    created_by="system",
+                ),
+            ])
+            db.commit()
+
+            grant_trial_balance(db, client, supplier_search_units=1, procurement_report_units=1)
+            db.commit()
+            db.refresh(client)
+
+            money_grants = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == client.id)
+                .filter(BillingTransaction.kind == KIND_MONEY)
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .all()
+            )
+            self.assertEqual(sum(item.amount_kopeks for item in money_grants), 16_000)
+            self.assertEqual(client.money_balance_kopeks, 16_000)
+        finally:
+            db.close()
+
+    def test_paid_service_reserves_full_price_even_with_granted_units(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-paid-units", telegram_id="paid-units", money_balance_kopeks=6_000)
+            job = Job(id="job-paid-units", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_GRANT,
+                    units=10,
+                    amount_kopeks=0,
+                    created_by="system",
+                ),
+            ])
+            db.commit()
+
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+            reserve = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == job.id)
+                .filter(BillingTransaction.operation == OP_RESERVE)
+                .one()
+            )
+
+            self.assertEqual(reserve.amount_kopeks, 6_000)
+            self.assertEqual(client.money_reserved_kopeks, 6_000)
+        finally:
+            db.close()
+
+    def test_disabled_client_tariff_cannot_fall_back_to_legacy_units(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-disabled", telegram_id="disabled", monthly_supplier_search_limit=10)
+            job = Job(id="job-disabled", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    price_kopeks=0,
+                    is_enabled=False,
+                ),
+            ])
+            db.commit()
+
+            with self.assertRaises(BillingError) as raised:
+                reserve_job_units(db, client, job)
+
+            self.assertIn("отключена", str(raised.exception))
+        finally:
+            db.close()
+
+    def test_repeated_reserve_for_same_paid_job_is_idempotent(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-reserve-repeat", telegram_id="reserve-repeat", money_balance_kopeks=6_000)
+            job = Job(id="job-reserve-repeat", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+            ])
+            db.commit()
+
+            reserve_job_units(db, client, job)
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+
+            reserves = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == job.id)
+                .filter(BillingTransaction.operation == OP_RESERVE)
+                .all()
+            )
+            self.assertEqual(len(reserves), 1)
+            self.assertEqual(reserves[0].amount_kopeks, 6_000)
+            self.assertEqual(client.money_reserved_kopeks, 6_000)
         finally:
             db.close()
 
@@ -180,23 +534,74 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_money_grant_top_up_records_balance_without_unit_access(self) -> None:
+    def test_money_grant_top_up_pays_for_service_at_effective_price(self) -> None:
         db = self.Session()
         try:
             client = Client(id="client-topup", telegram_id="102")
-            db.add(client)
+            job = Job(id="job-topup", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+            ])
             db.commit()
 
             transaction = grant_money_balance(db, client, amount_kopeks=12_300, note="manual topup")
+            reserve_job_units(db, client, job)
+            charge_job_reservation(db, job)
             db.refresh(client)
             payload = transaction_to_dict(transaction)
 
-            self.assertEqual(client.money_balance_kopeks, 12_300)
+            self.assertEqual(client.money_balance_kopeks, 6_300)
+            self.assertEqual(client.money_reserved_kopeks, 0)
             self.assertEqual(transaction.kind, KIND_MONEY)
             self.assertEqual(transaction.units, 0)
             self.assertEqual(payload["kind_label"], "Баланс")
-            self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 0)
-            self.assertEqual(balance_counter(db, client, KIND_PROCUREMENT_REPORT)["available"], 0)
+        finally:
+            db.close()
+
+    def test_money_balance_is_used_after_legacy_units_are_exhausted(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-money-fallback", telegram_id="103", money_balance_kopeks=600_000)
+            job = Job(id="job-money-fallback", client_id=client.id, mode="supplier_search")
+            db.add_all([
+                client,
+                job,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_GRANT,
+                    units=1,
+                    created_by="admin",
+                ),
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_RESERVE,
+                    units=1,
+                    created_by="system",
+                ),
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_CHARGE,
+                    units=1,
+                    created_by="system",
+                ),
+            ])
+            db.commit()
+
+            self.assertEqual(access_error_for_units(db, client, {KIND_SUPPLIER_SEARCH: 1}), "")
+            reserve_job_units(db, client, job)
+            db.refresh(client)
+            self.assertEqual(client.money_reserved_kopeks, 6_000)
+
+            charge_job_reservation(db, job)
+            db.refresh(client)
+            self.assertEqual(client.money_balance_kopeks, 594_000)
+            self.assertEqual(client.money_reserved_kopeks, 0)
         finally:
             db.close()
 
@@ -279,6 +684,55 @@ class BillingLedgerTests(unittest.TestCase):
             self.assertEqual(job.status, STATUS_CONFIRMATION_EXPIRED)
             self.assertEqual(counter["available"], 1)
             self.assertEqual(counter["reserved"], 0)
+        finally:
+            db.close()
+
+    def test_stale_accepted_partial_without_download_releases_reserve(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-partial", telegram_id="101")
+            job = Job(
+                id="job-partial",
+                client_id=client.id,
+                mode="supplier_search",
+                status="partial",
+                updated_at=now_utc() - timedelta(hours=25),
+            )
+            db.add_all([client, job])
+            db.commit()
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=1)
+            reserve_job_units(db, client, job)
+
+            expired = expire_stale_confirmations(db, older_than=timedelta(hours=24))
+
+            self.assertEqual(expired, 1)
+            self.assertEqual(job.status, STATUS_CONFIRMATION_EXPIRED)
+            self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 1)
+        finally:
+            db.close()
+
+    def test_downloaded_partial_is_not_expired_or_refunded(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-downloaded", telegram_id="102")
+            job = Job(
+                id="job-downloaded",
+                client_id=client.id,
+                mode="supplier_search",
+                status="partial",
+                updated_at=now_utc() - timedelta(hours=25),
+            )
+            db.add_all([client, job])
+            db.commit()
+            grant_package_units(db, client, kind=KIND_SUPPLIER_SEARCH, units=1)
+            reserve_job_units(db, client, job)
+            charge_job_reservation(db, job)
+
+            expired = expire_stale_confirmations(db, older_than=timedelta(hours=24))
+
+            self.assertEqual(expired, 0)
+            self.assertEqual(job.status, "partial")
+            self.assertEqual(balance_counter(db, client, KIND_SUPPLIER_SEARCH)["available"], 0)
         finally:
             db.close()
 
@@ -392,7 +846,7 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_unit_balance_works_with_price_and_no_money_balance(self) -> None:
+    def test_unit_balance_cannot_pay_for_priced_service(self) -> None:
         db = self.Session()
         try:
             client = Client(id="client-1", telegram_id="100", monthly_supplier_search_limit=1)
@@ -404,18 +858,18 @@ class BillingLedgerTests(unittest.TestCase):
             ])
             db.commit()
 
-            reserve_job_units(db, client, job)
-            charge_job_reservation(db, job)
+            with self.assertRaises(BillingError):
+                reserve_job_units(db, client, job)
             db.refresh(client)
             counter = balance_counter(db, client, KIND_SUPPLIER_SEARCH)
 
-            self.assertEqual(counter["available"], 0)
-            self.assertEqual(counter["spent"], 1)
+            self.assertEqual(counter["available"], 1)
+            self.assertEqual(counter["spent"], 0)
             self.assertEqual(client.money_balance_kopeks, 0)
         finally:
             db.close()
 
-    def test_money_grant_for_report_is_not_spent_on_supplier_search(self) -> None:
+    def test_common_money_balance_is_fungible_across_services(self) -> None:
         db = self.Session()
         try:
             client = Client(id="client-1", telegram_id="100")
@@ -437,10 +891,10 @@ class BillingLedgerTests(unittest.TestCase):
             reserve_job_units(db, client, supplier_job)
             charge_job_reservation(db, supplier_job)
             db.refresh(client)
-            self.assertEqual(client.money_balance_kopeks, 6000)
+            self.assertEqual(client.money_balance_kopeks, 0)
 
-            reserve_job_units(db, client, report_job)
-            charge_job_reservation(db, report_job)
+            with self.assertRaises(BillingError):
+                reserve_job_units(db, client, report_job)
             db.refresh(client)
             self.assertEqual(client.money_balance_kopeks, 0)
         finally:

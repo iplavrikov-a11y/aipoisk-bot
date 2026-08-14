@@ -24,9 +24,9 @@ log() {
 }
 
 case "$deploy_scope" in
-  full|backend) ;;
+  full|backend|site) ;;
   *)
-    log "unknown AIPOISK_DEPLOY_SCOPE: $deploy_scope (expected full or backend)" >&2
+    log "unknown AIPOISK_DEPLOY_SCOPE: $deploy_scope (expected full, backend or site)" >&2
     exit 2
     ;;
 esac
@@ -37,6 +37,49 @@ curl_get() {
 
 curl_head() {
   curl -fsSI --connect-timeout 3 --max-time 20 "$@"
+}
+
+verify_minprom_registry_runtime() {
+  local worker_pid worker_pythonpath worker_registry_dir
+
+  PYTHONPATH="$BACKEND_DIR" \
+    SUPPLIER_MINPROM_REGISTRY_CACHE_DIR="${SUPPLIER_MINPROM_REGISTRY_CACHE_DIR:-$ROOT_DIR/data/minprom_registry}" \
+    "$BACKEND_DIR/.venv/bin/python" - <<'PY'
+from pathlib import Path
+
+from app.supplier_search import get_minprom_registry_cache_status
+
+status = get_minprom_registry_cache_status()
+if not status["sqlite_ready"] or int(status["sqlite_entry_count"]) <= 0:
+    raise SystemExit("Minprom registry cache is not ready for supplier searches")
+if not Path(status["index_path"]).is_file() or not Path(status["sqlite_path"]).is_file():
+    raise SystemExit("Minprom registry cache paths are unavailable")
+PY
+
+  worker_pid="$(systemctl show aipoisk-worker.service --property=MainPID --value)"
+  [[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] || {
+    log "worker process is unavailable for Minprom registry verification" >&2
+    return 1
+  }
+  worker_pythonpath="$(tr '\0' '\n' <"/proc/$worker_pid/environ" | sed -n 's/^PYTHONPATH=//p' | head -n 1)"
+  worker_registry_dir="$(tr '\0' '\n' <"/proc/$worker_pid/environ" | sed -n 's/^SUPPLIER_MINPROM_REGISTRY_CACHE_DIR=//p' | head -n 1)"
+  [[ -n "$worker_pythonpath" && -d "$worker_pythonpath/app" ]] || {
+    log "worker code path is unavailable for Minprom registry verification" >&2
+    return 1
+  }
+  [[ -n "$worker_registry_dir" ]] || {
+    log "worker has no shared Minprom registry cache directory configured" >&2
+    return 1
+  }
+
+  SUPPLIER_MINPROM_REGISTRY_CACHE_DIR="$worker_registry_dir" \
+    "$BACKEND_DIR/.venv/bin/python" -P -c "
+import sys
+sys.path.insert(0, r'''$worker_pythonpath''')
+from app.supplier_search import get_minprom_registry_cache_status
+status = get_minprom_registry_cache_status()
+assert status['sqlite_ready'] and int(status['sqlite_entry_count']) > 0, status
+"
 }
 
 acquire_job_restart_gate() {
@@ -184,7 +227,8 @@ build_site_release() {
 }
 
 promote_site_release() {
-  site_next_backup="$SITE_DIR/.next.rollback-$STAMP"
+  mkdir -p "$BACKUP_DIR/tenderlex-site"
+  site_next_backup="$BACKUP_DIR/tenderlex-site/.next-$STAMP"
   if [[ ! -d "$SITE_DIR/.next" ]]; then
     log "live site build is missing: $SITE_DIR/.next" >&2
     return 1
@@ -208,8 +252,10 @@ export TENDERLEX_GOOGLE_SITE_VERIFICATION="${TENDERLEX_GOOGLE_SITE_VERIFICATION:
 
 cd "$ROOT_DIR"
 
-log "running backend tests"
-PYTHONPATH="$BACKEND_DIR" pytest backend/tests -q
+if [[ "$deploy_scope" != "site" ]]; then
+  log "running backend tests"
+  PYTHONPATH="$BACKEND_DIR" pytest backend/tests -q
+fi
 
 if [[ "$deploy_scope" == "full" ]]; then
   log "building admin frontend"
@@ -217,12 +263,15 @@ if [[ "$deploy_scope" == "full" ]]; then
 
   log "building isolated public site release"
   build_site_release
+elif [[ "$deploy_scope" == "site" ]]; then
+  log "site scope: building isolated public site release"
+  build_site_release
 else
   # A backend-only deploy must not publish unrelated, uncommitted web assets.
   log "backend scope: leaving admin and site artifacts unchanged"
 fi
 
-if [[ -f "$DB_PATH" ]]; then
+if [[ "$deploy_scope" != "site" && -f "$DB_PATH" ]]; then
   mkdir -p "$BACKUP_DIR"
   backup_path="$BACKUP_DIR/aipoisk-before-live-deploy-$STAMP.db"
   log "creating WAL-safe sqlite backup at $backup_path"
@@ -235,65 +284,77 @@ if [[ -f "$DB_PATH" ]]; then
   log "sqlite backup verified"
 fi
 
-log "restarting production services"
-active_jobs="$(active_job_count)"
-if [[ "${AIPOISK_FORCE_JOB_SERVICE_RESTART:-0}" != "0" ]]; then
-  log "forced job-service restart is disabled for safe deploys"
-  exit 1
-fi
-if [[ "$active_jobs" != "0" ]]; then
-  log "deploy blocked because active jobs are present: $active_jobs"
-  exit 1
-fi
-
-services_touched=1
-systemctl restart tender-source-service.service
-wait_for_url http://127.0.0.1:8096/ready 30 1
-curl_get http://127.0.0.1:8096/ready \
-  | jq -e '.ok == true and .tenderplan.ok == true' >/dev/null
-curl_get http://127.0.0.1:8096/health/eis \
-  | jq -e '.ok == true and .via_proxy == true' >/dev/null
-
-log "acquiring the final durable job restart fence"
-acquire_job_restart_gate
-if [[ "$active_jobs" != "0" ]]; then
-  log "deploy blocked because active jobs are present at the restart fence: $active_jobs"
-  exit 1
-fi
-
-log "stopping job services before updating the shared browser runtime"
-systemctl stop \
-  aipoisk-api.service \
-  aipoisk-worker.service \
-  aipoisk-bot.service
-
-log "ensuring compatible Playwright headless Chromium"
-"$BACKEND_DIR/.venv/bin/python" -m playwright install --only-shell chromium
-
-systemctl start \
-  aipoisk-api.service \
-  aipoisk-worker.service \
-  aipoisk-bot.service
-release_job_restart_gate COMMIT
-if [[ "$deploy_scope" == "full" ]]; then
+if [[ "$deploy_scope" == "site" ]]; then
+  log "site scope: promoting the public site without restarting backend job services"
+  services_touched=1
   promote_site_release
   systemctl restart tenderlex-site.service
+else
+  log "restarting production services"
+  active_jobs="$(active_job_count)"
+  if [[ "${AIPOISK_FORCE_JOB_SERVICE_RESTART:-0}" != "0" ]]; then
+    log "forced job-service restart is disabled for safe deploys"
+    exit 1
+  fi
+  if [[ "$active_jobs" != "0" ]]; then
+    log "deploy blocked because active jobs are present: $active_jobs"
+    exit 1
+  fi
+
+  services_touched=1
+  systemctl restart tender-source-service.service
+  wait_for_url http://127.0.0.1:8096/ready 30 1
+  curl_get http://127.0.0.1:8096/ready \
+    | jq -e '.ok == true and .tenderplan.ok == true' >/dev/null
+  curl_get http://127.0.0.1:8096/health/eis \
+    | jq -e '.ok == true and .via_proxy == true' >/dev/null
+
+  log "acquiring the final durable job restart fence"
+  acquire_job_restart_gate
+  if [[ "$active_jobs" != "0" ]]; then
+    log "deploy blocked because active jobs are present at the restart fence: $active_jobs"
+    exit 1
+  fi
+
+  log "stopping job services before updating the shared browser runtime"
+  systemctl stop \
+    aipoisk-api.service \
+    aipoisk-worker.service \
+    aipoisk-bot.service
+
+  log "ensuring compatible Playwright headless Chromium"
+  "$BACKEND_DIR/.venv/bin/python" -m playwright install --only-shell chromium
+
+  systemctl start \
+    aipoisk-api.service \
+    aipoisk-worker.service \
+    aipoisk-bot.service
+  release_job_restart_gate COMMIT
+  if [[ "$deploy_scope" == "full" ]]; then
+    promote_site_release
+    systemctl restart tenderlex-site.service
+  fi
 fi
 
 log "checking service state"
-systemctl is-active --quiet tender-source-service.service
-systemctl is-active --quiet aipoisk-api.service
-systemctl is-active --quiet aipoisk-worker.service
-systemctl is-active --quiet aipoisk-bot.service
 systemctl is-active --quiet tenderlex-site.service
+if [[ "$deploy_scope" != "site" ]]; then
+  systemctl is-active --quiet tender-source-service.service
+  systemctl is-active --quiet aipoisk-api.service
+  systemctl is-active --quiet aipoisk-worker.service
+  systemctl is-active --quiet aipoisk-bot.service
 
-log "checking live API payload"
-wait_for_url http://127.0.0.1:8088/api/health/ready 30 1
-curl_get http://127.0.0.1:8088/api/health/ready \
-  | jq -e '.ok == true and .database.ok == true and .queue.ok == true and .queue.stale_running == 0 and .tender_source.ok == true' >/dev/null
-wait_for_url http://127.0.0.1:8088/api/public/site 30 1
-curl_get http://127.0.0.1:8088/api/public/site | rg -q '"contacts"'
-curl_get http://127.0.0.1:8088/api/public/site | rg -q '"max"'
+  log "checking shared Minprom registry cache in API and worker runtimes"
+  verify_minprom_registry_runtime
+
+  log "checking live API payload"
+  wait_for_url http://127.0.0.1:8088/api/health/ready 30 1
+  curl_get http://127.0.0.1:8088/api/health/ready \
+    | jq -e '.ok == true and .database.ok == true and .queue.ok == true and .queue.stale_running == 0 and .tender_source.ok == true' >/dev/null
+  wait_for_url http://127.0.0.1:8088/api/public/site 30 1
+  curl_get http://127.0.0.1:8088/api/public/site | rg -q '"contacts"'
+  curl_get http://127.0.0.1:8088/api/public/site | rg -q '"max"'
+fi
 
 log "checking live site routes"
 wait_for_url http://127.0.0.1:3093/ 30 1
@@ -301,19 +362,26 @@ wait_for_url http://127.0.0.1:3093/cabinet 30 1
 curl_head http://127.0.0.1:3093/ >/dev/null
 curl_head http://127.0.0.1:3093/cabinet >/dev/null
 
-if [[ "$deploy_scope" == "full" ]]; then
-  log "checking metrika placement"
+if [[ "$deploy_scope" == "full" || "$deploy_scope" == "site" ]]; then
+  log "checking analytics consent gate"
   [[ "$(curl_get http://127.0.0.1:3093/cabinet | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" == "0" ]]
-  [[ "$(curl_get http://127.0.0.1:3093/ | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika|metrika' | wc -l)" != "0" ]]
+  [[ "$(curl_get http://127.0.0.1:3093/ | tr '<' '\n' | rg -o 'mc\.yandex\.ru|yandex-metrika' | wc -l)" == "0" ]]
+  curl_get http://127.0.0.1:3093/ | rg -q 'cookie-consent|Разрешить аналитику'
 fi
 
 log "checking procurement resource slice placement"
-for service in \
-  tender-source-service.service \
-  aipoisk-api.service \
-  aipoisk-worker.service \
-  aipoisk-bot.service \
-  tenderlex-site.service; do
+if [[ "$deploy_scope" == "site" ]]; then
+  services=(tenderlex-site.service)
+else
+  services=(
+    tender-source-service.service
+    aipoisk-api.service
+    aipoisk-worker.service
+    aipoisk-bot.service
+    tenderlex-site.service
+  )
+fi
+for service in "${services[@]}"; do
   control_group="$(systemctl show "$service" --property=ControlGroup --value)"
   [[ "$control_group" == /procurement.slice/procurement-tenderlex.slice/* ]]
 done

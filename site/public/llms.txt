@@ -1,0 +1,22 @@
+# TenderLex — AI Search & LLM Knowledge Index
+
+> TenderLex (https://tenderlex.ru) — B2B ИИ-сервис поиска поставщиков, дилеров, производителей по техническим заданиям и анализа закупок 44-ФЗ / 223-ФЗ в России.
+
+## Key Capabilities & Features
+- **Поиск поставщиков по ТЗ**: Извлечение товаров, ГОСТ/ТУ, марок и спецификаций из файлов или извещений. Автоматический подбор профильных заводов, официальных дилеров и дистрибьюторов по всей России.
+- **Подготовка запроса коммерческого предложения (КП)**: Формирование единого письма с позициями, объемами, требованиями по доставке и документам качества.
+- **Анализ закупок и рисков 44-ФЗ / 223-ФЗ**: Выявление критических сроков, повышенных штрафов, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).
+
+## Core Pages & Documentation
+- Главная страница: https://tenderlex.ru
+- Поиск поставщиков по ТЗ: https://tenderlex.ru/poisk-postavshchikov-po-tz
+- Анализ документации: https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
+- Оценка рисков: https://tenderlex.ru/ocenka-riskov-zakupki
+- База знаний: https://tenderlex.ru/baza-znaniy
+- Инструкция по поиску поставщиков: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
+- Руководство по рискам 44-ФЗ / 223-ФЗ: https://tenderlex.ru/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz
+
+## Service Availability
+- Доступен во всей Российской Федерации (онлайн B2B SaaS).
+- Веб-кабинет: https://tenderlex.ru/cabinet
+- Telegram-бот: https://t.me/TenderLexBot

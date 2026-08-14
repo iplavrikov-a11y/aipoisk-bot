@@ -1,24 +1,38 @@
 from __future__ import annotations
-
+import os
+import sys
+import time
+import json
+import re
 import asyncio
+
+import logging
+import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.filters import Command, CommandObject
+from aiogram.types import CallbackQuery, ForceReply, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonDefault, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from fastapi import HTTPException
+
+from .account_linking import (
+    TELEGRAM_TO_WEB,
+    AccountLinkError,
+    cabinet_link,
+    consume_web_to_telegram_token,
+    create_account_link_token,
+)
 
 from .billing import (
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
     BillingError,
-    balance_counter,
     charge_job_reservation,
     client_uses_trial_access,
     client_service_balance_summary,
@@ -43,15 +57,47 @@ from .jobs import (
     cleanup_expired_jobs,
     cancel_running_job,
     create_job,
+    job_dir,
     package_job_output_files,
     package_job_output_items,
 )
 from .main import create_additional_supplier_search_for_client, job_can_find_more_suppliers
-from .models import Client, Job, now_utc
+from .journey import claim_reminder, record_journey_event, reminder_candidates
+from .legal import (
+    LEGAL_DOCUMENT_PERSONAL_DATA,
+    LEGAL_DOCUMENT_TERMS,
+    LEGAL_INDEX_URL,
+    LEGAL_VERSION,
+    PERSONAL_DATA_URL,
+    PRIVACY_URL,
+    TERMS_URL,
+    record_legal_acceptance,
+)
+from .models import BillingTransaction, Client, Job, now_utc
 from .procurement_sources import source_label, source_payloads_from_text
-from .repository import client_access_error, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
+from .repository import client_access_error, get_client_by_telegram_id, get_or_create_settings, get_or_create_trial_client_by_telegram_id, seed_owner_client, supplier_target_for_client
+from .result_offers import (
+    CONFIRMATION_KIND_REGISTRY_FALLBACK,
+    ResultOfferConflict,
+    ResultOfferGone,
+    accept_job_result_offer,
+    active_result_offer_output_items,
+    billing_kinds_for_result_delivery,
+    claim_job_result_offer_delivery,
+    complete_job_result_offer_delivery,
+    decline_job_result_offer,
+    expire_result_offers,
+    fail_job_result_offer_delivery,
+    result_offer_to_dict,
+)
 
-router = Router()
+router = Router(name="private_customer_bot")
+group_safety_router = Router(name="group_safety")
+router.message.filter(F.chat.type == ChatType.PRIVATE)
+router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+group_safety_router.message.filter(F.chat.type != ChatType.PRIVATE)
+group_safety_router.callback_query.filter(F.message.chat.type != ChatType.PRIVATE)
+logger = logging.getLogger(__name__)
 PENDING_MODES: dict[int, str] = {}
 PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
@@ -66,6 +112,7 @@ BUTTON_ACCESS = "📊 Кабинет"
 BUTTON_TARIFFS = "💳 Тарифы"
 BUTTON_HELP = "❓ Помощь"
 BUTTON_CONTACTS = "📞 Контакты"
+BUTTON_LEGAL = "⚖️ Правовая информация"
 BUTTON_RUN_BATCH = "▶️ Запустить"
 BUTTON_CANCEL_BATCH = "🗑 Очистить"
 BUTTON_BACK_MAIN = "⬅️ Меню"
@@ -78,6 +125,15 @@ BOT_DESCRIPTION = (
     "TenderLex помогает работать с закупками: анализирует документацию по номеру извещения, "
     "ссылке, файлам или архивам, ищет поставщиков по ТЗ и выдаёт готовые файлы в Telegram.\n\n"
     "Чтобы начать, откройте бота, нажмите «Start» или «Запустить» и используйте кнопки меню."
+)
+ONBOARDING_REMINDER_TEXT = (
+    "👋 Добрый день! Нужна помощь с первым запуском TenderLex?\n\n"
+    "У вас открыт пробный доступ — можно проверить сервис на реальной задаче. "
+    "Проще всего начать с режима «🔎 Поставщики по ТЗ»: нажмите «🚀 Создать» и отправьте ТЗ, "
+    "спецификацию или описание позиции.\n\n"
+    "TenderLex найдёт и проверит поставщиков, подготовит список компаний и контактов.\n\n"
+    "Можно работать здесь, в боте, или в личном кабинете на https://tenderlex.ru. "
+    "Если не уверены, какой режим выбрать, откройте «📞 Контакты» — подскажем."
 )
 AI_CUSTOMER_NOTE = (
     "Важно: результат подготовлен с помощью ИИ и помогает быстрее оценить закупку. "
@@ -99,6 +155,7 @@ BOT_PAYMENT_INSTRUCTIONS = (
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
+BOT_TERMINAL_JOB_STATUSES = set(TERMINAL_JOB_STATUSES) | {"delivery_expired"}
 
 
 @dataclass
@@ -119,15 +176,46 @@ class JobProgressSnapshot:
     message: str
     error: str
     created_at: datetime | None
+    confirmation_kind: str = ""
+    confirmation_outcome: str = ""
+    offer_delivery_outcome: str = ""
+    registry_verified_count: int = 0
+    alternative_verified_count: int = 0
+    offer_charge_text: str = ""
 
 
 PENDING_UPLOADS: dict[int, PendingBatch] = {}
 CHAT_UPLOAD_LOCKS: dict[int, asyncio.Lock] = {}
+JOB_DELIVERY_LOCKS: dict[str, asyncio.Lock] = {}
+DELIVERED_JOB_IDS: set[str] = set()
 BATCH_RUNNING_CHATS: set[int] = set()
 BOT_CANCEL_NOTIFIED_JOBS: set[str] = set()
 TEXT_TZ_MIN_CHARS = 50
 TEXT_TZ_MIN_WORDS = 6
 TELEGRAM_CAPTION_LIMIT = 1024
+
+
+@router.error()
+async def unhandled_bot_error(event: ErrorEvent) -> bool:
+    exception = event.exception
+    logger.error(
+        "Unhandled Telegram update error",
+        exc_info=(type(exception), exception, exception.__traceback__),
+    )
+    try:
+        if event.update.callback_query:
+            await event.update.callback_query.answer(
+                "Не удалось выполнить действие. Попробуйте ещё раз.",
+                show_alert=True,
+            )
+        elif event.update.message:
+            await event.update.message.answer(
+                "⚠️ Не удалось выполнить действие. Попробуйте ещё раз или нажмите /start.",
+                reply_markup=main_menu(),
+            )
+    except Exception as reply_error:
+        logger.warning("Could not send Telegram error notice: %s", reply_error)
+    return True
 
 
 def _pending_input_count(pending: PendingBatch) -> int:
@@ -140,6 +228,40 @@ def _scenario_accepts_source_links(scenario: str) -> bool:
 
 def _scenario_uses_supplier_policy(scenario: str) -> bool:
     return scenario in {SCENARIO_SUPPLIERS, SCENARIO_ANALYSIS_AND_SUPPLIERS}
+
+
+def _scenario_job_mode(scenario: str) -> str:
+    if scenario == SCENARIO_REPORT:
+        return MODE_PROCUREMENT_REPORT
+    if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
+        return MODE_ANALYSIS_AND_SUPPLIERS
+    return MODE_SUPPLIER_SEARCH
+
+
+def _clear_pending_state(chat_id: int) -> bool:
+    had_state = any(chat_id in state for state in (PENDING_UPLOADS, PENDING_MODES, PENDING_SUPPLIER_POLICIES))
+    PENDING_UPLOADS.pop(chat_id, None)
+    PENDING_MODES.pop(chat_id, None)
+    PENDING_SUPPLIER_POLICIES.pop(chat_id, None)
+    return had_state
+
+
+def _select_scenario(chat_id: int, scenario: str) -> bool:
+    expected_mode = _scenario_job_mode(scenario)
+    pending = PENDING_UPLOADS.get(chat_id)
+    cleared_incompatible = bool(pending and pending.mode != expected_mode)
+    if cleared_incompatible:
+        PENDING_UPLOADS.pop(chat_id, None)
+    PENDING_MODES[chat_id] = scenario
+    if _scenario_uses_supplier_policy(scenario):
+        PENDING_SUPPLIER_POLICIES[chat_id] = SUPPLIER_POLICY_NORMAL
+    else:
+        PENDING_SUPPLIER_POLICIES.pop(chat_id, None)
+    return cleared_incompatible
+
+
+def _scenario_switch_note(cleared: bool) -> str:
+    return "\n\n🗑 Материалы предыдущего сценария очищены, чтобы задачи не смешались." if cleared else ""
 
 
 def _supplier_policy_for_chat(chat_id: int) -> str:
@@ -276,27 +398,35 @@ def _telegram_user_fields(message: Message) -> tuple[str, str, str]:
     return telegram_id, username, name
 
 
-def _trial_restricted_text(scenario: str) -> str:
-    return (
-        "⚠️ Режим недоступен\n\n"
-        "В бесплатном доступе анализ и поиск поставщиков запускаются отдельно."
-    )
-
-
-async def _reject_trial_restricted_scenario(message: Message, scenario: str) -> bool:
-    telegram_id, username, name = _telegram_user_fields(message)
+def _record_telegram_event(
+    message: Message,
+    event_name: str,
+    *,
+    mode: str = "",
+    outcome: str = "",
+    reason_code: str = "",
+) -> None:
+    telegram_id = str(message.from_user.id if message.from_user else "")
     db = SessionLocal()
     try:
-        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
-        if account_error:
-            await message.answer(account_error, reply_markup=main_menu())
-            return True
-        if client and client_uses_trial_access(db, client):
-            await message.answer(_trial_restricted_text(scenario), reply_markup=main_menu())
-            return True
+        client, account_error = get_client_by_telegram_id(db, telegram_id)
+        if client and not account_error:
+            record_journey_event(
+                db,
+                client.id,
+                channel="telegram",
+                event_name=event_name,
+                mode=mode,
+                outcome=outcome,
+                reason_code=reason_code,
+            )
+    except Exception as exc:
+        rollback = getattr(db, "rollback", None)
+        if callable(rollback):
+            rollback()
+        logger.warning("Telegram journey event was skipped: %s", exc)
     finally:
         db.close()
-    return False
 
 
 def _chat_upload_lock(chat_id: int) -> asyncio.Lock:
@@ -367,16 +497,47 @@ async def _download_document_content(message: Message, bot: Bot) -> tuple[str, b
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_path = temp_dir / filename
     last_error: Exception | None = None
-    for attempt in range(3):
+    try:
+        for attempt in range(3):
+            try:
+                file = await bot.get_file(document.file_id, request_timeout=60)
+                await bot.download_file(file.file_path, destination=temp_path, timeout=120)
+                return filename, temp_path.read_bytes()
+            except (TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+        raise RuntimeError(f"Не удалось загрузить файл из Telegram: {filename}") from last_error
+    finally:
+        temp_path.unlink(missing_ok=True)
         try:
-            file = await bot.get_file(document.file_id, request_timeout=60)
-            await bot.download_file(file.file_path, destination=temp_path, timeout=120)
-            return filename, temp_path.read_bytes()
-        except (TimeoutError, OSError) as exc:
-            last_error = exc
-            if attempt < 2:
-                await asyncio.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"Не удалось загрузить файл из Telegram: {filename}") from last_error
+            temp_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _cleanup_telegram_temp_storage(*, max_age_hours: int = 24, now: datetime | None = None) -> int:
+    root = config.storage_path / "telegram"
+    if not root.exists():
+        return 0
+    cutoff = (now or now_utc()) - timedelta(hours=max(1, max_age_hours))
+    removed = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            if modified < cutoff:
+                path.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    for directory in sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return removed
 
 
 def _reserve_created_job(db, client: Client, job: Job) -> str:
@@ -391,6 +552,15 @@ def _reserve_created_job(db, client: Client, job: Job) -> str:
         db.commit()
         return str(exc)
     return ""
+
+
+def _discard_unlaunched_jobs(db, jobs: list[Job]) -> None:
+    for job in reversed(jobs):
+        release_job_reservation(db, job, note="Резерв возвращён: комплект не был запущен")
+        db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).delete(synchronize_session=False)
+        shutil.rmtree(job_dir(job.id), ignore_errors=True)
+        db.delete(job)
+        db.commit()
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -547,6 +717,7 @@ def _status_label(status: str) -> str:
         STATUS_AWAITING_CUSTOMER_CONFIRMATION: "ожидает решения",
         STATUS_CUSTOMER_DECLINED: "отклонено клиентом",
         STATUS_CONFIRMATION_EXPIRED: "подтверждение истекло",
+        "delivery_expired": "срок выдачи истёк",
     }
     return labels.get(status, status)
 
@@ -568,6 +739,8 @@ def _progress_heading(snapshot: JobProgressSnapshot) -> str:
         return "Отчёт не отправлен"
     if snapshot.status == STATUS_CONFIRMATION_EXPIRED:
         return "Подтверждение истекло"
+    if snapshot.status == "delivery_expired":
+        return "Срок выдачи результата истёк"
     if snapshot.status == "partial":
         return "✅ Готово частично"
     if snapshot.status in {"completed", "needs_review"}:
@@ -652,7 +825,7 @@ def _job_elapsed_seconds(snapshot: JobProgressSnapshot, *, now: datetime | None 
 
 
 def _job_eta_text(snapshot: JobProgressSnapshot, *, now: datetime | None = None) -> str:
-    if snapshot.status in TERMINAL_JOB_STATUSES:
+    if snapshot.status in BOT_TERMINAL_JOB_STATUSES:
         return "завершено"
     progress = max(0, min(99, int(snapshot.progress or 0)))
     if progress < 10:
@@ -692,6 +865,16 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
                 _progress_heading(snapshot),
                 "",
                 "Подтверждение не было получено в течение 24 часов. Списания нет.",
+                f"Прошло: {elapsed}",
+            ]
+        )
+    if snapshot.status == "delivery_expired":
+        return "\n".join(
+            [
+                _progress_heading(snapshot),
+                "",
+                "Вы согласились получить вариант без подтверждения реестра, но файл не был выдан в течение 24 часов.",
+                "За поиск поставщиков списания нет.",
                 f"Прошло: {elapsed}",
             ]
         )
@@ -761,7 +944,64 @@ def _accepted_single_tz_text(*, from_text: bool = False) -> str:
     return "✅ ТЗ принято" if not from_text else "✅ ТЗ из сообщения принято"
 
 
-def _job_snapshot(job: Job) -> JobProgressSnapshot:
+def _job_result_offer_charge_text(db, job: Job) -> str:
+    if db is None or not getattr(job, "id", None):
+        return ""
+    try:
+        kinds = ["supplier_search"]
+        if str(getattr(job, "mode", "") or "") == MODE_ANALYSIS_AND_SUPPLIERS:
+            kinds.append("procurement_report")
+        rows = (
+            db.query(
+                BillingTransaction.kind,
+                BillingTransaction.operation,
+                BillingTransaction.units,
+                BillingTransaction.amount_kopeks,
+            )
+            .filter(BillingTransaction.job_id == job.id)
+            .filter(BillingTransaction.kind.in_(kinds))
+            .all()
+        )
+    except Exception:
+        return ""
+    reserved_amount = sum(
+        max(0, int(amount or 0)) for _kind, operation, _units, amount in rows if operation == "reserve"
+    )
+    settled_amount = sum(
+        max(0, int(amount or 0))
+        for _kind, operation, _units, amount in rows
+        if operation in {"charge", "release"}
+    )
+    remaining_amount = max(0, reserved_amount - settled_amount)
+    if remaining_amount:
+        return _price_text(remaining_amount)
+    unit_parts: list[str] = []
+    labels = {
+        "supplier_search": "поиска поставщиков",
+        "procurement_report": "анализа документации",
+    }
+    for kind in kinds:
+        reserved_units = sum(
+            max(0, int(units or 0))
+            for row_kind, operation, units, _amount in rows
+            if row_kind == kind and operation == "reserve"
+        )
+        settled_units = sum(
+            max(0, int(units or 0))
+            for row_kind, operation, units, _amount in rows
+            if row_kind == kind and operation in {"charge", "release"}
+        )
+        remaining_units = max(0, reserved_units - settled_units)
+        if remaining_units:
+            operation_word = "операция" if remaining_units == 1 else "операции"
+            unit_parts.append(f"{remaining_units} {operation_word} {labels[kind]}")
+    return " + ".join(unit_parts)
+
+
+def _job_snapshot(job: Job, db=None) -> JobProgressSnapshot:
+    confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
+    offer = result_offer_to_dict(db, job) if db is not None and confirmation_kind else None
+    charge_amount = max(0, int((offer or {}).get("charge_amount_kopeks") or 0))
     return JobProgressSnapshot(
         id=job.id,
         mode=job.mode,
@@ -770,6 +1010,25 @@ def _job_snapshot(job: Job) -> JobProgressSnapshot:
         message=job.message,
         error=job.error,
         created_at=job.created_at,
+        confirmation_kind=confirmation_kind,
+        confirmation_outcome=str((offer or {}).get("decision_outcome") or getattr(job, "confirmation_outcome", "") or ""),
+        offer_delivery_outcome=str((offer or {}).get("delivery_outcome") or getattr(job, "offer_delivery_outcome", "") or ""),
+        registry_verified_count=max(
+            0,
+            int((offer or {}).get("registry_verified_count") or getattr(job, "registry_verified_count", 0) or 0),
+        ),
+        alternative_verified_count=(
+            max(
+                0,
+                int((offer or {}).get("alternative_verified_count") or getattr(job, "alternative_verified_count", 0) or 0),
+            )
+            or (max(0, int(getattr(job, "verified_count", 0) or 0)) if confirmation_kind == "registry_fallback" else 0)
+        ),
+        offer_charge_text=(
+            _price_text(charge_amount)
+            if charge_amount
+            else (_job_result_offer_charge_text(db, job) if confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK else "")
+        ),
     )
 
 
@@ -777,7 +1036,7 @@ def _load_job_snapshot(job_id: str) -> JobProgressSnapshot | None:
     db = SessionLocal()
     try:
         job = db.get(Job, job_id)
-        return _job_snapshot(job) if job else None
+        return _job_snapshot(job, db) if job else None
     finally:
         db.close()
 
@@ -951,7 +1210,7 @@ async def watch_job_progress(
     last_key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
     last_heartbeat = started
 
-    while snapshot.status not in TERMINAL_JOB_STATUSES:
+    while snapshot.status not in BOT_TERMINAL_JOB_STATUSES:
         if asyncio.get_running_loop().time() - started >= timeout_seconds:
             await _edit_or_send_status(
                 status_message,
@@ -966,7 +1225,7 @@ async def watch_job_progress(
             await _edit_or_send_status(status_message, "Задача не найдена. Сообщите владельцу сервиса.")
             return None
         snapshot = current
-        if snapshot.status in TERMINAL_JOB_STATUSES:
+        if snapshot.status in BOT_TERMINAL_JOB_STATUSES:
             break
         key = (snapshot.status, snapshot.progress, snapshot.message, snapshot.error)
         now = asyncio.get_running_loop().time()
@@ -983,7 +1242,7 @@ async def watch_job_progress(
         await _edit_or_send_status(
             status_message,
             _partial_confirmation_text(snapshot),
-            reply_markup=_partial_confirmation_keyboard(job_id),
+            reply_markup=_partial_confirmation_keyboard(job_id, snapshot.confirmation_kind),
         )
     else:
         await _edit_or_send_status(status_message, _format_job_progress(snapshot), clear_reply_markup=True)
@@ -1012,17 +1271,13 @@ def _scenario_for_message(message: Message) -> str:
 def _start_text() -> str:
     return (
         f"👋 Добро пожаловать в {BRAND_NAME}.\n\n"
-        "Что можно сделать:\n"
-        "🔎 найти и проверить поставщиков по ТЗ;\n"
-        "📄 подготовить анализ закупочной документации;\n"
-        "📄🔎 получить анализ и отдельный файл с поставщиками.\n\n"
-        "Как начать:\n"
-        f"1. Нажмите «{BUTTON_CREATE}».\n"
-        "2. Выберите тип отчёта.\n"
-        "3. Отправьте ТЗ, документацию, архив, номер извещения или ссылку.\n"
-        "4. Дождитесь статуса и готового файла.\n\n"
-        "💳 Списание только после выдачи результата. Если файл не подготовлен, списания нет.\n"
-        f"📊 Остатки доступны в «{BUTTON_ACCESS}»."
+        "Помогу найти и проверить поставщиков или разобрать закупочную документацию.\n\n"
+        "Выберите, что нужно:\n"
+        f"{BUTTON_SUPPLIERS}\n"
+        f"{BUTTON_REPORT}\n"
+        f"{BUTTON_ANALYSIS_AND_SUPPLIERS}\n\n"
+        "Отправьте материалы — дальше подскажу следующий шаг.\n"
+        "💳 Списание только после готового результата."
     )
 
 
@@ -1073,6 +1328,13 @@ def _balance_line(counter: dict) -> str:
     )
 
 
+def _money_balance_warning(balances: dict) -> str:
+    money = balances.get("money")
+    if isinstance(money, dict) and money.get("low"):
+        return "⚠️ Баланс заканчивается."
+    return ""
+
+
 def _cabinet_text(db, client: Client, settings) -> str:
     balances = client_service_balance_summary(db, client)
     lines = [
@@ -1088,10 +1350,10 @@ def _cabinet_text(db, client: Client, settings) -> str:
         _balance_line(balances["procurement_report"]),
         _balance_line(balances["supplier_search_extra"]),
     ]
-    low = [item["label"] for item in balances.values() if isinstance(item, dict) and item.get("label") and item.get("low")]
-    if low:
-        lines.extend(["", f"⚠️ Заканчивается баланс: {', '.join(low)}."])
-    lines.extend(["", f"Пополнить пакет можно в разделе «{BUTTON_TARIFFS}»."])
+    warning = _money_balance_warning(balances)
+    if warning:
+        lines.extend(["", warning])
+    lines.extend(["", f"Пополнить баланс можно в разделе «{BUTTON_TARIFFS}»."])
     if (
         _telegram_contact_url(getattr(settings, "contact_telegram", ""))
         or settings.contact_email
@@ -1125,7 +1387,7 @@ def _tariffs_text(db, settings) -> str:
     lines = [
         "💳 Тарифы и оплата",
         "",
-        "Пакеты и пополнения отображаются в кабинете. Результат списывается после выдачи по настроенной цене услуги.",
+        "Баланс пополняется в рублях. При запуске стоимость услуги резервируется по тарифу, после успешной выдачи результата — списывается.",
     ]
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
@@ -1170,6 +1432,8 @@ def _bot_payment_instructions(settings) -> str:
 
 
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
+    if snapshot.confirmation_kind == "registry_fallback":
+        return _registry_fallback_confirmation_text(snapshot)
     return (
         "⚠️ Найдено меньше поставщиков, чем обычно удаётся подготовить по отчёту.\n\n"
         "Я проверил сайты и контакты. В файл попали только подтверждённые компании.\n\n"
@@ -1179,7 +1443,42 @@ def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
     )
 
 
-def _partial_confirmation_keyboard(job_id: str) -> InlineKeyboardMarkup:
+def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
+    alternative_count = max(0, int(snapshot.alternative_verified_count or 0))
+    charge_line = (
+        f"К списанию после успешной отправки: {snapshot.offer_charge_text}."
+        if snapshot.offer_charge_text
+        else "После успешной отправки будет списана стоимость поиска поставщиков."
+    )
+    return (
+        "⚠️ По реестру Минпромторга подходящие поставщики не подтверждены.\n\n"
+        f"• Подтверждено по реестру: {max(0, int(snapshot.registry_verified_count or 0))}\n"
+        f"• Найдено и проверено вне реестра: {alternative_count}\n\n"
+        "Могу отправить отчёт с этими поставщиками и заметной отметкой, что их соответствие реестру не подтверждено.\n\n"
+        f"{charge_line}\n"
+        "При отказе списания за поиск поставщиков не будет.\n\n"
+        "Получить отчёт без подтверждения реестра?"
+    )
+
+
+def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
+    if confirmation_kind == "registry_fallback":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Получить без реестра и списать",
+                        callback_data=f"result_offer_yes:{job_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отказаться без списания",
+                        callback_data=f"result_offer_no:{job_id}",
+                    ),
+                ],
+            ]
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1245,20 +1544,100 @@ def _callback_user_fields(callback: CallbackQuery) -> tuple[str, str, str]:
     return telegram_id, username, name
 
 
+def _legal_keyboard(_accepted: set[str] | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Оферта", url=TERMS_URL),
+                InlineKeyboardButton(text="Политика", url=PRIVACY_URL),
+            ],
+            [InlineKeyboardButton(text="Согласие на обработку ПД", url=PERSONAL_DATA_URL)],
+        ]
+    )
+
+
+def _legal_text(_accepted: set[str] | None = None) -> str:
+    return (
+        "⚖️ Документы TenderLex\n\n"
+        "Оферта, политика обработки персональных данных и отдельное согласие доступны по кнопкам ниже.\n\n"
+        f"Все документы и реквизиты: {LEGAL_INDEX_URL}"
+    )
+
+
+def _record_telegram_terms_acceptance(db, telegram_id: str) -> None:
+    record_legal_acceptance(
+        db,
+        subject_type="telegram",
+        subject_id=telegram_id,
+        document_type=LEGAL_DOCUMENT_TERMS,
+        document_version=LEGAL_VERSION,
+        source="telegram_job_launch",
+        user_agent="Telegram Bot API",
+    )
+
+
 @router.message(Command("start"))
-async def start(message: Message) -> None:
+async def start(message: Message, command: CommandObject | None = None) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
     access_note = ""
+    first_use = False
     db = SessionLocal()
     try:
-        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        link_token = ""
+        command_args = str(getattr(command, "args", "") or "").strip()
+        if command_args.startswith("link_"):
+            link_token = command_args.removeprefix("link_")
+        if link_token:
+            try:
+                link_result = consume_web_to_telegram_token(
+                    db,
+                    link_token,
+                    telegram_id=telegram_id,
+                    username=username,
+                    name=name,
+                )
+                client = db.get(Client, link_result.client_id)
+                account_error = ""
+                access_note = "\n\n✅ Telegram безопасно привязан к вашему кабинету. Баланс и история сохранены."
+                record_journey_event(db, client.id if client else None, channel="telegram", event_name="link_succeeded", outcome="linked")
+            except AccountLinkError as exc:
+                await message.answer(f"⚠️ {exc}", reply_markup=main_menu())
+                return
+        else:
+            client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
             access_note = f"\n\n⚠️ {account_error}"
-        elif client:
+        elif client and not access_note:
             access_note = "\n\n✅ Telegram-аккаунт подключён. Можно работать через кнопки меню."
+        if client:
+            first_use = not bool(db.query(Job.id).filter(Job.client_id == client.id).first())
+            record_journey_event(db, client.id, channel="telegram", event_name="bot_started")
     finally:
         db.close()
-    await message.answer(_start_text() + access_note, reply_markup=_menu_for_chat(message.chat.id))
+    menu = create_menu() if first_use and not _chat_has_processing_job(message.chat.id) else _menu_for_chat(message.chat.id)
+    await message.answer(_start_text() + access_note, reply_markup=menu)
+
+
+@router.message(Command("legal"))
+@router.message(F.text == BUTTON_LEGAL)
+async def legal_info(message: Message) -> None:
+    await message.answer(_legal_text(), reply_markup=_legal_keyboard())
+
+
+@router.callback_query(F.data.startswith("legal_accept:"))
+async def legal_acceptance_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    document_type = str(callback.data or "").split(":", 1)[1]
+    if document_type not in {LEGAL_DOCUMENT_TERMS, LEGAL_DOCUMENT_PERSONAL_DATA}:
+        await callback.answer("Неизвестный документ.", show_alert=True)
+        return
+    await callback.answer("Порядок обновлён. Актуальные документы доступны по ссылкам.")
+    try:
+        await callback.message.edit_text(_legal_text(), reply_markup=_legal_keyboard())
+    except TelegramBadRequest:
+        pass
 
 
 @router.message(Command("id"))
@@ -1275,6 +1654,7 @@ async def show_id(message: Message) -> None:
 async def show_status(message: Message) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
+    recoverable_result_offers: list[tuple[str, JobProgressSnapshot]] = []
     recoverable_outputs: list[tuple[str, JobProgressSnapshot]] = []
     db = SessionLocal()
     try:
@@ -1305,16 +1685,25 @@ async def show_status(message: Message) -> None:
             return
         lines = ["🕘 Последние задачи"]
         for index, job in enumerate(jobs, start=1):
-            snapshot = _job_snapshot(job)
+            snapshot = _job_snapshot(job, db)
             lines.append(
                 f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
                 f"   {_friendly_stage_text(snapshot.message)}"
             )
         await message.answer("\n".join(lines), reply_markup=_menu_for_chat(message.chat.id))
         for job in jobs:
-            snapshot = _job_snapshot(job)
+            snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
-            if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+            if (
+                snapshot.confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
+                and snapshot.confirmation_outcome == "accepted"
+                and snapshot.offer_delivery_outcome == "pending"
+            ):
+                recoverable_result_offers.append((job_id, snapshot))
+            elif (
+                snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION
+                and snapshot.confirmation_outcome not in {"accepted", "declined", "expired"}
+            ):
                 partial_confirmations.append((job_id, snapshot))
             elif snapshot.status in {"completed", "partial", "needs_review"} and job_has_unsettled_reservation(db, job):
                 recoverable_outputs.append((job_id, snapshot))
@@ -1322,6 +1711,15 @@ async def show_status(message: Message) -> None:
         db.close()
     for job_id, snapshot in partial_confirmations:
         await _send_partial_confirmation(message, job_id, snapshot)
+    for job_id, _snapshot in recoverable_result_offers:
+        await message.answer("✅ Вы уже согласились получить вариант без подтверждения реестра. Повторяю выдачу файла.")
+        try:
+            await _send_result_offer_outputs(message, job_id, accept_if_pending=False)
+        except (ResultOfferConflict, ResultOfferGone) as exc:
+            await message.answer(str(exc), reply_markup=_menu_for_chat(message.chat.id))
+        except Exception:
+            logger.exception("Could not recover registry fallback delivery for job %s", job_id)
+            await message.answer("Не удалось отправить все файлы. Списания нет; попробуйте ещё раз через «Задачи».", reply_markup=_menu_for_chat(message.chat.id))
     for job_id, snapshot in recoverable_outputs:
         await message.answer("✅ Нашёл готовый результат, который ещё не был отправлен. Отправляю файл сейчас.")
         await _send_job_outputs(message, job_id, snapshot)
@@ -1331,21 +1729,22 @@ async def show_status(message: Message) -> None:
 async def supplier_mode(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    PENDING_MODES[message.chat.id] = SCENARIO_SUPPLIERS
-    PENDING_SUPPLIER_POLICIES[message.chat.id] = SUPPLIER_POLICY_NORMAL
+    cleared = _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
+    _record_telegram_event(message, "mode_selected", mode=MODE_SUPPLIER_SEARCH)
     await message.answer(_supplier_policy_prompt_text(SCENARIO_SUPPLIERS), reply_markup=supplier_policy_keyboard())
-    await message.answer(_supplier_multi_intro_text(), reply_markup=batch_menu())
+    await message.answer(_supplier_multi_intro_text() + _scenario_switch_note(cleared), reply_markup=batch_menu())
 
 
 @router.message(Command("report"))
 async def report_mode(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    PENDING_MODES[message.chat.id] = SCENARIO_REPORT
+    cleared = _select_scenario(message.chat.id, SCENARIO_REPORT)
+    _record_telegram_event(message, "mode_selected", mode=MODE_PROCUREMENT_REPORT)
     await message.answer(
         "📄 Анализ закупки\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}».",
+        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}»." + _scenario_switch_note(cleared),
         reply_markup=batch_menu(),
     )
 
@@ -1359,6 +1758,7 @@ async def supplier_single_button(message: Message) -> None:
 async def create_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
+    _record_telegram_event(message, "create_opened")
     await message.answer(
         "🚀 Создать\n\n"
         "Выберите сценарий:\n"
@@ -1373,6 +1773,7 @@ async def create_button(message: Message) -> None:
 async def back_main_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
+    _clear_pending_state(message.chat.id)
     await message.answer("🏠 Меню", reply_markup=main_menu())
 
 
@@ -1385,15 +1786,13 @@ async def report_button(message: Message) -> None:
 async def analysis_and_suppliers_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    if await _reject_trial_restricted_scenario(message, SCENARIO_ANALYSIS_AND_SUPPLIERS):
-        return
-    PENDING_MODES[message.chat.id] = SCENARIO_ANALYSIS_AND_SUPPLIERS
-    PENDING_SUPPLIER_POLICIES[message.chat.id] = SUPPLIER_POLICY_NORMAL
+    cleared = _select_scenario(message.chat.id, SCENARIO_ANALYSIS_AND_SUPPLIERS)
+    _record_telegram_event(message, "mode_selected", mode=MODE_ANALYSIS_AND_SUPPLIERS)
     await message.answer(_supplier_policy_prompt_text(SCENARIO_ANALYSIS_AND_SUPPLIERS), reply_markup=supplier_policy_keyboard())
     await message.answer(
         "📄🔎 Анализ + поиск\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        "Результат: анализ закупки и отдельный список поставщиков по найденному ТЗ.",
+        "Результат: анализ закупки и отдельный список поставщиков по найденному ТЗ." + _scenario_switch_note(cleared),
         reply_markup=batch_menu(),
     )
 
@@ -1438,11 +1837,12 @@ async def processing_status_button(message: Message) -> None:
 async def cancel_processing_button(message: Message) -> None:
     cancelled_count = _cancel_processing_jobs_for_chat(message.chat.id)
     BATCH_RUNNING_CHATS.discard(message.chat.id)
+    had_pending_state = _clear_pending_state(message.chat.id)
     if cancelled_count:
         text = "⛔ Задача отменена. Резерв возвращён." if cancelled_count == 1 else f"⛔ Отменено задач: {cancelled_count}. Резервы возвращены."
         await message.answer(f"{text}\n\nМожно запустить новую обработку.", reply_markup=main_menu())
         return
-    if PENDING_UPLOADS.pop(message.chat.id, None):
+    if had_pending_state:
         await message.answer("🗑 Материалы очищены. Активной обработки не было.", reply_markup=main_menu())
         return
     await message.answer("✅ Активной обработки сейчас нет", reply_markup=main_menu())
@@ -1491,7 +1891,7 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
 async def cancel_batch_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
-    PENDING_UPLOADS.pop(message.chat.id, None)
+    _clear_pending_state(message.chat.id)
     await message.answer("🗑 Материалы очищены", reply_markup=main_menu())
 
 
@@ -1515,10 +1915,12 @@ async def run_batch_button(message: Message) -> None:
             )
         await message.answer(text, reply_markup=batch_menu())
         return
+    _record_telegram_event(message, "launch_attempted", mode=pending.mode)
     BATCH_RUNNING_CHATS.add(message.chat.id)
     job: Job | None = None
     job_id: str | None = None
     batch_jobs: list[tuple[str, str]] = []
+    created_batch_entities: list[Job] = []
     launch_started = False
     launch_message: Message | None = None
     db = SessionLocal()
@@ -1534,6 +1936,8 @@ async def run_batch_button(message: Message) -> None:
             supplier_search_count=supplier_search_count,
         )
         if error:
+            if client:
+                record_journey_event(db, client.id, channel="telegram", event_name="launch_blocked", mode=pending.mode, reason_code="access")
             BATCH_RUNNING_CHATS.discard(message.chat.id)
             await message.answer(error, reply_markup=batch_menu())
             return
@@ -1552,13 +1956,20 @@ async def run_batch_button(message: Message) -> None:
                     files=files,
                     sources=[],
                     supplier_search_policy=pending.supplier_search_policy,
+                    initial_status="draft",
                 )
+                created_batch_entities.append(created)
                 reserve_error = _reserve_created_job(db, client, created)
                 if reserve_error:
                     BATCH_RUNNING_CHATS.discard(message.chat.id)
                     await message.answer(reserve_error, reply_markup=main_menu())
                     return
                 batch_jobs.append((str(created.id), files[0][0]))
+            _record_telegram_terms_acceptance(db, pending.telegram_id)
+            for created in created_batch_entities:
+                created.status = "pending"
+                created.message = "Задача создана"
+            db.commit()
         else:
             title = Path(pending.files[0][0]).stem[:120] if pending.files else source_label(pending.sources[0]["value"])[:120]
             job = create_job(
@@ -1571,16 +1982,28 @@ async def run_batch_button(message: Message) -> None:
                 files=pending.files,
                 sources=pending.sources,
                 supplier_search_policy=pending.supplier_search_policy,
+                initial_status="draft",
             )
             reserve_error = _reserve_created_job(db, client, job)
             if reserve_error:
+                _discard_unlaunched_jobs(db, [job])
                 BATCH_RUNNING_CHATS.discard(message.chat.id)
                 await message.answer(reserve_error, reply_markup=main_menu())
                 return
+            _record_telegram_terms_acceptance(db, pending.telegram_id)
+            job.status = "pending"
+            job.message = "Задача создана"
+            db.commit()
             job_id = str(job.id)
-        PENDING_UPLOADS.pop(message.chat.id, None)
-        PENDING_MODES.pop(message.chat.id, None)
-        PENDING_SUPPLIER_POLICIES.pop(message.chat.id, None)
+        record_journey_event(
+            db,
+            client.id,
+            channel="telegram",
+            event_name="job_created",
+            mode=pending.mode,
+            outcome="batch" if batch_jobs else "created",
+        )
+        _clear_pending_state(message.chat.id)
         launch_started = True
         if batch_jobs:
             launch_message = await message.answer(
@@ -1595,6 +2018,8 @@ async def run_batch_button(message: Message) -> None:
                 reply_markup=processing_menu(),
             )
     finally:
+        if not launch_started and created_batch_entities:
+            _discard_unlaunched_jobs(db, created_batch_entities)
         db.close()
         if not launch_started:
             BATCH_RUNNING_CHATS.discard(message.chat.id)
@@ -1637,7 +2062,7 @@ async def _watch_supplier_multi_outputs(
                 snapshot,
                 reply_markup=main_menu() if index == total else processing_menu(),
             )
-            if not delivered and snapshot and snapshot.status in TERMINAL_JOB_STATUSES:
+            if not delivered and snapshot and snapshot.status in BOT_TERMINAL_JOB_STATUSES:
                 status_message = None
     if status_message is not None:
         final_text = "Обработка ТЗ завершена. Файл отправлен ниже." if total == 1 else "Обработка ТЗ завершена. Файлы отправлены ниже."
@@ -1645,6 +2070,133 @@ async def _watch_supplier_multi_outputs(
 
 
 async def _send_job_outputs(
+    message: Message,
+    job_id: str,
+    snapshot: JobProgressSnapshot | None = None,
+    *,
+    reply_markup: ReplyKeyboardMarkup | ReplyKeyboardRemove | None = None,
+) -> bool:
+    lookup_db = SessionLocal()
+    try:
+        lookup_job = lookup_db.get(Job, job_id)
+        use_result_offer_delivery = bool(
+            lookup_job
+            and str(getattr(lookup_job, "confirmation_kind", "") or "")
+            and str(getattr(lookup_job, "confirmation_outcome", "") or "") == "accepted"
+            and str(getattr(lookup_job, "offer_delivery_outcome", "") or "") == "pending"
+        )
+    finally:
+        lookup_db.close()
+    if use_result_offer_delivery:
+        return await _send_result_offer_outputs(
+            message,
+            job_id,
+            accept_if_pending=False,
+            reply_markup=reply_markup,
+        )
+    lock = JOB_DELIVERY_LOCKS.setdefault(str(job_id), asyncio.Lock())
+    async with lock:
+        if str(job_id) in DELIVERED_JOB_IDS:
+            return True
+        return await _send_job_outputs_locked(
+            message,
+            job_id,
+            snapshot,
+            reply_markup=reply_markup,
+        )
+
+
+async def _send_result_offer_outputs(
+    message: Message,
+    job_id: str,
+    *,
+    accept_if_pending: bool,
+    reply_markup: ReplyKeyboardMarkup | ReplyKeyboardRemove | None = None,
+) -> bool:
+    """Accept/claim/send/settle a typed result offer without a second charge or send."""
+    lock = JOB_DELIVERY_LOCKS.setdefault(str(job_id), asyncio.Lock())
+    async with lock:
+        if str(job_id) in DELIVERED_JOB_IDS:
+            return False
+        final_reply_markup = reply_markup or main_menu()
+        db = SessionLocal()
+        token = ""
+        job: Job | None = None
+        try:
+            job = db.get(Job, job_id)
+            if not job or not str(getattr(job, "confirmation_kind", "") or ""):
+                raise ResultOfferGone("Предложение результата не найдено.")
+            decision = str(getattr(job, "confirmation_outcome", "") or "")
+            if decision == "pending" and accept_if_pending:
+                job = accept_job_result_offer(db, job, channel="telegram")
+                decision = str(job.confirmation_outcome or "")
+            if decision != "accepted":
+                raise ResultOfferConflict("Подтверждение уже не актуально.")
+            token = claim_job_result_offer_delivery(db, job, channel="telegram")
+            if not token:
+                DELIVERED_JOB_IDS.add(str(job_id))
+                return False
+            selected_offer_items = active_result_offer_output_items(job)
+            output_items = selected_offer_items if selected_offer_items is not None else package_job_output_items(job)
+            if not output_items:
+                raise ResultOfferGone("Файл результата не сформирован.")
+            prepared_items: list[tuple[dict, Path]] = []
+            for item in output_items:
+                output = Path(str(item.get("path") or ""))
+                if not output.is_file():
+                    raise ResultOfferGone("Файл результата не сформирован.")
+                prepared_items.append((item, output))
+
+            sent_output_message: Message | None = None
+            sent_output_base_caption = ""
+            for index, (item, output) in enumerate(prepared_items):
+                is_last = index == len(prepared_items) - 1
+                sent_output_base_caption = _output_caption_for_item(job.mode, str(item.get("kind") or ""), output)
+                sent_output_message = await message.answer_document(
+                    FSInputFile(output),
+                    caption=sent_output_base_caption,
+                    reply_markup=final_reply_markup if is_last else None,
+                )
+
+            completed = complete_job_result_offer_delivery(
+                db,
+                job,
+                token,
+                billing_kinds=billing_kinds_for_result_delivery(job),
+                channel="telegram",
+                note=(
+                    "Вариант без подтверждения реестра отправлен клиенту в Telegram"
+                    if str(getattr(job, "confirmation_kind", "") or "") == CONFIRMATION_KIND_REGISTRY_FALLBACK
+                    else "Неполный отчёт отправлен клиенту в Telegram"
+                ),
+            )
+            token = ""
+            if not completed:
+                DELIVERED_JOB_IDS.add(str(job_id))
+                return False
+            DELIVERED_JOB_IDS.add(str(job_id))
+            if job.client and sent_output_message is not None:
+                await _edit_output_delivery_caption(
+                    sent_output_message,
+                    sent_output_base_caption,
+                    _after_delivery_balance_text(db, job.client),
+                    reply_markup=final_reply_markup,
+                )
+            if job_can_find_more_suppliers(job):
+                await _send_find_more_suppliers_offer(message, job.id)
+            return True
+        except Exception:
+            if token and job is not None:
+                try:
+                    fail_job_result_offer_delivery(db, job, token)
+                except Exception:
+                    logger.exception("Could not release result-offer delivery claim for job %s", job_id)
+            raise
+        finally:
+            db.close()
+
+
+async def _send_job_outputs_locked(
     message: Message,
     job_id: str,
     snapshot: JobProgressSnapshot | None = None,
@@ -1661,8 +2213,23 @@ async def _send_job_outputs(
                 reply_markup=final_reply_markup,
             )
             return False
-        if getattr(done_job, "status", "") == "cancelled" or (snapshot and snapshot.status == "cancelled"):
+        done_status = str(getattr(done_job, "status", "") or "")
+        confirmation_kind = str(getattr(done_job, "confirmation_kind", "") or "")
+        confirmation_outcome = str(getattr(done_job, "confirmation_outcome", "") or "")
+        delivery_outcome = str(getattr(done_job, "offer_delivery_outcome", "") or "")
+        analysis_only = (
+            str(getattr(done_job, "mode", "") or "") == MODE_ANALYSIS_AND_SUPPLIERS
+            and str(getattr(done_job, "active_output_manifest", "") or "") == "analysis_only"
+        )
+        if done_status in {"cancelled", "delivery_expired", STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED}:
             return False
+        if snapshot and snapshot.status in {"cancelled", "delivery_expired", STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED}:
+            return False
+        if confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK and not analysis_only:
+            if delivery_outcome == "delivered":
+                return True
+            if delivery_outcome == "expired" or confirmation_outcome != "accepted":
+                return False
         output_items = package_job_output_items(done_job) if (
             getattr(done_job, "evidence_path", None) or getattr(done_job, "result_path", None)
         ) else []
@@ -1681,6 +2248,7 @@ async def _send_job_outputs(
                     reply_markup=final_reply_markup if is_last else None,
                 )
             charge_job_reservation(db, done_job)
+            DELIVERED_JOB_IDS.add(str(job_id))
             if snapshot and snapshot.status in OWNER_ALERT_STATUSES:
                 await _alert_owner_about_job(message, snapshot, reason=f"problem_status:{snapshot.status}")
             if done_job.client and sent_output_message is not None:
@@ -1693,7 +2261,7 @@ async def _send_job_outputs(
             if job_can_find_more_suppliers(done_job):
                 await _send_find_more_suppliers_offer(message, done_job.id)
             return True
-        if snapshot and snapshot.status not in TERMINAL_JOB_STATUSES:
+        if snapshot and snapshot.status not in BOT_TERMINAL_JOB_STATUSES:
             await message.answer(
                 f"⏳ Обработка продолжается\n\nСтатус можно проверить кнопкой «{BUTTON_STATUS}».",
                 reply_markup=processing_menu(),
@@ -1708,9 +2276,9 @@ async def _send_job_outputs(
 def _after_delivery_balance_text(db, client: Client) -> str:
     balances = client_service_balance_summary(db, client)
     lines = ["✅ Результат отправлен. Баланс обновлён."]
-    low = [item["label"] for item in balances.values() if isinstance(item, dict) and item.get("label") and item.get("low")]
-    if low:
-        lines.append(f"⚠️ Заканчивается баланс: {', '.join(low)}.")
+    warning = _money_balance_warning(balances)
+    if warning:
+        lines.append(warning)
     lines.extend(["", AI_CUSTOMER_NOTE])
     return "\n".join(lines)
 
@@ -1744,7 +2312,7 @@ async def _edit_output_delivery_caption(
 async def _send_partial_confirmation(message: Message, job_id: str, snapshot: JobProgressSnapshot) -> None:
     await message.answer(
         _partial_confirmation_text(snapshot),
-        reply_markup=_partial_confirmation_keyboard(job_id),
+        reply_markup=_partial_confirmation_keyboard(job_id, snapshot.confirmation_kind),
     )
 
 
@@ -1796,7 +2364,24 @@ async def access_button(message: Message) -> None:
                 **_contact_message_options(),
             )
             return
-        await message.answer(_cabinet_text(db, client, settings), reply_markup=_menu_for_chat(message.chat.id), **_contact_message_options())
+        cabinet_text = _cabinet_text(db, client, settings)
+        if client.web_users:
+            web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
+            cabinet_text += f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Открыть веб-кабинет</a>'
+        else:
+            raw_token, _record = create_account_link_token(
+                db,
+                client=client,
+                direction=TELEGRAM_TO_WEB,
+                telegram_id=telegram_id,
+            )
+            web_url = cabinet_link(settings.public_base_url, raw_token)
+            record_journey_event(db, client.id, channel="telegram", event_name="link_requested")
+            cabinet_text += (
+                f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Создать связанный веб-кабинет</a>\n'
+                "Ссылка одноразовая и действует 15 минут. Новый отдельный баланс не создаётся."
+            )
+        await message.answer(cabinet_text, reply_markup=_menu_for_chat(message.chat.id), **_contact_message_options())
     finally:
         db.close()
 
@@ -1806,7 +2391,11 @@ async def tariffs_button(message: Message) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        await message.answer(_tariffs_text(db, settings), reply_markup=_menu_for_chat(message.chat.id), **_contact_message_options())
+        await message.answer(
+            _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}",
+            reply_markup=_menu_for_chat(message.chat.id),
+            **_contact_message_options(),
+        )
     finally:
         db.close()
 
@@ -1837,6 +2426,7 @@ async def help_button(message: Message) -> None:
         f"📊 Остатки смотрите в «{BUTTON_ACCESS}».\n\n"
         f"{INDIVIDUAL_TERMS_NOTE}\n\n"
         f"{AI_HELP_NOTE}\n\n"
+        f"⚖️ Правовая информация: {LEGAL_INDEX_URL}\n\n"
         "Если доступа нет, нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
         reply_markup=_menu_for_chat(message.chat.id),
     )
@@ -1934,6 +2524,7 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
         BATCH_RUNNING_CHATS.discard(chat_id)
 
 
+@router.callback_query(F.data.startswith("result_offer_yes:"))
 @router.callback_query(F.data.startswith("partial_yes:"))
 async def partial_report_accept(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1]
@@ -1942,6 +2533,37 @@ async def partial_report_accept(callback: CallbackQuery) -> None:
         return
     if not _callback_job_allowed(callback, job_id):
         await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    try:
+        candidate = db.get(Job, job_id)
+        confirmation_kind = str(getattr(candidate, "confirmation_kind", "") or "") if candidate else ""
+    finally:
+        db.close()
+    if confirmation_kind:
+        try:
+            delivered = await _send_result_offer_outputs(
+                callback.message,
+                job_id,
+                accept_if_pending=True,
+            )
+        except (ResultOfferConflict, ResultOfferGone) as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+        except Exception:
+            logger.exception("Could not deliver registry fallback for job %s", job_id)
+            await callback.answer("Не удалось отправить все файлы. Списания нет.", show_alert=True)
+            return
+        if not delivered:
+            await callback.answer("Результат уже был выдан; повторного списания нет.", show_alert=True)
+            return
+        await callback.answer("Отчёт отправлен.")
+        delivered_text = (
+            "Отчёт без подтверждения реестра отправлен. Списание выполнено только после успешной отправки."
+            if confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
+            else "Неполный отчёт отправлен. Списание выполнено только после успешной отправки."
+        )
+        await callback.message.answer(delivered_text, reply_markup=main_menu())
         return
     db = SessionLocal()
     try:
@@ -1967,6 +2589,7 @@ async def partial_report_accept(callback: CallbackQuery) -> None:
     await _send_find_more_suppliers_offer(callback.message, job_id)
 
 
+@router.callback_query(F.data.startswith("result_offer_no:"))
 @router.callback_query(F.data.startswith("partial_no:"))
 async def partial_report_decline(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1]
@@ -1976,6 +2599,30 @@ async def partial_report_decline(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         job = db.get(Job, job_id)
+        confirmation_kind = str(getattr(job, "confirmation_kind", "") or "") if job else ""
+        if job and confirmation_kind:
+            try:
+                decline_job_result_offer(db, job, channel="telegram")
+            except (ResultOfferConflict, ResultOfferGone) as exc:
+                await callback.answer(str(exc), show_alert=True)
+                return
+            decline_answer = (
+                "Списания за поиск поставщиков нет."
+                if confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
+                else "Списания нет."
+            )
+            await callback.answer(decline_answer)
+            if callback.message:
+                decline_text = (
+                    "Вариант без подтверждения реестра не отправлен. Списания за поиск поставщиков нет."
+                    if confirmation_kind == CONFIRMATION_KIND_REGISTRY_FALLBACK
+                    else "Неполный отчёт не отправлен. Резерв возвращён, списания нет."
+                )
+                await callback.message.answer(
+                    decline_text,
+                    reply_markup=main_menu(),
+                )
+            return
         if not job or job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
             await callback.answer("Подтверждение уже не актуально.", show_alert=True)
             return
@@ -2013,7 +2660,10 @@ def _mark_partial_delivered(job_id: str) -> None:
         if not job:
             return
         job.status = "partial"
-        job.message = _supplier_count_message("Частично готово", job.verified_count, job.target_suppliers)
+        job.message = (
+            f"Частично готово: отобрано кандидатов {job.verified_count}. "
+            "Уровень технического совпадения указан в отчёте"
+        )
         job.error = ""
         job.completed_at = now_utc()
         job.updated_at = now_utc()
@@ -2075,6 +2725,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
             return
         pending.files.append((filename, content))
         added_sources = _add_pending_sources(pending, caption_sources)
+        record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="document")
         await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_menu())
     finally:
         db.close()
@@ -2125,6 +2776,7 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
             return True
         filename, content, _title = _supplier_text_tz_payload(text, index=len(pending.files) + 1)
         pending.files.append((filename, content))
+        record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="text")
         await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_menu())
         return True
     finally:
@@ -2152,7 +2804,6 @@ async def _handle_source_text(message: Message) -> bool:
             await message.answer(error, reply_markup=main_menu())
             return True
         assert client is not None
-        settings = get_or_create_settings(db)
         pending = PENDING_UPLOADS.get(message.chat.id)
         if pending and pending.mode != mode:
             PENDING_UPLOADS.pop(message.chat.id, None)
@@ -2166,14 +2817,148 @@ async def _handle_source_text(message: Message) -> bool:
             )
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
+        record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="source")
         await message.answer(_source_added_text(pending), reply_markup=batch_menu())
     finally:
         db.close()
     return True
 
 
+
+# --- SITE CHAT OPERATOR RELAY HANDLERS ---
+CHAT_SESSIONS_FILE = "/root/projects/aipoisk-bot/data/chat_sessions.json"
+OPERATOR_REPLY_SESSIONS: dict[int, str] = {}
+
+def _load_chat_sessions() -> dict:
+    for attempt in range(5):
+        try:
+            if not os.path.exists(CHAT_SESSIONS_FILE):
+                return {}
+            with open(CHAT_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+                return json.loads(raw) if raw else {}
+        except Exception as e:
+            time.sleep(0.1)
+    return {}
+
+def _save_chat_sessions(data: dict) -> None:
+    try:
+        d = os.path.dirname(CHAT_SESSIONS_FILE)
+        if not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
+        with open(CHAT_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving chat sessions: {e}")
+
+@router.callback_query(F.data.startswith("reply:"))
+async def handle_site_chat_reply_btn(callback: CallbackQuery) -> None:
+    if not callback.message:
+        return
+    session_id = str(callback.data or "").split(":", 1)[1]
+    OPERATOR_REPLY_SESSIONS[callback.message.chat.id] = session_id
+    await callback.answer("Режим ответа активирован")
+    await callback.message.answer(
+        f"✍️ *Введите ответ для клиента* `{session_id}` *(просто отправьте текст ниже):*",
+        parse_mode="Markdown",
+        reply_markup=ForceReply(input_field_placeholder=f"Ответ для {session_id}..."),
+    )
+
+@router.callback_query(F.data.startswith("close:"))
+async def handle_site_chat_close_btn(callback: CallbackQuery) -> None:
+    if not callback.message:
+        return
+    session_id = str(callback.data or "").split(":", 1)[1]
+    OPERATOR_REPLY_SESSIONS.pop(callback.message.chat.id, None)
+    
+    sessions = _load_chat_sessions()
+    if session_id in sessions:
+        sessions[session_id].setdefault("messages", []).append({
+            "id": "sys_" + str(int(time.time() * 1000)),
+            "sender": "system",
+            "text": "Диалог завершен администратором. Спасибо за обращение!",
+            "timestamp": now_utc().isoformat(),
+        })
+        _save_chat_sessions(sessions)
+        
+    await callback.answer("Диалог закрыт")
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔒 Диалог закрыт", callback_data="none")]
+            ])
+        )
+    except Exception:
+        pass
+    await callback.message.answer(
+        f"🔒 *Диалог по сессии* `{session_id}` *закрыт.*\n\nКлавиатура бота снова активна:",
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+async def _handle_operator_chat_message(message: Message) -> bool:
+    chat_id = message.chat.id
+    text = str(message.text or "").strip() if message.text else ""
+    if not text:
+        return False
+
+    session_id = OPERATOR_REPLY_SESSIONS.get(chat_id)
+    if not session_id and message.reply_to_message and message.reply_to_message.text:
+        match = re.search(r"sess_[a-z0-9_]+", message.reply_to_message.text, re.IGNORECASE)
+        if match:
+            session_id = match.group(0)
+
+    if not session_id and text.startswith("/reply "):
+        parts = text.split(" ", 2)
+        if len(parts) >= 3:
+            session_id = parts[1]
+            text = parts[2]
+
+    if session_id:
+        session_id = session_id.strip("`'\" \t\r\n")
+        sessions = _load_chat_sessions()
+        matched_key = None
+        if session_id in sessions:
+            matched_key = session_id
+        else:
+            for k in sessions.keys():
+                if k.lower() == session_id.lower() or session_id.lower() in k.lower():
+                    matched_key = k
+                    break
+        
+        if not matched_key and session_id:
+            matched_key = session_id
+            sessions[matched_key] = {
+                "sessionId": session_id,
+                "created": now_utc().isoformat(),
+                "messages": [],
+                "updated": now_utc().isoformat(),
+            }
+
+        sessions[matched_key].setdefault("messages", []).append({
+            "id": "admin_" + str(int(time.time() * 1000)),
+            "sender": "admin",
+            "text": text,
+            "timestamp": now_utc().isoformat(),
+        })
+        sessions[matched_key]["updated"] = now_utc().isoformat()
+        _save_chat_sessions(sessions)
+        OPERATOR_REPLY_SESSIONS.pop(chat_id, None)
+        await message.answer(
+            f"✅ *Ответ успешно доставлен клиенту на сайт!*\n\n💬 *Текст:* {text}",
+            parse_mode="Markdown",
+            reply_markup=main_menu(),
+        )
+        return True
+
+    return False
+# --- END SITE CHAT HANDLERS ---
+
+
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
+    if await _handle_operator_chat_message(message):
+        return
     if await _handle_supplier_text_tz(message):
         return
     if await _handle_source_text(message):
@@ -2185,23 +2970,103 @@ async def unknown_text(message: Message) -> None:
     )
 
 
+@router.message()
+async def unsupported_message(message: Message) -> None:
+    await message.answer(
+        "⚠️ Этот тип сообщения не поддерживается.\n\n"
+        "Отправьте документ, архив, текст ТЗ, номер извещения или ссылку на закупку.",
+        reply_markup=_menu_for_chat(message.chat.id),
+    )
+
+
+@group_safety_router.message()
+async def reject_group_message(message: Message) -> None:
+    await message.answer(
+        "🔒 Для защиты документов, баланса и результатов TenderLex работает только в личном чате с ботом."
+    )
+
+
+@group_safety_router.callback_query()
+async def reject_group_callback(callback: CallbackQuery) -> None:
+    await callback.answer("Для защиты данных откройте личный чат с ботом.", show_alert=True)
+
+
 async def run_bot() -> None:
     if not config.bot_token:
         raise RuntimeError("AIPOISK_BOT_TOKEN is empty")
     init_db()
+    removed_temp_files = _cleanup_telegram_temp_storage()
+    if removed_temp_files:
+        logger.info("Removed %s stale Telegram temporary files", removed_temp_files)
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
         seed_owner_client(db)
         cleanup_expired_jobs(db, settings)
+        expire_result_offers(db)
         expire_stale_confirmations(db)
     finally:
         db.close()
-    bot = Bot(config.bot_token)
+    bot = Bot(config.bot_token) 
+    try:
+        import asyncio; await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        pass
     await configure_bot_profile(bot)
     dispatcher = Dispatcher()
+    dispatcher.include_router(group_safety_router)
     dispatcher.include_router(router)
-    await dispatcher.start_polling(bot)
+    reminder_task = asyncio.create_task(_onboarding_reminder_loop(bot))
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        reminder_task.cancel()
+        await asyncio.gather(reminder_task, return_exceptions=True)
+
+
+async def _send_due_onboarding_reminders(bot: Bot) -> int:
+    db = SessionLocal()
+    sent = 0
+    try:
+        settings = get_or_create_settings(db)
+        expire_result_offers(db)
+        expire_stale_confirmations(db)
+        candidates = reminder_candidates(db, settings)
+        for client, telegram_id in candidates:
+            reminder = claim_reminder(db, client.id)
+            if not reminder:
+                continue
+            try:
+                await bot.send_message(
+                    chat_id=int(telegram_id),
+                    text=ONBOARDING_REMINDER_TEXT,
+                    reply_markup=main_menu(),
+                )
+            except Exception as exc:
+                reminder.status = "failed"
+                reminder.failed_at = now_utc()
+                reminder.failure_code = type(exc).__name__[:80]
+                db.commit()
+                continue
+            reminder.status = "sent"
+            reminder.sent_at = now_utc()
+            db.commit()
+            record_journey_event(db, client.id, channel="telegram", event_name="onboarding_reminder_sent", outcome="sent")
+            sent += 1
+    finally:
+        db.close()
+    return sent
+
+
+async def _onboarding_reminder_loop(bot: Bot) -> None:
+    while True:
+        try:
+            await _send_due_onboarding_reminders(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(3600)
 
 
 async def configure_bot_profile(bot: Bot) -> None:

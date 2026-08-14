@@ -35,11 +35,31 @@ from app.main import (
     upload_job,
 )
 from app.billing import client_balance_summary
-from app.models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebSession, WebUser, now_utc
-from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientMergeRequest, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate
+from app.models import AccountLinkToken, DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTariffOverride, ClientTelegramAccount, Job, OnboardingReminder, SystemSettings, TariffPackage, UserJourneyEvent, WebEmailVerificationToken, WebPasswordResetRequest, WebSession, WebUser, now_utc
+from app.schemas import AiTestRequest, BillingGrantCreate, ClientCreate, ClientMergeRequest, ClientTelegramAccountCreate, ClientTelegramAccountPatch, ManualJobCreate, TariffPackageCreate
 
 
 class ApiGuardTests(unittest.TestCase):
+    def test_active_tariffs_require_one_unit_price_per_service(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            main.create_tariff_api(TariffPackageCreate(kind="supplier_search", name="1 поиск", units=1, price_kopeks=10_000), db=db)
+            with self.assertRaises(HTTPException) as raised:
+                main.create_tariff_api(TariffPackageCreate(kind="supplier_search", name="10 поисков", units=10, price_kopeks=80_000), db=db)
+        finally:
+            db.close()
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("одинаковую цену за единицу", str(raised.exception.detail))
+
     def test_manual_job_rejects_empty_no_input_job_before_db_access(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             create_manual_job(ManualJobCreate(telegram_id="123"), db=object())
@@ -151,6 +171,42 @@ class ApiGuardTests(unittest.TestCase):
 
         self.assertNotIn("search_provider_no_ok", [item["code"] for item in snapshot["alerts"]])
 
+    def test_supplier_quality_snapshot_counts_awaiting_underfill_and_ai_degradation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence_path = root / "jobs" / "job-1" / "output" / "evidence.json"
+            evidence_path.parent.mkdir(parents=True)
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "ai_required": True,
+                        "ai_used": True,
+                        "candidate_rerank": {"status": "fallback_after_empty_ai_selection"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            job = SimpleNamespace(
+                id="job-1",
+                mode="supplier_search",
+                title="partial",
+                status="awaiting_customer_confirmation",
+                verified_count=4,
+                target_suppliers=25,
+                error="",
+                evidence_path=str(evidence_path),
+                created_at=now_utc(),
+                completed_at=now_utc(),
+            )
+
+            snapshot = build_supplier_quality_snapshot([job], storage_root=root)
+
+        self.assertEqual(snapshot["underfilled_terminal_jobs"], 1)
+        self.assertEqual(snapshot["ai_required_failures"], 0)
+        self.assertEqual(snapshot["ai_degraded_jobs"], 1)
+        self.assertIn("underfilled_reports", [item["code"] for item in snapshot["alerts"]])
+        self.assertIn("ai_degraded_jobs", [item["code"] for item in snapshot["alerts"]])
+
     def test_job_to_dict_exposes_ui_contract_and_units(self) -> None:
         job = Job(
             id="job-1",
@@ -186,6 +242,25 @@ class ApiGuardTests(unittest.TestCase):
 
         self.assertEqual(payload["supplier_search_policy"], "minprom_registry_only")
         self.assertEqual(payload["supplier_search_run_type"], "additional")
+
+    def test_job_to_dict_exposes_registry_fallback_state_for_admin_ui(self) -> None:
+        job = Job(
+            id="job-registry-fallback",
+            mode="supplier_search",
+            title="ТЗ_усилитель",
+            status="awaiting_customer_confirmation",
+            verified_count=24,
+            confirmation_kind="registry_fallback",
+            confirmation_outcome="pending",
+            offer_delivery_outcome="",
+        )
+
+        payload = job_to_dict(job)
+
+        self.assertEqual(payload["confirmation_kind"], "registry_fallback")
+        self.assertEqual(payload["confirmation_outcome"], "pending")
+        self.assertEqual(payload["result_offer"]["alternative_verified_count"], 24)
+        self.assertTrue(payload["result_offer"]["can_accept"])
 
     def test_job_to_dict_marks_internal_service_jobs(self) -> None:
         job = Job(id="job-1", mode="supplier_search", title="worker_smoke_patch", message="retest")
@@ -282,6 +357,10 @@ class ApiGuardTests(unittest.TestCase):
             db.add(WebUser(id="web-1", client_id="client-1", email="buyer@example.com", password_hash="hash"))
             db.add(Job(id="job-1", client_id="client-1", mode="supplier_search", title="ТЗ"))
             db.add(BillingTransaction(client_id="client-1", job_id="job-1", kind="supplier_search", operation="grant", units=10))
+            db.add(ClientTariffOverride(client_id="client-1", kind="supplier_search", price_kopeks=100))
+            db.add(UserJourneyEvent(client_id="client-1", channel="web", event_name="registered"))
+            db.add(OnboardingReminder(client_id="client-1", channel="telegram"))
+            db.add(AccountLinkToken(client_id="client-1", direction="telegram_to_web", token_hash="delete-token", expires_at=now_utc() + timedelta(hours=1)))
             db.commit()
 
             result = delete_client("client-1", db=db)
@@ -290,6 +369,10 @@ class ApiGuardTests(unittest.TestCase):
             user_count = db.query(WebUser).count()
             job_count = db.query(Job).count()
             billing_count = db.query(BillingTransaction).count()
+            related_count = sum(
+                db.query(model).count()
+                for model in (ClientTariffOverride, UserJourneyEvent, OnboardingReminder, AccountLinkToken)
+            )
         finally:
             db.close()
 
@@ -298,6 +381,7 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(user_count, 0)
         self.assertEqual(job_count, 0)
         self.assertEqual(billing_count, 0)
+        self.assertEqual(related_count, 0)
 
     def test_delete_client_web_user_removes_login_only_and_preserves_client_state(self) -> None:
         from sqlalchemy import create_engine
@@ -359,6 +443,9 @@ class ApiGuardTests(unittest.TestCase):
         db = Session()
         try:
             target = create_client(ClientCreate(name="Тимошенко", telegram_id="1743101322", username="@bookwap"), db=db)
+            target_model = db.get(Client, target["id"])
+            target_model.money_balance_kopeks = 1_000
+            target_model.money_reserved_kopeks = 100
             db.add(BillingTransaction(client_id=target["id"], kind="procurement_report", operation="grant", units=2))
             source = Client(
                 id="web-client",
@@ -368,20 +455,36 @@ class ApiGuardTests(unittest.TestCase):
                 monthly_supplier_search_limit=50,
                 monthly_procurement_report_limit=3,
                 allowed_procurement_report=True,
+                money_balance_kopeks=6_000,
+                money_reserved_kopeks=600,
             )
             db.add(source)
             db.add(WebUser(id="web-1", client_id="web-client", email="m.timoshenko@bm-corp.ru", password_hash="hash", is_email_verified=True))
             db.add(Job(id="job-1", client_id="web-client", mode="procurement_report", title="Анализ"))
             db.add(BillingTransaction(client_id="web-client", job_id="job-1", kind="procurement_report", operation="grant", units=3))
+            db.add(BillingTransaction(client_id="web-client", job_id="job-1", kind="procurement_report", operation="reserve", units=1, amount_kopeks=600))
+            db.add(ClientTariffOverride(client_id="web-client", kind="supplier_search", price_kopeks=12345))
+            db.add(UserJourneyEvent(client_id="web-client", channel="web", event_name="registered"))
+            db.add(OnboardingReminder(client_id="web-client", channel="telegram"))
+            db.add(AccountLinkToken(client_id="web-client", web_user_id="web-1", direction="web_to_telegram", token_hash="merge-token", expires_at=now_utc() + timedelta(hours=1)))
             db.commit()
 
             result = merge_client(target["id"], ClientMergeRequest(source_client_id="web-client"), db=db)
             merged = db.get(Client, target["id"])
             web_user = db.query(WebUser).filter(WebUser.email == "m.timoshenko@bm-corp.ru").one()
             moved_job = db.get(Job, "job-1")
-            moved_billing = db.query(BillingTransaction).filter(BillingTransaction.job_id == "job-1").one()
+            moved_billing = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == "job-1")
+                .filter(BillingTransaction.operation == "grant")
+                .one()
+            )
             balance = client_balance_summary(db, merged)
             source_after = db.get(Client, "web-client")
+            moved_override = db.query(ClientTariffOverride).filter(ClientTariffOverride.client_id == target["id"]).one()
+            moved_journey = db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == target["id"]).one()
+            moved_reminder = db.query(OnboardingReminder).filter(OnboardingReminder.client_id == target["id"]).one()
+            moved_token = db.query(AccountLinkToken).filter(AccountLinkToken.client_id == target["id"]).one()
         finally:
             db.close()
 
@@ -390,12 +493,18 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(web_user.client_id, target["id"])
         self.assertEqual(moved_job.client_id, target["id"])
         self.assertEqual(moved_billing.client_id, target["id"])
-        self.assertEqual(balance["procurement_report"]["available"], 5)
+        self.assertEqual(balance["procurement_report"]["available"], 4)
         self.assertEqual(merged.telegram_id, "1743101322")
         self.assertEqual(merged.monthly_job_limit, 12)
         self.assertEqual(merged.monthly_supplier_search_limit, 50)
         self.assertEqual(merged.monthly_procurement_report_limit, 3)
         self.assertTrue(merged.allowed_procurement_report)
+        self.assertEqual(merged.money_balance_kopeks, 7_000)
+        self.assertEqual(merged.money_reserved_kopeks, 700)
+        self.assertEqual(moved_override.price_kopeks, 12345)
+        self.assertEqual(moved_journey.event_name, "registered")
+        self.assertEqual(moved_reminder.channel, "telegram")
+        self.assertEqual(moved_token.web_user_id, "web-1")
 
     def test_manual_telegram_id_account_still_can_be_added_to_client(self) -> None:
         from sqlalchemy import create_engine
@@ -853,7 +962,7 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("Недостаточно доступных генераций", str(raised.exception.detail))
 
-    def test_admin_money_top_up_credits_only_money_balance(self) -> None:
+    def test_admin_money_top_up_credits_money_balance(self) -> None:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
@@ -878,8 +987,6 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(result["transaction"]["kind_label"], "Баланс")
         self.assertEqual(result["transaction"]["units"], 0)
         self.assertEqual(result["client"]["usage"]["money"]["available_kopeks"], 25_000)
-        self.assertEqual(result["client"]["usage"]["supplier_search"]["available"], 0)
-        self.assertEqual(result["client"]["usage"]["procurement_report"]["available"], 0)
 
     def test_admin_money_debit_reduces_money_balance_and_rejects_overdraft(self) -> None:
         from sqlalchemy import create_engine
@@ -922,6 +1029,36 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(result["client"]["usage"]["money"]["available_kopeks"], 15_000)
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("Недостаточно денег для списания", str(raised.exception.detail))
+
+    def test_admin_money_operation_is_idempotent(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            client_payload = create_client(ClientCreate(name="Customer", telegram_id="781"), db=db)
+            request = BillingGrantCreate(
+                kind="money",
+                amount_kopeks=25_000,
+                note="manual topup",
+                idempotency_key="admin-topup-781-1",
+            )
+            first = grant_client_billing_units(client_payload["id"], request, db=db)
+            second = grant_client_billing_units(client_payload["id"], request, db=db)
+            client = db.get(Client, client_payload["id"])
+            transaction_count = db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).count()
+            balance = client.money_balance_kopeks
+        finally:
+            db.close()
+
+        self.assertEqual(first["transaction"]["id"], second["transaction"]["id"])
+        self.assertEqual(balance, 25_000)
+        self.assertEqual(transaction_count, 1)
 
     def test_delete_client_removes_client_without_history(self) -> None:
         from sqlalchemy import create_engine
@@ -1117,7 +1254,8 @@ class ApiGuardTests(unittest.TestCase):
             db.add(Job(id="job-2", client_id="paid-1", mode="procurement_report", status="failed", created_by_telegram_id="200", created_at=now_utc()))
             db.add(Job(id="job-admin-web", client_id="admin-web", mode="supplier_search", status="completed", created_by_telegram_id="", created_at=now_utc()))
             db.add(Job(id="job-admin-telegram", client_id="admin-telegram", mode="supplier_search", status="completed", created_by_telegram_id="320433711", created_at=now_utc()))
-            db.add(BillingTransaction(client_id="paid-1", kind="supplier_search", operation="grant", units=10, created_at=now_utc()))
+            db.add(BillingTransaction(client_id="trial-1", kind="supplier_search", operation="grant", units=1, amount_kopeks=10_000, created_by="system", created_at=now_utc()))
+            db.add(BillingTransaction(client_id="paid-1", kind="money", operation="grant", units=0, amount_kopeks=25_000, created_by="admin", created_at=now_utc()))
             db.add(BillingTransaction(client_id="admin-web", kind="supplier_search", operation="grant", units=1000, created_at=now_utc()))
             db.add(BillingTransaction(client_id="admin-telegram", kind="procurement_report", operation="grant", units=1000, created_at=now_utc()))
             db.commit()
@@ -1135,7 +1273,8 @@ class ApiGuardTests(unittest.TestCase):
         self.assertTrue(payload["billing"]["yookassa_ready"])
         self.assertNotIn("admin-web", {item["client_id"] for item in payload["top_clients"]})
         self.assertNotIn("admin-telegram", {item["client_id"] for item in payload["top_clients"]})
-        self.assertEqual(next(item for item in payload["billing"]["period"] if item["kind"] == "supplier_search")["granted"], 10)
+        money_row = next(item for item in payload["billing"]["period"] if item["kind"] == "money")
+        self.assertEqual(money_row["granted_amount_kopeks"], 25_000)
         self.assertEqual(payload["trial_followups"][0]["client_id"], "trial-1")
         self.assertEqual(payload["top_clients"][0]["jobs_total"], 1)
 
@@ -1496,8 +1635,10 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
         db = Session()
         original_create_job = main.create_job
         original_enqueue_job = main.enqueue_job
+        original_reserve_job_units = main.reserve_job_units
         captured: list[dict] = []
         enqueued: list[str] = []
+        reserved: list[str] = []
 
         def fake_create_job(*args, **kwargs):
             captured.append(kwargs)
@@ -1523,6 +1664,7 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
             db.commit()
             main.create_job = fake_create_job
             main.enqueue_job = lambda job_id: enqueued.append(job_id)
+            main.reserve_job_units = lambda _db, _client, job, **_kwargs: reserved.append(job.id)
 
             result = await upload_job(
                 telegram_id="123",
@@ -1536,12 +1678,14 @@ class ApiAsyncGuardTests(unittest.IsolatedAsyncioTestCase):
         finally:
             main.create_job = original_create_job
             main.enqueue_job = original_enqueue_job
+            main.reserve_job_units = original_reserve_job_units
             db.close()
 
         self.assertTrue(result["batch"])
         self.assertEqual(result["count"], 2)
         self.assertEqual([item["id"] for item in result["jobs"]], ["job-1", "job-2"])
         self.assertEqual(enqueued, ["job-1", "job-2"])
+        self.assertEqual(reserved, ["job-1", "job-2"])
         self.assertEqual(len(captured), 2)
         self.assertEqual(captured[0]["title"], "ТЗ насос")
         self.assertEqual(captured[0]["files"], [("ТЗ насос.docx", b"pump")])

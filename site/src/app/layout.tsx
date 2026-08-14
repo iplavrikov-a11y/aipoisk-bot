@@ -1,16 +1,16 @@
+import { ChatWidget } from '@/components/chat-widget';
 import type { Metadata } from "next";
-import { Inter, Manrope } from "next/font/google";
+import { Inter, Plus_Jakarta_Sans } from "next/font/google";
 import type { ReactNode } from "react";
+
+import {
+  buildOrganizationJsonLd,
+  buildSoftwareApplicationJsonLd,
+  normalizedSiteUrl,
+} from "@/lib/seo";
 
 import "./globals.css";
 import { YandexMetrika } from "./yandex-metrika";
-
-const manrope = Manrope({
-  subsets: ["cyrillic", "latin"],
-  variable: "--font-display",
-  weight: ["600", "700", "800"],
-  display: "swap",
-});
 
 const inter = Inter({
   subsets: ["cyrillic", "latin"],
@@ -18,10 +18,16 @@ const inter = Inter({
   display: "swap",
 });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://tenderlex.ru";
-const defaultTitle = "TenderLex - поиск поставщиков под спецификацию";
+const plusJakartaSans = Plus_Jakarta_Sans({
+  subsets: ["latin"],
+  variable: "--font-heading",
+  display: "swap",
+});
+
+const siteUrl = normalizedSiteUrl();
+const defaultTitle = "TenderLex - поиск поставщиков и анализ закупок";
 const defaultDescription =
-  "TenderLex находит компании под закупочную задачу, проверяет контакты, помогает подготовить запрос цены и разобрать условия закупки.";
+  "TenderLex находит компании под закупочную задачу, проверяет контакты, помогает подготовить запрос цены и разобрать условия закупки по всей России.";
 const defaultOgImage = "/tenderlex-product-preview.png";
 const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
@@ -31,6 +37,9 @@ const verification = {
   ...(yandexVerification ? { yandex: yandexVerification } : {}),
 };
 
+const orgSchema = buildOrganizationJsonLd();
+const softwareSchema = buildSoftwareApplicationJsonLd();
+
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
@@ -38,6 +47,20 @@ export const metadata: Metadata = {
     template: "%s | TenderLex",
   },
   description: defaultDescription,
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
+  alternates: {
+    canonical: "./",
+  },
   keywords: [
     "TenderLex",
     "поиск поставщиков",
@@ -51,9 +74,6 @@ export const metadata: Metadata = {
     "тендерная документация",
     "реестр Минпромторга",
   ],
-  alternates: {
-    canonical: "/",
-  },
   manifest: "/manifest.webmanifest",
   verification: Object.keys(verification).length ? verification : undefined,
   openGraph: {
@@ -90,10 +110,24 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="ru" className={`${manrope.variable} ${inter.variable}`}>
+    <html lang="ru" className={`${inter.variable} ${plusJakartaSans.variable}`}>
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareSchema) }}
+        />
+      </head>
       <body>
         {children}
+        <div className="global-legal-link">
+          <a href="/legal">Правовая информация</a>
+        </div>
         <YandexMetrika counterId={yandexMetrikaId} />
+        <ChatWidget />
       </body>
     </html>
   );

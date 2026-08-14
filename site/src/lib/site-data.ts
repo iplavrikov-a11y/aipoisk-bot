@@ -123,7 +123,7 @@ const fallbackData: PublicSitePayload = {
       "TenderLex помогает подобрать компании для запроса цены, проверить контакты и разобрать закупочную документацию на сайте или в Telegram.",
   },
   contacts: {
-    email: "snab@dealpartner.ru",
+    email: "info@tenderlex.ru",
     telegram: "Telegram",
     telegram_url: "https://t.me/lexelence",
     max: "",
@@ -157,7 +157,7 @@ function apiBaseUrl() {
 export async function getSiteData(): Promise<PublicSitePayload> {
   try {
     const response = await fetch(`${apiBaseUrl()}/api/public/site`, {
-      cache: "no-store",
+      next: { revalidate: 300 },
       headers: {
         accept: "application/json",
       },

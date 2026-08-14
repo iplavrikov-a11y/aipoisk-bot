@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 import io
 import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 import app.supplier_search as supplier_search
@@ -13,6 +17,289 @@ from app.supplier_search import Candidate, CandidateMatch, CandidateRerank, Proc
 
 
 class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_base_domain_preserves_registrable_domain_for_multi_label_suffixes(self) -> None:
+        self.assertEqual(supplier_search.base_domain("https://shop.vacuum.com.ru/catalog"), "vacuum.com.ru")
+        self.assertEqual(supplier_search.base_domain("metiz.com.tw"), "metiz.com.tw")
+        self.assertEqual(supplier_search.base_domain("https://www.example.co.uk"), "example.co.uk")
+
+    def test_confidence_rejects_ambiguous_zero_to_ten_scale(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "ambiguous 0-10"):
+            supplier_search._confidence_percent(9)
+        self.assertEqual(supplier_search._confidence_percent(0.91), 91)
+        self.assertEqual(supplier_search._confidence_percent(91), 91)
+
+    def test_verified_contacts_must_exist_in_extracted_page_contacts(self) -> None:
+        self.assertEqual(
+            supplier_search._verified_email("invented@wrong.example", ["real@supplier.example"]),
+            "real@supplier.example",
+        )
+        self.assertEqual(
+            supplier_search._verified_phone("+7 (617) 324-13-09", ["+86 173 2413 0960"]),
+            "+8617324130960",
+        )
+        self.assertEqual(supplier_search._normalize_phone("+886-2-278-45675"), "+886227845675")
+
+    def test_profile_merges_labeled_okpd2_from_source_context(self) -> None:
+        profile = ProcurementProfile(
+            summary="Установка",
+            items=(ProcurementItem(id="item-1", name="Вакуумная установка"),),
+        )
+        merged = supplier_search._merge_deterministic_okpd2(
+            profile,
+            "Код ОКПД2: 28.21.13.117. ГОСТ 12.2.003-91.",
+        )
+        self.assertEqual(merged.items[0].okpd2_codes, ("28.21.13.117",))
+
+    def test_detects_russian_origin_advantage_without_making_registry_mandatory(self) -> None:
+        self.assertEqual(
+            supplier_search._deterministic_measure_type(
+                "Предоставляется преимущество в отношении товара российского происхождения"
+            ),
+            "advantage",
+        )
+
+    async def test_post_verification_reserve_pass_skips_primary_provider(self) -> None:
+        calls: list[tuple[str, int]] = []
+
+        async def yandex(*_args, **_kwargs):
+            raise AssertionError("primary provider must not run in reserve-only pass")
+
+        async def google(_settings, _queries, max_results, **_kwargs):
+            calls.append(("google", max_results))
+            return [Candidate(url="https://reserve.example", domain="reserve.example", source="google")]
+
+        with (
+            patch.object(supplier_search, "_search_with_yandex", yandex),
+            patch.object(supplier_search, "_search_with_google", google),
+        ):
+            candidates, meta = await supplier_search.discover_candidates(
+                SimpleNamespace(supplier_search_provider_order="google"),
+                ["товар поставщик"],
+                max_results=80,
+                fallback_candidate_limit=8,
+                reserve_only=True,
+            )
+
+        self.assertEqual(calls, [("google", 8)])
+        self.assertEqual([candidate.domain for candidate in candidates], ["reserve.example"])
+        self.assertTrue(meta["strategy"]["reserve_only"])
+        self.assertEqual(meta["reports"][0]["status"], "skipped_post_verification_reserve")
+
+    def test_technical_fit_dominates_contact_completeness_in_quality_score(self) -> None:
+        common = {
+            "evidence_status": "verified",
+            "site": "https://supplier.example",
+            "evidence_url": "https://supplier.example/product",
+            "contact_url": "https://supplier.example/contact",
+            "search_query": "оборудование поставщик",
+            "company_name": "Supplier",
+        }
+        exact_without_phone = supplier_search._supplier_quality_score(
+            {**common, "match_level": "exact", "product_fit": "exact", "phone": "", "email": ""}
+        )
+        category_with_contacts = supplier_search._supplier_quality_score(
+            {
+                **common,
+                "match_level": "profile",
+                "product_fit": "category",
+                "phone": "+79991112233",
+                "email": "sales@supplier.example",
+            }
+        )
+        self.assertGreater(exact_without_phone, category_with_contacts)
+
+    async def test_candidate_verification_limit_is_shared_between_concurrent_reviews(self) -> None:
+        original_verify = supplier_search.verify_candidate
+        active = 0
+        max_active = 0
+
+        async def fake_verify(*args, **kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return {"evidence_status": "verified"}
+
+        supplier_search.verify_candidate = fake_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        candidate = Candidate(url="https://supplier.example", domain="supplier.example")
+        try:
+            with (
+                patch.object(supplier_search.config, "supplier_verification_concurrency", 2),
+                patch.object(supplier_search.config, "supplier_verification_timeout_seconds", 1.0),
+            ):
+                await asyncio.gather(
+                    *[
+                        supplier_search._verify_candidate_with_limits(
+                            SimpleNamespace(),
+                            candidate,
+                            "context",
+                        )
+                        for _ in range(6)
+                    ]
+                )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertEqual(max_active, 2)
+
+    async def test_candidate_verification_timeout_returns_no_result(self) -> None:
+        original_verify = supplier_search.verify_candidate
+
+        async def slow_verify(*args, **kwargs):
+            await asyncio.sleep(0.1)
+            return {"evidence_status": "verified"}
+
+        supplier_search.verify_candidate = slow_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        try:
+            with patch.object(
+                supplier_search,
+                "_supplier_verification_timeout_seconds",
+                return_value=0.01,
+            ):
+                result = await supplier_search._verify_candidate_with_limits(
+                    SimpleNamespace(),
+                    Candidate(url="https://supplier.example", domain="supplier.example"),
+                    "context",
+                )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertIsNone(result)
+
+    async def test_candidate_verification_retries_one_browser_infrastructure_failure(self) -> None:
+        original_verify = supplier_search.verify_candidate
+        calls = 0
+
+        async def flaky_verify(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise supplier_search.SupplierBrowserInfrastructureError("temporary")
+            return {"evidence_status": "verified"}
+
+        supplier_search.verify_candidate = flaky_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        try:
+            result = await supplier_search._verify_candidate_with_limits(
+                SimpleNamespace(),
+                Candidate(url="https://supplier.example", domain="supplier.example"),
+                "context",
+            )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertEqual(result, {"evidence_status": "verified"})
+        self.assertEqual(calls, 2)
+
+    async def test_candidate_verification_skips_persistent_browser_infrastructure_failure(self) -> None:
+        original_verify = supplier_search.verify_candidate
+        calls = 0
+
+        async def failing_verify(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise supplier_search.SupplierBrowserInfrastructureError("temporary")
+
+        supplier_search.verify_candidate = failing_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        try:
+            result = await supplier_search._verify_candidate_with_limits(
+                SimpleNamespace(),
+                Candidate(url="https://supplier.example", domain="supplier.example"),
+                "context",
+            )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, 2)
+
+    async def test_candidate_verification_limit_is_shared_across_event_loops(self) -> None:
+        original_verify = supplier_search.verify_candidate
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+
+        async def fake_verify(*args, **kwargs):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            await asyncio.sleep(0.02)
+            with state_lock:
+                active -= 1
+            return {"evidence_status": "verified"}
+
+        async def run_reviews() -> None:
+            candidate = Candidate(url="https://supplier.example", domain="supplier.example")
+            await asyncio.gather(
+                *[
+                    supplier_search._verify_candidate_with_limits(
+                        SimpleNamespace(), candidate, "context"
+                    )
+                    for _ in range(6)
+                ]
+            )
+
+        supplier_search.verify_candidate = fake_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        try:
+            with (
+                patch.object(supplier_search.config, "supplier_verification_concurrency", 2),
+                patch.object(supplier_search.config, "supplier_verification_timeout_seconds", 1.0),
+            ):
+                await asyncio.gather(
+                    asyncio.to_thread(asyncio.run, run_reviews()),
+                    asyncio.to_thread(asyncio.run, run_reviews()),
+                )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertEqual(max_active, 2)
+
+    async def test_candidate_timeout_budget_starts_after_capacity_is_acquired(self) -> None:
+        original_verify = supplier_search.verify_candidate
+
+        async def fake_verify(*args, **kwargs):
+            await asyncio.sleep(0.08)
+            return {"evidence_status": "verified"}
+
+        supplier_search.verify_candidate = fake_verify
+        supplier_search._supplier_verification_limiter.reset_for_tests()
+        candidate = Candidate(url="https://supplier.example", domain="supplier.example")
+        try:
+            with (
+                patch.object(supplier_search.config, "supplier_verification_concurrency", 1),
+                patch.object(supplier_search, "_supplier_verification_timeout_seconds", return_value=0.12),
+            ):
+                results = await asyncio.gather(
+                    supplier_search._verify_candidate_with_limits(
+                        SimpleNamespace(), candidate, "context"
+                    ),
+                    supplier_search._verify_candidate_with_limits(
+                        SimpleNamespace(), candidate, "context"
+                    ),
+                )
+        finally:
+            supplier_search.verify_candidate = original_verify
+            supplier_search._supplier_verification_limiter.reset_for_tests()
+
+        self.assertEqual(
+            results,
+            [
+                {"evidence_status": "verified"},
+                {"evidence_status": "verified"},
+            ],
+        )
+
     async def test_collect_pages_adds_browser_rendered_page_when_http_has_no_contact(self) -> None:
         original_fetch_page = supplier_search.fetch_page
         original_browser = supplier_search.fetch_page_with_browser
@@ -146,6 +433,38 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(has_active_ai_provider=False),
                 "Требуются реестровые записи Минпромторга.",
             )
+
+    def test_minprom_registry_cache_uses_shared_sqlite_data_dir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "shared-data"
+            database_path = data_dir / "aipoisk.db"
+            old_legacy_dir = os.environ.pop("SUPPLIER_MINPROM_REGISTRY_CACHE_DIR", None)
+            try:
+                with (
+                    patch.object(supplier_search.config, "minprom_registry_cache_dir", ""),
+                    patch.object(supplier_search.config, "database_url", f"sqlite:///{database_path}"),
+                ):
+                    self.assertEqual(
+                        supplier_search._minprom_registry_cache_dir(),
+                        data_dir / "minprom_registry",
+                    )
+            finally:
+                if old_legacy_dir is not None:
+                    os.environ["SUPPLIER_MINPROM_REGISTRY_CACHE_DIR"] = old_legacy_dir
+
+    def test_minprom_registry_cache_dir_explicit_setting_overrides_database_location(self) -> None:
+        with TemporaryDirectory() as tmp:
+            explicit_dir = Path(tmp) / "registry-cache"
+            old_legacy_dir = os.environ.pop("SUPPLIER_MINPROM_REGISTRY_CACHE_DIR", None)
+            try:
+                with (
+                    patch.object(supplier_search.config, "minprom_registry_cache_dir", str(explicit_dir)),
+                    patch.object(supplier_search.config, "database_url", "sqlite:////unrelated/data/aipoisk.db"),
+                ):
+                    self.assertEqual(supplier_search._minprom_registry_cache_dir(), explicit_dir)
+            finally:
+                if old_legacy_dir is not None:
+                    os.environ["SUPPLIER_MINPROM_REGISTRY_CACHE_DIR"] = old_legacy_dir
 
     async def test_minprom_registry_search_uses_local_jsonl_index(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -575,6 +894,139 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         filtered = supplier_search._filter_minprom_verified_suppliers(accepted, registry_context)
 
         self.assertEqual(filtered, [])
+
+    async def test_strict_minprom_preserves_verified_rows_for_trustworthy_zero_fallback(self) -> None:
+        profile = ProcurementProfile(
+            summary="Волоконный усилитель",
+            items=(ProcurementItem(id="item-1", name="Волоконный усилитель"),),
+        )
+        candidate = Candidate(
+            url="https://supplier.example",
+            domain="supplier.example",
+            title="Поставщик",
+        )
+
+        async def fake_profile(*_args, **_kwargs):
+            return profile
+
+        async def fake_queries(*_args, **_kwargs):
+            return ["волоконный усилитель поставщик"]
+
+        async def fake_candidates(*_args, **_kwargs):
+            return [candidate], {"reports": [{"provider": "test", "status": "ok"}]}
+
+        async def fake_rerank(*_args, **_kwargs):
+            return CandidateRerank([candidate], {"status": "ok"})
+
+        for registry_status, expected_reason in (
+            ("empty", "registry_no_relevant_entries"),
+            ("ok", "registry_entries_no_supplier_match"),
+        ):
+            with self.subTest(registry_status=registry_status):
+                registry_context = supplier_search.MinpromRegistryContext(
+                    requirement=supplier_search.MinpromRegistryRequirement(
+                        required=True,
+                        measure_type="prohibition",
+                    ),
+                    entries=(
+                        {
+                            "registry_number": "РПП-ДРУГОЙ-ТОВАР",
+                            "manufacturer": "Другой завод",
+                            "product": "Другой товар",
+                            "inn": "7700000000",
+                        },
+                    ) if registry_status == "ok" else (),
+                    status=registry_status,
+                )
+                source_rows = [
+                    {
+                        "company_name": f"Поставщик {index}",
+                        "site": f"https://supplier-{index}.example",
+                        "email": f"sales{index}@supplier.example",
+                        "product": "Волоконный усилитель",
+                        "product_fit": "exact",
+                        "evidence_status": "verified",
+                        "quality_score": 90 - index,
+                    }
+                    for index in range(3)
+                ]
+                filtered_input: list[dict] = []
+                filter_seen = False
+                real_filter = supplier_search._filter_minprom_verified_suppliers
+
+                async def fake_registry(*_args, **_kwargs):
+                    if filter_seen:
+                        raise AssertionError("registry discovery ran after strict filter")
+                    return registry_context
+
+                async def fake_review(*_args, **_kwargs):
+                    if filter_seen:
+                        raise AssertionError("candidate review ran after strict filter")
+                    return source_rows, [], {"reviewed_count": len(source_rows)}
+
+                async def unexpected_recovery(*_args, **_kwargs):
+                    raise AssertionError("no recovery/search call is expected after three verified rows")
+
+                def recording_filter(rows, context):
+                    nonlocal filter_seen
+                    filtered_input.extend(deepcopy(rows))
+                    filter_seen = True
+                    return real_filter(rows, context)
+
+                with (
+                    patch.object(supplier_search, "build_procurement_profile", fake_profile),
+                    patch.object(supplier_search, "build_supplier_queries", fake_queries),
+                    patch.object(supplier_search, "discover_minprom_registry_context", fake_registry),
+                    patch.object(supplier_search, "discover_candidates", fake_candidates),
+                    patch.object(supplier_search, "ai_rerank_candidates", fake_rerank),
+                    patch.object(supplier_search, "_review_candidates_until_target", fake_review),
+                    patch.object(supplier_search, "_build_supplier_recovery_queries_with_ai", unexpected_recovery),
+                    patch.object(supplier_search, "_filter_minprom_verified_suppliers", recording_filter),
+                ):
+                    accepted, evidence = await supplier_search._discover_suppliers_impl(
+                        SimpleNamespace(has_active_ai_provider=True),
+                        "ТЗ на волоконный усилитель",
+                        target=3,
+                        supplier_search_policy=supplier_search.SUPPLIER_POLICY_MINPROM_ONLY,
+                    )
+
+                alternative = evidence["non_registry_alternative"]
+                self.assertEqual(accepted, [])
+                self.assertEqual(evidence["accepted"], [])
+                self.assertEqual(evidence["accepted_count"], 0)
+                self.assertEqual(evidence["registry_result"], {"status": registry_status, "verified_count": 0})
+                self.assertTrue(alternative["available"])
+                self.assertEqual(alternative["verified_count"], 3)
+                self.assertEqual(alternative["reason_code"], expected_reason)
+                self.assertEqual(alternative["verified_rows"], filtered_input)
+                self.assertTrue(
+                    all(row["supplier_search_origin"] == "ordinary_fallback" for row in alternative["verified_rows"])
+                )
+
+                source_rows[0]["company_name"] = "Изменено после формирования evidence"
+                self.assertEqual(alternative["verified_rows"][0]["company_name"], "Поставщик 0")
+
+    async def test_strict_minprom_registry_error_never_enables_fallback_offer(self) -> None:
+        rows = [{"company_name": "Поставщик", "site": "https://supplier.example"}]
+        context = supplier_search.MinpromRegistryContext(
+            requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),
+            status="error",
+            error="registry unavailable",
+        )
+        supplier_search._annotate_minprom_registry_matches(
+            rows,
+            context,
+            supplier_search.SUPPLIER_POLICY_MINPROM_ONLY,
+        )
+        alternative = supplier_search._non_registry_alternative_evidence(
+            rows,
+            context,
+            registry_verified_count=0,
+        )
+
+        self.assertFalse(alternative["available"])
+        self.assertEqual(alternative["reason_code"], "")
+        self.assertEqual(alternative["verified_count"], 1)
 
     def test_supplier_search_blocks_tender_and_registry_mirror_domains(self) -> None:
         for domain in ("poisktenderov.ru", "awindex.ru", "torgs.ru", "ruscable.ru", "zakupki44fz.ru", "dzen.ru"):
@@ -1134,7 +1586,7 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["email"], "sales@supplier.example")
 
     def test_verified_phone_normalizes_and_rejects_broken_numbers(self) -> None:
-        self.assertEqual(supplier_search._verified_phone("8 800 119 00 00", []), "+7 (800) 119-00-00")
+        self.assertEqual(supplier_search._verified_phone("8 800 119 00 00", []), "")
         self.assertEqual(supplier_search._verified_phone("8000\n1190000", []), "")
         self.assertEqual(
             supplier_search._verified_phone("не найдено", ["+7 999 111 22 33"]),

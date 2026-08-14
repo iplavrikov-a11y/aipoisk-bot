@@ -13,7 +13,7 @@ from .models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, Cl
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-DEFAULT_SUPPLIER_TARGET = 25
+DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
 INTERNAL_JOB_PATTERN = re.compile(
     r"(smoke|retest|patch2?|remain|pusher|ai_required|live_|worker_smoke)",
@@ -74,7 +74,7 @@ def get_or_create_settings(db: Session) -> SystemSettings:
 def supplier_target_for_client(settings: SystemSettings, client: Client | None) -> int:
     client_target = int(getattr(client, "supplier_target_min", 0) or 0)
     configured_target = client_target if client_target > 0 else int(getattr(settings, "default_supplier_target", 0) or DEFAULT_SUPPLIER_TARGET)
-    return max(1, min(MAX_SUPPLIER_TARGET, configured_target))
+    return max(50, min(MAX_SUPPLIER_TARGET, configured_target))
 
 
 def seed_owner_client(db: Session) -> None:
@@ -444,8 +444,6 @@ def client_access_error(
         return "Неизвестный режим обработки."
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)
-    if uses_trial_access and mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return "В бесплатном доступе режим «Анализ + поставщики» недоступен. Запустите анализ и поиск поставщиков отдельно."
     if uses_trial_access and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:
         return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ за один запуск."
 

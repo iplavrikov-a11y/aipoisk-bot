@@ -370,7 +370,7 @@ class AccessLimitTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_trial_rejects_combined_and_mass_supplier_modes(self) -> None:
+    def test_trial_allows_combined_but_rejects_mass_supplier_mode(self) -> None:
         db = self.Session()
         try:
             client = Client(
@@ -388,7 +388,7 @@ class AccessLimitTests(unittest.TestCase):
             mass_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=2)
             single_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=1)
 
-            self.assertIn("Анализ + поставщики", combined_error)
+            self.assertEqual(combined_error, "")
             self.assertIn("массовая обработка", mass_error)
             self.assertEqual(single_error, "")
         finally:

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  X,
   ArrowDown,
   ArrowUp,
   Bot,
@@ -69,6 +70,14 @@ type Client = {
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
   recent_billing: BillingTransaction[]
+  onboarding?: {
+    last_event: string
+    last_channel: string
+    last_mode: string
+    last_outcome: string
+    last_reason_code: string
+    last_event_at: string | null
+  } | null
 }
 
 type ClientUsage = {
@@ -174,6 +183,10 @@ type Job = {
   mode_label: string
   supplier_search_policy: string
   supplier_search_run_type: string
+  confirmation_kind?: string
+  confirmation_outcome?: string
+  offer_delivery_outcome?: string
+  result_offer?: JobResultOffer | null
   status: string
   progress: number
   message: string
@@ -192,6 +205,24 @@ type Job = {
   created_at: string
   updated_at: string | null
   completed_at: string | null
+  yandex_requests_count?: number
+  yandex_cost_rub?: number
+  yandex_cost_label?: string
+}
+
+type JobResultOffer = {
+  kind: string
+  registry_verified_count: number
+  alternative_verified_count: number
+  decision_expires_at?: string | null
+  decision_outcome?: string
+  delivery_expires_at?: string | null
+  delivery_outcome?: string
+  active_manifest_version?: number
+  charge_amount_kopeks?: number
+  charge_units?: number
+  can_accept?: boolean
+  can_decline?: boolean
 }
 
 type JobResultFile = {
@@ -253,6 +284,8 @@ type SettingsPayload = {
   trial_supplier_search_limit: number
   trial_procurement_report_limit: number
   trial_file_limit: number
+  onboarding_reminders_enabled: boolean
+  onboarding_reminders_rollout_at: string
   primary_provider: string
   primary_model: string
   light_provider: string
@@ -356,7 +389,20 @@ type BotAnalytics = {
     daily: Array<{ date: string; supplier_search: number; procurement_report: number; analysis_and_suppliers: number; total: number }>
   }
   billing: {
-    period: Array<{ kind: string; label: string; granted: number; reserved: number; charged: number; released: number; manual_debited: number }>
+    period: Array<{
+      kind: string
+      label: string
+      granted: number
+      reserved: number
+      charged: number
+      released: number
+      manual_debited: number
+      granted_amount_kopeks: number
+      reserved_amount_kopeks: number
+      charged_amount_kopeks: number
+      released_amount_kopeks: number
+      manual_debited_amount_kopeks: number
+    }>
     payment_provider: string
     yookassa_ready: boolean
   }
@@ -426,6 +472,7 @@ type OpsStatus = {
     status: string
     status_label: string
     balance_label: string
+    warning?: boolean
     note: string
   }>
   warnings: string[]
@@ -554,6 +601,7 @@ const statusLabels: Record<string, string> = {
   awaiting_customer_confirmation: 'ожидает клиента',
   customer_declined: 'отклонено',
   confirmation_expired: 'истёк срок',
+  delivery_expired: 'срок выдачи истёк',
 }
 
 const functionLabels: Record<string, string> = {
@@ -616,6 +664,23 @@ function clientDisplayName(client: Client) {
   return client.name || (client.username ? `@${client.username}` : '') || client.telegram_id || 'без имени'
 }
 
+function onboardingStageLabel(eventName: string) {
+  return ({
+    account_created: 'создан кабинет',
+    bot_started: 'открыт бот',
+    create_opened: 'открыто создание',
+    mode_selected: 'выбран сценарий',
+    input_added: 'добавлены материалы',
+    launch_attempted: 'попытка запуска',
+    launch_blocked: 'запуск остановлен',
+    job_created: 'задача создана',
+    link_requested: 'запрошена привязка',
+    link_succeeded: 'аккаунты связаны',
+    link_conflict: 'конфликт привязки',
+    onboarding_reminder_sent: 'отправлена подсказка',
+  } as Record<string, string>)[eventName] || eventName
+}
+
 function accountDisplayName(account?: TelegramAccount) {
   if (!account) return 'этот Telegram-аккаунт'
   return account.name || (account.username ? `@${account.username}` : '') || account.telegram_id || 'этот Telegram-аккаунт'
@@ -645,6 +710,47 @@ function transferAccountMessage(sourceClient: Client, targetClient: Client, acco
 
 function supplierCountLabel(job: Job) {
   return `${job.verified_count}`
+}
+
+function registryFallbackOffer(job: Job) {
+  const offer = job.result_offer
+  const kind = String(offer?.kind || job.confirmation_kind || '')
+  if (kind !== 'registry_fallback') return null
+  return {
+    decision: String(offer?.decision_outcome || job.confirmation_outcome || ''),
+    delivery: String(offer?.delivery_outcome || job.offer_delivery_outcome || ''),
+    count: Math.max(0, Number(offer?.alternative_verified_count ?? job.verified_count ?? 0)),
+  }
+}
+
+function registryFallbackStatusLabel(job: Job) {
+  const offer = registryFallbackOffer(job)
+  if (!offer) return ''
+  if (offer.decision === 'accepted') {
+    if (offer.delivery === 'delivered') return 'Без реестра: выдано'
+    if (offer.delivery === 'expired') return 'Без реестра: срок выдачи истёк'
+    return 'Без реестра: ожидает выдачи'
+  }
+  if (offer.decision === 'declined') return 'Без реестра: клиент отказался'
+  if (offer.decision === 'expired') return 'Без реестра: решение не получено'
+  return 'Без реестра: ожидает решения'
+}
+
+function registryFallbackDecisionLabel(decision: string) {
+  return ({
+    pending: 'ожидается',
+    accepted: 'принято',
+    declined: 'отказ',
+    expired: 'не получено в срок',
+  } as Record<string, string>)[decision || 'pending'] || decision
+}
+
+function registryFallbackDeliveryLabel(delivery: string) {
+  return ({
+    pending: 'ожидает выдачи',
+    delivered: 'выдано',
+    expired: 'срок выдачи истёк',
+  } as Record<string, string>)[delivery] || delivery
 }
 
 function parseJson<T>(value: string, fallback: T): T {
@@ -781,6 +887,45 @@ function apiDateValue(value: string) {
   return `${trimmed}Z`
 }
 
+
+function formatJobDuration(job: { created_at?: string | null; completed_at?: string | null; updated_at?: string | null; status?: string }, nowTs: number): string | null {
+  if (!job.created_at) return null
+  const startTime = new Date(apiDateValue(job.created_at)).getTime()
+  if (Number.isNaN(startTime)) return null
+
+  const isRunning = job.status === 'pending' || job.status === 'running' || job.status === 'queued' || job.status === 'in_progress'
+  
+  let totalSeconds = 0
+  if (!isRunning) {
+    const endStr = job.completed_at || job.updated_at
+    if (!endStr) return null
+    const endTime = new Date(apiDateValue(endStr)).getTime()
+    if (Number.isNaN(endTime) || endTime < startTime) return null
+    totalSeconds = Math.floor((endTime - startTime) / 1000)
+  } else {
+    totalSeconds = Math.max(0, Math.floor((nowTs - startTime) / 1000))
+  }
+
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (isRunning) {
+    const mm = String(minutes).padStart(2, '0')
+    const ss = String(seconds).padStart(2, '0')
+    return `${mm}:${ss}`
+  }
+
+  if (minutes === 0) {
+    return `${seconds} сек`
+  }
+  if (minutes < 60) {
+    return `${minutes} мин ${seconds} сек`
+  }
+  const hours = Math.floor(minutes / 60)
+  const remMin = minutes % 60
+  return `${hours} ч ${remMin} мин`
+}
+
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
   const date = new Date(apiDateValue(value))
@@ -804,6 +949,13 @@ export function App() {
   const [passwordResets, setPasswordResets] = useState<PasswordResetRequest[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [nowTs, setNowTs] = useState(() => Date.now())
+  const [showServerModal, setShowServerModal] = useState(false)
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowTs(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
 
   const isReady = authenticated
   const canLogin = username.trim().length > 0 && password.length > 0
@@ -813,14 +965,13 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, opsStatusData, minpromRegistryData, settingsData, analyticsData, tariffData, passwordResetData] = await Promise.all([
+      const [dashboardData, clientsData, jobsData, opsStatusData, minpromRegistryData, settingsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
-        api<Job[]>('/api/jobs?include_internal=true&limit=500'),
+        api<Job[]>('/api/jobs?include_internal=true&limit=200'),
         api<OpsStatus>('/api/ops/system-status'),
         api<MinpromRegistryStatus>('/api/ops/minprom-registry'),
         api<SettingsPayload>('/api/settings'),
-        api<BotAnalytics>('/api/analytics/bot?period_days=30'),
         api<TariffPackage[]>('/api/tariffs'),
         api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
       ])
@@ -830,13 +981,22 @@ export function App() {
       setOpsStatus(opsStatusData)
       setMinpromRegistry(minpromRegistryData)
       setSettings(settingsData)
-      setAnalytics(analyticsData)
       setTariffs(tariffData)
       setPasswordResets(passwordResetData)
     } catch (err) {
       setError(formatError(err))
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadAnalytics() {
+    if (!authenticated) return
+    try {
+      const analyticsData = await api<BotAnalytics>('/api/analytics/bot?period_days=30')
+      setAnalytics(analyticsData)
+    } catch (err) {
+      console.error('Failed to load analytics:', err)
     }
   }
 
@@ -885,6 +1045,68 @@ export function App() {
       })
       .catch(() => setAuthenticated(false))
   }, [])
+
+  useEffect(() => {
+    if (!authenticated) return
+
+    let timeoutId: any = null
+    let cancelled = false
+
+    async function loop() {
+      if (cancelled) return
+
+      let hasActive = false
+      setJobs(prevJobs => {
+        hasActive = prevJobs.some(j => j.status === 'running' || j.status === 'pending')
+        return prevJobs
+      })
+
+      const delay = document.hidden ? 30000 : hasActive ? 2500 : 6000
+
+      timeoutId = setTimeout(async () => {
+        if (cancelled) return
+        if (!document.hidden) {
+          try {
+            const updatedJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=200')
+            if (!cancelled && updatedJobs) {
+              setJobs(updatedJobs)
+              const nowHasActive = updatedJobs.some(j => j.status === 'running' || j.status === 'pending')
+              if (hasActive && !nowHasActive) {
+                void api<Dashboard>('/api/dashboard').then(d => {
+                  if (!cancelled && d) setDashboard(d)
+                }).catch(() => {})
+              }
+            }
+          } catch {
+            // Ignore transient background network glitches
+          }
+        }
+        if (!cancelled) {
+          loop()
+        }
+      }, delay)
+    }
+
+    loop()
+
+    function handleVisibilityOrFocus() {
+      if (!document.hidden && authenticated) {
+        void api<Job[]>('/api/jobs?include_internal=true&limit=200').then(updatedJobs => {
+          if (!cancelled && updatedJobs) setJobs(updatedJobs)
+        }).catch(() => {})
+      }
+    }
+
+    window.addEventListener('focus', handleVisibilityOrFocus)
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus)
+
+    return () => {
+      cancelled = true
+      if (timeoutId) clearTimeout(timeoutId)
+      window.removeEventListener('focus', handleVisibilityOrFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
+    }
+  }, [authenticated])
 
   useEffect(() => {
     function handleUnhandled(event: PromiseRejectionEvent) {
@@ -954,22 +1176,107 @@ export function App() {
             <p>{viewCopy[view].description}</p>
           </div>
           <div className="top-actions">
-            <button className="login-button" onClick={() => void loadAll()} disabled={loading}>
-              {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-              Обновить
-            </button>
+            {opsStatus && (
+              <div className="header-status-badges">
+                <span className={`header-badge ${opsStatus.server.cpu_percent >= 80 ? 'warning' : ''}`} title={`CPU: ${opsStatus.server.cpu_percent}%`}>
+                  <Cpu size={13} />
+                  <span>CPU {opsStatus.server.cpu_percent}%</span>
+                </span>
+                <span className={`header-badge ${opsStatus.server.ram_percent >= 85 ? 'warning' : ''}`} title={`RAM: ${opsStatus.server.ram_used_gb}/${opsStatus.server.ram_total_gb} ГБ`}>
+                  <MemoryStick size={13} />
+                  <span>RAM {Math.round(opsStatus.server.ram_percent)}%</span>
+                </span>
+                <span className={`header-badge ${opsStatus.server.disk_free_gb < 10 ? 'warning' : ''}`} title={`SSD свободно: ${Math.floor(opsStatus.server.disk_free_gb)} ГБ`}>
+                  <HardDrive size={13} />
+                  <span>SSD {Math.floor(opsStatus.server.disk_free_gb)} ГБ</span>
+                </span>
+                {(() => {
+                  const yandexSvc = opsStatus.services.find(s => s.id === 'yandex')
+                  const isWarn = yandexSvc?.warning || yandexSvc?.status !== 'ok'
+                  const balanceText = yandexSvc?.balance_label || 'OK'
+                  return (
+                    <button
+                      className={`header-badge clickable ${isWarn ? 'critical' : 'warning'}`}
+                      onClick={() => setShowServerModal(true)}
+                      title="Нажмите для просмотра состояния сервера и API балансов"
+                    >
+                      <Search size={13} />
+                      <span>Поиск Яндекс: {balanceText}</span>
+                    </button>
+                  )
+                })()}
+              </div>
+            )}
             <button className="secondary" onClick={() => void logout()}>Выйти</button>
           </div>
         </header>
 
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
-        {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} />}
+        {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} onLoad={loadAnalytics} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
+
+        {showServerModal && opsStatus && (
+          <div className="server-modal-backdrop" onClick={() => setShowServerModal(false)}>
+            <div className="server-modal-card" onClick={e => e.stopPropagation()}>
+              <div className="server-modal-header">
+                <h3>СОСТОЯНИЕ СЕРВЕРА</h3>
+                <button className="server-modal-close" onClick={() => setShowServerModal(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="server-grid-3">
+                <div className={`server-grid-item ${opsStatus.server.cpu_percent >= 80 ? 'warning' : ''}`}>
+                  <div className="server-grid-item-title"><Cpu size={14} /> CPU</div>
+                  <div className="server-grid-item-value">{opsStatus.server.cpu_percent}%</div>
+                </div>
+                <div className={`server-grid-item ${opsStatus.server.ram_percent >= 85 ? 'warning' : ''}`}>
+                  <div className="server-grid-item-title"><MemoryStick size={14} /> RAM</div>
+                  <div className="server-grid-item-value">{opsStatus.server.ram_percent}%</div>
+                </div>
+                <div className={`server-grid-item ${opsStatus.server.disk_free_gb < 10 ? 'warning' : ''}`}>
+                  <div className="server-grid-item-title"><HardDrive size={14} /> SSD</div>
+                  <div className="server-grid-item-value">{Math.floor(opsStatus.server.disk_free_gb)} GB</div>
+                </div>
+              </div>
+
+              <div className="server-cache-box">
+                <span className="server-cache-title">Кэш и логи</span>
+                <button className="secondary small" onClick={async () => {
+                  if (!window.confirm('Очистить временные логи и кэш?')) return
+                  const res = await api<{ cancelled: string[]; count: number }>('/api/jobs/force-stale?max_minutes=45', { method: 'POST' })
+                  alert(res.count ? `Очищено задач: ${res.count}` : 'Кэш и задачи в норме')
+                }}>
+                  <Trash2 size={13} style={{ marginRight: 4 }} />
+                  Очистить
+                </button>
+              </div>
+
+              <div className="server-api-section-title">API СЕРВИСЫ</div>
+
+              {opsStatus.services.map(svc => (
+                <div key={svc.id} className={`server-api-card ${svc.warning ? 'warning' : ''}`}>
+                  <div className="server-api-card-info">
+                    <div className="server-api-card-icon">
+                      {svc.id === 'yandex' ? <Search size={16} /> : <Bot size={16} />}
+                    </div>
+                    <div>
+                      <div className="server-api-card-name">{svc.label}</div>
+                      <div className="server-api-card-sub">{svc.detail}</div>
+                    </div>
+                  </div>
+                  <div className="server-api-card-val">{svc.balance_label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   )
@@ -1131,8 +1438,11 @@ function DashboardAttentionPanel({ items }: { items: Array<{ title: string; deta
   )
 }
 
-function AnalyticsView({ analytics }: { analytics: BotAnalytics | null }) {
-  if (!analytics) return <div className="empty">Статистика пока не загружена.</div>
+function AnalyticsView({ analytics, onLoad }: { analytics: BotAnalytics | null; onLoad: () => void }) {
+  useEffect(() => {
+    if (!analytics) onLoad()
+  }, [analytics, onLoad])
+  if (!analytics) return <div className="empty">Загрузка статистики...</div>
   const summary = analytics.summary
   const funnel = analytics.funnel
   const maxDaily = Math.max(1, ...analytics.jobs.daily.map(item => item.total))
@@ -1255,9 +1565,12 @@ function analyticsBalance(client: AnalyticsClient) {
 }
 
 function billingPeriodSummaryText(item: BotAnalytics['billing']['period'][number]) {
-  const parts = [`начислено ${item.granted}`, `списано ${item.charged}`]
-  if (item.reserved > 0) parts.push(`в работе ${item.reserved}`)
-  if (item.manual_debited > 0) parts.push(`коррекция ${item.manual_debited}`)
+  const parts = [
+    `начислено ${formatPrice(item.granted_amount_kopeks)}`,
+    `списано ${formatPrice(item.charged_amount_kopeks)}`,
+  ]
+  if (item.reserved_amount_kopeks > 0) parts.push(`в работе ${formatPrice(item.reserved_amount_kopeks)}`)
+  if (item.manual_debited_amount_kopeks > 0) parts.push(`коррекция ${formatPrice(item.manual_debited_amount_kopeks)}`)
   return parts.join(' · ')
 }
 
@@ -1339,11 +1652,14 @@ function ClientsView({
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
   const [accountEditForms, setAccountEditForms] = useState<Record<string, AccountDraft>>({})
   const [grantForms, setGrantForms] = useState<Record<string, GrantDraft>>({})
+  const balanceRequestIds = useRef<Record<string, string>>({})
+  const balanceRequestsInFlight = useRef<Record<string, boolean>>({})
   const [mergeForms, setMergeForms] = useState<Record<string, string>>({})
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({})
   const [priceForms, setPriceForms] = useState<Record<string, string>>({})
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
+  const [deletingClientId, setDeletingClientId] = useState<string | null>(null)
   async function createClient() {
     const usernames = parseTelegramUsernames(form.telegram_usernames)
     await api('/api/clients', {
@@ -1363,11 +1679,24 @@ function ClientsView({
     input.value = String(nextValue)
     if (nextValue !== (client.supplier_target_min || 0)) void patchClient(client, { supplier_target_min: nextValue })
   }
-  async function deleteClient(client: Client) {
+  async function deleteClient(client: Client, event?: React.MouseEvent) {
     const label = client.name || client.username || client.telegram_id || 'этого клиента'
     if (!window.confirm(`Полностью удалить клиента «${label}» вместе с задачами, балансом и привязками? Это действие нельзя отменить.`)) return
-    await api(`/api/clients/${client.id}`, { method: 'DELETE' })
-    await onChange()
+    
+    if (event?.currentTarget) {
+      const detailsEl = (event.currentTarget as HTMLElement).closest('details') as HTMLDetailsElement | null
+      if (detailsEl) detailsEl.open = false
+    }
+
+    setDeletingClientId(client.id)
+    try {
+      await api(`/api/clients/${client.id}`, { method: 'DELETE' })
+      await onChange()
+    } catch (err) {
+      alert(`Ошибка при удалении клиента: ${formatError(err)}`)
+    } finally {
+      setDeletingClientId(null)
+    }
   }
   async function mergeClientIntoTarget(target: Client) {
     const sourceId = mergeForms[target.id] || ''
@@ -1463,38 +1792,60 @@ function ClientsView({
     const amountRub = Number(String(draft.amount_rub || 0).replace(',', '.'))
     const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
     if (amountKopeks <= 0) return
-    await api(`/api/clients/${client.id}/billing/grants`, {
-      method: 'POST',
-      body: JSON.stringify({
-        kind: 'money',
-        package_id: '',
-        units: 1,
-        amount_kopeks: amountKopeks,
-        note: 'Ручное пополнение баланса',
-        operation: 'grant',
-      }),
-    })
-    setGrantForms({ ...grantForms, [client.id]: { ...draft, amount_rub: '' } })
-    await onChange()
+    const requestSlot = `${client.id}:grant`
+    if (balanceRequestsInFlight.current[requestSlot]) return
+    const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
+    balanceRequestIds.current[requestSlot] = idempotencyKey
+    balanceRequestsInFlight.current[requestSlot] = true
+    try {
+      await api(`/api/clients/${client.id}/billing/grants`, {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'money',
+          package_id: '',
+          units: 1,
+          amount_kopeks: amountKopeks,
+          note: 'Ручное пополнение баланса',
+          operation: 'grant',
+          idempotency_key: idempotencyKey,
+        }),
+      })
+      delete balanceRequestIds.current[requestSlot]
+      setGrantForms({ ...grantForms, [client.id]: { ...draft, amount_rub: '' } })
+      await onChange()
+    } finally {
+      delete balanceRequestsInFlight.current[requestSlot]
+    }
   }
   async function debitClientBalance(client: Client) {
     const draft = grantDraft(client)
     const amountRub = Number(String(draft.debit_amount_rub || 0).replace(',', '.'))
     const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
     if (amountKopeks <= 0) return
-    await api(`/api/clients/${client.id}/billing/grants`, {
-      method: 'POST',
-      body: JSON.stringify({
-        kind: 'money',
-        package_id: '',
-        units: 1,
-        amount_kopeks: amountKopeks,
-        note: 'Ручное списание с баланса',
-        operation: 'debit',
-      }),
-    })
-    setGrantForms({ ...grantForms, [client.id]: { ...draft, debit_amount_rub: '' } })
-    await onChange()
+    const requestSlot = `${client.id}:debit`
+    if (balanceRequestsInFlight.current[requestSlot]) return
+    const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
+    balanceRequestIds.current[requestSlot] = idempotencyKey
+    balanceRequestsInFlight.current[requestSlot] = true
+    try {
+      await api(`/api/clients/${client.id}/billing/grants`, {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'money',
+          package_id: '',
+          units: 1,
+          amount_kopeks: amountKopeks,
+          note: 'Ручное списание с баланса',
+          operation: 'debit',
+          idempotency_key: idempotencyKey,
+        }),
+      })
+      delete balanceRequestIds.current[requestSlot]
+      setGrantForms({ ...grantForms, [client.id]: { ...draft, debit_amount_rub: '' } })
+      await onChange()
+    } finally {
+      delete balanceRequestsInFlight.current[requestSlot]
+    }
   }
   async function saveClientTariffOverride(client: Client, kind: string, fallbackKopeks: number) {
     const key = priceDraftKey(client, kind)
@@ -1609,37 +1960,47 @@ function ClientsView({
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
           return (
-            <article className="client-card" key={client.id}>
-              <div className="client-card-head">
-                <div className="client-title-row">
+            <article className={`client-card compact ${expanded ? 'expanded' : ''}`} key={client.id}>
+              <div className="client-card-head compact">
+                <div className="client-title-row compact">
                   <button
-                    className="client-expand-button"
+                    className="client-expand-button compact"
                     title={expanded ? 'Свернуть карточку клиента' : 'Открыть карточку клиента'}
                     aria-expanded={expanded}
                     onClick={() => setExpandedClients({ ...expandedClients, [client.id]: !expanded })}
                   >
-                    {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+                    {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   </button>
-                  <div>
-                    <h2>{client.name || 'Без имени'}</h2>
+                  <div className="client-name-wrap">
+                    <div className="client-name-line">
+                      <h2>{client.name || 'Без имени'}</h2>
+                      {!client.is_active && <StatusBadge status="disabled" />}
+                    </div>
                     <p>{clientSummaryLine(client, accounts)}</p>
+                    {client.onboarding?.last_event && (
+                      <small>Шаг: {onboardingStageLabel(client.onboarding.last_event)} · {formatDate(client.onboarding.last_event_at)}</small>
+                    )}
                   </div>
                 </div>
-                <div className="client-summary-pills">
-                  {webUsers.length > 0 && <span>Web: {webUsers.length}</span>}
-                  <span>Telegram: {connectedCount}</span>
-                  {pendingCount > 0 && <span>Ожидают ID: {pendingCount}</span>}
-                  {client.usage?.money && <span>Баланс: {formatMoney(client.usage.money.available_kopeks)}</span>}
+                <div className="client-summary-pills compact">
+                  {webUsers.length > 0 && <span className="pill web">Web: {webUsers.length}</span>}
+                  <span className="pill tg">TG: {connectedCount}</span>
+                  {pendingCount > 0 && <span className="pill pending">Ожидают: {pendingCount}</span>}
+                  {client.usage?.money && <span className="pill balance">{formatMoney(client.usage.money.available_kopeks)}</span>}
                 </div>
                 <div className="client-state">
-                  {!client.is_active && <StatusBadge status="disabled" />}
-                  <details className="client-actions-menu">
+                  <details className="client-actions-menu compact">
                     <summary title="Действия клиента" aria-label="Действия клиента">
-                      <MoreHorizontal size={18} />
+                      <MoreHorizontal size={15} />
                     </summary>
                     <div className="client-actions-popover">
-                      <button className="danger small-text" onClick={() => void deleteClient(client)}>
-                        <Trash2 size={14} />Удалить клиента
+                      <button
+                        className="danger small-text"
+                        onClick={(e) => void deleteClient(client, e)}
+                        disabled={deletingClientId === client.id}
+                      >
+                        <Trash2 size={13} />
+                        {deletingClientId === client.id ? 'Удаление...' : 'Удалить клиента'}
                       </button>
                     </div>
                   </details>
@@ -1975,6 +2336,12 @@ function fallbackDownloadName(job: Job, extension: string) {
 }
 
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
+  const [nowTs, setNowTs] = useState(() => Date.now())
+  const [showServerModal, setShowServerModal] = useState(false)
+  useEffect(() => {
+    const timer = setInterval(() => setNowTs(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({})
   const [jobDetails, setJobDetails] = useState<Record<string, JobDetail | JobDetailError>>({})
   const [page, setPage] = useState(1)
@@ -1983,7 +2350,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   const [modeFilter, setModeFilter] = useState('')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
-  const filteredJobs = jobs
+  const filteredJobs = useMemo(() => jobs
     .filter(job => showInternalJobs || !job.is_internal)
     .filter(job => !statusFilter || job.status === statusFilter)
     .filter(job => !modeFilter || job.mode === modeFilter)
@@ -1991,23 +2358,27 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
       if (!normalizedQuery) return true
       return [
         job.human_title,
+        job.title,
         job.client_name,
+        (job as any).client_email,
+        (job as any).client_username,
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
         supplierSearchPolicyLabel(job),
         supplierRunTypeLabel(job),
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
-    })
+    }), [jobs, showInternalJobs, statusFilter, modeFilter, normalizedQuery])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / ADMIN_JOBS_PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * ADMIN_JOBS_PAGE_SIZE
   const visibleJobs = filteredJobs.slice(pageStart, pageStart + ADMIN_JOBS_PAGE_SIZE)
-  const hiddenInternalCount = showInternalJobs ? 0 : jobs.filter(job => job.is_internal).length
-  const statusOptions = Array.from(new Set(jobs.map(job => job.status).filter(Boolean)))
-  const modeOptions = Array.from(new Set(jobs.map(job => job.mode).filter(Boolean)))
+  const hiddenInternalCount = useMemo(() => showInternalJobs ? 0 : jobs.filter(job => job.is_internal).length, [jobs, showInternalJobs])
+  const statusOptions = useMemo(() => Array.from(new Set(jobs.map(job => job.status).filter(Boolean))), [jobs])
+  const modeOptions = useMemo(() => Array.from(new Set(jobs.map(job => job.mode).filter(Boolean))), [jobs])
   const shownFrom = filteredJobs.length ? pageStart + 1 : 0
   const shownTo = Math.min(filteredJobs.length, pageStart + visibleJobs.length)
+  const registryFallbackJobsCount = useMemo(() => filteredJobs.filter(job => Boolean(registryFallbackOffer(job))).length, [filteredJobs])
 
   useEffect(() => {
     setPage(1)
@@ -2067,10 +2438,13 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     link.remove()
     URL.revokeObjectURL(url)
   }
+    const totalYandexCost = filteredJobs.reduce((sum, j) => sum + (j.yandex_cost_rub || 0), 0)
   return (
     <section className="stack">
       <div className="list-toolbar">
         <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
+        {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
+        {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
         {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
           <div className="list-pagination toolbar-pagination">
             <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
@@ -2105,44 +2479,88 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           const details = jobDetails[job.id]
           const supplierPolicyLabel = supplierSearchPolicyLabel(job)
           const supplierRunLabel = supplierRunTypeLabel(job)
+          const fallbackOffer = registryFallbackOffer(job)
+          const fallbackStatusLabel = registryFallbackStatusLabel(job)
+          const isFinished = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+          const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
+          const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
           return (
-          <article className={job.is_internal ? 'job-card service' : 'job-card'} key={job.id}>
-            <div className="job-main">
+          <article className={`job-card compact ${job.is_internal ? 'service' : ''} ${job.status}`} key={job.id}>
+            <div className="job-card-top">
               <button
-                className="client-expand-button"
+                className="client-expand-button compact"
                 title={expanded ? 'Свернуть задачу' : 'Открыть задачу'}
                 aria-expanded={expanded}
                 onClick={() => void toggleJobDetails(job)}
               >
-                {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
-              <div>
-                <h2>{job.human_title || humanMode(job.mode)}</h2>
-                <p>{formatDate(job.created_at)} · {job.client_name || 'клиент не указан'} · менеджер {job.created_by_telegram_id || job.telegram_id || 'не указан'}</p>
+              <div className="job-title-group">
+                <div className="job-title-row">
+                  <h2 title={job.title}>{job.human_title || humanMode(job.mode)}</h2>
+                  <StatusBadge status={job.status} />
+                </div>
+                <p className="job-subline">
+                  {formatDate(job.created_at)}
+                  {formatJobDuration(job, nowTs) ? ` · ${formatJobDuration(job, nowTs)}` : ''}
+                  {' · '}{job.client_name || 'клиент не указан'}
+                  {(job as any).client_email ? ` (${(job as any).client_email})` : ''}
+                  {' · '}менеджер {job.created_by_telegram_id || job.telegram_id || 'не указан'}
+                </p>
               </div>
-              <StatusBadge status={job.status} />
+              <div className="job-card-actions">
+                {hasResult && !job.result_files?.length && (
+                  <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={13} /></button>
+                )}
+                {(job.status === 'running' || job.status === 'pending') && (
+                  <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
+                )}
+                <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
+              </div>
             </div>
-            <div className="job-meta">
-              <span>{job.mode_label || humanMode(job.mode)}</span>
-              {supplierPolicyLabel && <span className={`supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
-              {supplierRunLabel && <span className="supplier-policy additional">{supplierRunLabel}</span>}
-              <span>{job.mode === 'procurement_report' ? 'Анализ документации' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
+
+            <div className="job-card-meta-line">
+              <div className="job-meta-badges">
+                <span className="badge-pill mode">{job.mode_label || humanMode(job.mode)}</span>
+                {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
+                {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
+                {fallbackStatusLabel && <span className="badge-pill supplier-policy registry-fallback">{fallbackStatusLabel}</span>}
+                {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
+                {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
+                {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
+                <span className="badge-pill count">{job.mode === 'procurement_report' ? 'Анализ ТЗ' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
+                {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) && (
+                  <span className="badge-pill yandex-cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
+                    🔍 {(job.yandex_cost_rub || 0).toFixed(2)} ₽
+                  </span>
+                )}
+              </div>
+              {job.result_files && job.result_files.length > 0 && (
+                <div className="job-inline-downloads">
+                  {job.result_files.map(file => (
+                    <button
+                      key={`${job.id}-${file.kind}`}
+                      className="download-pill"
+                      onClick={() => void download(job, file)}
+                      title={file.filename}
+                    >
+                      <Download size={12} />{file.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            <Progress value={job.progress} note={job.message || humanStatus(job.status)} />
-            {job.result_files?.length > 0 && (
-              <div className="job-output-list">
-                {job.result_files.map(file => (
-                  <button
-                    key={`${job.id}-${file.kind}`}
-                    className="ghost small-text"
-                    onClick={() => void download(job, file)}
-                    title={file.filename}
-                  >
-                    <Download size={14} />{file.label}
-                  </button>
-                ))}
+
+            {showProgress && (
+              <div className="job-progress-compact">
+                <Progress value={job.progress} note={job.message || humanStatus(job.status)} />
               </div>
             )}
+
+            {job.status === 'failed' && Boolean(job.error) && !showProgress && (
+              <div className="alert error compact">{job.error}</div>
+            )}
+
             {expanded && (
               <JobDetailsPanel
                 job={job}
@@ -2150,11 +2568,6 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 onDownloadInput={downloadInputFile}
               />
             )}
-            <div className="row-actions">
-              {job.has_result && !job.result_files?.length && <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={15} /></button>}
-              {(job.status === 'running' || job.status === 'pending') && <button className="icon-button small" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={15} /></button>}
-              <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={15} /></button>
-            </div>
           </article>
           )
         })}
@@ -2197,6 +2610,12 @@ function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?
         </div>
       )}
       {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
+      {Boolean(job.yandex_requests_count || job.yandex_cost_rub) && (
+        <div className="job-detail-section yandex-metrics">
+          <strong>Расход Yandex Search API:</strong>
+          <span> Запросов: {job.yandex_requests_count || 0}</span> · <span>Стоимость: {(job.yandex_cost_rub || 0).toFixed(2)} ₽</span>
+        </div>
+      )}
       {job.error && <div className="job-detail-error">{job.error}</div>}
     </div>
   )
@@ -2386,7 +2805,9 @@ function SettingsView({
         <label className="switch-row"><input type="checkbox" checked={draft.trial_enabled} onChange={e => setDraft({ ...draft, trial_enabled: e.target.checked })} />Включить бесплатный период для новых Telegram-аккаунтов</label>
         <NumberField label="Бесплатных отчётов по поставщикам" value={draft.trial_supplier_search_limit} onChange={value => setDraft({ ...draft, trial_supplier_search_limit: value })} />
         <NumberField label="Бесплатных анализов документации" value={draft.trial_procurement_report_limit} onChange={value => setDraft({ ...draft, trial_procurement_report_limit: value })} />
-        <p className="field-help">В бесплатном периоде недоступны массовая обработка ТЗ и режим «Анализ + поставщики».</p>
+        <p className="field-help">В бесплатном периоде недоступна массовая обработка нескольких ТЗ. Комбинированный сценарий использует один поиск и один анализ.</p>
+        <label className="switch-row"><input type="checkbox" checked={draft.onboarding_reminders_enabled} onChange={e => setDraft({ ...draft, onboarding_reminders_enabled: e.target.checked, onboarding_reminders_rollout_at: e.target.checked && !draft.onboarding_reminders_rollout_at ? new Date().toISOString() : draft.onboarding_reminders_rollout_at })} />Одна подсказка новым пользователям без запусков через 24 часа</label>
+        <p className="field-help">Работает только для пользователей, открывших бота после даты включения; повторные сообщения исключены.</p>
       </div>
       <div className="form-panel">
         <h2>Отчёты</h2>
@@ -2419,7 +2840,7 @@ function SettingsView({
           <div className="registry-heading">
             <div>
               <h3>Реестр Минпромторга</h3>
-              <p>{minpromRegistry?.sqlite_ready ? 'Локальный SQLite-индекс готов для ручных режимов поиска.' : 'Для ручных режимов загрузите актуальный XLSX реестра.'}</p>
+              <p>{minpromRegistry?.sqlite_ready ? 'Единая база ГИСП подключена из сервиса EmailAgent.' : 'Централизованный индекс ГИСП формируется в EmailAgent.'}</p>
             </div>
             <span className={minpromRegistry?.sqlite_ready ? 'status active' : 'status warning'}>
               {minpromRegistry?.sqlite_ready ? 'готов' : 'не готов'}
@@ -2431,18 +2852,6 @@ function SettingsView({
             <div><span>JSONL</span><strong>{formatBytes(minpromRegistry?.index_size_bytes || 0)}</strong></div>
             <div><span>SQLite</span><strong>{formatBytes(minpromRegistry?.sqlite_size_bytes || 0)}</strong></div>
           </div>
-          <div className="registry-upload-row">
-            <input
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={event => setRegistryFile(event.currentTarget.files?.[0] || null)}
-            />
-            <button onClick={() => void uploadMinpromRegistry()} disabled={!registryFile || registryUploadBusy}>
-              {registryUploadBusy ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
-              Загрузить XLSX
-            </button>
-          </div>
-          {registryUploadMessage && <p className={registryUploadMessage.includes('Загружено') ? 'registry-message ok' : 'registry-message error'}>{registryUploadMessage}</p>}
         </div>
         <details className="service-panel">
           <summary>Расширенные параметры источников</summary>

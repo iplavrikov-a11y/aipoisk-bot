@@ -3,8 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass
-from typing import Any
+import random
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable
 
 import httpx
 
@@ -38,9 +44,12 @@ _RETRIABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 1.5
 _RETRY_MAX_DELAY = 20.0
+_DEFAULT_MAX_MODEL_ATTEMPTS = 6
+_DEFAULT_MAX_REQUEST_ATTEMPTS = 12
+_DEFAULT_OVERALL_TIMEOUT_MULTIPLIER = 2.0
 # Provider ids that cost real money and must NEVER be added as an automatic
 # fallback target. The user can still pick them explicitly as the primary.
-_PAID_PROVIDER_IDS = {"polza"}
+_PAID_PROVIDER_IDS = {"polza", "open-ai", "openai"}
 
 
 class LLMError(RuntimeError):
@@ -69,6 +78,50 @@ class ModelSelection:
     model: str
     base_url: str
     api_key: str
+
+
+@dataclass
+class _RequestAttemptBudget:
+    remaining: int
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def consume(self) -> bool:
+        with self._lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
+
+
+class _ProcessLLMLimiter:
+    """Process-wide capacity guard shared by worker threads and event loops."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def _try_acquire(self) -> bool:
+        with self._lock:
+            if self._active >= _llm_concurrency_limit():
+                return False
+            self._active += 1
+            return True
+
+    async def acquire(self) -> None:
+        while not self._try_acquire():
+            await asyncio.sleep(0.025)
+
+    def release(self) -> None:
+        with self._lock:
+            if self._active <= 0:
+                raise RuntimeError("LLM limiter released without acquire")
+            self._active -= 1
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            if self._active:
+                raise RuntimeError("cannot reset an active LLM limiter")
+            self._active = 0
 
 
 def normalize_chat_endpoint(base_url: str) -> str:
@@ -133,10 +186,17 @@ def get_model_selection(
         selected_model = str(getattr(settings, "supplier_ai_model", "") or settings.light_model or "").strip()
 
     explicit_override = str(override or "").strip()
-    if routing_key in SUPPLIER_SEARCH_ROUTING_KEYS and not explicit_override:
+    configured_override = resolve_function_override(settings, routing_key)
+    if explicit_override:
+        value = explicit_override
+    elif configured_override:
+        value = configured_override
+    elif routing_key in SUPPLIER_SEARCH_ROUTING_KEYS:
+        # Backwards-compatible default: supplier stages share the supplier model
+        # unless the operator configured a stage-specific function override.
         value = AI_ROUTING_SUPPLIER_SEARCH
     else:
-        value = explicit_override or resolve_function_override(settings, routing_key)
+        value = ""
     if routing_key in SUPPLIER_SEARCH_ROUTING_KEYS and value == AI_ROUTING_SUPPLIER_SEARCH:
         selected_tier = "supplier_search"
         selected_provider = str(getattr(settings, "supplier_ai_provider", "") or settings.light_provider or "").strip()
@@ -191,6 +251,25 @@ def model_selection_attempts(
     seen = {f"{first.provider_id}:{first.model}"}
     if override:
         return attempts
+    # User-configured fallbacks have priority and preserve their exact order.
+    # Paid models are allowed here because this list is an explicit choice.
+    for entry in _manual_fallback_entries(settings, routing_key):
+        pid = str(entry.get("provider") or "").strip()
+        mid = str(entry.get("modelId") or "").strip()
+        if not pid or not mid:
+            continue
+        key = f"{pid}:{mid}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            attempts.append(
+                get_model_selection(settings, tier=tier, routing_key=None, override=key)
+            )
+        except Exception:
+            continue
+    # Nearby same-provider aliases are a compatibility fallback after the
+    # operator's ordered list, but before the optional automatic free pool.
     for model in model_fallbacks_for(first.model):
         key = f"{first.provider_id}:{model}"
         if key in seen:
@@ -207,31 +286,13 @@ def model_selection_attempts(
             )
         except Exception:
             continue
-    # User-configured ordered fallback (manual). Tried before the automatic
-    # free pool. Paid models ARE allowed here — this is the user's explicit
-    # choice (the auto pool below stays strictly free-only).
-    for entry in _manual_fallback_entries(settings, routing_key):
-        pid = str(entry.get("provider") or "").strip()
-        mid = str(entry.get("modelId") or "").strip()
-        if not pid or not mid:
-            continue
-        key = f"{pid}:{mid}"
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            attempts.append(
-                get_model_selection(settings, tier=tier, routing_key=None, override=key)
-            )
-        except Exception:
-            continue
-    # Cross-provider free-only fallback. Paid providers/models (Polza, and
-    # OpenRouter models without ":free") are never added automatically; they
-    # can only be used when the user picks them as the primary.
+    # Cross-provider automatic fallback is opt-in and free-only. A saved model
+    # must be explicitly allowlisted and marked free (or use a provider's
+    # unambiguous free model suffix). Unmarked saved models are never executed.
     for entry in _saved_model_entries(settings):
         pid = str(entry.get("provider") or "").strip()
         mid = str(entry.get("modelId") or "").strip()
-        if not pid or not mid or _is_paid_model(pid, mid):
+        if not pid or not mid or not _automatic_fallback_allowed(entry, pid, mid):
             continue
         key = f"{pid}:{mid}"
         if key in seen:
@@ -257,9 +318,30 @@ def _is_paid_model(provider_id: str, model: str) -> bool:
     pid = str(provider_id or "").strip().lower()
     if pid in _PAID_PROVIDER_IDS:
         return True
-    if pid == "openrouter" and ":free" not in str(model or ""):
+    if pid == "openrouter" and ":free" not in str(model or "").lower():
         return True
     return False
+
+
+def _truthy_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _automatic_fallback_allowed(entry: dict, provider_id: str, model: str) -> bool:
+    if not _truthy_flag(entry.get("allowAutomaticFallback")):
+        return False
+    if _is_paid_model(provider_id, model):
+        return False
+    pid = str(provider_id or "").strip().lower()
+    mid = str(model or "").strip().lower()
+    billing_class = str(entry.get("billingClass") or "").strip().lower()
+    explicitly_free = _truthy_flag(entry.get("isFree")) or billing_class == "free"
+    provider_free_marker = (pid == "openrouter" and ":free" in mid) or (
+        pid == "opencode" and mid.endswith("-free")
+    )
+    return explicitly_free or provider_free_marker
 
 
 def _saved_model_entries(settings: SystemSettings) -> list[dict]:
@@ -281,34 +363,110 @@ def _manual_fallback_entries(settings: SystemSettings, routing_key: str | None) 
     return parse_json_list(getattr(settings, col, "[]") or "[]")
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _llm_concurrency_limit() -> int:
+    return _env_int("AIPOISK_LLM_MAX_CONCURRENCY", 3, minimum=1, maximum=32)
+
+
+def _max_model_attempts() -> int:
+    return _env_int(
+        "AIPOISK_LLM_MAX_MODEL_ATTEMPTS",
+        _DEFAULT_MAX_MODEL_ATTEMPTS,
+        minimum=1,
+        maximum=20,
+    )
+
+
+def _max_request_attempts() -> int:
+    return _env_int(
+        "AIPOISK_LLM_MAX_REQUEST_ATTEMPTS",
+        _DEFAULT_MAX_REQUEST_ATTEMPTS,
+        minimum=1,
+        maximum=60,
+    )
+
+
+def _overall_timeout_seconds(per_model_timeout: float) -> float:
+    configured = str(os.getenv("AIPOISK_LLM_OVERALL_TIMEOUT_SECONDS", "") or "").strip()
+    if configured:
+        try:
+            return max(1.0, min(900.0, float(configured)))
+        except (TypeError, ValueError):
+            pass
+    return max(
+        per_model_timeout,
+        min(300.0, per_model_timeout * _DEFAULT_OVERALL_TIMEOUT_MULTIPLIER),
+    )
+
+
+def _httpx_timeout(overall_seconds: float) -> httpx.Timeout:
+    overall = max(1.0, float(overall_seconds))
+    return httpx.Timeout(
+        timeout=overall,
+        connect=min(10.0, overall),
+        read=min(overall, max(15.0, overall * 0.8)),
+        write=min(30.0, overall),
+        pool=min(10.0, overall),
+    )
+
+
+def _retry_after_seconds(response: httpx.Response, *, now: datetime | None = None) -> float | None:
+    value = str(response.headers.get("retry-after") or "").strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, min(_RETRY_MAX_DELAY, float(value)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        return max(0.0, min(_RETRY_MAX_DELAY, (retry_at - current).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
     if response is not None:
-        try:
-            value = response.headers.get("retry-after")
-            if value:
-                return min(_RETRY_MAX_DELAY, float(value))
-        except Exception:
-            pass
-    return min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** attempt))
+        retry_after = _retry_after_seconds(response)
+        if retry_after is not None:
+            return retry_after
+    base = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** attempt))
+    jitter = random.uniform(0.0, min(1.0, base * 0.1))
+    return min(_RETRY_MAX_DELAY, base + jitter)
 
 
-# Throttle concurrent LLM calls so free tiers (OpenRouter :free, Gemini
-# accounts, Z.AI coding plan) are not burned down in a single search burst.
-# Keyed by running loop so it survives across event loops without errors.
-_llm_semaphores: dict[int, asyncio.Semaphore] = {}
+def _safe_error_text(exc: Exception) -> str:
+    message = str(exc).strip() or type(exc).__name__
+    message = re.sub(r"(?i)bearer\s+\S+", "Bearer <redacted>", message)
+    message = re.sub(
+        r"(?i)(api[_-]?key|authorization)(\s*[:=]\s*)[^\s,;]+",
+        r"\1\2<redacted>",
+        message,
+    )
+    return message[:500]
 
 
-def _llm_semaphore() -> asyncio.Semaphore:
-    loop_id = id(asyncio.get_running_loop())
-    sem = _llm_semaphores.get(loop_id)
-    if sem is None:
-        try:
-            limit = max(1, int(os.getenv("AIPOISK_LLM_MAX_CONCURRENCY", "3")))
-        except ValueError:
-            limit = 3
-        sem = asyncio.Semaphore(limit)
-        _llm_semaphores[loop_id] = sem
-    return sem
+_process_llm_limiter = _ProcessLLMLimiter()
+
+
+async def _sleep_before_retry(delay: float, deadline_monotonic: float | None) -> None:
+    bounded_delay = max(0.0, delay)
+    if deadline_monotonic is not None:
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("LLM overall deadline exceeded")
+        bounded_delay = min(bounded_delay, remaining)
+    await asyncio.sleep(bounded_delay)
 
 
 async def _post_llm_request(
@@ -317,6 +475,9 @@ async def _post_llm_request(
     *,
     json_mode: bool,
     timeout_seconds: float,
+    attempt_budget: _RequestAttemptBudget | None = None,
+    request_metadata: dict[str, Any] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "model": selection.model,
@@ -329,14 +490,31 @@ async def _post_llm_request(
     headers.update(_extra_headers(selection))
 
     last_error: LLMError | None = None
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+    if request_metadata is not None:
+        request_metadata.update({"request_attempts": 0, "retry_count": 0, "last_status": None})
+    async with httpx.AsyncClient(timeout=_httpx_timeout(timeout_seconds)) as client:
         for attempt in range(_MAX_RETRIES + 1):
-            async with _llm_semaphore():
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise TimeoutError("LLM overall deadline exceeded")
+            if attempt_budget is not None and not attempt_budget.consume():
+                raise LLMError(
+                    "LLM request attempt budget exhausted",
+                    retriable=False,
+                    provider=selection.provider_id,
+                    model=selection.model,
+                )
+            if request_metadata is not None:
+                request_metadata["request_attempts"] = int(request_metadata["request_attempts"]) + 1
+                request_metadata["retry_count"] = attempt
+            await _process_llm_limiter.acquire()
+            try:
                 try:
                     response = await client.post(selection.base_url, headers=headers, json=payload)
                     transport_error: Exception | None = None
                 except httpx.HTTPError as exc:
                     transport_error = exc
+            finally:
+                _process_llm_limiter.release()
 
             if transport_error is not None:
                 last_error = LLMError(
@@ -347,10 +525,12 @@ async def _post_llm_request(
                     model=selection.model,
                 )
                 if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_delay(attempt))
+                    await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
 
+            if request_metadata is not None:
+                request_metadata["last_status"] = response.status_code
             if response.status_code >= 400:
                 detail = response.text.strip()[:500]
                 retriable = response.status_code in _RETRIABLE_STATUS
@@ -363,7 +543,7 @@ async def _post_llm_request(
                     model=selection.model,
                 )
                 if retriable and attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_delay(attempt, response))
+                    await _sleep_before_retry(_retry_delay(attempt, response), deadline_monotonic)
                     continue
                 raise last_error
 
@@ -378,7 +558,7 @@ async def _post_llm_request(
                     model=selection.model,
                 )
                 if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_delay(attempt))
+                    await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
 
@@ -397,7 +577,7 @@ async def _post_llm_request(
                     model=selection.model,
                 )
                 if retriable and attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_delay(attempt))
+                    await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
 
@@ -410,7 +590,7 @@ async def _post_llm_request(
                     model=selection.model,
                 )
                 if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(_retry_delay(attempt))
+                    await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
             return str(choices[0].get("message", {}).get("content") or "")
@@ -428,23 +608,69 @@ async def call_llm(
     json_mode: bool = False,
     timeout_seconds: float = 90.0,
     metadata: dict[str, Any] | None = None,
+    response_validator: Callable[[str], None] | None = None,
+    total_timeout_seconds: float | None = None,
 ) -> str:
     messages: list[dict[str, str]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
-    attempts = model_selection_attempts(settings, tier=tier, routing_key=routing_key, override=override)
+    all_attempts = model_selection_attempts(settings, tier=tier, routing_key=routing_key, override=override)
+    model_attempt_limit = _max_model_attempts()
+    attempts = all_attempts[:model_attempt_limit]
+    overall_timeout = max(
+        1.0,
+        float(total_timeout_seconds)
+        if total_timeout_seconds is not None
+        else _overall_timeout_seconds(timeout_seconds),
+    )
+    deadline = time.monotonic() + overall_timeout
+    request_attempt_limit = _max_request_attempts()
+    request_budget = _RequestAttemptBudget(request_attempt_limit)
     last_error: Exception | None = None
     attempted_models: list[str] = []
-    for selection in attempts:
+    trace: list[dict[str, Any]] = []
+    for index, selection in enumerate(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            last_error = TimeoutError("LLM overall deadline exceeded")
+            break
         attempted_models.append(f"{selection.provider_name}:{selection.model}")
+        started = time.monotonic()
+        request_metadata: dict[str, Any] = {}
+        phase = "request"
+        trace_item: dict[str, Any] = {
+            "provider_id": selection.provider_id,
+            "provider_name": selection.provider_name,
+            "model": selection.model,
+            "fallback_used": index > 0,
+        }
         try:
-            result = await _post_llm_request(
-                selection,
-                messages,
-                json_mode=json_mode,
-                timeout_seconds=timeout_seconds,
+            selection_timeout = max(0.001, min(float(timeout_seconds), remaining))
+            result = await asyncio.wait_for(
+                _post_llm_request(
+                    selection,
+                    messages,
+                    json_mode=json_mode,
+                    timeout_seconds=selection_timeout,
+                    attempt_budget=request_budget,
+                    request_metadata=request_metadata,
+                    deadline_monotonic=deadline,
+                ),
+                timeout=selection_timeout,
             )
+            phase = "validation"
+            if response_validator is not None:
+                response_validator(result)
+            trace_item.update(
+                {
+                    "status": "success",
+                    "error": "",
+                    "latency_ms": int(round((time.monotonic() - started) * 1000)),
+                    **request_metadata,
+                }
+            )
+            trace.append(trace_item)
             if metadata is not None:
                 metadata.update(
                     {
@@ -452,17 +678,64 @@ async def call_llm(
                         "provider_name": selection.provider_name,
                         "model": selection.model,
                         "attempted_models": attempted_models.copy(),
+                        "attempts": trace.copy(),
+                        "fallback_used": index > 0,
+                        "model_attempt_limit": model_attempt_limit,
+                        "request_attempt_limit": request_attempt_limit,
+                        "overall_timeout_seconds": overall_timeout,
                     }
                 )
             return result
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, TimeoutError):
+                status = "timeout"
+            elif phase == "validation":
+                status = "validation_error"
+            elif isinstance(exc, LLMError) and "budget exhausted" in str(exc).lower():
+                status = "budget_exhausted"
+            else:
+                status = "error"
+            trace_item.update(
+                {
+                    "status": status,
+                    "error_type": type(exc).__name__,
+                    "error": _safe_error_text(exc),
+                    "latency_ms": int(round((time.monotonic() - started) * 1000)),
+                    **request_metadata,
+                }
+            )
+            if isinstance(exc, LLMError) and exc.status is not None:
+                trace_item["http_status"] = exc.status
+            trace.append(trace_item)
+            if metadata is not None:
+                metadata.update(
+                    {
+                        "attempted_models": attempted_models.copy(),
+                        "attempts": trace.copy(),
+                        "fallback_used": index > 0,
+                        "model_attempt_limit": model_attempt_limit,
+                        "request_attempt_limit": request_attempt_limit,
+                        "overall_timeout_seconds": overall_timeout,
+                    }
+                )
+            if status == "budget_exhausted":
+                break
     if metadata is not None:
-        metadata["attempted_models"] = attempted_models.copy()
+        metadata.update(
+            {
+                "attempted_models": attempted_models.copy(),
+                "attempts": trace.copy(),
+                "fallback_used": len(attempted_models) > 1,
+                "model_attempt_limit": model_attempt_limit,
+                "request_attempt_limit": request_attempt_limit,
+                "overall_timeout_seconds": overall_timeout,
+            }
+        )
     if last_error is None:
         raise RuntimeError("AI model selection failed")
     raise RuntimeError(
-        f"{last_error}; tried models: {', '.join(attempted_models)}"
+        f"{_safe_error_text(last_error)}; tried models: {', '.join(attempted_models)}"
     ) from last_error
 
 

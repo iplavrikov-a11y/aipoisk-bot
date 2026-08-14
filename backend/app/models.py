@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -43,8 +43,11 @@ class SystemSettings(Base):
     logistics_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     trial_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
+    yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.04)
     trial_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
     trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
+    onboarding_reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    onboarding_reminders_rollout_at: Mapped[str] = mapped_column(String(40), default="")
 
     primary_provider: Mapped[str] = mapped_column(String(80), default="")
     primary_model: Mapped[str] = mapped_column(String(160), default="")
@@ -100,6 +103,8 @@ class SystemSettings(Base):
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
             "trial_file_limit": self.trial_file_limit,
+            "onboarding_reminders_enabled": self.onboarding_reminders_enabled,
+            "onboarding_reminders_rollout_at": self.onboarding_reminders_rollout_at,
             "primary_provider": self.primary_provider,
             "primary_model": self.primary_model,
             "light_provider": self.light_provider,
@@ -290,6 +295,75 @@ class WebRegistrationAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
+class LegalAcceptance(Base):
+    __tablename__ = "legal_acceptances"
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_type",
+            "subject_id",
+            "document_type",
+            "document_version",
+            name="uq_legal_acceptance_subject_document_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    subject_type: Mapped[str] = mapped_column(String(40), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    document_type: Mapped[str] = mapped_column(String(40), index=True)
+    document_version: Mapped[str] = mapped_column(String(40), index=True)
+    source: Mapped[str] = mapped_column(String(40), default="")
+    ip_address: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class AccountLinkToken(Base):
+    __tablename__ = "account_link_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    direction: Mapped[str] = mapped_column(String(40), index=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    web_user_id: Mapped[str | None] = mapped_column(ForeignKey("web_users.id"), nullable=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="active", index=True)
+    telegram_id: Mapped[str] = mapped_column(String(64), default="")
+    conflict_client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class UserJourneyEvent(Base):
+    __tablename__ = "user_journey_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(20), index=True)
+    actor_ref: Mapped[str] = mapped_column(String(64), default="")
+    event_name: Mapped[str] = mapped_column(String(80), index=True)
+    mode: Mapped[str] = mapped_column(String(40), default="")
+    outcome: Mapped[str] = mapped_column(String(40), default="")
+    reason_code: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class OnboardingReminder(Base):
+    __tablename__ = "onboarding_reminders"
+    __table_args__ = (UniqueConstraint("client_id", "channel", name="uq_onboarding_reminder_client_channel"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(20), default="telegram")
+    status: Mapped[str] = mapped_column(String(20), default="claimed", index=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_code: Mapped[str] = mapped_column(String(80), default="")
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -308,6 +382,22 @@ class Job(Base):
     file_count: Mapped[int] = mapped_column(Integer, default=0)
     result_path: Mapped[str] = mapped_column(Text, default="")
     evidence_path: Mapped[str] = mapped_column(Text, default="")
+    confirmation_kind: Mapped[str] = mapped_column(String(40), default="")
+    confirmation_outcome: Mapped[str] = mapped_column(String(40), default="")
+    confirmation_offered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmation_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmation_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    offer_delivery_outcome: Mapped[str] = mapped_column(String(40), default="")
+    offer_delivery_claim_token: Mapped[str] = mapped_column(String(64), default="")
+    offer_delivery_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    offer_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    offer_delivery_expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active_output_manifest: Mapped[str] = mapped_column(String(40), default="")
+    active_output_manifest_version: Mapped[int] = mapped_column(Integer, default=0)
+    active_entitlements_json: Mapped[str] = mapped_column(Text, default="[]")
+    yandex_requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    yandex_cost_rub: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -337,6 +427,9 @@ class TariffPackage(Base):
 
 class BillingTransaction(Base):
     __tablename__ = "billing_transactions"
+    __table_args__ = (
+        UniqueConstraint("job_id", "kind", "operation", name="uq_billing_transaction_job_kind_operation"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
@@ -344,6 +437,7 @@ class BillingTransaction(Base):
     package_id: Mapped[str] = mapped_column(String(32), default="")
     kind: Mapped[str] = mapped_column(String(40), index=True)
     operation: Mapped[str] = mapped_column(String(40), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
     units: Mapped[int] = mapped_column(Integer, default=0)
     amount_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     balance_after_kopeks: Mapped[int] = mapped_column(Integer, default=0)
@@ -358,6 +452,9 @@ class BillingTransaction(Base):
 
 class ClientTariffOverride(Base):
     __tablename__ = "client_tariff_overrides"
+    __table_args__ = (
+        UniqueConstraint("client_id", "kind", name="uq_client_tariff_override_client_kind"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)

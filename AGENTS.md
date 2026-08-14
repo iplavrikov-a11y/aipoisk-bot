@@ -17,6 +17,13 @@
 - Public domain canonical URL: `https://tenderlex.ru`.
 - `www.tenderlex.ru` should redirect to `https://tenderlex.ru`.
 
+## Browser/Webmaster Access
+
+- For TenderLex SEO, indexing, webmaster, ranking, or search-quality diagnostics that require a real logged-in browser session, use `kimi-webbridge` first. This includes Linkbuilder, Yandex Webmaster, Google Search Console, Google search results, Yandex search results, and already-open user tabs.
+- Before claiming that browser control is unavailable, check WebBridge with `curl -s http://127.0.0.1:10086/status` or `~/.kimi-webbridge/bin/kimi-webbridge status`.
+- When WebBridge is healthy (`running: true`, `extension_connected: true`), use `http://127.0.0.1:10086/command` with `list_tabs` / `find_tab` / `snapshot` / `click` / `fill` / `evaluate`; do not treat missing `DISPLAY` or absent local Chrome processes in the remote shell as failure.
+- If WebBridge is unhealthy, follow `~/.codex/skills/kimi-webbridge/references/operations.md` before falling back to Playwright or static web checks.
+
 ## Working Commands
 
 - Backend tests from repo root: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests -q`

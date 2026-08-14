@@ -282,6 +282,37 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         finally:
             supplier_search.fetch_page_with_browser = original_browser
 
+    async def test_concurrent_jobs_keep_browser_pools_separate(self) -> None:
+        created: list[object] = []
+        closed: list[object] = []
+        both_jobs_entered = asyncio.Event()
+        entered = 0
+
+        class FakePool:
+            def __init__(self) -> None:
+                created.append(self)
+
+            async def close(self) -> None:
+                closed.append(self)
+
+        async def run_job(job_id: str) -> object:
+            nonlocal entered
+            with supplier_search.supplier_search_job_context(job_id):
+                async with supplier_search._browser_pool_session():
+                    pool = supplier_search._get_browser_pool()
+                    entered += 1
+                    if entered == 2:
+                        both_jobs_entered.set()
+                    await both_jobs_entered.wait()
+                    return pool
+
+        with patch.object(supplier_search, "_BrowserPool", FakePool):
+            first_pool, second_pool = await asyncio.gather(run_job("job-one"), run_job("job-two"))
+
+        self.assertIsNot(first_pool, second_pool)
+        self.assertEqual(set(created), {first_pool, second_pool})
+        self.assertEqual(set(closed), {first_pool, second_pool})
+
     async def test_browser_pool_initializes_once_under_concurrency(self) -> None:
         starts = 0
         launches = 0
@@ -354,7 +385,7 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(pool._playwright)
         self.assertIsNone(pool._browser)
 
-    async def test_browser_failure_logs_safe_job_context(self) -> None:
+    async def test_browser_start_failure_is_reported_with_safe_job_context(self) -> None:
         class FailingPool:
             async def __aenter__(self):
                 return self
@@ -385,6 +416,120 @@ class SupplierSearchStressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("url=https://supplier.example/catalog", log_output)
         self.assertNotIn("token=hidden", log_output)
         self.assertNotIn("token=secret", log_output)
+
+    async def test_browser_pool_stops_playwright_when_browser_close_is_cancelled(self) -> None:
+        playwright_stopped = False
+
+        class CancelledBrowser:
+            async def close(self) -> None:
+                raise asyncio.CancelledError
+
+        class FakePlaywright:
+            async def stop(self) -> None:
+                nonlocal playwright_stopped
+                playwright_stopped = True
+
+        pool = supplier_search._BrowserPool()
+        pool._browser = CancelledBrowser()
+        pool._playwright = FakePlaywright()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await pool.close()
+
+        self.assertTrue(playwright_stopped)
+        self.assertIsNone(pool._browser)
+        self.assertIsNone(pool._playwright)
+
+    async def test_browser_pool_retries_cleanup_before_releasing_resources(self) -> None:
+        browser_close_attempts = 0
+        playwright_stop_attempts = 0
+
+        class FlakyBrowser:
+            async def close(self) -> None:
+                nonlocal browser_close_attempts
+                browser_close_attempts += 1
+                if browser_close_attempts == 1:
+                    raise RuntimeError("temporary browser close failure")
+
+        class FakePlaywright:
+            async def stop(self) -> None:
+                nonlocal playwright_stop_attempts
+                playwright_stop_attempts += 1
+
+        pool = supplier_search._BrowserPool()
+        pool._browser = FlakyBrowser()
+        pool._playwright = FakePlaywright()
+
+        await pool.close()
+
+        self.assertEqual(browser_close_attempts, 2)
+        self.assertEqual(playwright_stop_attempts, 1)
+        self.assertIsNone(pool._browser)
+        self.assertIsNone(pool._playwright)
+
+    async def test_browser_navigation_failure_is_recorded_for_the_current_job(self) -> None:
+        class FailingBrowser:
+            async def new_page(self, **_kwargs):
+                raise RuntimeError("page failed: token=secret")
+
+        class FailingPool:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc_value, _traceback) -> None:
+                return None
+
+            async def get_browser(self):
+                return FailingBrowser()
+
+            async def close(self) -> None:
+                return None
+
+        with supplier_search.supplier_search_job_context("job-browser-diagnostics"):
+            source_token = supplier_search._supplier_search_source_context.set("yandex")
+            try:
+                with (
+                    patch.object(supplier_search, "_BrowserPool", return_value=FailingPool()),
+                    self.assertLogs("app.supplier_search", level="WARNING") as captured,
+                ):
+                    result = await supplier_search.fetch_page_with_browser(
+                        "https://supplier.example/catalog?token=hidden",
+                    )
+            finally:
+                supplier_search._supplier_search_source_context.reset(source_token)
+
+        self.assertIsNone(result)
+        log_output = "\n".join(captured.output)
+        self.assertIn("job_id=job-browser-diagnostics", log_output)
+        self.assertIn("source=yandex", log_output)
+        self.assertNotIn("token=hidden", log_output)
+
+    async def test_browser_error_diagnostics_redact_credentials_and_structured_secrets(self) -> None:
+        safe_url = supplier_search._browser_log_url(
+            "https://client:password@supplier.example:8443/catalog?token=hidden"
+        )
+        safe_error = "\n".join(
+            supplier_search._browser_log_error(RuntimeError(value))
+            for value in (
+                "Authorization: Basic dXNlcjpwYXNz",
+                "Proxy-Authorization: Bearer proxy-secret",
+                'payload={"token":"json-secret"}',
+                "Cookie: session=browser-cookie; remember=second-cookie; password=top-secret",
+            )
+        )
+
+        self.assertEqual(safe_url, "https://supplier.example:8443/catalog")
+        for secret in (
+            "client",
+            "password",
+            "dXNlcjpwYXNz",
+            "proxy-secret",
+            "json-secret",
+            "browser-cookie",
+            "second-cookie",
+            "top-secret",
+        ):
+            self.assertNotIn(secret, safe_url + safe_error)
 
     async def test_discover_suppliers_closes_job_browser_pool_on_error(self) -> None:
         closes = 0

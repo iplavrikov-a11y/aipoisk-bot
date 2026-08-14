@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -17,11 +20,39 @@ SUPPLIER_HEADERS = [
     "Email",
     "Комментарий",
 ]
+SPREADSHEETML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+FONT_CHILD_ORDER = {
+    name: index
+    for index, name in enumerate(
+        (
+            "b",
+            "i",
+            "strike",
+            "outline",
+            "shadow",
+            "condense",
+            "extend",
+            "sz",
+            "u",
+            "vertAlign",
+            "color",
+            "name",
+            "charset",
+            "family",
+            "scheme",
+        )
+    )
+}
 COMMENT_LIMIT = 260
 PROCUREMENT_REPORT_DISCLAIMER = (
     "Важно: отчёт подготовлен с помощью ИИ и предназначен для быстрой оценки закупочной документации. "
     "Критичные юридические, финансовые и технические условия сверяйте с официальными документами закупки. "
     "Отчёт не заменяет профессиональную проверку; решения по участию, цене и обязательствам принимает пользователь."
+)
+REGISTRY_FALLBACK_REPORT_DISCLAIMER = (
+    "Важно: соответствие указанных поставщиков и товаров конкретным записям реестра Минпромторга "
+    "не подтверждено. Поставщики найдены и проверены по открытым сайтам; перед закупкой запросите "
+    "у них актуальные реестровые сведения."
 )
 QUOTE_REQUEST_INTRO = (
     "Просим выставить счёт или направить коммерческое предложение по указанным ниже товарам. "
@@ -37,7 +68,63 @@ MATCH_LEVEL_LABELS = {
 }
 
 
-def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "") -> Path:
+def _save_xlsx(workbook: Workbook, path: Path) -> None:
+    """Save an XLSX whose font nodes follow the OpenXML schema sequence."""
+    workbook.save(path)
+    _normalize_xlsx_font_order(path)
+
+
+def _normalize_xlsx_font_order(path: Path) -> None:
+    """Rewrite only styles.xml when openpyxl emitted non-canonical font ordering."""
+    styles_part = "xl/styles.xml"
+    font_tag = f"{{{SPREADSHEETML_NS}}}font"
+    fonts_tag = f"{{{SPREADSHEETML_NS}}}fonts"
+
+    with zipfile.ZipFile(path, "r") as source:
+        try:
+            styles = source.read(styles_part)
+        except KeyError:
+            return
+
+        root = ET.fromstring(styles)
+        changed = False
+        for font in root.findall(f".//{fonts_tag}/{font_tag}"):
+            children = list(font)
+            ordered = sorted(
+                children,
+                key=lambda child: FONT_CHILD_ORDER.get(child.tag.rsplit("}", 1)[-1], len(FONT_CHILD_ORDER)),
+            )
+            if children != ordered:
+                font[:] = ordered
+                changed = True
+
+        if not changed:
+            return
+
+        ET.register_namespace("", SPREADSHEETML_NS)
+        normalized_styles = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        entries = [(entry, source.read(entry.filename)) for entry in source.infolist()]
+        archive_comment = source.comment
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f"{path.stem}-styles-",
+        suffix=path.suffix,
+        dir=path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        with zipfile.ZipFile(temporary_path, "w") as target:
+            target.comment = archive_comment
+            for entry, content in entries:
+                target.writestr(entry, normalized_styles if entry.filename == styles_part else content)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -47,11 +134,30 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(SUPPLIER_HEADERS))
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(wrap_text=True)
-    ws.append([_supplier_count_summary(len(rows), target)])
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(SUPPLIER_HEADERS))
+    policy_label = _supplier_policy_label(policy)
+    if policy_label:
+        ws.append([policy_label])
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(SUPPLIER_HEADERS))
+        ws["A2"].font = Font(italic=True, color="4B5563")
+        ws["A2"].alignment = Alignment(wrap_text=True)
+        summary_row = 3
+        header_row = 4
+        freeze_row = "A5"
+    else:
+        summary_row = 2
+        header_row = 3
+        freeze_row = "A4"
+    summary = _supplier_count_summary(rows, target)
+    if _is_registry_fallback_report(rows):
+        summary = f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}"
+    ws.append([summary])
+    ws.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=len(SUPPLIER_HEADERS))
+    if _is_registry_fallback_report(rows):
+        ws.cell(row=summary_row, column=1).font = Font(bold=True, color="9C2A10")
+        ws.cell(row=summary_row, column=1).fill = PatternFill("solid", fgColor="FEF3C7")
     ws.append(SUPPLIER_HEADERS)
     header_fill = PatternFill("solid", fgColor="E5E7EB")
-    for cell in ws[3]:
+    for cell in ws[header_row]:
         cell.font = Font(bold=True)
         cell.fill = header_fill
         cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -65,7 +171,8 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
                 _client_supplier_comment(row),
             ]
         )
-    for row_index in range(4, ws.max_row + 1):
+    data_start_row = header_row + 1
+    for row_index in range(data_start_row, ws.max_row + 1):
         site_cell = ws.cell(row=row_index, column=2)
         if site_cell.value:
             site_cell.hyperlink = str(site_cell.value)
@@ -73,12 +180,12 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     widths = [30, 42, 24, 30, 70]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
-    ws.freeze_panes = "A4"
-    ws.auto_filter.ref = f"A3:{get_column_letter(len(SUPPLIER_HEADERS))}{max(3, ws.max_row)}"
+    ws.freeze_panes = freeze_row
+    ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(SUPPLIER_HEADERS))}{max(header_row, ws.max_row)}"
     for row in ws.iter_rows():
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-    wb.save(out)
+    _save_xlsx(wb, out)
     return out
 
 
@@ -87,10 +194,34 @@ def _match_level_label(value: object) -> str:
     return MATCH_LEVEL_LABELS.get(raw, raw)
 
 
-def _supplier_count_summary(count: int, target: int) -> str:
-    return (
-        f"Найдено и проверено: {count}. "
-        "В отчёте оставлены только контакты и краткие комментарии для работы с поставщиками."
+def _supplier_count_summary(rows: list[dict], target: int) -> str:
+    counts = {"exact": 0, "analog": 0, "category": 0, "profile": 0}
+    for row in rows:
+        product_fit = str(row.get("product_fit") or "").strip().lower()
+        if product_fit in counts:
+            counts[product_fit] += 1
+
+    unclassified = max(0, len(rows) - sum(counts.values()))
+    parts = [
+        f"контактов с точным техническим совпадением: {counts['exact']}",
+        f"возможных аналогов: {counts['analog']}",
+        f"категорийных кандидатов: {counts['category'] + counts['profile']}",
+    ]
+    if unclassified:
+        parts.append(f"требуют классификации: {unclassified}")
+    return f"Проверены сайты и контакты. Кандидатов: {len(rows)}; {', '.join(parts)}."
+
+
+def _is_registry_fallback_report(rows: list[dict]) -> bool:
+    return any(
+        str(row.get("supplier_search_policy") or "").strip() == "minprom_registry_only"
+        and str(row.get("supplier_search_origin") or "").strip() == "ordinary_fallback"
+        and not bool(
+            row.get("minprom_registry_match", {}).get("matched")
+            if isinstance(row.get("minprom_registry_match"), dict)
+            else False
+        )
+        for row in rows
     )
 
 
@@ -134,12 +265,16 @@ def _supplier_registry_note(row: dict) -> str:
     if match.get("matched"):
         registry_number = _clean_comment_text(match.get("registry_number") or "")
         manufacturer = _clean_comment_text(match.get("manufacturer") or "")
+        if not registry_number and match.get("evidence"):
+            ev_m = re.search(r"(?:заключение|срок действия/заключение|реестровый номер|первичный)[:\s]*([A-Z0-9/-]+)", str(match.get("evidence") or ""), re.I)
+            if ev_m:
+                registry_number = ev_m.group(1).strip()
         if registry_number and manufacturer:
-            return f"Реестр: запись {registry_number}, производитель {manufacturer}."
+            return f"Реестр ГИСП Минпромторга: запись № {registry_number}, производитель {manufacturer}."
         if registry_number:
-            return f"Реестр: запись {registry_number}."
+            return f"Реестр ГИСП Минпромторга: запись № {registry_number}."
         if manufacturer:
-            return f"Реестр: подтверждён производитель {manufacturer}."
+            return f"Реестр ГИСП Минпромторга: подтверждён производитель {manufacturer}."
         return "Реестр: запись подтверждена."
     status = str(row.get("minprom_registry_status") or "").strip().lower()
     origin = str(row.get("supplier_search_origin") or "").strip()
@@ -149,17 +284,26 @@ def _supplier_registry_note(row: dict) -> str:
         return "Реестр: релевантная запись не найдена."
     if status == "error":
         return "Реестр: проверка не выполнена."
+    if status == "ok" and origin == "ordinary_fallback":
+        return "Реестр: соответствие поставщика конкретной записи не подтверждено; поставщик найден обычным поиском."
     return ""
 
 
-def _supplier_report_heading(title: str, subject: str = "") -> str:
+POLICY_DISPLAY_NAMES = {
+    "minprom_registry_priority": "Режим: Поиск поставщиков (Реестр в приоритете)",
+    "minprom_registry_only": "Режим: Поиск поставщиков (Только реестр)",
+    "normal": "Режим: Поиск поставщиков (Обычный)",
+}
+
+def _supplier_report_heading(title: str, subject: str = "", policy: str = "") -> str:
     source = _clean_comment_text(title)
     item = _clean_comment_text(subject)
-    if item:
-        return f"Отчёт по ТЗ: {item}"
-    if source:
-        return f"Отчёт по ТЗ: {source}"
-    return "Отчёт по ТЗ"
+    base_title = item or source or "ТЗ"
+    return f"Отчёт по ТЗ: {base_title}"
+
+
+def _supplier_policy_label(policy: str) -> str:
+    return POLICY_DISPLAY_NAMES.get(policy, "")
 
 
 def _clean_comment_text(value: object) -> str:

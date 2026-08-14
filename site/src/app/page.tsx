@@ -1,829 +1,428 @@
+import { TenderLexLogo } from '@/components/logo';
+import type { Metadata } from 'next';
+import Link from 'next/link';
+import { InteractiveHeroDemo } from '@/components/interactive-hero-demo';
+import { getSiteData } from '@/lib/site-data';
 import {
-  ArrowRight,
-  Building2,
-  CheckCircle2,
-  ClipboardList,
-  FileSearch,
+  buildOrganizationJsonLd,
+  buildSoftwareApplicationJsonLd,
+  buildWebSiteJsonLd,
+  buildFaqJsonLd,
+} from '@/lib/seo';
+import {
   FileText,
-  Mail,
-  MessageCircle,
-  Paperclip,
-  Phone,
   Search,
-  Send,
+  Zap,
+  Building2,
   ShieldCheck,
-  Target,
-  type LucideIcon,
-} from "lucide-react";
-import Image from "next/image";
+  ArrowRight,
+  Mail,
+  CheckCircle2,
+  Sparkles,
+} from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import { formatRubles, getSiteData, type PublicTariff } from "@/lib/site-data";
+export const revalidate = 300;
 
-export const dynamic = "force-dynamic";
-
-const featureItems = [
-  {
-    icon: Search,
-    title: "Найти компании под позицию",
-    text: "Собирает производителей, дилеров, дистрибьюторов и профильных продавцов по описанию товара, спецификации или документам закупки.",
+export const metadata: Metadata = {
+  title: 'TenderLex — Извлечение контактов поставщиков и разбор ТЗ за 3 минуты',
+  description:
+    'ИИ-платформа для закупщиков: извлечение номенклатуры из ТЗ, сбор прямых email/телефонов заводов и дилеров по всей России, автоматическая генерация запросов КП и экспресс-анализ 44-ФЗ / 223-ФЗ.',
+  keywords:
+    'поиск поставщиков по ТЗ, коммерческое предложение закупка, контакты дилеров заводов, анализ рисков ТЗ 44-ФЗ, автоматизация закупа тендер',
+  openGraph: {
+    title: 'TenderLex — Извлечение контактов поставщиков и разбор ТЗ за 3 минуты',
+    description:
+      'ИИ-помощник отдела снабжения. Находите прямые контакты производителей и дилеров по вашему ТЗ за 3 минуты.',
+    url: 'https://tenderlex.ru',
+    siteName: 'TenderLex',
+    locale: 'ru_RU',
+    type: 'website',
   },
-  {
-    icon: ClipboardList,
-    title: "Подготовить запрос цены",
-    text: "Собирает один понятный текст для поставщика: что нужно, какие условия важны и какие документы попросить сразу.",
-  },
-  {
-    icon: FileText,
-    title: "Разобрать закупку",
-    text: "Выносит предмет, сроки, обеспечение, оплату, поставку, требования к участнику и спорные места договора.",
-  },
-  {
-    icon: ShieldCheck,
-    title: "Понять риски до участия",
-    text: "Показывает, где могут быть проблемы: приемка, штрафы, короткие сроки, ограничения допуска и вопросы заказчику.",
-  },
-];
-
-const processSteps = [
-  {
-    title: "Поставьте задачу",
-    text: "Нужно найти кому написать, подготовить запрос цены или сначала понять условия закупки.",
-  },
-  {
-    title: "Передайте материалы",
-    text: "Подойдет описание позиции, спецификация, ссылка на закупку, номер извещения или комплект документов.",
-  },
-  {
-    title: "Получите рабочий список",
-    text: "В результате есть компании, контакты, комментарии по релевантности и вопросы для первого обращения.",
-  },
-];
-
-const useCases = [
-  {
-    icon: Building2,
-    title: "Снабжению и закупкам",
-    points: [
-      "быстро понять, кому отправить запрос цены",
-      "получить контакты производителей, дилеров и профильных продавцов",
-      "собрать сравнимые ответы по цене, срокам и условиям",
-    ],
-  },
-  {
-    icon: Target,
-    title: "Поставщикам и тендерным отделам",
-    points: [
-      "быстро понять, стоит ли заходить в закупку",
-      "увидеть сроки, обеспечение, оплату и риски договора",
-      "подготовить вопросы заказчику и аргументы для решения об участии",
-    ],
-  },
-];
-
-const primaryScenario = {
-  href: "/poisk-postavshchikov-po-tz",
-  title: "Список компаний для запроса цены",
-  text: "Кто реально производит, продает или официально поставляет нужную позицию. Сайт, контакты, роль компании и что уточнить перед письмом.",
-  points: ["производитель, дилер или поставщик", "рабочие контакты", "что спросить в первом письме"],
 };
 
-const relatedScenarios = [
-  {
-    href: "/poisk-postavshchikov-dlya-tendera",
-    title: "Разобрать закупку",
-    text: "Сроки, обеспечение, договор и спорные требования.",
-  },
-  {
-    href: "/poisk-proizvoditeley-po-tz",
-    title: "Выйти на завод",
-    text: "Когда посредник не подходит.",
-  },
-  {
-    href: "/postavshchiki-dlya-zaprosa-kp",
-    title: "Собрать адресатов",
-    text: "Кому отправить первый запрос.",
-  },
-  {
-    href: "/zapros-kp-po-tz",
-    title: "Подготовить письмо",
-    text: "Позиции, условия и вопросы без канцелярита.",
-  },
-  {
-    href: "/analiz-zakupochnoi-dokumentacii",
-    title: "Сравнить ответы",
-    text: "Цена, сроки, доставка и документы.",
-  },
-  {
-    href: "/reestr-minpromtorga-v-zakupkah",
-    title: "Проверить допуск",
-    text: "Реестры и ограничения, если они есть.",
-  },
-];
-
-const trustItems = [
-  {
-    icon: ShieldCheck,
-    title: "Работа по документам и открытым источникам",
-    text: "Анализ строится по номеру извещения, официальным данным и присланным материалам, а компании и контакты проверяются по открытым сайтам.",
-  },
-  {
-    icon: FileSearch,
-    title: "Ваши материалы не показываются другим",
-    text: "Номер закупки, документы и описание задачи используются только для подготовки результата в вашем кабинете или Telegram.",
-  },
-  {
-    icon: CheckCircle2,
-    title: "Решение остается за командой",
-    text: "TenderLex ускоряет подготовку, но финальную юридическую, ценовую и коммерческую проверку делает человек.",
-  },
-];
-
-const reportRows = [
-  ["Предмет закупки", "минераловатный утеплитель для кровли и фасадных работ"],
-  ["Критичные условия", "плотность, толщина, упаковка, сертификаты, сроки отгрузки и доставка на объект"],
-  ["Что уточнить", "замены по характеристикам, пожарные требования, сохранность упаковки при поставке"],
-];
-
-const supplierRows = [
-  ["ЦЕМРОС", "производитель цемента и строительных материалов", "официальный сайт, региональные продажи", "уточнить марку, фасовку, объем партии и график отгрузки"],
-  ["КНАУФ", "производитель сухих смесей и строительных систем", "официальный сайт, дилерская сеть", "проверить линейку смеси, наличие и условия доставки"],
-  ["Старатели", "производитель сухих строительных смесей", "официальный сайт, контакты продаж", "сравнить фасовку, сроки поставки и документы качества"],
-];
-
-const heroSupplierRows = [
-  ["ТЕХНОНИКОЛЬ", "официальный сайт, дилерская сеть", "плотность, толщина, сроки"],
-  ["ROCKWOOL", "официальный сайт, региональные контакты", "сертификаты и наличие"],
-  ["ISOVER", "официальный сайт, дилерская сеть", "формат плит и доставка"],
-];
-
-export default async function Home() {
+export default async function HomePage() {
   const data = await getSiteData();
-  const contactUrl = data.contacts.telegram_url || (data.contacts.email ? `mailto:${data.contacts.email}` : "#contacts");
-  const contactActionLabel = data.contacts.telegram_url ? "Написать в Telegram" : "Написать на email";
-  const botUrl = data.bot?.telegram_url || "https://t.me/tenderlex_bot";
-  const cabinetUrl = "/cabinet";
-  const supplierTariffs = data.tariff_groups.supplier_search;
-  const reportTariffs = data.tariff_groups.procurement_report;
+  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || 'https://t.me/TenderLexBot';
+  const cabinetUrl = '/cabinet';
+
+  const orgSchema = buildOrganizationJsonLd();
+  const appSchema = buildSoftwareApplicationJsonLd();
+  const websiteSchema = buildWebSiteJsonLd();
+
+  const homeFaqItems = [
+    {
+      question: 'Как TenderLex находит прямые контакты поставщиков?',
+      answer:
+        'Сервис сопоставляет извлеченную номенклатуру ТЗ с базой контрагентов, фильтруя компании по ролям (Завод-изготовитель, Дилер) и предоставляя e-mail отделов оптовых продаж.',
+    },
+    {
+      question: 'Как получить бесплатный триал-период?',
+      answer:
+        'При регистрация каждому новому пользователю автоматически начисляется 200 рублей приветственного баланса. Этого достаточно для выполнения первых двух бесплатных поисков или анализов документов.',
+    },
+    {
+      question: 'Можно ли использовать Telegram-бота без регистрации на сайте?',
+      answer:
+        'Да, наш Telegram-бот @TenderLexBot обладает полным функционалом поиска контактов и разбора закупки 44-ФЗ. Баланс отчетов единый для сайта и бота.',
+    },
+    {
+      question: 'Можно ли автоматизировать работу отдела снабжения для всей компании?',
+      answer:
+        'Да. Использование TenderLex сокращает время поиска релевантных адресатов и подготовки единых писем с нескольких часов до 3 минут.',
+    },
+  ];
+
+  const faqSchema = buildFaqJsonLd(homeFaqItems);
+
+  const scenarios = [
+    {
+      id: 'kp',
+      title: 'Сбор контрагентов для Запроса КП',
+      tag: 'Поиск контактов',
+      desc: 'Извлечение сложных позиций из ТЗ и сбор прямых e-mail отделов продаж заводов и официальных дилеров.',
+      points: [
+        'Сбор базы контрагентов для Запроса КП',
+        'Подготовка вопросов заказчику закупки',
+        'Поиск аналогов и оценка исполнимости контракта',
+      ],
+      link: '/postavshchiki-dlya-zaprosa-kp',
+    },
+    {
+      id: 'tz',
+      title: 'Поиск поставщиков по ТЗ',
+      tag: 'База заводов и дилеров',
+      desc: 'Глубокий анализ спецификации, определение категорий товаров и выгрузка списка проверенных поставщиков.',
+      points: [
+        'Поиск прямых изготовителей по ГОСТ/ТУ',
+        'Фильтрация дилеров по регионам',
+        'Прямые контакты отделов продаж',
+      ],
+      link: '/poisk-postavshchikov-po-tz',
+    },
+    {
+      id: 'risks',
+      title: 'Анализ рисков 44-ФЗ / 223-ФЗ',
+      tag: 'Экспресс-аудит',
+      desc: 'Проверка проекта контракта на сжатые сроки, нетипичные штрафы, реестры Минпромторга и скрытые требования.',
+      points: [
+        'Выявление жестких сроков приемки',
+        'Проверка Постановлений № 616/617',
+        'Подготовка вопросов для разъяснений',
+      ],
+      link: '/ocenka-riskov-zakupki',
+    },
+    {
+      id: 'mfg',
+      title: 'Поиск производителей по ТЗ',
+      tag: 'Прямые заводы',
+      desc: 'Поиск завода-изготовителя без посредников для получения минимальной цены и выявления официальных дистрибьюторов.',
+      points: [
+        'Идентификация заводов по номенклатуре',
+        'Проверка наличия дилерской сети',
+        'Формирование официального Запроса КП',
+      ],
+      link: '/poisk-proizvoditeley-po-tz',
+    },
+  ];
+
+  const features = [
+    {
+      icon: Search,
+      badge: 'Поиск по ТЗ',
+      title: 'Авто-извлечение номенклатуры',
+      desc: 'Загрузите проект контракта или файл ТЗ (PDF, Word, Excel). ИИ сам распознает таблицы, маркировки и ГОСТы.',
+    },
+    {
+      icon: Mail,
+      badge: 'Прямые контакты',
+      title: 'E-mail и телефоны продаж',
+      desc: 'Сервис предоставляет не общие инфо-адреса, а прямые контакты отделов оптовых продаж и менеджеров.',
+    },
+    {
+      icon: FileText,
+      badge: 'Готовый Запрос КП',
+      title: 'Единый текст обращения',
+      desc: 'Формирование готового официального письма Запроса КП с выбранными позициями ТЗ в один клик.',
+    },
+    {
+      icon: ShieldCheck,
+      badge: 'Аудит рисков',
+      title: 'Разбор контракта 44-ФЗ / 223-ФЗ',
+      desc: 'Мгновенное выявление подвохов в условиях оплаты, нетипичных штрафах, авансировании и приемке.',
+    },
+  ];
 
   return (
-    <main>
+    <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify(buildJsonLd(data.site.domain, botUrl, data.contacts.telegram_url, data.contacts.email)),
-        }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
       />
-      <Header contactUrl={cabinetUrl} ctaLabel="Личный кабинет" />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(appSchema) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+      />
 
-      <section className="hero">
-        <div className="container hero-layout">
-          <div className="hero-copy">
-            <h1>Поиск поставщиков под вашу спецификацию</h1>
-            <p>
-              Загрузите описание позиции, ссылку на закупку или документы. TenderLex выделит
-              нужный товар, найдет компании, покажет контакты и подскажет, что спросить у
-              поставщика перед сравнением цен. Если закупка сложная, отдельно разберет сроки,
-              обеспечение, договор и спорные требования.
-            </p>
-            <div className="hero-actions">
-              <Button asChild size="lg">
-                <a href={cabinetUrl}>
-                  <FileText size={18} aria-hidden="true" />
-                  Попробовать на сайте
-                </a>
-              </Button>
-              <Button asChild variant="secondary" size="lg">
-                <a href={botUrl} target={botUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-                  <Send size={18} aria-hidden="true" />
-                  Попробовать в Telegram
-                </a>
-              </Button>
+      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+        {/* TOP HEADER */}
+        <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            <TenderLexLogo size={36} textColor="text-teal-700" />
+
+            <nav className="hidden md:flex items-center gap-8">
+              <a href="#features" className="text-slate-700 font-bold hover:text-teal-700 text-sm transition-colors">
+                Возможности
+              </a>
+              <Link href="/regiony" className="text-slate-700 font-bold hover:text-teal-700 text-sm transition-colors">
+                Регионы
+              </Link>
+              <Link href="/baza-znaniy" className="text-slate-700 font-bold hover:text-teal-700 text-sm transition-colors">
+                База знаний
+              </Link>
+              <a href="#faq" className="text-slate-700 font-bold hover:text-teal-700 text-sm transition-colors">
+                FAQ
+              </a>
+            </nav>
+
+            <div className="flex items-center gap-3">
+              <a
+                href={botUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition-all border border-slate-200"
+              >
+                Telegram-бот
+              </a>
+              <a
+                href={cabinetUrl}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold shadow-sm transition-all hover:scale-[1.02]"
+              >
+                Личный кабинет
+              </a>
             </div>
-            <dl className="hero-proof" aria-label="Коротко о сервисе">
-              <ProofItem value="Компании" label="производители, дилеры, дистрибьюторы и профильные продавцы" />
-              <ProofItem value="Контакты" label="сайт, страница связи, email или телефон, комментарий" />
-              <ProofItem value="Проверки" label="что уточнить по цене, срокам, документам и ограничениям" />
-            </dl>
           </div>
+        </header>
 
-          <HeroProduct />
-        </div>
-      </section>
+        {/* HERO */}
+        <section className="py-12 sm:py-20 bg-gradient-to-b from-teal-50/70 via-slate-50 to-slate-50 border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-3xl mx-auto space-y-6">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-teal-100/90 border border-teal-200 text-teal-800 text-xs font-extrabold shadow-2xs">
+                <Sparkles size={14} className="text-teal-600" />
+                <span>Платформа ИИ-автоматизации снабжения</span>
+              </div>
 
-      <section id="features" className="feature-band">
-        <div className="container feature-grid">
-          {featureItems.map((item) => (
-            <article key={item.title} className="feature-card">
-              <span className="icon-box">
-                <item.icon size={22} aria-hidden="true" />
-              </span>
-              <h2>{item.title}</h2>
-              <p>{item.text}</p>
-            </article>
-          ))}
-        </div>
-      </section>
+              <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-slate-900 leading-[1.15]">
+                Извлечение контактов поставщиков и разбор ТЗ за 3 минуты
+              </h1>
 
-      <section id="process" className="section process-section">
-        <div className="container">
-          <SectionHeader
-            title="Как это работает"
-            text="Главный результат — список компаний, с которыми можно связаться. Разбор закупки и письмо поставщику подключаются только там, где они нужны."
-          />
-          <div className="process-grid">
-            {processSteps.map((step, index) => (
-              <article key={step.title} className="process-step">
-                <span>{index + 1}</span>
-                <h3>{step.title}</h3>
-                <p>{step.text}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
+              <p className="text-base sm:text-lg text-slate-700 font-medium leading-relaxed">
+                Загрузите ТЗ или спецификацию закупки — TenderLex автоматически распознает позицию, сопоставит контакты прямых изготовителей и дилеров по всей России и выявит риски 44-ФЗ.
+              </p>
 
-      <section className="section usecase-section">
-        <div className="container">
-          <SectionHeader
-            title="Для рабочих закупочных задач"
-            text="TenderLex полезен, когда нужно не прочитать еще одну справку, а быстро получить основу для действия: кому писать, что спросить и какие условия проверить."
-          />
-          <div className="usecase-panel">
-            {useCases.map((item) => (
-              <article key={item.title} className="usecase-item">
-                <span className="icon-box accent">
-                  <item.icon size={22} aria-hidden="true" />
-                </span>
-                <h3>{item.title}</h3>
-                <ul>
-                  {item.points.map((point) => (
-                    <li key={point}>
-                      <CheckCircle2 size={17} aria-hidden="true" />
-                      <span>{point}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="scenarios" className="section scenario-section">
-        <div className="container scenario-layout">
-          <SectionHeader
-            title="Сначала список компаний"
-            text="Один основной путь: найти, кому отправить запрос цены. Остальные проверки нужны только когда задача сложнее обычного подбора."
-            align="left"
-          />
-          <div className="scenario-board" aria-label="Сценарии работы TenderLex">
-            <a className="scenario-primary" href={primaryScenario.href}>
-              <span className="scenario-tag">Основной путь</span>
-              <h3>{primaryScenario.title}</h3>
-              <p>{primaryScenario.text}</p>
-              <ul>
-                {primaryScenario.points.map((point) => (
-                  <li key={point}>
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                    <span>{point}</span>
-                  </li>
-                ))}
-              </ul>
-              <span className="scenario-primary-link">
-                Подробнее
-                <ArrowRight size={18} aria-hidden="true" />
-              </span>
-            </a>
-            <div className="scenario-related">
-              <p>Что подключить при необходимости</p>
-              <div className="scenario-related-grid">
-                {relatedScenarios.map((item) => (
-                  <a key={item.href} className="scenario-related-link" href={item.href}>
-                    <strong>{item.title}</strong>
-                    <span>{item.text}</span>
-                    <ArrowRight size={17} aria-hidden="true" />
-                  </a>
-                ))}
+              <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+                <a
+                  href={cabinetUrl}
+                  className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold shadow-md shadow-teal-600/20 text-sm transition-all hover:scale-[1.01]"
+                >
+                  Попробовать бесплатно (200 ₽ на баланс)
+                  <ArrowRight size={16} />
+                </a>
+                <a
+                  href={botUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+                >
+                  Открыть Telegram-бота
+                </a>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
 
-      <section className="section result-section">
-        <div className="container result-layout">
-          <div>
-            <SectionHeader
-              title="На выходе не просто ссылки"
-              text="Команда получает список для действия: кто подходит, куда писать, что спросить и какие условия сравнить между ответами."
-              align="left"
-            />
-            <ul className="result-list">
-              <ResultPoint title="Кого запросить" text="Производители, официальные дистрибьюторы, региональные дилеры, поставщики аналогов и профильные продавцы." />
-              <ResultPoint title="Куда писать" text="Сайты, страницы связи, email или телефон, профиль компании и комментарий, почему она подходит под задачу." />
-              <ResultPoint title="Что спросить" text="Цена, наличие, срок поставки, доставка, документы качества, гарантия, замены и ограничения по партии." />
-              <ResultPoint title="Что проверить" text="Сроки закупки, обеспечение, оплату, приемку, договор и специальные требования, если задача идет через процедуру." />
-            </ul>
+            <div className="mt-12 sm:mt-16">
+              <InteractiveHeroDemo />
+            </div>
           </div>
-          <SupplierSheet />
-        </div>
-      </section>
+        </section>
 
-      <section id="tariffs" className="section pricing-section">
-        <div className="container">
-          <SectionHeader
-            title="Стоимость услуг"
-            text="Базовая услуга — поиск компаний и контактов. Разбор закупки подключается отдельно, если перед запросом цены нужно понять условия и риски."
-          />
-          <div className="pricing-grid">
-            <PricingTable
-              icon={Search}
-              title="Поиск компаний"
-              subtitle="Список, контакты и комментарии для первого запроса"
-              tariffs={supplierTariffs}
-              contactUrl={contactUrl}
-              contactLabel={contactActionLabel}
-              note="Нужен больший список компаний или нестандартная товарная группа? Напишите нам — обсудим условия под вашу задачу."
-            />
-            <PricingTable
-              icon={FileText}
-              title="Разбор закупки"
-              subtitle="Требования, условия, риски и вопросы заказчику"
-              tariffs={reportTariffs}
-              contactUrl={contactUrl}
-              contactLabel={contactActionLabel}
-            />
-          </div>
-        </div>
-      </section>
+        {/* FEATURES GRID */}
+        <section id="features" className="py-16 sm:py-24 bg-white border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-2xl mx-auto mb-12 sm:mb-16 space-y-3">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-teal-700">Возможности платформы</span>
+              <h2 className="text-2xl sm:text-4xl font-black text-slate-900 tracking-tight">
+                Инструменты отделов снабжения и тендерных специалистов
+              </h2>
+            </div>
 
-      <section id="trust" className="section trust-section">
-        <div className="container trust-layout">
-          <div>
-            <h2>Инструмент для подготовки, не замена решения</h2>
-            <p>
-              TenderLex помогает быстрее собрать компании, контакты, вопросы и условия для сравнения.
-              Итоговое решение по цене, обязательствам и выбору поставщика остается за вашей командой.
-            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {features.map((item, idx) => {
+                const IconComp = item.icon;
+                return (
+                  <div
+                    key={idx}
+                    className="p-6 rounded-2xl bg-slate-50 border-2 border-slate-200/90 shadow-2xs hover:border-teal-500/80 transition-all group"
+                  >
+                    <div className="w-12 h-12 rounded-xl bg-teal-100 text-teal-700 flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+                      <IconComp size={24} />
+                    </div>
+                    <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block mb-1">
+                      {item.badge}
+                    </span>
+                    <h3 className="text-lg font-black text-slate-900 mb-2">{item.title}</h3>
+                    <p className="text-xs text-slate-700 font-medium leading-relaxed">{item.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div className="trust-list">
-            {trustItems.map((item) => (
-              <article key={item.title} className="trust-item">
-                <item.icon size={20} aria-hidden="true" />
-                <div>
-                  <h3>{item.title}</h3>
-                  <p>{item.text}</p>
+        </section>
+
+        {/* SCENARIOS */}
+        <section className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-2xl mx-auto mb-12 sm:mb-16 space-y-3">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-teal-700">Сценарии работы</span>
+              <h2 className="text-2xl sm:text-4xl font-black text-slate-900 tracking-tight">
+                Решение задач любой сложности
+              </h2>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
+              {scenarios.map((sc) => (
+                <div
+                  key={sc.id}
+                  className="p-8 rounded-2xl bg-white border-2 border-slate-200 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between"
+                >
+                  <div className="space-y-4">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200 inline-block">
+                      {sc.tag}
+                    </span>
+                    <h3 className="text-xl font-black text-slate-900">{sc.title}</h3>
+                    <p className="text-sm text-slate-700 font-medium leading-relaxed">{sc.desc}</p>
+
+                    <ul className="space-y-2.5 pt-2">
+                      {sc.points.map((pt, pIdx) => (
+                        <li key={pIdx} className="flex items-start gap-2.5 text-xs text-slate-800 font-bold">
+                          <CheckCircle2 size={16} className="text-teal-600 shrink-0 mt-0.5" />
+                          <span>{pt}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="pt-6 mt-6 border-t border-slate-100">
+                    <Link
+                      href={sc.link}
+                      className="inline-flex items-center gap-2 text-sm font-extrabold text-teal-700 hover:text-teal-800 transition-colors"
+                    >
+                      <span>Узнать больше</span>
+                      <ArrowRight size={16} />
+                    </Link>
+                  </div>
                 </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="contacts" className="cta-section">
-        <div className="container cta-inner">
-          <h2>Получите список компаний для запроса цены</h2>
-          <p>Передайте описание позиции, спецификацию, номер извещения или документы. TenderLex найдет компании, покажет контакты и подготовит основу для первого обращения.</p>
-          <div className="cta-actions">
-            <Button asChild size="lg">
-              <a href={cabinetUrl}>
-                <FileText size={18} aria-hidden="true" />
-                Попробовать на сайте
-              </a>
-            </Button>
-            <Button asChild variant="secondary" size="lg">
-              <a href={botUrl} target={botUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-                <Send size={18} aria-hidden="true" />
-                Попробовать в Telegram
-              </a>
-            </Button>
-            <div className="contact-stack">
-              {data.contacts.telegram_url ? <ContactLink href={data.contacts.telegram_url} icon={MessageCircle} label="Telegram" /> : null}
-              <ContactLink href={data.contacts.max_url} icon={MessageCircle} label="MAX" staticLabel={data.contacts.max || "MAX"} />
-              <ContactLink href={data.contacts.email ? `mailto:${data.contacts.email}` : ""} icon={Mail} label={data.contacts.email} />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <Footer email={data.contacts.email} telegramUrl={data.contacts.telegram_url} maxUrl={data.contacts.max_url} max={data.contacts.max} />
-    </main>
-  );
-}
-
-function Header({ contactUrl, ctaLabel }: { contactUrl: string; ctaLabel: string }) {
-  return (
-    <header className="site-header">
-      <div className="container header-inner">
-        <a className="brand" href="/" aria-label="TenderLex">
-          <Image src="/tenderlex-logo.png" alt="" width={32} height={32} priority />
-          <span>TenderLex</span>
-        </a>
-        <nav aria-label="Основная навигация">
-          <a href="#features">Возможности</a>
-          <a href="#process">Процесс</a>
-          <a href="#scenarios">Сценарии</a>
-          <a href="#tariffs">Тарифы</a>
-          <a href="#contacts">Контакты</a>
-        </nav>
-        <Button asChild className="header-cta">
-          <a href={contactUrl} target={contactUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-            {ctaLabel}
-          </a>
-        </Button>
-      </div>
-    </header>
-  );
-}
-
-function HeroProduct() {
-  return (
-    <div className="hero-product" aria-label="Два режима работы TenderLex">
-      <div className="task-strip">
-        <div>
-          <Image src="/tenderlex-logo.png" alt="" width={32} height={32} />
-          <div>
-            <strong>TenderLex</strong>
-            <span>Сайт и Telegram</span>
-          </div>
-        </div>
-        <span>
-          <Paperclip size={15} aria-hidden="true" />
-          номер закупки, документы, ссылка или спецификация
-        </span>
-      </div>
-
-      <div className="hero-output-grid">
-        <article className="output-card">
-          <div className="output-head">
-            <span className="icon-box">
-              <Search size={20} aria-hidden="true" />
-            </span>
-            <div>
-              <p>Поиск поставщиков</p>
-              <h2>Компании под спецификацию</h2>
-            </div>
-          </div>
-          <div className="output-badges">
-            <span>производители</span>
-            <span>дилеры</span>
-            <span>комплектующие</span>
-          </div>
-          <div className="supplier-scale">
-            TenderLex ищет компании, связанные с нужной номенклатурой, и выводит основу для первого запроса.
-          </div>
-          <div className="supplier-mini-list">
-            {heroSupplierRows.map(([type, contact, note]) => (
-              <div key={type} className="supplier-mini-row">
-                <div className="supplier-mini-meta">
-                  <strong>{type}</strong>
-                  <small>{contact}</small>
-                </div>
-                <p>{note}</p>
-              </div>
-            ))}
-          </div>
-          <div className="output-footer">
-            <MessageCircle size={15} aria-hidden="true" />
-            Готово к письму поставщику и сравнению условий
-          </div>
-        </article>
-
-        <article className="output-card">
-          <div className="output-head">
-            <span className="icon-box">
-              <FileText size={20} aria-hidden="true" />
-            </span>
-            <div>
-              <p>Анализ закупки</p>
-              <h2>Поставка минераловатного утеплителя</h2>
-            </div>
-          </div>
-          <div className="output-badges">
-            <span>стройматериалы</span>
-            <span>гарантия</span>
-            <span>доставка</span>
-          </div>
-          <div className="risk-note compact">
-            <ShieldCheck size={17} aria-hidden="true" />
-            <p>До подачи заявки видно, где нужны уточнения: плотность, толщина, сертификаты, упаковка и доставка до объекта.</p>
-          </div>
-          <table className="output-table">
-            <tbody>
-              {reportRows.map(([section, value]) => (
-                <tr key={section}>
-                  <td>{section}</td>
-                  <td>{value}</td>
-                </tr>
               ))}
-            </tbody>
-          </table>
-          <div className="output-footer">
-            <CheckCircle2 size={15} aria-hidden="true" />
-            Вердикт: участвовать после уточнений
-          </div>
-        </article>
-      </div>
-    </div>
-  );
-}
-
-function SupplierSheet() {
-  return (
-    <div className="supplier-sheet" aria-label="Пример результата поиска поставщиков">
-      <div className="sheet-bar">
-        <span>Пример подбора поставщиков</span>
-        <strong>по цементу и сухим смесям</strong>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Компания</th>
-            <th>Профиль</th>
-            <th>Контакты</th>
-            <th>Что проверить в предложении</th>
-          </tr>
-        </thead>
-        <tbody>
-          {supplierRows.map(([company, specialization, contact, note]) => (
-            <tr key={company}>
-              <td data-label="Компания">{company}</td>
-              <td data-label="Профиль">{specialization}</td>
-              <td data-label="Контакты">{contact}</td>
-              <td data-label="Что проверить в предложении">{note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="sheet-footer">
-        <span>
-          <Phone size={16} aria-hidden="true" />
-          Основа для запроса: цена, марка, фасовка, документы качества, доставка
-        </span>
-        <CheckCircle2 size={18} aria-hidden="true" />
-      </div>
-    </div>
-  );
-}
-
-function PricingTable({
-  icon: Icon,
-  title,
-  subtitle,
-  tariffs,
-  contactUrl,
-  contactLabel,
-  note,
-}: {
-  icon: LucideIcon;
-  title: string;
-  subtitle: string;
-  tariffs: PublicTariff[];
-  contactUrl: string;
-  contactLabel: string;
-  note?: string;
-}) {
-  return (
-    <article className="pricing-table">
-      <div className="pricing-title">
-        <span className="icon-box accent">
-          <Icon size={20} aria-hidden="true" />
-        </span>
-        <div>
-          <h3>{title}</h3>
-          <p>{subtitle}</p>
-        </div>
-      </div>
-      <div className="tariff-rows">
-        {tariffs.map((tariff) => (
-          <div key={tariff.id} className="tariff-row">
-            <div>
-              <strong>{tariffDisplayName(tariff)}</strong>
-              <span>{tariffDescription(tariff)}</span>
             </div>
-            <b>{formatRubles(tariff.price_kopeks)}</b>
           </div>
-        ))}
-      </div>
-      {note ? <p className="pricing-note">{note}</p> : null}
-      <Button asChild variant="secondary">
-        <a href={contactUrl} target={contactUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-          {contactLabel}
-          <ArrowRight size={17} aria-hidden="true" />
-        </a>
-      </Button>
-    </article>
-  );
-}
+        </section>
 
-function SectionHeader({ title, text, align = "center" }: { title: string; text: string; align?: "center" | "left" }) {
-  return (
-    <div className={`section-header ${align === "left" ? "align-left" : ""}`}>
-      <h2>{title}</h2>
-      <p>{text}</p>
-    </div>
-  );
-}
+        {/* FAQ SECTION */}
+        <section id="faq" className="py-16 sm:py-24 bg-white border-b border-slate-200">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center tracking-tight mb-12">
+              Часто задаваемые вопросы
+            </h2>
 
-function ProofItem({ value, label }: { value: string; label: string }) {
-  return (
-    <div>
-      <dt>{value}</dt>
-      <dd>{label}</dd>
-    </div>
-  );
-}
-
-function ResultPoint({ title, text }: { title: string; text: string }) {
-  return (
-    <li>
-      <CheckCircle2 size={19} aria-hidden="true" />
-      <div>
-        <strong>{title}</strong>
-        <span>{text}</span>
-      </div>
-    </li>
-  );
-}
-
-function ContactLink({ href, icon: Icon, label, staticLabel }: { href: string; icon: LucideIcon; label: string; staticLabel?: string }) {
-  const fallbackLabel = staticLabel || label;
-  if (!fallbackLabel) {
-    return null;
-  }
-  if (!href) {
-    return (
-      <span className="contact-link contact-link-static">
-        <Icon size={17} aria-hidden="true" />
-        {fallbackLabel}
-      </span>
-    );
-  }
-  return (
-    <a className="contact-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-      <Icon size={17} aria-hidden="true" />
-      {label}
-    </a>
-  );
-}
-
-function Footer({ email, telegramUrl, maxUrl, max }: { email: string; telegramUrl: string; maxUrl: string; max: string }) {
-  return (
-    <footer className="site-footer">
-      <div className="container footer-inner">
-        <div>
-          <a className="brand" href="/" aria-label="TenderLex">
-            <Image src="/tenderlex-logo.png" alt="" width={30} height={30} />
-            <span>TenderLex</span>
-          </a>
-          <p>Сервис для поиска компаний под закупочную задачу: контакты, вопросы поставщику и разбор условий.</p>
-        </div>
-        <nav className="footer-nav" aria-label="Навигация в подвале">
-          <div className="footer-group">
-            <strong>Сервис</strong>
-            <a href="#features">Возможности</a>
-            <a href="#process">Процесс</a>
-            <a href="#scenarios">Сценарии</a>
-            <a href="#tariffs">Тарифы</a>
+            <div className="space-y-4">
+              {homeFaqItems.map((faq, idx) => (
+                <details key={idx} className="group bg-slate-50 p-6 rounded-2xl border-2 border-slate-200 text-left transition-all shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{faq.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
+                    {faq.answer}
+                  </p>
+                </details>
+              ))}
+            </div>
           </div>
-          <div className="footer-group">
-            <strong>Страницы</strong>
-            <a href="/poisk-postavshchikov-po-tz">Поставщики под спецификацию</a>
-            <a href="/poisk-postavshchikov-dlya-tendera">Поставщики для тендера</a>
-            <a href="/poisk-proizvoditeley-po-tz">Выйти на производителя</a>
-            <a href="/postavshchiki-dlya-zaprosa-kp">Кого запросить</a>
-            <a href="/zapros-kp-po-tz">Подготовить письмо</a>
-            <a href="/analiz-zakupochnoi-dokumentacii">Разобрать закупку</a>
-            <a href="/reestr-minpromtorga-v-zakupkah">Проверить допуск</a>
-            <a href="/terms">Условия</a>
-            <a href="/privacy">Конфиденциальность</a>
+        </section>
+
+        {/* CTA SECTION */}
+        <section id="contacts" className="py-16 sm:py-24 bg-gradient-to-b from-slate-50 via-teal-50/60 to-teal-100/70 border-b border-slate-200 text-slate-900 text-center">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6 space-y-6">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-teal-950 bg-teal-200/80 px-3.5 py-1.5 rounded-full border border-teal-300 shadow-2xs inline-block">
+              Мгновенный запуск за 3 минуты
+            </span>
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 tracking-tight">
+              Получите 200 ₽ на баланс при регистрации и начните работу
+            </h2>
+            <p className="text-slate-700 max-w-2xl mx-auto text-base font-semibold leading-relaxed">
+              Зарегистрируйтесь в веб-кабинете или воспользуйтесь Telegram-ботом TenderLex для оперативного сбора контрагентов.
+            </p>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-4">
+              <a
+                href={cabinetUrl}
+                className="inline-flex items-center justify-center px-8 py-3.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold shadow-md shadow-teal-600/20 text-sm transition-all hover:scale-[1.01]"
+              >
+                Зарегистрироваться и получить 200 ₽
+              </a>
+              <a
+                href={botUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center px-8 py-3.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 font-extrabold border-2 border-slate-300 shadow-xs text-sm transition-all hover:border-teal-500"
+              >
+                Запустить Telegram-бота
+              </a>
+            </div>
           </div>
-        </nav>
-        <div className="footer-contacts footer-group">
-          <strong>Связь</strong>
-          {telegramUrl ? <a href={telegramUrl} target="_blank" rel="noreferrer">Telegram</a> : null}
-          {max ? (maxUrl ? <a href={maxUrl} target="_blank" rel="noreferrer">MAX</a> : <span>{max}</span>) : null}
-          <a href={`mailto:${email}`}>{email}</a>
-        </div>
-      </div>
-    </footer>
+        </section>
+
+        {/* FOOTER */}
+        <footer className="py-12 bg-white text-slate-600 text-xs border-t border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-2 md:grid-cols-4 gap-8">
+            <div>
+              <strong className="text-slate-900 font-bold text-sm block mb-2">TenderLex</strong>
+              <p className="text-slate-600 leading-relaxed">
+                ИИ-сервис извлечения контактов поставщиков и экспресс-анализа рисков закупок 44-ФЗ / 223-ФЗ.
+              </p>
+            </div>
+            <div>
+              <strong className="text-slate-900 font-bold text-sm block mb-2">Сервисы</strong>
+              <ul className="space-y-1.5">
+                <li><Link href="/poisk-postavshchikov-po-tz" className="hover:text-teal-700 font-semibold">Поиск по ТЗ</Link></li>
+                <li><Link href="/poisk-proizvoditeley-po-tz" className="hover:text-teal-700 font-semibold">Поиск заводов</Link></li>
+                <li><Link href="/ocenka-riskov-zakupki" className="hover:text-teal-700 font-semibold">Анализ 44-ФЗ</Link></li>
+              </ul>
+            </div>
+            <div>
+              <strong className="text-slate-900 font-bold text-sm block mb-2">Информация</strong>
+              <ul className="space-y-1.5">
+                <li><Link href="/baza-znaniy" className="hover:text-teal-700 font-semibold">База знаний</Link></li>
+                <li><Link href="/regiony" className="hover:text-teal-700 font-semibold">Регионы поставки</Link></li>
+                <li><Link href="/about" className="hover:text-teal-700 font-semibold">О сервисе</Link></li>
+              </ul>
+            </div>
+            <div>
+              <strong className="text-slate-900 font-bold text-sm block mb-2">Правовая информация</strong>
+              <ul className="space-y-1.5">
+                <li><Link href="/privacy" className="hover:text-teal-700 font-semibold">Политика конфиденциальности</Link></li>
+                <li><Link href="/terms" className="hover:text-teal-700 font-semibold">Условия использования</Link></li>
+              </ul>
+            </div>
+          </div>
+        </footer>
+      </main>
+    </>
   );
-}
-
-function tariffCountLabel(tariff: PublicTariff) {
-  const variants: [string, string, string] =
-    tariff.kind === "procurement_report"
-      ? ["отчёт", "отчёта", "отчётов"]
-      : ["запрос", "запроса", "запросов"];
-  return `${tariff.units} ${pluralizeRu(tariff.units, variants)}`;
-}
-
-function pluralizeRu(value: number, [one, few, many]: [string, string, string]) {
-  const mod10 = Math.abs(value) % 10;
-  const mod100 = Math.abs(value) % 100;
-  if (mod10 === 1 && mod100 !== 11) {
-    return one;
-  }
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-    return few;
-  }
-  return many;
-}
-
-function tariffDescription(tariff: PublicTariff) {
-  if (tariff.kind === "procurement_report") {
-    return "Требования, условия участия, риски договора и вопросы заказчику.";
-  }
-  if (tariff.kind === "supplier_search") {
-    return "Подбор релевантных компаний и контактов для первого запроса.";
-  }
-  return tariff.description.trim() || tariffCountLabel(tariff);
-}
-
-function tariffDisplayName(tariff: PublicTariff) {
-  if (tariff.kind === "procurement_report") {
-    return tariff.units === 1 ? "1 анализ закупки" : `${tariff.units} анализов закупок`;
-  }
-  if (tariff.kind === "supplier_search") {
-    return tariff.units === 1 ? "1 подбор поставщиков" : `${tariff.units} подборов поставщиков`;
-  }
-  return tariff.name;
-}
-
-function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string, email: string) {
-  const normalizedSiteUrl = siteUrl.replace(/\/+$/, "");
-  const sameAs = [botUrl, contactTelegramUrl].filter(Boolean);
-
-  return {
-    "@context": "https://schema.org",
-    "@graph": [
-      {
-        "@type": "Organization",
-        "@id": `${normalizedSiteUrl}/#organization`,
-        name: "TenderLex",
-        url: normalizedSiteUrl,
-        logo: {
-          "@type": "ImageObject",
-          url: `${normalizedSiteUrl}/tenderlex-logo.png`,
-          width: 512,
-          height: 512,
-        },
-        image: `${normalizedSiteUrl}/tenderlex-product-preview.png`,
-        email,
-        sameAs,
-        contactPoint: email
-          ? [
-              {
-                "@type": "ContactPoint",
-                email,
-                contactType: "customer support",
-                availableLanguage: ["ru"],
-              },
-            ]
-          : undefined,
-      },
-      {
-        "@type": "WebSite",
-        "@id": `${normalizedSiteUrl}/#website`,
-        name: "TenderLex",
-        url: normalizedSiteUrl,
-        inLanguage: "ru-RU",
-        description:
-          "TenderLex помогает найти компании под закупочную задачу, собрать контакты, подготовить вопросы поставщику и разобрать условия закупки.",
-        publisher: {
-          "@id": `${normalizedSiteUrl}/#organization`,
-        },
-      },
-      {
-        "@type": "SoftwareApplication",
-        "@id": `${normalizedSiteUrl}/#software`,
-        name: "TenderLex",
-        applicationCategory: "BusinessApplication",
-        operatingSystem: "Web, Telegram",
-        url: normalizedSiteUrl,
-        image: `${normalizedSiteUrl}/tenderlex-product-preview.png`,
-        description:
-          "Сервис для поиска поставщиков под спецификацию, проверки контактов, подготовки запроса цены и разбора закупочной документации.",
-        featureList: [
-          "Поиск поставщиков под спецификацию",
-          "Подготовка запроса цены",
-          "Проверка контактов и профиля поставщика",
-          "Разбор закупочной документации",
-          "Проверка рисков до подачи заявки",
-          "Проверка специальных требований допуска",
-        ],
-        offers: {
-          "@type": "AggregateOffer",
-          priceCurrency: "RUB",
-          lowPrice: "100",
-          highPrice: "5000",
-          availability: "https://schema.org/InStock",
-        },
-        provider: {
-          "@id": `${normalizedSiteUrl}/#organization`,
-        },
-      },
-    ],
-  };
 }

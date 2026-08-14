@@ -26,10 +26,39 @@ DEFAULT_DOCUMENT_OPTIONS = {
 
 
 def sanitize_filename(value: str) -> str:
-    value = re.sub(r"[^\wА-Яа-яЁё ._-]+", "_", str(value or ""), flags=re.UNICODE).strip(" ._")
-    return _truncate_utf8(value, 180, fallback="upload")
+    raw_val = str(value or "").strip()
+    if not raw_val:
+        return "upload"
+    p = Path(raw_val)
+    ext = p.suffix
+    stem = p.stem if ext else raw_val
+    clean_ext = re.sub(r"[^\w.-]+", "_", ext, flags=re.UNICODE)
+    clean_stem = re.sub(r"[^\w?-??-??? ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
+    ext_bytes = len(clean_ext.encode("utf-8"))
+    max_stem_bytes = max(10, 180 - ext_bytes)
+    truncated_stem = _truncate_utf8(clean_stem, max_stem_bytes, fallback="upload")
+    return f"{truncated_stem}{clean_ext}"
 
 
+def _is_xlsx_package(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
+    return "[Content_Types].xml" in names and any(name.startswith("xl/") for name in names)
+
+
+def _is_pdf_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as f:
+            return f.read(5).startswith(b"%PDF-")
+    except Exception:
+        return False
 def _truncate_utf8(value: str, max_bytes: int, *, fallback: str) -> str:
     value = str(value or "").strip()
     if len(value.encode("utf-8")) <= max_bytes:
@@ -43,6 +72,20 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
     depth = int(options.get("archive_depth") or 0) if _depth is None else _depth
     file_path = Path(path)
     suffix = file_path.suffix.lower()
+    if not suffix or suffix not in (
+        TEXT_EXTENSIONS
+        | IMAGE_EXTENSIONS
+        | ARCHIVE_EXTENSIONS
+        | {".csv", ".tsv", ".html", ".htm", ".xml", ".docx", ".doc", ".xlsx", ".xls", ".pdf"}
+    ):
+        if _is_docx_package(file_path):
+            suffix = ".docx"
+        elif _is_xlsx_package(file_path):
+            suffix = ".xlsx"
+        elif _is_pdf_file(file_path):
+            suffix = ".pdf"
+        elif zipfile.is_zipfile(file_path) and depth > 0:
+            suffix = ".zip"
     try:
         if suffix in TEXT_EXTENSIONS:
             return file_path.read_text(encoding="utf-8", errors="ignore"), "ok"
@@ -52,7 +95,16 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             return _extract_html(file_path), "ok"
         if suffix == ".docx":
             try:
-                return _extract_docx(file_path), "ok"
+                text = _extract_docx(file_path)
+                if len(text.strip()) < 80:
+                    fallback_text = _extract_via_libreoffice(
+                        file_path,
+                        ".txt",
+                        lambda converted: converted.read_text(encoding="utf-8", errors="ignore"),
+                    )
+                    if len(fallback_text.strip()) > len(text.strip()):
+                        return fallback_text, "docx_libreoffice_ok"
+                return text, "ok"
             except Exception:
                 if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
                     text, status = _extract_archive(file_path, options, depth)
@@ -77,6 +129,13 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                 return text, "image_ocr_ok" if text.strip() else "image_ocr_empty"
             return "", "image_ocr_disabled"
         if suffix == ".doc":
+            if zipfile.is_zipfile(file_path):
+                try:
+                    text = _extract_docx(file_path)
+                    if text.strip():
+                        return text, "ok"
+                except Exception:
+                    pass
             text = _extract_doc(file_path)
             return text, "ok" if text.strip() else "parser_not_connected_yet"
         if suffix in {".rtf", ".odt", ".pptx"}:
@@ -130,6 +189,8 @@ def _extract_docx(path: Path) -> str:
 
 
 def _is_docx_package(path: Path) -> bool:
+    if not path.is_file():
+        return False
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
@@ -153,6 +214,17 @@ def _extract_xlsx(path: Path) -> str:
 
 
 def _extract_pdf(path: Path) -> str:
+    try:
+        import pdf_inspector
+
+        res = pdf_inspector.process_pdf(str(path))
+        if res and res.markdown and not res.has_encoding_issues and res.pdf_type != "scanned":
+            text = str(res.markdown or "").strip()
+            if len(text) > 50:
+                return text
+    except Exception:
+        pass
+
     try:
         import fitz
 
@@ -186,7 +258,10 @@ def _extract_via_pandoc(path: Path) -> str:
     pandoc = shutil.which("pandoc")
     if not pandoc:
         return ""
-    result = subprocess.run([pandoc, str(path), "-t", "plain"], check=False, capture_output=True, text=True, timeout=80)
+    try:
+        result = subprocess.run([pandoc, str(path), "-t", "plain"], check=False, capture_output=True, text=True, timeout=80)
+    except (OSError, subprocess.SubprocessError):
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 

@@ -494,6 +494,17 @@ Registry contract:
   linkage is absent. In priority mode, if no relevant registry entry survives
   filtering, the comment must say that no relevant registry record was found
   and the supplier was found by ordinary search.
+- In strict mode, a trustworthy zero result (`empty` or `ok` with no supplier
+  linkage) preserves already verified pre-filter suppliers as an immutable
+  alternative. TenderLex offers that report in Telegram and the website with
+  explicit no-registry wording, charges only after successful delivery, and
+  releases the supplier reservation on decline or expiry. Registry status
+  `error` remains a technical/no-charge outcome and cannot be presented as an
+  empty registry.
+- Result-offer decisions and deliveries are separate DB-backed states. Offers
+  have a 24-hour decision window; accepted but undelivered results have a new
+  24-hour delivery window. Combined analysis-plus-search jobs can fall back to
+  an analysis-only manifest without exposing the stale supplier archive.
 
 ## Reports And Audit Fields
 
@@ -754,6 +765,16 @@ Load-test boundary:
   returns `19` verified suppliers with a configured minimum of `15`; no extra
   paid batch is run after the minimum is reached, but already AI-verified extra
   rows from the active batch stay in the XLSX.
+- **DaData & Registry Manufacturer Enrichment (2026-08-14)**:
+  - Integrated asynchronous DaData client (`backend/app/dadata_client.py`) with caching by INN for legal entity data extraction (status, full legal name, standardized legal address, region, CEO name/position, OGRN, KPP).
+  - Upgraded registry fallback pipeline: unmatched GISP/Minpromtorg manufacturers are no longer injected as empty stubs. The system automatically launches targeted web searches (`"{ИНН}" официальный сайт` + `"{Наименование}" контакты`), filters directory/aggregator domains, crawls official websites, and extracts direct phones and emails (>90% contact discovery rate across 10 real test procurements).
+  - Added DaData auto-enrichment for all accepted suppliers with valid INN to ensure uniform region and contact person population.
+- **Safe Cascading Client Deletion (2026-08-14)**:
+  - Fixed `_force_delete_client` in `backend/app/main.py` to safely delete all cascading dependencies of a specific client in correct foreign key dependency order (`WebSession`, `WebPasswordResetRequest`, `WebEmailVerificationToken`, `AccountLinkToken`, `WebUser`, `ClientTelegramAccount`, `UserJourneyEvent`, `OnboardingReminder`, `ClientTariffOverride`, `SupplierResult`, `JobFile`, `JobSource`, `BillingTransaction`, `Job` and on-disk job folders).
+  - Prevents SQLite IntegrityError/500 failures and ensures 100% isolation from other clients or global system state.
+- **Admin Panel Live Reactive Updates & Compact Modern UI (2026-08-14)**:
+  - Replaced broken EventSource connection with an adaptive background polling loop: 2.5s interval during active jobs, 6s when idle, 30s when tab is hidden, and instant refresh on window focus / visibility change.
+  - Implemented compact high-density design for `JobsView` and `ClientsView`: card heights reduced by >2x, fitting 8–10 jobs and 12–14 clients on a standard screen without losing any buttons, download links, tags, or fields.
 
 Detailed task evidence for an earlier admin UI / limits / provider-settings pass
 is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.

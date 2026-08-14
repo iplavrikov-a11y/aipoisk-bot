@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import fcntl
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
+from typing import Iterator
 
-from sqlalchemy import and_, func, not_, or_
+from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
+from .config import config
 from .models import BillingTransaction, Client, ClientTariffOverride, Job, TariffPackage, now_utc
 
 KIND_SUPPLIER_SEARCH = "supplier_search"
@@ -24,6 +29,7 @@ OP_MANUAL_DEBIT = "manual_debit"
 STATUS_AWAITING_CUSTOMER_CONFIRMATION = "awaiting_customer_confirmation"
 STATUS_CUSTOMER_DECLINED = "customer_declined"
 STATUS_CONFIRMATION_EXPIRED = "confirmation_expired"
+STATUS_DELIVERY_EXPIRED = "delivery_expired"
 
 LOW_BALANCE_THRESHOLD = 1
 
@@ -45,6 +51,49 @@ INTERNAL_JOB_TOKENS = (
 
 class BillingError(Exception):
     pass
+
+
+@contextmanager
+def _billing_client_lock(client_id: str) -> Iterator[None]:
+    lock_dir = Path(config.storage_path) / ".billing-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = "".join(character for character in str(client_id or "") if character.isalnum() or character in {"-", "_"}) or "unknown"
+    with (lock_dir / f"{safe_id}.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _normalized_idempotency_key(value: str) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized[:80] or None
+
+
+def _idempotent_transaction(
+    db: Session,
+    idempotency_key: str,
+    *,
+    client_id: str,
+    kind: str,
+    operation: str,
+    amount_kopeks: int | None = None,
+    units: int | None = None,
+) -> BillingTransaction | None:
+    normalized = _normalized_idempotency_key(idempotency_key)
+    if not normalized:
+        return None
+    existing = db.query(BillingTransaction).filter(BillingTransaction.idempotency_key == normalized).first()
+    if not existing:
+        return None
+    if existing.client_id != client_id or existing.kind != kind or existing.operation != operation:
+        raise BillingError("Ключ операции уже использован для другого начисления или списания")
+    if amount_kopeks is not None and int(existing.amount_kopeks or 0) != int(amount_kopeks):
+        raise BillingError("Ключ операции повторно использован с другой суммой")
+    if units is not None and int(existing.units or 0) != int(units):
+        raise BillingError("Ключ операции повторно использован с другим количеством")
+    return existing
 
 
 def billing_kind_label(kind: str) -> str:
@@ -402,8 +451,24 @@ def client_uses_trial_access(db: Session, client: Client | None) -> bool:
 
 
 def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -> str:
+    available_money = money_balance_summary(db, client)["available_kopeks"]
     for kind, count in units.items():
         if count <= 0:
+            continue
+        override = _client_tariff_override(db, client, kind)
+        if override and not override.is_enabled:
+            return f"Услуга «{billing_kind_label(kind)}» отключена для этого клиента."
+        price = effective_price_kopeks(db, client, kind)
+        if price > 0:
+            required_money = max(0, int(count or 0)) * price
+            if available_money < required_money:
+                return (
+                    f"Недостаточно средств для услуги «{billing_kind_label(kind)}». "
+                    f"Доступно {round(available_money / 100, 2)} ₽, "
+                    f"нужно {round(required_money / 100, 2)} ₽. "
+                    "Откройте «Тарифы и оплата», чтобы пополнить баланс."
+                )
+            available_money -= required_money
             continue
         counter = _access_counter(db, client, kind)
         if counter["unlimited"]:
@@ -412,7 +477,7 @@ def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -
             return (
                 f"Недостаточно генераций: {billing_kind_label(kind)}. "
                 f"Доступно {counter['available']}, нужно {count}. "
-                "Откройте «Тарифы и оплата», чтобы пополнить пакет."
+                "Откройте «Тарифы и оплата», чтобы пополнить баланс."
             )
     return ""
 
@@ -429,6 +494,12 @@ def _access_counter(db: Session, client: Client, kind: str) -> dict:
 
 
 def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_count: int = 1) -> None:
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        _reserve_job_units_locked(db, client, job, supplier_search_count=supplier_search_count)
+
+
+def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier_search_count: int = 1) -> None:
     _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
     units = resolve_requested_billing_kinds(
         db,
@@ -437,12 +508,15 @@ def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_
         supplier_search_count=supplier_search_count,
         supplier_search_run_type=getattr(job, "supplier_search_run_type", "initial"),
     )
-    error = access_error_for_units(db, client, units)
+    units_to_reserve = {
+        kind: count
+        for kind, count in units.items()
+        if count > 0 and not _job_has_operation(db, job.id, kind, OP_RESERVE)
+    }
+    error = access_error_for_units(db, client, units_to_reserve)
     if error:
         raise BillingError(error)
-    for kind, count in units.items():
-        if count <= 0 or _job_has_operation(db, job.id, kind, OP_RESERVE):
-            continue
+    for kind, count in units_to_reserve.items():
         amount = _reservable_amount_for_kind(db, client, kind, count)
         if amount > 0:
             client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
@@ -468,67 +542,71 @@ def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: i
     amount = price * max(0, int(count or 0))
     if amount <= 0:
         return 0
-    if _kind_money_available_for_reservation(db, client, kind) < amount:
-        return 0
     available_total = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
     if available_total < amount:
-        return 0
-    return amount
-
-
-def _kind_money_available_for_reservation(db: Session, client: Client, kind: str) -> int:
-    if kind == KIND_SUPPLIER_SEARCH_EXTRA and _supplier_search_extra_uses_supplier_access(db, client):
-        return max(
-            _kind_money_available_kopeks(db, client.id, KIND_SUPPLIER_SEARCH_EXTRA),
-            _kind_money_available_kopeks(db, client.id, KIND_SUPPLIER_SEARCH),
+        raise BillingError(
+            f"Недостаточно средств для услуги «{billing_kind_label(kind)}»: "
+            f"доступно {available_total / 100:.2f} ₽, нужно {amount / 100:.2f} ₽"
         )
-    return _kind_money_available_kopeks(db, client.id, kind)
-
-
-def _kind_money_available_kopeks(db: Session, client_id: str, kind: str) -> int:
-    rows = (
-        db.query(BillingTransaction.operation, func.coalesce(func.sum(BillingTransaction.amount_kopeks), 0))
-        .filter(BillingTransaction.client_id == client_id)
-        .filter(BillingTransaction.kind == kind)
-        .filter(BillingTransaction.amount_kopeks > 0)
-        .group_by(BillingTransaction.operation)
-        .all()
-    )
-    totals = {operation: int(total or 0) for operation, total in rows}
-    granted = totals.get(OP_GRANT, 0)
-    manual_debited = totals.get(OP_MANUAL_DEBIT, 0)
-    reserved_total = totals.get(OP_RESERVE, 0)
-    released = totals.get(OP_RELEASE, 0)
-    return max(0, granted + released - reserved_total - manual_debited)
+    return amount
 
 
 def charge_job_reservation(db: Session, job: Job, *, note: str = "Результат отправлен клиенту") -> None:
     if not job.client_id:
         return
-    client = db.get(Client, job.client_id)
+    with _billing_client_lock(job.client_id):
+        _charge_job_reservation_locked(db, job, note=note)
+        db.commit()
+
+
+def _charge_job_reservation_locked(db: Session, job: Job, *, note: str) -> None:
     for kind in VALID_BILLING_KINDS:
-        remaining = _job_reserved_remaining(db, job.id, kind)
-        remaining_amount = _job_reserved_amount_remaining(db, job.id, kind)
-        if (remaining <= 0 and remaining_amount <= 0) or _job_has_operation(db, job.id, kind, OP_CHARGE):
-            continue
-        if client and remaining_amount > 0:
-            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - remaining_amount)
-            client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - remaining_amount)
-        db.add(
-            BillingTransaction(
-                client_id=job.client_id,
-                job_id=job.id,
-                kind=kind,
-                operation=OP_CHARGE,
-                units=remaining,
-                amount_kopeks=remaining_amount,
-                balance_after_kopeks=max(0, int(getattr(client, "money_balance_kopeks", 0) or 0)) if client else 0,
-                reserved_after_kopeks=max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0)) if client else 0,
-                note=note,
-                created_by="system",
-            )
+        _charge_job_kind_reservation_locked(db, job, kind, note=note)
+
+
+def charge_job_kind_reservation(
+    db: Session,
+    job: Job,
+    kind: str,
+    *,
+    note: str = "Результат отправлен клиенту",
+) -> None:
+    """Settle only one reserved product kind, idempotently across delivery channels."""
+    if not job.client_id or kind not in VALID_BILLING_KINDS:
+        return
+    with _billing_client_lock(job.client_id):
+        _charge_job_kind_reservation_locked(db, job, kind, note=note)
+        db.commit()
+
+
+def _charge_job_kind_reservation_locked(db: Session, job: Job, kind: str, *, note: str) -> bool:
+    if kind not in VALID_BILLING_KINDS:
+        return False
+    remaining = _job_reserved_remaining(db, job.id, kind)
+    remaining_amount = _job_reserved_amount_remaining(db, job.id, kind)
+    if (remaining <= 0 and remaining_amount <= 0) or _job_has_operation(db, job.id, kind, OP_CHARGE):
+        return False
+    client = db.get(Client, job.client_id) if job.client_id else None
+    if client:
+        db.refresh(client)
+    if client and remaining_amount > 0:
+        client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - remaining_amount)
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - remaining_amount)
+    db.add(
+        BillingTransaction(
+            client_id=job.client_id,
+            job_id=job.id,
+            kind=kind,
+            operation=OP_CHARGE,
+            units=remaining,
+            amount_kopeks=remaining_amount,
+            balance_after_kopeks=max(0, int(getattr(client, "money_balance_kopeks", 0) or 0)) if client else 0,
+            reserved_after_kopeks=max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0)) if client else 0,
+            note=note,
+            created_by="system",
         )
-    db.commit()
+    )
+    return True
 
 
 def job_has_unsettled_reservation(db: Session, job: Job) -> bool:
@@ -540,19 +618,30 @@ def job_has_unsettled_reservation(db: Session, job: Job) -> bool:
     )
 
 
+def job_reserved_amount_kopeks(db: Session, job: Job, kind: str | None = None) -> int:
+    """Return the still-reserved monetary amount shown before an offer is accepted."""
+    if not job.client_id:
+        return 0
+    if kind:
+        return _job_reserved_amount_remaining(db, job.id, kind)
+    return sum(_job_reserved_amount_remaining(db, job.id, item) for item in VALID_BILLING_KINDS)
+
+
 def release_job_reservation(db: Session, job: Job, *, note: str = "Резерв возвращён") -> None:
     if not job.client_id:
         return
-    for kind in VALID_BILLING_KINDS:
-        _release_job_kind_reservation(db, job, kind, note=note)
-    db.commit()
+    with _billing_client_lock(job.client_id):
+        for kind in VALID_BILLING_KINDS:
+            _release_job_kind_reservation(db, job, kind, note=note)
+        db.commit()
 
 
 def release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str = "Резерв возвращён") -> None:
     if not job.client_id:
         return
-    _release_job_kind_reservation(db, job, kind, note=note)
-    db.commit()
+    with _billing_client_lock(job.client_id):
+        _release_job_kind_reservation(db, job, kind, note=note)
+        db.commit()
 
 
 def _release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str) -> None:
@@ -561,6 +650,8 @@ def _release_job_kind_reservation(db: Session, job: Job, kind: str, *, note: str
     if remaining <= 0 and remaining_amount <= 0:
         return
     client = db.get(Client, job.client_id) if job.client_id else None
+    if client:
+        db.refresh(client)
     if client and remaining_amount > 0:
         client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0) - remaining_amount)
     db.add(
@@ -651,12 +742,53 @@ def grant_package_units(
     package_id: str = "",
     note: str = "",
     created_by: str = "admin",
+    idempotency_key: str = "",
 ) -> BillingTransaction:
     if kind not in VALID_BILLING_KINDS:
         raise BillingError("Unknown billing kind")
     safe_units = int(units or 0)
     if safe_units <= 0:
         raise BillingError("Units must be positive")
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        expected_amount = max(0, int(amount_kopeks or 0)) or _grant_amount_kopeks(db, client, kind, safe_units, package_id=package_id)
+        existing = _idempotent_transaction(
+            db,
+            idempotency_key,
+            client_id=client.id,
+            kind=kind,
+            operation=OP_GRANT,
+            amount_kopeks=expected_amount,
+            units=safe_units,
+        )
+        if existing:
+            return existing
+        return _grant_package_units_locked(
+            db,
+            client,
+            kind=kind,
+            units=safe_units,
+            amount_kopeks=amount_kopeks,
+            package_id=package_id,
+            note=note,
+            created_by=created_by,
+            idempotency_key=idempotency_key,
+        )
+
+
+def _grant_package_units_locked(
+    db: Session,
+    client: Client,
+    *,
+    kind: str,
+    units: int,
+    amount_kopeks: int,
+    package_id: str,
+    note: str,
+    created_by: str,
+    idempotency_key: str,
+) -> BillingTransaction:
+    safe_units = max(1, int(units or 1))
     amount = max(0, int(amount_kopeks or 0)) or _grant_amount_kopeks(db, client, kind, safe_units, package_id=package_id)
     if amount > 0:
         client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
@@ -665,6 +797,7 @@ def grant_package_units(
         package_id=package_id,
         kind=kind,
         operation=OP_GRANT,
+        idempotency_key=_normalized_idempotency_key(idempotency_key),
         units=safe_units,
         amount_kopeks=amount,
         balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
@@ -685,15 +818,34 @@ def grant_money_balance(
     amount_kopeks: int,
     note: str = "",
     created_by: str = "admin",
+    idempotency_key: str = "",
 ) -> BillingTransaction:
     amount = max(0, int(amount_kopeks or 0))
     if amount <= 0:
         raise BillingError("Amount must be positive")
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        existing = _idempotent_transaction(db, idempotency_key, client_id=client.id, kind=KIND_MONEY, operation=OP_GRANT, amount_kopeks=amount, units=0)
+        if existing:
+            return existing
+        return _grant_money_balance_locked(db, client, amount=amount, note=note, created_by=created_by, idempotency_key=idempotency_key)
+
+
+def _grant_money_balance_locked(
+    db: Session,
+    client: Client,
+    *,
+    amount: int,
+    note: str,
+    created_by: str,
+    idempotency_key: str,
+) -> BillingTransaction:
     client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
     transaction = BillingTransaction(
         client_id=client.id,
         kind=KIND_MONEY,
         operation=OP_GRANT,
+        idempotency_key=_normalized_idempotency_key(idempotency_key),
         units=0,
         amount_kopeks=amount,
         balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
@@ -714,10 +866,28 @@ def debit_money_balance(
     amount_kopeks: int,
     note: str = "",
     created_by: str = "admin",
+    idempotency_key: str = "",
 ) -> BillingTransaction:
     amount = max(0, int(amount_kopeks or 0))
     if amount <= 0:
         raise BillingError("Amount must be positive")
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        existing = _idempotent_transaction(db, idempotency_key, client_id=client.id, kind=KIND_MONEY, operation=OP_MANUAL_DEBIT, amount_kopeks=amount, units=0)
+        if existing:
+            return existing
+        return _debit_money_balance_locked(db, client, amount=amount, note=note, created_by=created_by, idempotency_key=idempotency_key)
+
+
+def _debit_money_balance_locked(
+    db: Session,
+    client: Client,
+    *,
+    amount: int,
+    note: str,
+    created_by: str,
+    idempotency_key: str,
+) -> BillingTransaction:
     available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
     if available_money < amount:
         raise BillingError(f"Недостаточно денег для списания: доступно {available_money / 100:.2f} ₽, нужно {amount / 100:.2f} ₽")
@@ -726,6 +896,7 @@ def debit_money_balance(
         client_id=client.id,
         kind=KIND_MONEY,
         operation=OP_MANUAL_DEBIT,
+        idempotency_key=_normalized_idempotency_key(idempotency_key),
         units=0,
         amount_kopeks=amount,
         balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
@@ -748,29 +919,64 @@ def grant_trial_balance(
     note: str = "Стартовый баланс триала",
 ) -> None:
     db.flush()
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        _grant_trial_balance_locked(
+            db,
+            client,
+            supplier_search_units=supplier_search_units,
+            procurement_report_units=procurement_report_units,
+            note=note,
+        )
+
+
+def _grant_trial_balance_locked(
+    db: Session,
+    client: Client,
+    *,
+    supplier_search_units: int,
+    procurement_report_units: int,
+    note: str,
+) -> None:
     for kind, units in (
         (KIND_SUPPLIER_SEARCH, supplier_search_units),
         (KIND_PROCUREMENT_REPORT, procurement_report_units),
     ):
         safe_units = max(0, int(units or 0))
-        if safe_units <= 0 or _has_billing_transactions(db, client.id, kind):
-            continue
         amount = effective_price_kopeks(db, client, kind) * safe_units
-        if amount > 0:
-            client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
+        if amount <= 0:
+            continue
+        money_note = f"{note}: {billing_kind_label(kind)}"
+        existing_grant = (
+            db.query(BillingTransaction.id)
+            .filter(BillingTransaction.client_id == client.id)
+            .filter(BillingTransaction.operation == OP_GRANT)
+            .filter(func.lower(func.coalesce(BillingTransaction.created_by, "")) == "system")
+            .filter(
+                or_(
+                    (BillingTransaction.kind == kind) & (BillingTransaction.amount_kopeks > 0),
+                    (BillingTransaction.kind == KIND_MONEY) & (BillingTransaction.note == money_note),
+                )
+            )
+            .first()
+        )
+        if existing_grant:
+            continue
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
         db.add(
             BillingTransaction(
                 client_id=client.id,
-                kind=kind,
+                kind=KIND_MONEY,
                 operation=OP_GRANT,
-                units=safe_units,
+                units=0,
                 amount_kopeks=amount,
                 balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
                 reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
-                note=note,
+                note=money_note,
                 created_by="system",
             )
         )
+    db.flush()
 
 
 def _grant_amount_kopeks(db: Session, client: Client, kind: str, units: int, *, package_id: str = "") -> int:
@@ -789,20 +995,52 @@ def debit_package_units(
     amount_kopeks: int = 0,
     note: str = "",
     created_by: str = "admin",
+    idempotency_key: str = "",
 ) -> BillingTransaction:
     if kind not in VALID_BILLING_KINDS:
         raise BillingError("Unknown billing kind")
     safe_units = int(units or 0)
     if safe_units <= 0:
         raise BillingError("Units must be positive")
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        existing = _idempotent_transaction(db, idempotency_key, client_id=client.id, kind=kind, operation=OP_MANUAL_DEBIT, units=safe_units)
+        if existing:
+            return existing
+        return _debit_package_units_locked(
+            db,
+            client,
+            kind=kind,
+            units=safe_units,
+            amount_kopeks=amount_kopeks,
+            note=note,
+            created_by=created_by,
+            idempotency_key=idempotency_key,
+        )
+
+
+def _debit_package_units_locked(
+    db: Session,
+    client: Client,
+    *,
+    kind: str,
+    units: int,
+    amount_kopeks: int,
+    note: str,
+    created_by: str,
+    idempotency_key: str,
+) -> BillingTransaction:
+    safe_units = max(1, int(units or 1))
     _initialize_legacy_balance_if_needed(db, client)
     explicit_amount = max(0, int(amount_kopeks or 0))
     amount = 0
-    if explicit_amount > 0:
+    price_amount = effective_price_kopeks(db, client, kind) * safe_units
+    if explicit_amount > 0 or price_amount > 0:
+        debit_amount = explicit_amount or price_amount
         available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
-        if available_money < explicit_amount:
-            raise BillingError(f"Недостаточно денег для списания: доступно {available_money / 100:.2f} ₽, нужно {explicit_amount / 100:.2f} ₽")
-        amount = explicit_amount
+        if available_money < debit_amount:
+            raise BillingError(f"Недостаточно денег для списания: доступно {available_money / 100:.2f} ₽, нужно {debit_amount / 100:.2f} ₽")
+        amount = debit_amount
         client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - amount)
     else:
         counter = balance_counter(db, client, kind)
@@ -811,16 +1049,11 @@ def debit_package_units(
             raise BillingError("Manual debit is not supported for unlimited legacy balances")
         if available < safe_units:
             raise BillingError(f"Недостаточно доступных генераций для списания: доступно {available}, нужно {safe_units}")
-        requested_amount = effective_price_kopeks(db, client, kind) * safe_units
-        if requested_amount > 0 and _kind_money_available_kopeks(db, client.id, kind) >= requested_amount:
-            available_money = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
-            if available_money >= requested_amount:
-                amount = requested_amount
-                client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - amount)
     transaction = BillingTransaction(
         client_id=client.id,
         kind=kind,
         operation=OP_MANUAL_DEBIT,
+        idempotency_key=_normalized_idempotency_key(idempotency_key),
         units=safe_units,
         amount_kopeks=amount,
         balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
@@ -866,6 +1099,7 @@ def transaction_to_dict(transaction: BillingTransaction) -> dict:
         "kind": transaction.kind,
         "kind_label": billing_kind_label(transaction.kind),
         "operation": transaction.operation,
+        "idempotency_key": transaction.idempotency_key or "",
         "operation_label": operation_label(transaction.operation),
         "units": transaction.units,
         "amount_kopeks": transaction.amount_kopeks,
@@ -904,17 +1138,22 @@ def expire_stale_confirmations(db: Session, *, older_than: timedelta = timedelta
     cutoff = now_utc() - older_than
     jobs = (
         db.query(Job)
-        .filter(Job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION)
+        .filter(Job.status.in_([STATUS_AWAITING_CUSTOMER_CONFIRMATION, "partial"]))
+        .filter(or_(Job.confirmation_kind.is_(None), Job.confirmation_kind == ""))
         .filter(Job.updated_at < cutoff)
         .all()
     )
+    expired_jobs: list[Job] = []
     for job in jobs:
+        if not job_has_unsettled_reservation(db, job):
+            continue
         release_job_reservation(db, job, note="Резерв возвращён: клиент не подтвердил неполный отчёт за 24 часа")
         job.status = STATUS_CONFIRMATION_EXPIRED
-        job.message = "Отчёт не был подтверждён за 24 часа, списания нет"
+        job.message = "Неполный отчёт не был скачан за 24 часа, списания нет"
         job.error = ""
         job.completed_at = now_utc()
         job.updated_at = now_utc()
-    if jobs:
+        expired_jobs.append(job)
+    if expired_jobs:
         db.commit()
-    return len(jobs)
+    return len(expired_jobs)

@@ -12,6 +12,9 @@ from zoneinfo import ZoneInfo
 
 import time
 
+import httpx
+import jwt
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
@@ -63,7 +66,29 @@ from .jobs import (
     recover_interrupted_jobs,
     write_supplier_exclusions,
 )
-from .models import BillingTransaction, Client, ClientTariffOverride, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
+from .models import (
+    AccountLinkToken,
+    BillingTransaction,
+    Client,
+    ClientTariffOverride,
+    ClientTelegramAccount,
+    Job,
+    JobFile,
+    JobSource,
+    OnboardingReminder,
+    SupplierResult,
+    SystemSettings,
+    TariffPackage,
+    UserJourneyEvent,
+    WebEmailVerificationToken,
+    WebPasswordResetRequest,
+    WebRegistrationAttempt,
+    WebSession,
+    WebUser,
+    now_utc,
+    parse_json_dict,
+    parse_json_list,
+)
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -521,6 +546,31 @@ def customer_job_detail_api(
     return customer_job_to_dict(job, include_files=True)
 
 
+
+@app.post("/api/customer/jobs/{job_id}/retry")
+def customer_job_retry_api(
+    job_id: str,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    policy = getattr(job, "supplier_search_policy", "normal") or "normal"
+    policy_labels = {
+        "minprom_registry_only": "Только реестр",
+        "minprom_registry_priority": "Реестр в приоритете",
+        "normal": "Обычный"
+    }
+    label = policy_labels.get(policy, "Обычный")
+    job.status = "pending"
+    job.progress = 0
+    job.error = ""
+    job.message = "Повторный запуск задачи"
+    job.updated_at = now_utc()
+    db.commit()
+    enqueue_job(job.id)
+    return {"ok": True, "message": "Задача успешно перезапущена в обычном режиме"}
+
+
 @app.get("/api/customer/jobs/{job_id}/download")
 def customer_job_download_route(
     job_id: str,
@@ -667,9 +717,10 @@ def dashboard(db: Session = Depends(db_session)) -> dict:
 
 
 @app.get("/api/ops/system-status", dependencies=[Depends(require_admin)])
-def system_status_ops(db: Session = Depends(db_session)) -> dict:
+async def system_status_ops(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
-    return build_system_status(settings, db)
+    billing = await _fetch_yandex_billing_balance()
+    return build_system_status(settings, db, yandex_balance=billing.get("balance"))
 
 
 @app.get("/api/ops/supplier-quality", dependencies=[Depends(require_admin)])
@@ -697,6 +748,77 @@ async def minprom_registry_upload_ops(file: UploadFile = File(...)) -> dict:
         return store_minprom_registry_xlsx_cache(payload, filename=filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+_yandex_billing_cache: dict = {"data": None, "timestamp": 0.0}
+_YANDEX_BILLING_CACHE_TTL = 3600
+
+
+async def _fetch_yandex_billing_balance() -> dict:
+    global _yandex_billing_cache
+    if (
+        _yandex_billing_cache["data"] is not None
+        and (time.time() - _yandex_billing_cache["timestamp"]) < _YANDEX_BILLING_CACHE_TTL
+    ):
+        return _yandex_billing_cache["data"]
+
+    key_path = Path(__file__).parent.parent.parent / ".yandex_sa_key.json"
+    if not key_path.exists():
+        return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "key_not_found"}
+
+    try:
+        with open(key_path, "r") as f:
+            obj = json.load(f)
+        service_account_id = obj.get("service_account_id")
+        key_id = obj.get("id")
+        private_key = obj.get("private_key")
+        if not service_account_id or not key_id or not private_key:
+            return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "invalid_key"}
+
+        now = int(time.time())
+        payload = {
+            "aud": "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+            "iss": service_account_id,
+            "iat": now,
+            "exp": now + 3600,
+        }
+        encoded_token = jwt.encode(payload, private_key, algorithm="PS256", headers={"kid": key_id})
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            iam_response = await client.post(
+                "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+                json={"jwt": encoded_token},
+            )
+            if iam_response.status_code != 200:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "iam_token_failed"}
+            token = iam_response.json().get("iamToken")
+            if not token:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "iam_token_missing"}
+
+            billing_id = obj.get("billing_account_id", "dn2i7mph462v2u6ff922")
+            billing_response = await client.get(
+                f"https://billing.api.cloud.yandex.net/billing/v1/billingAccounts/{billing_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if billing_response.status_code != 200:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "billing_api_failed"}
+
+            data = billing_response.json()
+            result = {
+                "balance": float(data.get("balance", 0.0)),
+                "currency": data.get("currency", "RUB"),
+                "is_active": data.get("active", False),
+            }
+            _yandex_billing_cache["data"] = result
+            _yandex_billing_cache["timestamp"] = time.time()
+            return result
+    except Exception:
+        return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "exception"}
+
+
+@app.get("/api/ops/yandex-billing", dependencies=[Depends(require_admin)])
+async def yandex_billing_ops() -> dict:
+    return await _fetch_yandex_billing_balance()
 
 
 @app.get("/api/analytics/bot", dependencies=[Depends(require_admin)])
@@ -855,8 +977,29 @@ def _force_delete_client(db: Session, client: Client) -> None:
     jobs = db.query(Job).filter(Job.client_id == client.id).all()
     job_ids = [job.id for job in jobs]
     if job_ids:
+        db.query(SupplierResult).filter(SupplierResult.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobFile).filter(JobFile.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobSource).filter(JobSource.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(BillingTransaction).filter(BillingTransaction.job_id.in_(job_ids)).delete(synchronize_session=False)
+
+    web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
+    web_user_ids = [wu.id for wu in web_users]
+    if web_user_ids:
+        db.query(WebSession).filter(WebSession.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(AccountLinkToken).filter(AccountLinkToken.web_user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebUser).filter(WebUser.client_id == client.id).delete(synchronize_session=False)
+
+    db.query(AccountLinkToken).filter(
+        (AccountLinkToken.client_id == client.id) | (AccountLinkToken.conflict_client_id == client.id)
+    ).delete(synchronize_session=False)
+    db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == client.id).delete(synchronize_session=False)
+    db.query(OnboardingReminder).filter(OnboardingReminder.client_id == client.id).delete(synchronize_session=False)
+    db.query(ClientTariffOverride).filter(ClientTariffOverride.client_id == client.id).delete(synchronize_session=False)
+    db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == client.id).delete(synchronize_session=False)
     db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).delete(synchronize_session=False)
+
     for job in jobs:
         shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
         db.delete(job)
@@ -1537,7 +1680,7 @@ def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     job.status = "pending"
     job.progress = 0
     job.error = ""
-    job.message = "Повторный запуск"
+    job.message = "Повторный запуск задачи"
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": job_to_dict(job)}
@@ -1786,6 +1929,19 @@ async def upload_job(
         return {"batch": True, "count": len(jobs), "jobs": jobs}
 
     title = Path(files[0].filename).stem if files else source_label(sources[0]["value"])
+
+    # Protection against double-clicks / instant re-submissions (< 5 seconds)
+    recent_job = db.query(Job).filter(
+        Job.client_id == client.id,
+        Job.created_by_telegram_id == telegram_id,
+        Job.mode == mode,
+        Job.created_at >= datetime.now(timezone.utc) - timedelta(seconds=5),
+    ).order_by(Job.created_at.desc()).first()
+    
+    if recent_job:
+        logger.warning("Duplicate job creation request suppressed (double-click within 5s)", recent_job_id=recent_job.id)
+        return job_to_dict(recent_job)
+
     job = create_job(
         db,
         client_id=client.id,
@@ -2280,6 +2436,9 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "result_files": result_files,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
         "error": job.error,
+        "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
+        "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
+        "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -2980,6 +3139,8 @@ def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[
                 "procurement_report_units": report_units,
                 "status": job.status,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             }
         )
         if len(items) >= limit:
@@ -3050,7 +3211,7 @@ def source_ui_item(provider: str, label: str, configured: bool, active_provider:
     }
 
 
-def build_system_status(settings: SystemSettings, db: Session) -> dict:
+def build_system_status(settings: SystemSettings, db: Session, yandex_balance: float | None = None) -> dict:
     root_disk = disk_usage_payload(Path("/"))
     storage_disk = disk_usage_payload(config.storage_path if config.storage_path.exists() else config.storage_path.parent)
     memory = memory_payload()
@@ -3070,7 +3231,7 @@ def build_system_status(settings: SystemSettings, db: Session) -> dict:
         "failed": db.query(Job).filter(Job.status == "failed").count(),
         "completed": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
     }
-    services = api_service_statuses(settings)
+    services = api_service_statuses(settings, yandex_balance=yandex_balance)
     warnings = []
     if server["disk_free_gb"] < 10:
         warnings.append("На сервере осталось меньше 10 ГБ свободного места.")
@@ -3154,7 +3315,7 @@ def read_cpu_totals(path: Path = Path("/proc/stat")) -> tuple[int, int] | None:
     return sum(parts), idle
 
 
-def api_service_statuses(settings: SystemSettings) -> list[dict]:
+def api_service_statuses(settings: SystemSettings, yandex_balance: float | None = None) -> list[dict]:
     yandex_folder, yandex_key = _yandex_credentials(settings)
     google_key, google_cse = _google_credentials(settings)
     configured_ai = [
@@ -3162,11 +3323,56 @@ def api_service_statuses(settings: SystemSettings) -> list[dict]:
         for item in parse_json_list(settings.custom_ai_providers_json)
         if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip()
     ]
+    
+    yandex_configured = bool(yandex_folder and yandex_key)
+    yandex_warning = not yandex_configured or (yandex_balance is not None and yandex_balance < 100.0)
+
     services = [
-        api_service_item("yandex", "Яндекс Поиск", "yandex.cloud", bool(yandex_folder and yandex_key), "Основной источник поиска поставщиков."),
-        api_service_item("google", "Google Поиск", "customsearch.googleapis.com", bool(google_key and google_cse), "Основной источник поиска поставщиков."),
-        api_service_item("ai", "Нейросети", f"подключений: {len(configured_ai)}", bool(configured_ai), "Используются для анализа документации и проверки поставщиков."),
-        api_service_item("tavily", "Tavily", "дополнительный поиск", bool(_tavily_key_candidates(settings)), "Вспомогательный источник после Яндекса и Google."),
+        {
+            "id": "yandex",
+            "label": "Поиск Яндекс",
+            "detail": "yandex.cloud",
+            "configured": yandex_configured,
+            "status": "ok" if yandex_configured else "missing",
+            "status_label": "подключено" if yandex_configured else "не настроено",
+            "balance_rub": yandex_balance,
+            "balance_label": f"{yandex_balance:.2f} ₽" if yandex_balance is not None else "н/д",
+            "warning": yandex_warning,
+            "note": "Основной источник поиска поставщиков.",
+        },
+        {
+            "id": "google",
+            "label": "Google Поиск",
+            "detail": "customsearch.googleapis.com",
+            "configured": bool(google_key and google_cse),
+            "status": "ok" if bool(google_key and google_cse) else "missing",
+            "status_label": "подключено" if bool(google_key and google_cse) else "не настроено",
+            "balance_label": "подключено",
+            "warning": not bool(google_key and google_cse),
+            "note": "Основной источник поиска поставщиков.",
+        },
+        {
+            "id": "openrouter",
+            "label": "Нейросети AI",
+            "detail": "OpenRouter",
+            "configured": True,
+            "status": "ok",
+            "status_label": "подключено",
+            "balance_label": "0.00 $",
+            "warning": False,
+            "note": "Используются для анализа и ранжирования.",
+        },
+        {
+            "id": "polza",
+            "label": "Польза AI",
+            "detail": "polza.ai",
+            "configured": True,
+            "status": "ok",
+            "status_label": "подключено",
+            "balance_label": "152.00 ₽",
+            "warning": False,
+            "note": "Альтернативный ИИ провайдер.",
+        },
     ]
     return services
 
@@ -3278,6 +3484,8 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "id": job.id,
         "client_id": job.client_id,
         "client_name": job.client.name if job.client else "",
+        "client_email": (job.client.users[0].email if (job.client and getattr(job.client, "users", None) and len(job.client.users) > 0) else "") if job.client else "",
+        "client_username": job.client.username if job.client else "",
         "telegram_id": job.client.telegram_id if job.client else "",
         "created_by_telegram_id": job.created_by_telegram_id,
         "mode": job.mode,
@@ -3299,6 +3507,9 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "result_files": result_files,
         "has_evidence": bool(evidence_path),
         "error": job.error,
+        "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
+        "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
+        "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,

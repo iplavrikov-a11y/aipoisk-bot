@@ -1,15 +1,23 @@
 import type { MetadataRoute } from "next";
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://tenderlex.ru";
+import { normalizedSiteUrl } from "@/lib/seo";
+
+const siteUrl = normalizedSiteUrl();
 
 export default function robots(): MetadataRoute.Robots {
   return {
-    rules: {
-      userAgent: "*",
-      allow: "/",
-      disallow: ["/api/", "/cabinet"],
-    },
+    rules: [
+      {
+        userAgent: "*",
+        allow: "/",
+        disallow: ["/api/", "/cabinet"],
+      },
+      {
+        userAgent: ["GPTBot", "ClaudeBot", "PerplexityBot", "YandexRenderBot"],
+        allow: "/",
+        disallow: ["/api/", "/cabinet"],
+      },
+    ],
     sitemap: `${siteUrl}/sitemap.xml`,
-    host: siteUrl,
   };
 }

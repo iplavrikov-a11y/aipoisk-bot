@@ -16,6 +16,7 @@ from email.utils import formataddr
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .billing import grant_trial_balance
@@ -89,6 +90,7 @@ def create_web_user(
     name: str = "",
     client: Client | None = None,
     email_verified: bool = False,
+    commit: bool = True,
 ) -> WebUser:
     normalized_email = validate_email(email)
     if db.query(WebUser.id).filter(WebUser.email == normalized_email).first():
@@ -136,8 +138,11 @@ def create_web_user(
         is_email_verified=bool(email_verified),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    if commit:
+        db.commit()
+        db.refresh(user)
+    else:
+        db.flush()
     return user
 
 
@@ -395,8 +400,7 @@ def require_web_context(request: Request, db: Session = Depends(db_session)) -> 
     session = get_web_session_by_token(db, request.cookies.get(CUSTOMER_COOKIE, ""))
     if not session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Войдите в личный кабинет.")
-    session.last_seen_at = now_utc()
-    db.commit()
+    touch_web_session_if_stale(db, session)
     return WebAuthContext(user=session.user, session=session)
 
 
@@ -404,9 +408,22 @@ def optional_web_context(request: Request, db: Session = Depends(db_session)) ->
     session = get_web_session_by_token(db, request.cookies.get(CUSTOMER_COOKIE, ""))
     if not session:
         return None
-    session.last_seen_at = now_utc()
-    db.commit()
+    touch_web_session_if_stale(db, session)
     return WebAuthContext(user=session.user, session=session)
+
+
+def touch_web_session_if_stale(db: Session, session: WebSession, *, interval: timedelta = timedelta(minutes=5)) -> bool:
+    current = now_utc()
+    if _as_aware_utc(session.last_seen_at) > current - interval:
+        return False
+    try:
+        session.last_seen_at = current
+        db.commit()
+        return True
+    except OperationalError as exc:
+        db.rollback()
+        logger.warning("Skipping non-critical web session touch after database error: %s", exc)
+        return False
 
 
 def require_customer_csrf(request: Request, context: WebAuthContext) -> None:

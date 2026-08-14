@@ -80,6 +80,8 @@ def _ensure_schema() -> None:
         "trial_supplier_search_limit": "INTEGER DEFAULT 0",
         "trial_procurement_report_limit": "INTEGER DEFAULT 0",
         "trial_file_limit": "INTEGER DEFAULT 10",
+        "onboarding_reminders_enabled": "BOOLEAN DEFAULT 0",
+        "onboarding_reminders_rollout_at": "VARCHAR(40) DEFAULT ''",
         "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
         "contact_email": "VARCHAR(255) DEFAULT ''",
         "contact_telegram": "VARCHAR(255) DEFAULT ''",
@@ -104,18 +106,37 @@ def _ensure_schema() -> None:
         "money_balance_kopeks": "INTEGER DEFAULT 0",
         "money_reserved_kopeks": "INTEGER DEFAULT 0",
         "supplier_target_min": "INTEGER DEFAULT 0",
+        "yandex_search_price_per_request": "REAL DEFAULT 0.04",
     }
     jobs_existing = _existing_columns(inspector, "jobs")
     job_additions = {
         "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
         "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
         "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
+        "confirmation_kind": "VARCHAR(40) DEFAULT ''",
+        "confirmation_outcome": "VARCHAR(40) DEFAULT ''",
+        "confirmation_offered_at": "DATETIME NULL",
+        "confirmation_expires_at": "DATETIME NULL",
+        "confirmation_decided_at": "DATETIME NULL",
+        "delivery_expires_at": "DATETIME NULL",
+        "offer_delivery_outcome": "VARCHAR(40) DEFAULT ''",
+        "offer_delivery_claim_token": "VARCHAR(64) DEFAULT ''",
+        "offer_delivery_lease_expires_at": "DATETIME NULL",
+        "offer_delivered_at": "DATETIME NULL",
+        "offer_delivery_expired_at": "DATETIME NULL",
+        "active_output_manifest": "VARCHAR(40) DEFAULT ''",
+        "active_output_manifest_version": "INTEGER DEFAULT 0",
+        "active_entitlements_json": "TEXT DEFAULT '[]'",
+        "yandex_requests_count": "INTEGER DEFAULT 0",
+        "yandex_cost_rub": "REAL DEFAULT 0.0",
     }
     billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
+    client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")
     billing_transaction_additions = {
         "amount_kopeks": "INTEGER DEFAULT 0",
         "balance_after_kopeks": "INTEGER DEFAULT 0",
         "reserved_after_kopeks": "INTEGER DEFAULT 0",
+        "idempotency_key": "VARCHAR(80) NULL",
     }
     web_users_existing = _existing_columns(inspector, "web_users")
     web_user_additions = {
@@ -186,6 +207,26 @@ def _ensure_schema() -> None:
         for column, definition in billing_transaction_additions.items():
             if billing_transactions_existing and column not in billing_transactions_existing:
                 connection.execute(text(f"ALTER TABLE billing_transactions ADD COLUMN {column} {definition}"))
+        if billing_transactions_existing:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_transactions_idempotency_key "
+                    "ON billing_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_transaction_job_kind_operation "
+                    "ON billing_transactions(job_id, kind, operation) WHERE job_id IS NOT NULL"
+                )
+            )
+        if client_tariff_overrides_existing:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_client_tariff_override_client_kind "
+                    "ON client_tariff_overrides(client_id, kind)"
+                )
+            )
         for column, definition in web_user_additions.items():
             if web_users_existing and column not in web_users_existing:
                 connection.execute(text(f"ALTER TABLE web_users ADD COLUMN {column} {definition}"))
@@ -210,7 +251,7 @@ def _ensure_legacy_client_accounts() -> None:
         changed = False
         for client in clients:
             telegram_id = str(client.telegram_id or "").strip()
-            if not telegram_id:
+            if not telegram_id or telegram_id.startswith(("web:", "pending:")):
                 continue
             existing = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == telegram_id).first()
             if existing:

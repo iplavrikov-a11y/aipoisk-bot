@@ -17,6 +17,8 @@ class SettingsPatch(BaseModel):
     trial_supplier_search_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_procurement_report_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_file_limit: int | None = Field(default=None, ge=0, le=100000)
+    onboarding_reminders_enabled: bool | None = None
+    onboarding_reminders_rollout_at: str | None = None
     primary_provider: str | None = None
     primary_model: str | None = None
     light_provider: str | None = None
@@ -34,6 +36,7 @@ class SettingsPatch(BaseModel):
     supplier_search_provider_order: str | None = None
     yandex_search_folder_id: str | None = None
     yandex_search_api_key: str | None = None
+    yandex_search_price_per_request: float | None = 0.04
     google_search_api_key: str | None = None
     google_search_cse_id: str | None = None
     prompt_settings_json: str | None = None
@@ -63,11 +66,16 @@ class WebRegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=256)
     name: str = ""
     website: str = ""
+    link_token: str = Field(default="", max_length=128)
+    terms_accepted: bool = False
+    personal_data_consent: bool = False
+    legal_version: str = Field(default="", max_length=40)
 
 
 class WebLoginRequest(BaseModel):
     email: str
     password: str = Field(min_length=1, max_length=256)
+    link_token: str = Field(default="", max_length=128)
 
 
 class WebPasswordResetRequestCreate(BaseModel):
@@ -183,6 +191,7 @@ class BillingGrantCreate(BaseModel):
     package_id: str = ""
     note: str = ""
     operation: str = "grant"
+    idempotency_key: str = Field(default="", max_length=80)
 
 
 class ClientTariffOverridePatch(BaseModel):

@@ -12,6 +12,7 @@ from app.quote_request import build_quote_request_markdown
 from app.report_builder import (
     PROCUREMENT_REPORT_DISCLAIMER,
     QUOTE_REQUEST_INTRO,
+    REGISTRY_FALLBACK_REPORT_DISCLAIMER,
     write_procurement_docx,
     write_quote_request_docx,
     write_supplier_xlsx,
@@ -184,6 +185,32 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertIn("sales@supplier.ru", values)
         self.assertEqual(site_hyperlink, "https://supplier.ru")
 
+    def test_supplier_xlsx_keeps_font_children_in_schema_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [{"company_name": "Поставщик", "product_fit": "exact"}],
+                title="ТЗ",
+                target=1,
+            )
+            with zipfile.ZipFile(path) as archive:
+                styles = ET.fromstring(archive.read("xl/styles.xml"))
+
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        order = (
+            "b", "i", "strike", "outline", "shadow", "condense", "extend", "sz", "u",
+            "vertAlign", "color", "name", "charset", "family", "scheme",
+        )
+        positions = {name: index for index, name in enumerate(order)}
+        for font in styles.findall(f".//{{{namespace}}}fonts/{{{namespace}}}font"):
+            child_positions = [
+                positions[child.tag.rsplit("}", 1)[-1]]
+                for child in font
+                if child.tag.rsplit("}", 1)[-1] in positions
+            ]
+            self.assertEqual(child_positions, sorted(child_positions))
+
     def test_supplier_xlsx_marks_non_exact_matches_as_confirmation_needed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"
@@ -304,6 +331,50 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertIn("Реестр: релевантная запись не найдена", comment)
         self.assertIn("обычным поиском", comment)
 
+    def test_supplier_xlsx_marks_strict_registry_fallback_at_document_and_row_level(self) -> None:
+        for registry_status in ("empty", "ok"):
+            with self.subTest(registry_status=registry_status), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "suppliers-without-registry-confirmation.xlsx"
+                write_supplier_xlsx(
+                    path,
+                    [
+                        {
+                            "company_name": "Поставщик",
+                            "product_fit": "exact",
+                            "product": "Волоконный усилитель",
+                            "phone": "+7 999 111 22 33",
+                            "email": "sales@supplier.ru",
+                            "site": "https://supplier.ru",
+                            "supplier_search_policy": "minprom_registry_only",
+                            "supplier_search_origin": "ordinary_fallback",
+                            "minprom_registry_required": True,
+                            "minprom_registry_status": registry_status,
+                            "minprom_registry_match": {"matched": False},
+                        }
+                    ],
+                    title="ТЗ",
+                    target=1,
+                )
+
+                wb = load_workbook(path)
+                ws = wb.active
+                document_warning = ws["A2"].value
+                row_comment = ws["E4"].value
+                warning_fill = ws["A2"].fill.fgColor.rgb
+                wb.close()
+
+            self.assertIn(REGISTRY_FALLBACK_REPORT_DISCLAIMER, document_warning)
+            self.assertIn("не подтверждено", document_warning)
+            self.assertNotIn("запись подтверждена", document_warning.lower())
+            self.assertIn("Точное соответствие", row_comment)
+            self.assertIn("Реестр:", row_comment)
+            self.assertNotIn("запись подтверждена", row_comment.lower())
+            if registry_status == "empty":
+                self.assertIn("релевантная запись не найдена", row_comment)
+            else:
+                self.assertIn("соответствие поставщика конкретной записи не подтверждено", row_comment)
+            self.assertEqual(warning_fill, "00FEF3C7")
+
     def test_supplier_xlsx_adds_registry_number_in_single_comment_column(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"
@@ -339,7 +410,7 @@ class ReportBuilderTests(unittest.TestCase):
             wb.close()
 
         self.assertEqual(headers, ["Компания", "Сайт", "Телефоны", "Email", "Комментарий"])
-        self.assertIn("Реестр: запись РПП-123", comment)
+        self.assertIn("Реестр ГИСП Минпромторга: запись № РПП-123", comment)
         self.assertIn('АО "Завод"', comment)
 
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:
@@ -367,7 +438,9 @@ class ReportBuilderTests(unittest.TestCase):
             summary = ws["A2"].value
             wb.close()
 
-        self.assertIn("Найдено и проверено: 4", summary)
+        self.assertIn("Проверены сайты и контакты. Кандидатов: 4", summary)
+        self.assertIn("точным техническим совпадением: 0", summary)
+        self.assertIn("категорийных кандидатов: 4", summary)
         self.assertNotIn("Минимум по настройкам", summary)
         self.assertNotIn("4/2", summary)
 
@@ -395,7 +468,9 @@ class ReportBuilderTests(unittest.TestCase):
             summary = ws["A2"].value
             wb.close()
 
-        self.assertIn("Найдено и проверено: 1", summary)
+        self.assertIn("Проверены сайты и контакты. Кандидатов: 1", summary)
+        self.assertIn("точным техническим совпадением: 0", summary)
+        self.assertIn("категорийных кандидатов: 1", summary)
         self.assertNotIn("1/15", summary)
         self.assertNotIn("миним", summary.lower())
 
