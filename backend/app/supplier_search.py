@@ -11,6 +11,13 @@ import logging
 import os
 import re
 import sqlite3
+import socket
+import threading
+try:
+    import dns.resolver
+    HAS_DNS_RESOLVER = True
+except ImportError:
+    HAS_DNS_RESOLVER = False
 import threading
 import uuid
 from dataclasses import dataclass, replace
@@ -3880,6 +3887,77 @@ async def _search_with_adapter(settings: SystemSettings, queries: list[str], max
     return candidates
 
 
+
+_DNS_RESOLVE_CACHE: dict[str, bool] = {}
+_MX_RESOLVE_CACHE: dict[str, bool] = {}
+_MAX_DNS_CACHE_SIZE = 5000
+
+
+def _clean_host_for_dns(value: str) -> str:
+    host = str(value or "").strip().lower()
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/")[0].split("?")[0].split("#")[0].split("@")[-1].split(":")[0].strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    try:
+        host = host.encode("idna").decode("ascii")
+    except Exception:
+        pass
+    return host
+
+
+async def candidate_domain_resolves_fast(domain_or_url: str, *, timeout: float = 1.2) -> bool:
+    host = _clean_host_for_dns(domain_or_url)
+    if not host or "." not in host:
+        return False
+    if host.endswith(".example") or host.endswith(".test") or host.endswith(".invalid"):
+        return True
+    cached = _DNS_RESOLVE_CACHE.get(host)
+    if cached is not None:
+        return cached
+    try:
+        await asyncio.wait_for(asyncio.to_thread(socket.getaddrinfo, host, None), timeout=timeout)
+        if len(_DNS_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
+            _DNS_RESOLVE_CACHE.clear()
+        _DNS_RESOLVE_CACHE[host] = True
+        return True
+    except Exception:
+        if len(_DNS_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
+            _DNS_RESOLVE_CACHE.clear()
+        _DNS_RESOLVE_CACHE[host] = False
+        return False
+
+
+async def email_has_valid_mx(email: str, *, timeout: float = 1.5) -> bool:
+    if not HAS_DNS_RESOLVER or not email or "@" not in email:
+        return True
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    try:
+        domain = domain.encode("idna").decode("ascii")
+    except Exception:
+        pass
+    cached = _MX_RESOLVE_CACHE.get(domain)
+    if cached is not None:
+        return cached
+    try:
+        loop = asyncio.get_event_loop()
+        records = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: dns.resolver.resolve(domain, "MX")),
+            timeout=timeout,
+        )
+        has_mx = len(records) > 0
+        if len(_MX_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
+            _MX_RESOLVE_CACHE.clear()
+        _MX_RESOLVE_CACHE[domain] = has_mx
+        return has_mx
+    except Exception:
+        if len(_MX_RESOLVE_CACHE) >= _MAX_DNS_CACHE_SIZE:
+            _MX_RESOLVE_CACHE.clear()
+        _MX_RESOLVE_CACHE[domain] = False
+        return False
+
+
 async def verify_candidate(
     settings: SystemSettings,
     candidate: Candidate,
@@ -3888,6 +3966,10 @@ async def verify_candidate(
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
 ) -> dict | None:
+    # Fast DNS pre-check: skip unresolvable/dead domains before heavy HTTP/Playwright
+    if not await candidate_domain_resolves_fast(candidate.domain or candidate.url):
+        return None
+
     source_token = _supplier_search_source_context.set(str(candidate.source or "unknown")[:80])
     try:
         pages = await collect_pages(candidate.url)
@@ -3928,6 +4010,17 @@ async def verify_candidate(
     site_url = evidence_url if match.level == "exact" else candidate.url
     phone = _verified_phone(decision.get("phone"), phones)
     email = _verified_email(decision.get("email"), emails)
+    if email and HAS_DNS_RESOLVER:
+        if not await email_has_valid_mx(email):
+            # Check other extracted emails
+            valid_found = False
+            for alt_email in emails:
+                if alt_email != email and await email_has_valid_mx(alt_email):
+                    email = alt_email
+                    valid_found = True
+                    break
+            if not valid_found and not phone:
+                email = ""
     contact_warning = ""
     if not phone and not email:
         # Fallback: accept AI-provided contacts even without parser confirmation
