@@ -1668,40 +1668,49 @@ export function CabinetClient() {
             ) : null}
 
             {acceptsSources ? (
-              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
-                <span>{selectedCopy.sourceLabel}</span>
-                <input
-                  className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                  value={sourceUrls}
-                  onChange={(event) => setSourceUrls(event.target.value)}
-                  placeholder={selectedCopy.sourcePlaceholder}
-                />
-              </label>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 w-full">
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 flex-1 min-w-0">
+                  <span>{selectedCopy.sourceLabel}</span>
+                  <input
+                    className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[46px]"
+                    value={sourceUrls}
+                    onChange={(event) => setSourceUrls(event.target.value)}
+                    placeholder={selectedCopy.sourcePlaceholder}
+                  />
+                </label>
+                <button
+                  className="px-6 h-[46px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
+                  type="submit"
+                  disabled={busy}
+                >
+                  {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+                  <span>{selectedCopy.submit}</span>
+                </button>
+              </div>
             ) : null}
 
             {acceptsText ? (
-              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
-                <span>{selectedCopy.textLabel}</span>
-                <textarea
-                  className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  rows={3}
-                  placeholder={selectedCopy.textPlaceholder}
-                />
-              </label>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 w-full">
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 flex-1 min-w-0">
+                  <span>{selectedCopy.textLabel}</span>
+                  <textarea
+                    className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y"
+                    value={text}
+                    onChange={(event) => setText(event.target.value)}
+                    rows={2}
+                    placeholder={selectedCopy.textPlaceholder}
+                  />
+                </label>
+                <button
+                  className="px-6 h-[64px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[260px] whitespace-normal text-center leading-snug"
+                  type="submit"
+                  disabled={busy}
+                >
+                  {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+                  <span>{selectedCopy.submit}</span>
+                </button>
+              </div>
             ) : null}
-          </div>
-
-          <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
-            <button
-              className="w-full sm:w-auto px-8 py-3.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-sm font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              type="submit"
-              disabled={busy}
-            >
-              {busy ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}
-              <span>{selectedCopy.submit}</span>
-            </button>
           </div>
         </form>
       </section>
