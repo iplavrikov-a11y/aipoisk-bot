@@ -1612,8 +1612,8 @@ export function CabinetClient() {
 
           <div className="space-y-2">
             <div
-              className={`border-2 border-dashed rounded-xl p-3.5 sm:p-4 text-center cursor-pointer transition-all flex flex-col sm:flex-row items-center justify-center gap-3 ${
-                dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-300/90 hover:border-teal-500 bg-teal-50/20 hover:bg-teal-50/50"
+              className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
+                dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-400/80 hover:border-teal-500 bg-teal-50/25 hover:bg-teal-50/50"
               }`}
               onDragOver={(event) => {
                 event.preventDefault();
@@ -1635,12 +1635,19 @@ export function CabinetClient() {
                 accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip"
                 onChange={handleFileInput}
               />
-              <div className="w-9 h-9 rounded-xl bg-teal-100/90 text-teal-700 flex items-center justify-center border border-teal-200/80 shadow-2xs shrink-0">
-                <Upload size={18} aria-hidden="true" />
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-teal-100/90 text-teal-700 flex items-center justify-center border border-teal-200/80 shadow-2xs shrink-0">
+                  <Upload size={16} aria-hidden="true" />
+                </div>
+                <strong className="text-sm font-extrabold text-slate-900 whitespace-nowrap">{selectedCopy.uploadTitle}</strong>
               </div>
-              <div className="text-center sm:text-left">
-                <strong className="block text-sm sm:text-base font-extrabold text-slate-900 leading-snug">{selectedCopy.uploadTitle}</strong>
-                <span className="block text-xs sm:text-sm text-slate-600 font-medium mt-0.5">{selectedCopy.uploadText}</span>
+
+              <div className="flex items-center gap-2.5 text-xs text-slate-600 font-medium ml-auto">
+                <span className="hidden md:inline">{selectedCopy.uploadText}</span>
+                <span className="md:hidden text-[11px]">Нажмите для выбора (PDF, DOCX, XLSX, ZIP)</span>
+                <span className="px-2.5 py-1 bg-white border border-teal-300 text-teal-800 rounded-lg text-xs font-bold shadow-2xs shrink-0">
+                  Выбрать файл
+                </span>
               </div>
             </div>
 
