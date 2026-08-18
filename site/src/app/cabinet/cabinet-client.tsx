@@ -159,7 +159,7 @@ const scenarioOptions: Array<{ id: Scenario; label: string; description: string;
   },
   {
     id: "procurement_report",
-    label: "Анализ закупки",
+    label: "Анализ документации",
     description: "номер, ссылка или документы закупки",
     icon: FileText,
   },
@@ -204,7 +204,7 @@ const modeCopy: Record<Scenario, {
     sourceLabel: "Номер извещения ЕИС или ссылка на zakupki.gov.ru",
     sourcePlaceholder: "Например: 0173200001424000001 или ссылка на zakupki.gov.ru",
     hint: "Укажите номер извещения ЕИС или прямую ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на внешние интернет-магазины и частные площадки не поддерживаются.",
-    submit: "Запустить анализ закупки",
+    submit: "Запустить анализ документации",
   },
   analysis_and_suppliers: {
     mode: "analysis_and_suppliers",
