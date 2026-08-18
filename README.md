@@ -78,9 +78,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   separately, and a web login can be removed without deleting the customer,
   balance, jobs, or Telegram accounts.
 - Website cabinet exposes the same customer work scenarios as the bot:
-  supplier search by ТЗ, procurement analysis, and combined analysis plus
-  supplier search. The task launch form uses a compact inline layout with
-  action submit buttons aligned to the right of text/source input fields.
+  supplier search by ТЗ, procurement document analysis («Анализ документации»),
+  and combined analysis plus supplier search. The task launch form uses a compact
+  layout with a horizontal full-width file upload bar and action submit buttons
+  aligned to the right of text/source input fields.
 - Completed supplier-search, procurement-analysis, and combined jobs can expose
   a `Запрос КП` document generated from the original customer materials and
   available analysis data. The customer can preview/copy it and download DOCX
