@@ -1679,11 +1679,11 @@ export function CabinetClient() {
                   />
                 </label>
                 <button
-                  className="px-4 h-[38px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
+                  className="px-5 h-[38px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap border border-teal-500/40"
                   type="submit"
                   disabled={busy}
                 >
-                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />}
+                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
                   <span>{selectedCopy.submit}</span>
                 </button>
               </div>
@@ -1702,11 +1702,11 @@ export function CabinetClient() {
                   />
                 </label>
                 <button
-                  className="px-4 h-[50px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[220px] whitespace-normal text-center leading-snug"
+                  className="px-5 h-[50px] bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 active:from-teal-700 active:to-teal-800 text-white text-xs font-extrabold rounded-lg shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[220px] whitespace-normal text-center leading-snug border border-teal-500/40"
                   type="submit"
                   disabled={busy}
                 >
-                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />}
+                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
                   <span>{selectedCopy.submit}</span>
                 </button>
               </div>
