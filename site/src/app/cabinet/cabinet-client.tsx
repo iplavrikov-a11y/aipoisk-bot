@@ -1612,8 +1612,8 @@ export function CabinetClient() {
 
           <div className="space-y-2">
             <div
-              className={`border-2 border-dashed rounded-xl p-2.5 sm:p-3 text-center cursor-pointer transition-colors flex flex-col sm:flex-row items-center justify-center gap-2 ${
-                dragActive ? "border-teal-500 bg-teal-50/60 shadow-xs" : "border-teal-300/90 hover:border-teal-500 bg-teal-50/20 hover:bg-teal-50/50"
+              className={`border-2 border-dashed rounded-xl p-3.5 sm:p-4 text-center cursor-pointer transition-all flex flex-col sm:flex-row items-center justify-center gap-3 ${
+                dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-300/90 hover:border-teal-500 bg-teal-50/20 hover:bg-teal-50/50"
               }`}
               onDragOver={(event) => {
                 event.preventDefault();
@@ -1635,12 +1635,12 @@ export function CabinetClient() {
                 accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip"
                 onChange={handleFileInput}
               />
-              <div className="w-7 h-7 rounded-md bg-teal-100/80 text-teal-700 flex items-center justify-center border border-teal-200/60 shadow-2xs shrink-0">
-                <Upload size={14} aria-hidden="true" />
+              <div className="w-9 h-9 rounded-xl bg-teal-100/90 text-teal-700 flex items-center justify-center border border-teal-200/80 shadow-2xs shrink-0">
+                <Upload size={18} aria-hidden="true" />
               </div>
               <div className="text-center sm:text-left">
-                <strong className="block text-xs font-extrabold text-slate-900">{selectedCopy.uploadTitle}</strong>
-                <span className="block text-[10px] text-slate-500">{selectedCopy.uploadText}</span>
+                <strong className="block text-sm sm:text-base font-extrabold text-slate-900 leading-snug">{selectedCopy.uploadTitle}</strong>
+                <span className="block text-xs sm:text-sm text-slate-600 font-medium mt-0.5">{selectedCopy.uploadText}</span>
               </div>
             </div>
 
