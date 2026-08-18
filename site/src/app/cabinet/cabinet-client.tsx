@@ -1405,40 +1405,40 @@ export function CabinetClient() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50/60 p-4 sm:p-8 max-w-7xl mx-auto space-y-6 font-sans text-slate-900">
-      <header className="w-full flex items-center justify-between pb-6 border-b border-slate-200/80">
-        <a className="flex items-center gap-3 font-extrabold text-slate-900 text-xl hover:text-teal-700 transition-colors" href="/">
-          <Image src="/tenderlex-logo.png" alt="TenderLex" width={36} height={36} priority />
+    <main className="min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
+      <header className="w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
+        <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
+          <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
           <span>TenderLex</span>
         </a>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2.5 bg-white px-3.5 py-2 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
-            <User size={16} className="text-teal-600" aria-hidden="true" />
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
+            <User size={14} className="text-teal-600" aria-hidden="true" />
             <span>{session?.user?.email}</span>
             <button
               type="button"
-              className="p-1 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+              className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
               onClick={logout}
               disabled={busy}
               aria-label="Выйти"
             >
-              <LogOut size={16} aria-hidden="true" />
+              <LogOut size={14} aria-hidden="true" />
             </button>
           </div>
         </div>
       </header>
 
       {!emailVerified ? (
-        <div className="p-4 bg-amber-50 border border-amber-200/90 rounded-2xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-          <div className="flex items-center gap-2.5">
-            <Mail size={18} className="text-amber-700 shrink-0" aria-hidden="true" />
+        <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
             <span>
               <strong>Подтвердите email.</strong> Проверьте вашу почту для активирования всех функций уведомлений.
             </span>
           </div>
           <button
             type="button"
-            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
             onClick={resendVerification}
             disabled={busy}
           >
@@ -1448,26 +1448,26 @@ export function CabinetClient() {
       ) : null}
 
       {(message || error) ? (
-        <div className={`p-4 rounded-2xl border text-xs font-bold flex items-center gap-3 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
-          {error ? <XCircle size={18} aria-hidden="true" /> : <CheckCircle2 size={18} aria-hidden="true" />}
+        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
           <span>{error || message}</span>
         </div>
       ) : null}
 
       {/* Top Dashboard: Compact Header with Balance and All Buttons in 1 Continuous Row */}
-      <section className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-4 shadow-2xs font-sans space-y-3">
-        <div className="flex flex-wrap items-center gap-2.5">
+      <section className="bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {/* Balance Badge */}
-          <div className="flex items-center gap-2.5 bg-gradient-to-br from-teal-900 to-slate-900 text-white px-3.5 py-2 rounded-xl shadow-2xs shrink-0">
-            <Receipt size={18} className="text-teal-300" aria-hidden="true" />
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-semibold text-teal-200 uppercase tracking-wider">Баланс</span>
-              <strong className="text-sm font-extrabold whitespace-nowrap">
+          <div className="flex items-center gap-2 bg-gradient-to-br from-teal-900 to-slate-900 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
+            <Receipt size={15} className="text-teal-300" aria-hidden="true" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-semibold text-teal-200 uppercase tracking-wider">Баланс</span>
+              <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap">
                 {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
               </strong>
             </div>
             {session?.user?.is_trial ? (
-              <span className="text-[9px] font-bold text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-500/30 shrink-0 ml-1">
+              <span className="text-[9px] font-bold text-amber-300 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-500/30 shrink-0 ml-1">
                 пробный доступ
               </span>
             ) : null}
@@ -1476,16 +1476,16 @@ export function CabinetClient() {
           {/* All buttons sequentially inline in 1 continuous tight row right next to balance */}
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
             onClick={() => setShowTariffs((v) => !v)}
           >
-            <Sliders size={14} className="text-teal-600 shrink-0" aria-hidden="true" />
+            <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
             <span>{showTariffs ? "Скрыть тарифы ▲" : "Тарифы и цены ▼"}</span>
           </button>
 
           <button
             type="button"
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0"
+            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
             onClick={() => {
               if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
                 (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
@@ -1493,27 +1493,27 @@ export function CabinetClient() {
               window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
             }}
           >
-            <MessageCircle size={14} className="text-teal-600 shrink-0" aria-hidden="true" />
+            <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
             <span>Чат сайта</span>
           </button>
 
           {session?.contacts?.telegram_url ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-xl text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
-              <MessageCircle size={14} className="text-sky-500 shrink-0" aria-hidden="true" />
+            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
+              <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
               <span>Telegram</span>
             </a>
           ) : null}
 
           {session?.contacts?.max_url ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-xl text-xs font-bold transition-colors shrink-0" href={session.contacts.max_url} target="_blank" rel="noreferrer">
-              <MessageCircle size={14} className="text-teal-600 shrink-0" aria-hidden="true" />
+            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.max_url} target="_blank" rel="noreferrer">
+              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>MAX</span>
             </a>
           ) : null}
 
           {session?.contacts?.email ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-xl text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
-              <Mail size={14} className="text-slate-600 shrink-0" aria-hidden="true" />
+            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
+              <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
               <span>Email</span>
             </a>
           ) : null}
@@ -1521,28 +1521,28 @@ export function CabinetClient() {
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
         {showTariffs ? (
-          <div className="grid md:grid-cols-2 gap-4 pt-3 border-t border-slate-100 transition-all">
-            <div className="space-y-1.5 bg-slate-50/70 p-3.5 rounded-2xl border border-slate-200/70">
+          <div className="grid md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 transition-all">
+            <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
-              <div className="space-y-1 mt-1">
+              <div className="space-y-1 mt-0.5">
                 {(session?.tariff_groups?.supplier_search || []).slice(0, 3).map((tariff) => (
-                  <div key={tariff.id} className="px-3 py-2 bg-white border border-slate-200/80 rounded-xl flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                  <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
                     <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
                     <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
                   </div>
                 ))}
-                <div className="px-3 py-2 bg-teal-50/50 border border-teal-200/70 rounded-xl flex items-center justify-between text-xs font-medium text-teal-950 shadow-2xs">
+                <div className="px-2 py-1 bg-teal-50/50 border border-teal-200/70 rounded-md flex items-center justify-between text-xs font-medium text-teal-950 shadow-2xs">
                   <span className="truncate mr-2 font-semibold text-teal-900 text-xs">1 добор поставщиков (по тому же ТЗ)</span>
                   <b className="font-extrabold text-teal-900 shrink-0 whitespace-nowrap text-xs">50 ₽</b>
                 </div>
               </div>
             </div>
 
-            <div className="space-y-1.5 bg-slate-50/70 p-3.5 rounded-2xl border border-slate-200/70">
+            <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Анализ закупки</span>
-              <div className="space-y-1 mt-1">
+              <div className="space-y-1 mt-0.5">
                 {(session?.tariff_groups?.procurement_report || []).slice(0, 3).map((tariff) => (
-                  <div key={tariff.id} className="px-3 py-2 bg-white border border-slate-200/80 rounded-xl flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                  <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
                     <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
                     <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
                   </div>
@@ -1554,14 +1554,14 @@ export function CabinetClient() {
       </section>
 
       {/* Main Task Launch Form */}
-      <section className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-8 shadow-xs">
-        <form id="new-job" className="space-y-6" onSubmit={submitJob}>
-          <div className="space-y-1 pb-4 border-b border-slate-100">
-            <h1 className="text-xl font-extrabold text-slate-900">Запуск задачи</h1>
-            <p className="text-xs text-slate-500">{selectedCopy.formSubtitle}</p>
+      <section className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
+        <form id="new-job" className="space-y-2.5" onSubmit={submitJob}>
+          <div className="space-y-0.5 pb-2 border-b border-slate-100">
+            <h1 className="text-sm sm:text-base font-extrabold text-slate-900">Запуск задачи</h1>
+            <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-100/80 p-1.5 rounded-2xl" role="tablist" aria-label="Тип задачи">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 bg-slate-100/80 p-1 rounded-lg" role="tablist" aria-label="Тип задачи">
             {scenarioOptions.map((item) => {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
@@ -1569,14 +1569,14 @@ export function CabinetClient() {
                 <button
                   key={item.id}
                   type="button"
-                  className={`py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  className={`py-1.5 px-2.5 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                     isSelected
                       ? "bg-teal-600 text-white shadow-xs"
                       : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
                   }`}
                   onClick={() => selectScenario(item.id)}
                 >
-                  <ItemIcon size={16} aria-hidden="true" />
+                  <ItemIcon size={13} aria-hidden="true" />
                   <span>{item.label}</span>
                 </button>
               );
@@ -1584,19 +1584,19 @@ export function CabinetClient() {
           </div>
 
           {scenario !== "procurement_report" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 p-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1.5 bg-slate-50 border border-slate-200/80 rounded-lg">
               {supplierPolicyOptions.map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
-                  className={`p-2.5 rounded-xl text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
+                  className={`p-1.5 rounded-md text-left border text-xs transition-all cursor-pointer flex items-start gap-1.5 ${
                     supplierSearchPolicy === opt.id
                       ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-2xs font-bold text-slate-900"
                       : "bg-white/60 border-slate-200 text-slate-600 hover:border-slate-300"
                   }`}
                   onClick={() => setSupplierSearchPolicy(opt.id)}
                 >
-                  <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${
+                  <div className={`w-3 h-3 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${
                     supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300"
                   }`}>
                     {supplierSearchPolicy === opt.id ? <div className="w-1 h-1 rounded-full bg-white" /> : null}
@@ -1610,9 +1610,9 @@ export function CabinetClient() {
             </div>
           ) : null}
 
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div
-              className={`border-2 border-dashed rounded-2xl p-4 sm:p-5 text-center cursor-pointer transition-colors flex flex-col sm:flex-row items-center justify-center gap-3.5 ${
+              className={`border-2 border-dashed rounded-lg p-2.5 sm:p-3 text-center cursor-pointer transition-colors flex flex-col sm:flex-row items-center justify-center gap-2 ${
                 dragActive ? "border-teal-500 bg-teal-50/50" : "border-slate-300 hover:border-teal-400 bg-slate-50/50"
               }`}
               onDragOver={(event) => {
@@ -1635,31 +1635,31 @@ export function CabinetClient() {
                 accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip"
                 onChange={handleFileInput}
               />
-              <div className="w-10 h-10 rounded-xl bg-teal-100/80 text-teal-700 flex items-center justify-center border border-teal-200/60 shadow-2xs shrink-0">
-                <Upload size={20} aria-hidden="true" />
+              <div className="w-7 h-7 rounded-md bg-teal-100/80 text-teal-700 flex items-center justify-center border border-teal-200/60 shadow-2xs shrink-0">
+                <Upload size={14} aria-hidden="true" />
               </div>
               <div className="text-center sm:text-left">
-                <strong className="block text-xs sm:text-sm font-extrabold text-slate-900">{selectedCopy.uploadTitle}</strong>
-                <span className="block text-[11px] text-slate-500 mt-0.5">{selectedCopy.uploadText}</span>
+                <strong className="block text-xs font-extrabold text-slate-900">{selectedCopy.uploadTitle}</strong>
+                <span className="block text-[10px] text-slate-500">{selectedCopy.uploadText}</span>
               </div>
             </div>
 
             {selectedFiles.length ? (
-              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2">
+              <div className="p-2 bg-slate-50 border border-slate-200/80 rounded-lg space-y-1">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                   <span>Выбранные файлы ({selectedFiles.length}):</span>
                   <button
                     type="button"
-                    className="px-2.5 py-1 text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                    className="px-2 py-0.5 text-[10px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-md transition-colors cursor-pointer"
                     onClick={clearSelectedFiles}
                   >
                     Очистить все
                   </button>
                 </div>
-                <ul className="space-y-1.5">
+                <ul className="space-y-1">
                   {selectedFiles.map((file, idx) => (
-                    <li key={`${file.name}-${idx}`} className="flex items-center justify-between text-xs bg-white p-2 rounded-xl border border-slate-200/70 text-slate-800">
-                      <span className="truncate max-w-xs font-medium">{file.name}</span>
+                    <li key={`${file.name}-${idx}`} className="flex items-center justify-between text-xs bg-white p-1 rounded-md border border-slate-200/70 text-slate-800">
+                      <span className="truncate max-w-xs font-medium text-xs">{file.name}</span>
                       <span className="text-[10px] text-slate-400 font-mono shrink-0 ml-2">{(file.size / 1024).toFixed(1)} KB</span>
                     </li>
                   ))}
@@ -1668,33 +1668,33 @@ export function CabinetClient() {
             ) : null}
 
             {acceptsSources ? (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 w-full">
-                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 flex-1 min-w-0">
-                  <span>{selectedCopy.sourceLabel}</span>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
+                <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
+                  <span className="text-[11px]">{selectedCopy.sourceLabel}</span>
                   <input
-                    className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[46px]"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs h-[38px]"
                     value={sourceUrls}
                     onChange={(event) => setSourceUrls(event.target.value)}
                     placeholder={selectedCopy.sourcePlaceholder}
                   />
                 </label>
                 <button
-                  className="px-6 h-[46px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
+                  className="px-4 h-[38px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                   type="submit"
                   disabled={busy}
                 >
-                  {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />}
                   <span>{selectedCopy.submit}</span>
                 </button>
               </div>
             ) : null}
 
             {acceptsText ? (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 w-full">
-                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 flex-1 min-w-0">
-                  <span>{selectedCopy.textLabel}</span>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
+                <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
+                  <span className="text-[11px]">{selectedCopy.textLabel}</span>
                   <textarea
-                    className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs resize-y min-h-[50px]"
                     value={text}
                     onChange={(event) => setText(event.target.value)}
                     rows={2}
@@ -1702,11 +1702,11 @@ export function CabinetClient() {
                   />
                 </label>
                 <button
-                  className="px-6 h-[64px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[260px] whitespace-normal text-center leading-snug"
+                  className="px-4 h-[50px] bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 sm:max-w-[220px] whitespace-normal text-center leading-snug"
                   type="submit"
                   disabled={busy}
                 >
-                  {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+                  {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />}
                   <span>{selectedCopy.submit}</span>
                 </button>
               </div>
@@ -1716,9 +1716,9 @@ export function CabinetClient() {
       </section>
 
       {/* Jobs History Table */}
-      <section id="jobs" className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-8 shadow-xs space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
-          <div className="flex items-center gap-3">
+      <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
+          <div className="flex items-center gap-2">
             <h2 className="text-lg font-extrabold text-slate-900">Задачи</h2>
             <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">
               {jobsTotal ? `${jobsStart}-${jobsEnd} из ${jobsTotal}` : "0 задач"}
