@@ -13,11 +13,21 @@ export function SiteFooter() {
           <p className="text-slate-600 text-xs leading-relaxed">
             Онлайн-платформа ИИ-автоматизации снабжения: поиск прямых контактов производителей по всей России и анализ рисков закупочной документации 44-ФЗ / 223-ФЗ.
           </p>
-          <div className="pt-1">
+          <div className="pt-1 flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-800 bg-teal-50 px-3 py-1.5 rounded-xl border border-teal-200">
               <ShieldCheck size={14} className="text-teal-600" />
               Соответствие 152-ФЗ
             </span>
+            <a
+              href="https://productradar.ru"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 transition-colors"
+              title="TenderLex на Product Radar"
+            >
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              Мы на <strong>Product Radar</strong>
+            </a>
           </div>
         </div>
 

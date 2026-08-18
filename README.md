@@ -14,6 +14,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Durable queue worker: `aipoisk-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
+- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`) and calculator (`ProcurementCalculator`).
 - Public site SEO and verification wiring live in the site app and the `tenderlex-site.service.d/seo.conf` drop-in; Google Search Console uses DNS TXT, Yandex Webmaster uses the public HTML verification file, and Yandex Metrika is enabled by env.
 - Nginx redirects HTTP to HTTPS, serves `aipoisk.lexelence.ru` from `/root/projects/aipoisk-bot/frontend/dist`, and proxies `/api/` to `127.0.0.1:8088`.
 - Minpromtorg/GISP registry runtime cache lives under

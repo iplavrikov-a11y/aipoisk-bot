@@ -12,6 +12,13 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Product Radar Launch Readiness (2026-08):
+  - Product Radar resident badge integrated into the public footer alongside 152-FZ compliance.
+  - Pinned founder comment, publication article draft, and checklist prepared for official release on 2026-08-24.
+- UI/UX Design Overhaul (2026-08):
+  - Completely redesigned interactive showcase (`ScrollWorldViewer`) and savings calculator (`ProcurementCalculator`) from pitch-black (`bg-slate-950`) into a high-trust, light-emerald B2B palette (`emerald-600`, `border-emerald-100`, `bg-white`).
+  - Copy refined to eliminate artificial technical labels ("Интерактивный WOW-сценарий", "Модуль 1/2") in favor of natural procurement terminology.
+  - Interactive design testing laboratory route `/demo-design` deployed.
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.

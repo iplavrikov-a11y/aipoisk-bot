@@ -120,34 +120,39 @@ export function ProcurementCalculator() {
         </div>
 
         {/* Results Card */}
-        <div className="lg:col-span-5 bg-gradient-to-br from-slate-900 via-teal-950 to-slate-900 text-white p-7 rounded-3xl shadow-xl border border-teal-500/30 space-y-6 flex flex-col justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-teal-400 block">
-            Прогнозируемый результат в месяц
-          </span>
+        <div className="lg:col-span-5 bg-gradient-to-br from-emerald-50 via-teal-50/40 to-white text-slate-900 p-7 rounded-3xl shadow-xl border-2 border-emerald-300 space-y-6 flex flex-col justify-between">
+          <div className="flex justify-between items-center">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-800 block">
+              Прогнозируемый результат в месяц
+            </span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
+              ~10x быстрее
+            </span>
+          </div>
 
           <div className="space-y-5">
-            <div className="border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2 text-slate-400 text-xs font-bold mb-1">
-                <Clock size={14} className="text-teal-400" />
+            <div className="border-b border-slate-200 pb-4">
+              <div className="flex items-center gap-2 text-slate-600 text-xs font-bold mb-1">
+                <Clock size={14} className="text-emerald-600" />
                 <span>Экономия рабочего времени:</span>
               </div>
-              <div className="text-3xl sm:text-4xl font-extrabold text-teal-300">
+              <div className="text-3xl sm:text-4xl font-extrabold text-emerald-700">
                 ~{savedHours} {savedHours === 1 ? "час" : savedHours < 5 ? "часа" : "часов"}
               </div>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-500">
                 вместо ручного сбора контактов и набора запросов КП
               </span>
             </div>
 
             <div>
-              <div className="flex items-center gap-2 text-slate-400 text-xs font-bold mb-1">
-                <DollarSign size={14} className="text-emerald-400" />
+              <div className="flex items-center gap-2 text-slate-600 text-xs font-bold mb-1">
+                <DollarSign size={14} className="text-emerald-600" />
                 <span>Экономия фонда оплаты труда:</span>
               </div>
-              <div className="text-2xl sm:text-3xl font-extrabold text-emerald-400">
+              <div className="text-2xl sm:text-3xl font-extrabold text-slate-900">
                 ~{savedBudget.toLocaleString("ru-RU")} ₽
               </div>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-500">
                 освобождение времени для работы с ценами и сделками
               </span>
             </div>
@@ -155,7 +160,7 @@ export function ProcurementCalculator() {
 
           <a
             href="/cabinet"
-            className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs transition-all shadow-md hover:scale-[1.01]"
+            className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
           >
             <span>Попробовать бесплатно</span>
             <ArrowRight size={14} />

@@ -126,7 +126,7 @@ export default async function HomePage() {
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed">
-                Интерактивный сквозной процесс: от загрузки сложного ТЗ и проверки правовых рисков 44-ФЗ до поиска прямых заводов РФ и победы в закупке.
+                От загрузки технического задания и проверки условий до поиска прямых заводов РФ и подготовки запроса цен.
               </p>
             </div>
 
@@ -162,10 +162,10 @@ export default async function HomePage() {
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Два ключевых модуля платформы
+                Возможности платформы
               </span>
               <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Инструменты для эффективного снабжения и участия в закупках
+                Инструменты для снабжения и участия в закупках
               </h2>
               <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
                 TenderLex закрывает две главные задачи бизнеса: быстрый выход на прямых поставщиков и правовая защита при участии в торгах.
@@ -179,7 +179,7 @@ export default async function HomePage() {
                   <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
                     <Search className="w-6 h-6" />
                   </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Модуль 1</span>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Поиск поставщиков</span>
                   <h3 className="text-2xl font-extrabold text-slate-900">
                     Поиск поставщиков и заводов по всей России
                   </h3>
@@ -219,7 +219,7 @@ export default async function HomePage() {
                   <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
                     <ShieldAlert className="w-6 h-6" />
                   </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Модуль 2</span>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Анализ документации</span>
                   <h3 className="text-2xl font-extrabold text-slate-900">
                     Экспресс-аудит закупочной документации 44-ФЗ / 223-ФЗ
                   </h3>
