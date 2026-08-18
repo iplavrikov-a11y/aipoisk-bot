@@ -1,43 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { Building2, CheckCircle2, FileText, Send, ArrowRight, Sparkles, Factory } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  seoPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск производителей по ТЗ — заводы и официальные каналы",
+  title: "Поиск заводов-производителей по ТЗ — база изготовителей РФ — TenderLex",
   description:
-    "Передайте ТЗ и получите заводы, бренды и официальные каналы, чтобы подтвердить происхождение, характеристики и возможность поставки.",
+    "Прямой выход на российские заводы и официальных дилеров по спецификации закупки. Извлечение direct email, контактов отделов сбыта без посредников.",
   keywords: [
     "поиск производителей по ТЗ",
-    "найти производителя по техническому заданию",
-    "поиск завода по спецификации",
-    "официальный представитель производителя",
+    "база заводов изготовителей",
+    "найти завод по спецификации",
+    "прямые контакты производителей",
     "TenderLex",
   ],
   alternates: {
     canonical: "/poisk-proizvoditeley-po-tz",
-  },
-  openGraph: {
-    type: "website",
-    url: "/poisk-proizvoditeley-po-tz",
-    title: "Поиск производителей по ТЗ — заводы и официальные каналы | TenderLex",
-    description:
-      "Найдите завод, бренд или официальный канал поставки по характеристикам товара.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Поиск производителей по ТЗ — заводы и официальные каналы | TenderLex",
-    description:
-      "TenderLex помогает найти производителей и подготовить вопросы для подтверждения товара.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -45,61 +32,43 @@ const pagePath = "/poisk-proizvoditeley-po-tz";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Когда нужен именно поиск производителя?",
+    question: "Как TenderLex отличает завод-изготовитель от перекупщика?",
     answer:
-      "Он нужен, когда важны происхождение товара, производство под заказ, техническая экспертиза, бренд, гарантия или официальный канал поставки. Для обычного запроса цены по широкой номенклатуре подходит общий поиск поставщиков.",
+      "Алгоритм анализирует производственные мощности, сертификаты соответствия ГОСТ/ТУ, каталоги готовой продукции и структуру предприятия, фильтруя посредников и оставляя реальных изготовителей.",
   },
   {
-    question: "Как отличить производителя от продавца?",
+    question: "Какие контактные данные заводов предоставляет сервис?",
     answer:
-      "По открытым данным можно проверить продуктовую линейку, описание производства, официальный сайт и контакты. Окончательное подтверждение статуса, полномочий и возможности поставки получает ваша команда в ответе компании.",
+      "Вы получаете прямые email-адреса отделов оптовых продаж, телефоны специалистов по сбыту, официальный сайт предприятия и юридические реквизиты.",
   },
   {
-    question: "Можно ли искать производителя аналога?",
+    question: "Сколько времени занимает поиск производителей по ТЗ?",
     answer:
-      "Да, если закупка допускает аналог или эквивалент. Поиск строится по назначению, материалу, стандартам, диапазону характеристик и другим признакам, а не только по одному названию модели.",
-  },
-  {
-    question: "Какие вопросы задать производителю?",
-    answer:
-      "Обычно уточняют соответствие характеристикам, комплектность, документы качества, минимальную партию, срок производства или отгрузки, гарантию, доставку и официальный статус канала поставки.",
+      "Обработка спецификации и формирование выборки занимает от 1 до 3 минут в личном кабинете или в Telegram-боте.",
   },
 ];
 
-export default function ManufacturerSearchPage() {
+export default function PoiskProizvoditeleyPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Поиск производителей по ТЗ", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Поиск заводов-производителей", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Поиск производителей по ТЗ",
-    description:
-      "TenderLex помогает найти заводы, бренды и официальные каналы поставки по спецификации, чтобы подтвердить происхождение и характеристики товара.",
+    name: "Поиск заводов-производителей по ТЗ",
+    description: "Сервис поиска прямых контактов заводов-изготовителей по спецификации.",
     path: pagePath,
-    serviceType: "Manufacturer search by technical specification",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как найти производителя по ТЗ с TenderLex",
-    description:
-      "Порядок поиска производителя: от характеристик товара до списка заводов и вопросов для подтверждения.",
+    name: "Как найти производителей по ТЗ",
+    description: "Пошаговый процесс поиска заводов-изготовителей.",
     steps: [
-      {
-        name: "Передайте характеристики товара",
-        text: "Загрузите спецификацию, ссылку на закупку или описание с назначением, материалами, стандартами и ограничениями.",
-      },
-      {
-        name: "Выделите признаки для поиска",
-        text: "TenderLex использует модельные признаки, назначение, размеры, стандарты, возможные аналоги и требования к документам.",
-      },
-      {
-        name: "Найдите завод или официальный канал",
-        text: "В результат попадают производители, бренды и официальные представители с доступными каналами связи.",
-      },
-      {
-        name: "Подтвердите статус и возможность поставки",
-        text: "Команда направляет вопросы о соответствии, документах, сроке, минимальной партии и полномочиях поставщика.",
-      },
+      { name: "Загрузка спецификации", text: "Загрузите файл ТЗ или описание номенклатуры." },
+      { name: "ИИ-анализ стандартов", text: "Система выделяет марки, ГОСТы и технические параметры." },
+      { name: "Подбор заводов", text: "Формирование реестра прямых изготовителей по РФ." },
+      { name: "Генерация запроса КП", text: "Готовое письмо для отправки на заводы." },
     ],
   });
 
@@ -109,91 +78,100 @@ export default function ManufacturerSearchPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Найти производителя по ТЗ</h1>
-          <p className="legal-date">
-            Для закупок и снабжения, когда нужен завод, бренд или официальный канал поставки. Обновлено {seoPageLastUpdated}.
-          </p>
 
-          <section>
-            <h2>Когда нужен именно производитель</h2>
-            <p>
-              Этот сценарий нужен, когда недостаточно найти продавца. Команде важно выйти на завод, бренд или
-              официального представителя, чтобы подтвердить происхождение товара, получить технический ответ или
-              проверить возможность производства и поставки.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Что отличает завод от общего списка поставщиков</h2>
-            <p>
-              Поиск производителя опирается на признаки производства: продуктовую линейку, технические характеристики,
-              стандарты, модельные обозначения и официальный канал продаж. Дилер или дистрибьютор может остаться в
-              списке только как способ связаться с брендом или закрыть поставку в нужном регионе.
-            </p>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <Factory size={14} className="text-teal-600" />
+              <span>Прямой выход на производственные предприятия РФ</span>
+            </div>
 
-          <section>
-            <h2>Какие параметры помогают найти нужный завод</h2>
-            <p>
-              TenderLex выделяет назначение товара, материал, размеры, стандарты, марки, диапазон характеристик,
-              требования к сертификатам и допустимые аналоги. Это позволяет искать производителя сопоставимого решения,
-              а не ограничиваться совпадением по названию.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Поиск заводов-производителей по ТЗ и спецификациям
+            </h1>
 
-          <section>
-            <h2>Что подтвердить до выбора канала поставки</h2>
-            <p>
-              У компании нужно подтвердить статус, соответствие характеристикам, документы качества, минимальную
-              партию, срок производства или отгрузки, гарантию, возможность доставки и условия работы через
-              официального дилера, если он участвует в поставке.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Мгновенный сбор прямых e-mail адресов и телефонов отделов сбыта отечественных заводов без переплат посредникам и трейдерам.
             </p>
-          </section>
 
-          <section>
-            <h2>Связанные задачи</h2>
-            <p>
-              Если подходят производители, дилеры и другие профильные компании, используйте{" "}
-              <a href="/poisk-postavshchikov-po-tz">поиск поставщиков по ТЗ</a>. Для поставки под условия конкретной
-              процедуры подойдет <a href="/poisk-postavshchikov-dlya-tendera">поиск поставщиков для тендера</a>.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              После выбора производителя или официального канала подготовьте{" "}
-              <a href="/zapros-kp-po-tz">единый запрос КП по ТЗ</a>, чтобы сравнить цену, сроки и условия поставки.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Найти заводы</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Без посредников</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Экономия до 30% бюджета за счет прямых отпускных цен производственных площадок.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Проверка сертификации</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Сопоставление номенклатуры с действующими паспортами качества, ГОСТами и ТР ТС.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Единый запрос цен</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Автоматическая генерация официального письма RFQ с таблицей позиций и дедлайном.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
               {faqItems.map((item, index) => (
-                <div
-                  key={item.question}
-                  style={{ borderTop: index > 0 ? "1px solid var(--line)" : undefined, paddingTop: index > 0 ? 20 : 0 }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>{item.question}</h3>
-                  <p style={{ margin: 0, color: "var(--ink-soft)", fontSize: 15, lineHeight: 1.65 }}>{item.answer}</p>
-                </div>
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
+                    {item.answer}
+                  </p>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Начать поиск производителя</h2>
-            <p>
-              Откройте <a href="/cabinet">личный кабинет</a> или отправьте спецификацию в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              .
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

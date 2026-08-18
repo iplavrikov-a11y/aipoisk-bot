@@ -1,44 +1,29 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { ShieldCheck, CheckCircle2, FileText, Send, Building2, ArrowRight, ShieldAlert } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  commercialPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Оценка рисков закупки перед участием",
+  title: "Оценка рисков закупки 44-ФЗ / 223-ФЗ — экспресс-проверка до заявки — TenderLex",
   description:
-    "TenderLex помогает оценить риски закупки: сроки, обеспечение, приемку, штрафы, оплату, нацрежим, спорные условия договора и вопросы заказчику.",
+    "Автоматическая оценка исполнимости контракта: аудит условий приемки, финансовых гарантий, штрафов и ограничений национального режима.",
   keywords: [
     "оценка рисков закупки",
-    "риски закупочной документации",
-    "проверка рисков тендера",
-    "анализ рисков договора закупки",
-    "риски участия в закупке",
+    "проверка рисков 44-ФЗ",
+    "риски исполнения госконтракта",
     "TenderLex",
   ],
   alternates: {
     canonical: "/ocenka-riskov-zakupki",
-  },
-  openGraph: {
-    type: "website",
-    url: "/ocenka-riskov-zakupki",
-    title: "Оценка рисков закупки перед участием | TenderLex",
-    description:
-      "Проверьте закупку до подачи заявки: сроки, обеспечение, штрафы, приемка, оплата, нацрежим и спорные условия договора.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Оценка рисков закупки перед участием | TenderLex",
-    description:
-      "TenderLex выделяет риски закупки и вопросы заказчику до подачи заявки.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -46,61 +31,38 @@ const pagePath = "/ocenka-riskov-zakupki";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Какие риски закупки стоит проверить до подачи заявки?",
+    question: "Как оценка рисков помогает поставщикам?",
     answer:
-      "Сроки исполнения, обеспечение заявки и договора, приемку, штрафы, оплату, требования к участнику, документы качества, нацрежим, возможность поставки нужного товара и спорные условия договора.",
+      "Она позволяет вовремя отказаться от заведомо токсичных или неисполнимых контрактов, где заказчик установил невыполнимые сроки или скрытые условия расторжения с внесением в РНП.",
   },
   {
-    question: "Что считается критичным риском?",
+    question: "Сколько времени занимает проверка?",
     answer:
-      "Критичный риск — это условие, которое может привести к отклонению заявки, невозможности поставить товар, кассовому разрыву, штрафам или спору при приемке. Такие пункты нужно выносить в решение об участии отдельно.",
-  },
-  {
-    question: "TenderLex заменяет юриста?",
-    answer:
-      "Нет. Сервис ускоряет первичный анализ и показывает, какие условия требуют внимания. Финальную правовую позицию по договору и спорным пунктам должна подтвердить команда или профильный юрист.",
-  },
-  {
-    question: "Можно ли сразу подготовить вопросы заказчику?",
-    answer:
-      "Да. В результате анализа формируются вопросы по неясным характеристикам, срокам, приемке, документам качества, нацрежиму и условиям договора.",
+      "Анализ проекта контракта и спецификации занимает от 1 до 3 минут в кабинете или Telegram-боте.",
   },
 ];
 
-export default function ProcurementRiskAssessmentPage() {
+export default function OcenkaRisktovZakupkiPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Оценка рисков закупки", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Оценка рисков закупки", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Оценка рисков закупки перед участием",
-    description:
-      "TenderLex анализирует закупочную и тендерную документацию, выделяет риски участия, спорные условия договора и вопросы заказчику.",
+    name: "Оценка рисков закупки",
+    description: "Сервис экспресс-оценки рисков исполнения контракта 44-ФЗ/223-ФЗ.",
     path: pagePath,
-    serviceType: "Procurement risk assessment",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как оценить риски закупки с TenderLex",
-    description:
-      "Порядок проверки закупки: загрузить документацию, выделить условия, оценить риски и подготовить вопросы заказчику.",
+    name: "Как оценить риски закупки перед подачей заявки",
+    description: "Пошаговый аудит рисков проекта контракта через TenderLex.",
     steps: [
-      {
-        name: "Передайте закупочную документацию",
-        text: "Укажите номер извещения, ссылку на закупку или загрузите комплект документов.",
-      },
-      {
-        name: "TenderLex выделяет ключевые условия",
-        text: "Сервис извлекает сроки, обеспечение, оплату, приемку, штрафы, требования к участнику и условия договора.",
-      },
-      {
-        name: "Риски группируются по влиянию",
-        text: "Отдельно показываются пункты, которые могут повлиять на допуск, цену, исполнение договора или приемку товара.",
-      },
-      {
-        name: "Готовятся вопросы заказчику",
-        text: "По спорным формулировкам формируются вопросы, которые стоит задать до подачи заявки.",
-      },
+      { name: "Загрузка проекта контракта", text: "Передайте файл проекта договора или извещения." },
+      { name: "Смысловой ИИ-разбор спорных пунктов", text: "Анализ условий приемки, сроков и штрафов." },
+      { name: "Формирование отчета об исполнимости", text: "Выгрузка детальной сводки с рекомендациями." },
+      { name: "Принятие решения об участии", text: "Обоснованный выход на торги или запрос разъяснений." },
     ],
   });
 
@@ -110,86 +72,100 @@ export default function ProcurementRiskAssessmentPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Оценка рисков закупки перед участием</h1>
-          <p className="legal-date">
-            Для тендерных отделов, которым нужно быстро понять, где заявка или исполнение могут стать проблемой. Обновлено {commercialPageLastUpdated}.
-          </p>
 
-          <section>
-            <h2>Короткий ответ</h2>
-            <p>
-              Оценка рисков закупки помогает до подачи заявки увидеть условия, которые могут привести к отклонению,
-              убыткам при исполнении, спору с заказчиком или невозможности поставить товар в срок.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Что проверяется в документации</h2>
-            <p>
-              TenderLex разбирает закупочную и тендерную документацию по блокам: предмет закупки, требования к участнику,
-              сроки, обеспечение, оплату, поставку, приемку, штрафы, расторжение, нацрежим, документы качества и проект договора.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Риск оценивается не абстрактно, а через влияние на решение об участии: можно ли подтвердить требования,
-              успеть с поставкой, заложить расходы в цену и получить оплату без спорной приемки.
-            </p>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <ShieldCheck size={14} className="text-teal-600" />
+              <span>Защита от риска попадания в РНП</span>
+            </div>
 
-          <section>
-            <h2>Какие риски чаще всего всплывают</h2>
-            <p>
-              Типовые проблемы: короткий срок поставки, жесткая приемка, непропорциональные штрафы, неясные характеристики,
-              спорные требования к документам, кассовый разрыв из-за оплаты, ограничения по стране происхождения и неочевидные
-              реестровые требования.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Оценка рисков закупки и условий госконтракта
+            </h1>
 
-          <section>
-            <h2>Что получает команда</h2>
-            <p>
-              Результат — структурированный список рисков, практический вывод по каждому блоку и вопросы заказчику.
-              Его можно передать руководителю, юристу, снабжению или финансисту для решения: участвовать, уточнять условия
-              или отказаться от закупки.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Проверьте условия оплаты, график поставки, скрытые штрафы и ограничения нацрежима до того, как внесете обеспечение заявки.
             </p>
-          </section>
 
-          <section>
-            <h2>Связанные сценарии</h2>
-            <p>
-              Для полного разбора используйте <a href="/analiz-zakupochnoi-dokumentacii">анализ закупочной документации</a>.
-              Если после оценки нужно понять рынок, запустите <a href="/poisk-postavshchikov-dlya-tendera">поиск поставщиков для тендера</a>.
-              Для риска отклонения отдельно проверьте <a href="/reestr-minpromtorga-v-zakupkah">нацрежим и реестровые требования</a>.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Оценить риски</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
-              {faqItems.map((item, i) => (
-                <div key={item.question} style={{ borderTop: i > 0 ? "1px solid var(--line)" : undefined, paddingTop: i > 0 ? 20 : 0 }}>
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>{item.question}</h3>
-                  <p style={{ margin: 0, color: "var(--ink-soft)", fontSize: 15, lineHeight: 1.65 }}>{item.answer}</p>
-                </div>
+        {/* FEATURES */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Проверка сроков приемки</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Контроль соответствия между сроком поставки товара и сроком работы приемочной комиссии заказчика.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Обеспечительные платежи</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Анализ требований к гарантийным обязательствам, независимым гарантиям и удержаниям.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Вопросы заказчику</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Готовые формулировки запросов на разъяснение положений извещения в единой информационной системе.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
+              {faqItems.map((item, index) => (
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
+                    {item.answer}
+                  </p>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Запустить оценку рисков</h2>
-            <p>
-              Откройте <a href="/cabinet">личный кабинет</a> или отправьте номер закупки, ссылку или документы в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              .
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

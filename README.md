@@ -38,6 +38,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   Additional supplier search defaults to 50% of the effective supplier-search
   price when no explicit global package or per-customer override is configured;
   per-customer `Добор` prices remain editable in the admin client card.
+  Reserved funds are settled immediately upon job completion (`status == completed`),
+  and runs finding 20 or more verified suppliers complete automatically without
+  requiring partial-result confirmation.
 - Batch jobs for supplier search and procurement Word reports.
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a

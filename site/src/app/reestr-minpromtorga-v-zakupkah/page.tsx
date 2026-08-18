@@ -1,44 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { Award, CheckCircle2, FileText, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  commercialPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Нацрежим и реестр Минпромторга в закупках",
+  title: "Реестр Минпромторга в закупках — проверка ПП 616 и 617 — TenderLex",
   description:
-    "TenderLex помогает проверить нацрежим в закупках, отличить запрет, ограничение и преимущество и понять, когда нужна реестровая запись Минпромторга.",
+    "Проверка товаров и производителей на включение в Реестр российской промышленной продукции Минпромторга (ГИСП), применение нацрежима по 44-ФЗ и 223-ФЗ.",
   keywords: [
-    "нацрежим в закупках",
     "реестр Минпромторга в закупках",
-    "Минпромторг закупки",
-    "реестровая запись Минпромторга",
-    "запрет ограничение преимущество в закупках",
+    "постановление 616 закупки",
+    "постановление 617 закупки",
+    "проверка реестра ГИСП",
     "TenderLex",
   ],
   alternates: {
     canonical: "/reestr-minpromtorga-v-zakupkah",
-  },
-  openGraph: {
-    type: "website",
-    url: "/reestr-minpromtorga-v-zakupkah",
-    title: "Нацрежим и реестр Минпромторга в закупках | TenderLex",
-    description:
-      "Проверка требований к выпискам и реестровым записям Минпромторга: запрет, ограничение, преимущество и поиск поставщиков.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Нацрежим и реестр Минпромторга в закупках | TenderLex",
-    description:
-      "Как определить применённую меру и проверить, требуется ли реестровая запись для конкретной позиции закупки.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -46,239 +32,141 @@ const pagePath = "/reestr-minpromtorga-v-zakupkah";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Что такое нацрежим в закупках?",
+    question: "Как TenderLex проверяет требования Минпромторга?",
     answer:
-      "Нацрежим в закупках — это правила допуска товаров по стране происхождения: запрет, ограничение или преимущество. Для поставщика важно понять вид меры, потому что от него зависит комплект документов и необходимость реестровой записи.",
+      "Сервис сопоставляет код ОКПД2 и характеристики товара из ТЗ с перечнями Постановлений Правительства № 616 (запрет) и № 617 (ограничения), выявляя необходимость предоставления реестровых номеров ГИСП.",
   },
   {
-    question: "Когда нужна выписка из реестра Минпромторга?",
+    question: "Помогает ли сервис найти российских производителей с реестровыми записями?",
     answer:
-      "Необходимость и способ подтверждения зависят от конкретной позиции, применённой меры и актуальной редакции документации. При запрете или ограничении номер реестровой записи может быть предусмотрен как подтверждение происхождения товара.",
-  },
-  {
-    question: "Нужна ли выписка при ограничении?",
-    answer:
-      "Ограничение не равно запрету, но это не означает, что реестровая запись никогда не нужна. Проверьте перечень и позицию товара, механизм ограничения и способ подтверждения, прямо указанный в актуальной документации.",
-  },
-  {
-    question: "Нужна ли выписка при преимуществе?",
-    answer:
-      "Нельзя делать вывод только по названию меры. Нужно проверить объект закупки, относящийся к нему перечень и документы, которыми в конкретной процедуре подтверждается происхождение товара.",
-  },
-  {
-    question: "Что запросить у поставщика, если документация требует реестровую запись?",
-    answer:
-      "Нужно запросить номер действующей реестровой записи, источник записи и подтверждение, что запись относится к товару или производителю, указанному в техническом задании.",
-  },
-  {
-    question: "Как проверить, что запись относится к нужному товару?",
-    answer:
-      "Сверьте не только номер записи, но и наименование продукции, производителя, характеристики и срок действия с конкретной позицией закупки. Одного упоминания компании в реестре недостаточно.",
+      "Да, TenderLex выделяет отечественные заводы, чья продукция официально внесена в реестр Минпромторга РФ и реестр ЕАЭС.",
   },
 ];
 
-export default function MinpromRegistryPage() {
+export default function ReestrMinpromtorgaPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Нацрежим и Минпромторг в закупках", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Реестр Минпромторга в закупках", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Проверка нацрежима и реестровых требований Минпромторга в закупках",
-    description:
-      "TenderLex помогает отличить запрет, ограничение и преимущество по нацрежиму, понять, когда нужна реестровая запись Минпромторга, и учесть это при поиске поставщиков.",
+    name: "Проверка Реестра Минпромторга в закупках",
+    description: "Сервис экспресс-аудита требований национального режима (ПП 616/617) по ТЗ.",
     path: pagePath,
-    serviceType: "Procurement registry requirements check",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как проверить нацрежим и реестровые требования в закупке",
-    description:
-      "Рабочая последовательность проверки: определить товар и меру, найти требование в документации, сверить запись и сформулировать вопрос поставщику.",
+    name: "Как проверить требования Минпромторга по ТЗ",
+    description: "Пошаговый процесс проверки национального режима в госзакупках.",
     steps: [
-      {
-        name: "Зафиксируйте конкретную позицию",
-        text: "Выпишите наименование товара, характеристики, код, производителя и страну происхождения, если они указаны.",
-      },
-      {
-        name: "Определите вид меры",
-        text: "Отделите запрет от ограничения и преимущества: от вида меры зависит логика допуска и комплект подтверждений.",
-      },
-      {
-        name: "Сверьте документацию",
-        text: "Найдите прямую формулировку о подтверждении происхождения, реестровой записи и документах, которые должны войти в заявку.",
-      },
-      {
-        name: "Проверьте запись по товару",
-        text: "Сопоставьте номер записи, производителя, продукцию, характеристики и срок действия с закупаемой позицией.",
-      },
-      {
-        name: "Подготовьте решение и вопросы",
-        text: "Зафиксируйте, что обязательно для допуска, что нужно запросить у поставщика и какие формулировки должен проверить специалист.",
-      },
+      { name: "Загрузка спецификации или кода ОКПД2", text: "Передайте параметры товара." },
+      { name: "Проверка наличия в перечнях ПП 616 и 617", text: "Анализ запретов и ограничений допуска." },
+      { name: "Поиск производителей с реестровыми номерами ГИСП", text: "Сбор заводов с действующими выписками." },
+      { name: "Формирование обоснованного запроса КП", text: "Готовое обращение с запросом реестровых номеров." },
     ],
   });
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }}
-      />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Нацрежим и реестр Минпромторга в закупках</h1>
-          <p className="legal-date">Запрет, ограничение и преимущество нужно различать до первого письма поставщику. Обновлено {commercialPageLastUpdated}.</p>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
 
-          <section>
-            <h2>Короткий ответ</h2>
-            <p>
-              Наличие нацрежима ещё не отвечает на вопрос, нужна ли реестровая запись. Сначала нужно определить вид
-              меры по конкретной позиции, затем найти в документации способ подтверждения страны происхождения и
-              только после этого проверять запись по товару и производителю.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Ошибка на этом этапе меняет весь дальнейший сценарий: можно необоснованно отсеять подходящего
-              поставщика, запросить лишний документ или, наоборот, обнаружить отсутствие обязательного подтверждения
-              уже перед подачей заявки.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Алгоритм проверки по одной позиции</h2>
-            <ul>
-              <li>Зафиксируйте товар, характеристики, код и страну происхождения из извещения, ТЗ и приложений.</li>
-              <li>Найдите, какая мера указана для этой позиции: запрет, ограничение или преимущество.</li>
-              <li>Выпишите дословно, чем участник должен подтвердить происхождение товара в составе заявки.</li>
-              <li>Если нужна запись, сопоставьте её с товаром, производителем, характеристиками и сроком действия.</li>
-              <li>Отдельно отметьте расхождения и вопросы, которые нужно задать заказчику или поставщику.</li>
-            </ul>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <Award size={14} className="text-teal-600" />
+              <span>Национальный режим и Реестр ГИСП</span>
+            </div>
 
-          <section>
-            <h2>Как меняется рабочее решение</h2>
-            <p>
-              <strong>При запрете</strong> сначала проверяют, допускается ли предложенный товар и какое подтверждение
-              прямо предусмотрено документацией. Если требуется реестровая запись, одного общего заявления
-              поставщика о российском происхождении недостаточно.
-            </p>
-            <p>
-              <strong>При ограничении</strong> нельзя механически применять логику запрета. Нужно отдельно проверить
-              механизм допуска, состав заявок и документы, которые влияют на его применение в этой закупке. Номер
-              реестровой записи также может быть предусмотрен как подтверждение происхождения товара.
-            </p>
-            <p>
-              <strong>При преимуществе</strong> происхождение товара может влиять на оценку предложения, но это не
-              означает автоматического отклонения любого товара без записи. Решение принимают по условиям конкретной
-              процедуры.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Проверка Реестра Минпромторга и нацрежима в закупках
+            </h1>
 
-          <section>
-            <h2>Что сверять в реестровой записи</h2>
-            <ul>
-              <li>номер и источник записи, её статус и срок действия;</li>
-              <li>наименование производителя и продукции;</li>
-              <li>характеристики, модель или иной признак, связывающий запись с позицией закупки;</li>
-              <li>соответствие сведениям, которые поставщик планирует указать в заявке и коммерческом предложении;</li>
-              <li>отсутствие расхождений между ТЗ, записью и документами производителя.</li>
-            </ul>
-            <p style={{ marginTop: 14 }}>
-              Проверка только по названию компании ненадёжна: у производителя могут быть разные товары, а нужная
-              модификация или характеристика может не следовать из найденной записи.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Узнайте, попадает ли ваша номенклатура под Постановления № 616, № 617 и найдите российских производителей с действующими выписками из ГИСП.
             </p>
-          </section>
 
-          <section>
-            <h2>Что делает TenderLex</h2>
-            <p>
-              При анализе документации сервис отдельно показывает вид меры и прямой ответ: требуются ли выписки из
-              реестра Минпромторга. При поиске поставщиков этот контекст нужен для проверки производителей,
-              дилеров и дистрибьюторов по релевантности товара и необходимости запросить подтверждающие документы.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Если документация предусматривает реестровую запись, в{" "}
-              <a href="/zapros-kp-po-tz">запрос цены поставщику</a> нужно включить соответствующее условие и попросить
-              поставщика указать номер записи по конкретной позиции.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Проверить по реестру</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Какой результат получает команда</h2>
-            <p>
-              Итог проверки — не просто отметка «есть нацрежим», а рабочая карточка позиции: вид меры, требуемое
-              подтверждение, найденные сведения о товаре и производителе, расхождения, вопросы поставщику и пункт,
-              который должен подтвердить специалист до подачи заявки.
-            </p>
-            <p>
-              Такой вывод можно использовать вместе с <a href="/ocenka-riskov-zakupki">оценкой рисков закупки</a>,
-              чтобы понять влияние требования на допуск, цену и возможность исполнения.
-            </p>
-          </section>
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Постановление № 616</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Аудит полного запрета на допуск промышленных товаров иностранного происхождения.
+                </p>
+              </div>
 
-          <section>
-            <h2>Где нужна проверка человека</h2>
-            <p>
-              Требования по нацрежиму зависят от конкретной редакции документации и формулировок заказчика. TenderLex
-              ускоряет первичный разбор и подготовку вопросов, но финальное решение по допуску, заявке и комплекту
-              документов должен подтвердить специалист. Особенно важно перепроверить вывод, если разные части
-              документации противоречат друг другу или сведения поставщика не совпадают с записью.
-            </p>
-          </section>
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Постановление № 617</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Контроль применения правила «третий лишний» и подтверждения страны происхождения.
+                </p>
+              </div>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
-              {faqItems.map((item, i) => (
-                <div
-                  key={item.question}
-                  style={{
-                    borderTop: i > 0 ? "1px solid var(--line)" : undefined,
-                    paddingTop: i > 0 ? 20 : 0,
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>
-                    {item.question}
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: "var(--ink-soft)",
-                      fontSize: 15,
-                      lineHeight: 1.65,
-                    }}
-                  >
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Заводы с реестровыми номерами</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Прямые контакты изготовителей, чья продукция имеет действующее заключение Минпромторга.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
+              {faqItems.map((item, index) => (
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
                     {item.answer}
                   </p>
-                </div>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Проверить конкретную закупку</h2>
-            <p>
-              Запустите <a href="/analiz-zakupochnoi-dokumentacii">анализ закупочной документации</a>, а затем при
-              необходимости используйте <a href="/poisk-postavshchikov-po-tz">поиск поставщиков под спецификацию</a>.
-              Открыть проверку можно в <a href="/cabinet">личном кабинете</a> или в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">Telegram-боте TenderLex</a>.
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

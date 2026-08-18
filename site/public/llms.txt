@@ -10,13 +10,33 @@
 ## Core Pages & Documentation
 - Главная страница: https://tenderlex.ru
 - Поиск поставщиков по ТЗ: https://tenderlex.ru/poisk-postavshchikov-po-tz
-- Анализ документации: https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
-- Оценка рисков: https://tenderlex.ru/ocenka-riskov-zakupki
+- Поиск заводов-производителей: https://tenderlex.ru/poisk-proizvoditeley-po-tz
+- Подбор поставщиков под тендер: https://tenderlex.ru/poisk-postavshchikov-dlya-tendera
+- Адресаты для запроса КП: https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp
+- Генератор Запроса КП (RFQ): https://tenderlex.ru/zapros-kp-po-tz
+- Анализ закупочной документации: https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
+- Экспресс-оценка рисков контракта: https://tenderlex.ru/ocenka-riskov-zakupki
+- Анализ рынка 44-ФЗ: https://tenderlex.ru/analiz-rynka-44-fz
+- Реестр Минпромторга (ПП 616/617): https://tenderlex.ru/reestr-minpromtorga-v-zakupkah
+- Каталог отраслей: https://tenderlex.ru/otrasli
+- Металлопрокат и трубы: https://tenderlex.ru/otrasli/metalloprokat
+- Кабель и электротехника: https://tenderlex.ru/otrasli/kabel-i-provod
+- Запорная арматура: https://tenderlex.ru/otrasli/truboprovodnaya-armatura
+- Стройматериалы: https://tenderlex.ru/otrasli/stroitelnye-materialy
+- СИЗ и спецодежда: https://tenderlex.ru/otrasli/siz-i-specodezhda
+- Региональный охват: https://tenderlex.ru/regiony
 - База знаний: https://tenderlex.ru/baza-znaniy
 - Инструкция по поиску поставщиков: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
 - Руководство по рискам 44-ФЗ / 223-ФЗ: https://tenderlex.ru/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz
+- Инструкция по Постановлениям № 616 и 617: https://tenderlex.ru/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617
+- Как составить Запрос КП: https://tenderlex.ru/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku
+- Проверка дилерских сертификатов: https://tenderlex.ru/baza-znaniy/proverka-dilerskih-sertifikatov-b2b
+- О сервисе TenderLex: https://tenderlex.ru/about
+- Правовая информация и реквизиты: https://tenderlex.ru/legal
 
-## Service Availability
-- Доступен во всей Российской Федерации (онлайн B2B SaaS).
+## Service Availability & Contacts
+- Зона обслуживания: вся Российская Федерация (онлайн B2B SaaS).
+- Телефон отдела поддержки: +7 (921) 146-00-80
+- Email: support@tenderlex.ru, info@tenderlex.ru
 - Веб-кабинет: https://tenderlex.ru/cabinet
-- Telegram-бот: https://t.me/TenderLexBot
+- Telegram-бот: https://t.me/tenderlex_bot

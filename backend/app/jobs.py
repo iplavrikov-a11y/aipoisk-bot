@@ -22,6 +22,7 @@ from .billing import (
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
     STATUS_DELIVERY_EXPIRED,
+    charge_job_reservation,
     release_job_kind_reservation,
     release_job_reservation,
     expire_stale_confirmations,
@@ -1190,7 +1191,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
     job.yandex_requests_count = y_reqs
     job.yandex_cost_rub = y_cost
-    if len(accepted) >= job.target_suppliers or _is_registry_only_supplier_search(job):
+    if len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         status = "completed"
         message = _supplier_count_message("Готово", len(accepted), job.target_suppliers)
         error = ""
@@ -1206,6 +1207,8 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_PARTIAL_COUNT)
     _set_job(db, job, status=status, progress=100, message=message, error=error)
     job.completed_at = now_utc()
+    if status == "completed":
+        charge_job_reservation(db, job, note="Результат готов")
     db.commit()
 
 
@@ -1279,6 +1282,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         )
     else:
         _set_job(db, job, status="completed", progress=100, message="Анализ документации готов")
+        charge_job_reservation(db, job, note="Результат готов")
     job.completed_at = now_utc()
     db.commit()
 
@@ -1467,8 +1471,9 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             message="Анализ и поставщики готовы, нужна проверка ИИ-настроек" + browser_failure_note,
             error=" ".join(item for item in (str(report.warning or "").strip(), browser_failure_error) if item),
         )
-    elif len(accepted) >= job.target_suppliers or _is_registry_only_supplier_search(job):
+    elif len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
+        charge_job_reservation(db, job, note="Результат готов")
     else:
         publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_PARTIAL_COUNT)
         _set_job(

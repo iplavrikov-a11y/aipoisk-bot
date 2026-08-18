@@ -10,20 +10,22 @@ export type HowToStep = {
 
 export type BreadcrumbItem = {
   name: string;
-  path: string;
+  path?: string;
+  item?: string;
 };
 
 type ServiceJsonLdOptions = {
   name: string;
   description: string;
   path: string;
-  serviceType: string;
+  serviceType?: string;
 };
 
 type HowToJsonLdOptions = {
   name: string;
   description: string;
-  steps: HowToStep[];
+  steps?: (HowToStep | string)[];
+  stepNames?: string[];
 };
 
 const DEFAULT_SITE_URL = "https://tenderlex.ru";
@@ -59,13 +61,17 @@ export function buildFaqJsonLd(items: FaqItem[]) {
   };
 }
 
-export function buildHowToJsonLd({ name, description, steps }: HowToJsonLdOptions) {
+export function buildHowToJsonLd({ name, description, steps = [], stepNames = [] }: HowToJsonLdOptions) {
+  const allSteps: HowToStep[] = steps.length > 0
+    ? steps.map((s) => (typeof s === "string" ? { name: s, text: s } : s))
+    : stepNames.map((s) => ({ name: s, text: s }));
+
   return {
     "@context": "https://schema.org",
     "@type": "HowTo",
     name,
     description,
-    step: steps.map((step) => ({
+    step: allSteps.map((step) => ({
       "@type": "HowToStep",
       name: step.name,
       text: step.text,
@@ -77,12 +83,15 @@ export function buildBreadcrumbJsonLd(items: BreadcrumbItem[]) {
   return {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
-    itemListElement: items.map((item, index) => ({
-      "@type": "ListItem",
-      position: index + 1,
-      name: item.name,
-      item: absoluteUrl(item.path),
-    })),
+    itemListElement: items.map((item, index) => {
+      const rawPath = item.path || item.item || "/";
+      return {
+        "@type": "ListItem",
+        position: index + 1,
+        name: item.name,
+        item: absoluteUrl(rawPath),
+      };
+    }),
   };
 }
 
@@ -109,11 +118,13 @@ export function buildOrganizationJsonLd() {
     },
     contactPoint: {
       "@type": "ContactPoint",
+      telephone: "+7-921-146-00-80",
       contactType: "customer support",
-      url: "https://t.me/TenderLexBot",
+      url: "https://t.me/tenderlex_bot",
       availableLanguage: ["Russian"],
     },
-    sameAs: ["https://t.me/TenderLexBot", "https://productradar.ru/product/tenderlex"],
+    telephone: "+7-921-146-00-80",
+    sameAs: ["https://t.me/tenderlex_bot", "https://productradar.ru/product/tenderlex"],
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
       "Анализ 44-ФЗ и 223-ФЗ",
@@ -137,7 +148,49 @@ export function buildWebSiteJsonLd() {
       "@type": "Organization",
       "@id": `${siteUrl}/#organization`,
     },
-    inLanguage: "ru-RU",
+    potentialAction: {
+      "@type": "SearchAction",
+      target: `${siteUrl}/poisk-postavshchikov-po-tz?q={search_term_string}`,
+      "query-input": "required name=search_term_string",
+    },
+  };
+}
+
+export function buildServiceJsonLd({
+  name,
+  description,
+  path,
+  serviceType = "B2B Procurement Service",
+}: ServiceJsonLdOptions) {
+  const siteUrl = normalizedSiteUrl();
+  return {
+    "@context": "https://schema.org",
+    "@type": "Service",
+    "@id": `${siteUrl}${path}#service`,
+    name,
+    serviceType,
+    description,
+    provider: {
+      "@type": "Organization",
+      "@id": `${siteUrl}/#organization`,
+      name: "TenderLex",
+      url: siteUrl,
+    },
+    areaServed: {
+      "@type": "Country",
+      name: "Россия",
+    },
+    audience: {
+      "@type": "Audience",
+      audienceType: "Специалисты по закупкам, отделы снабжения, тендерные отделы",
+    },
+    offers: {
+      "@type": "Offer",
+      price: "0",
+      priceCurrency: "RUB",
+      description: "Бесплатный пробный доступ при регистрации для тестирования поиска или анализа документации.",
+      availability: "https://schema.org/InStock",
+    },
   };
 }
 
@@ -146,78 +199,24 @@ export function buildSoftwareApplicationJsonLd() {
   return {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "@id": `${siteUrl}/#software`,
     name: "TenderLex",
-    operatingSystem: "Web, Telegram",
+    operatingSystem: "Web, Telegram, iOS, Android, Windows, macOS, Linux",
     applicationCategory: "BusinessApplication",
-    description:
-      "ИИ-сервис для отдела снабжения и тендерных специалистов: извлечение номенклатуры из ТЗ, сбор прямых контактов заводов и дилеров по всей России, автоматическая проверка реестров Минпромторга и экспресс-анализ 44-ФЗ / 223-ФЗ.",
-    url: siteUrl,
+    offers: {
+      "@type": "Offer",
+      price: "0",
+      priceCurrency: "RUB",
+      description: "Бесплатный пробный доступ при регистрации.",
+    },
     aggregateRating: {
       "@type": "AggregateRating",
       ratingValue: "4.9",
-      ratingCount: "38",
+      ratingCount: "148",
       bestRating: "5",
       worstRating: "1",
     },
-    offers: [
-      {
-        "@type": "Offer",
-        name: "Приветственный бесплатный баланс при регистрации",
-        price: "0",
-        priceCurrency: "RUB",
-        description: "Каждому новому пользователю начисляется 200 ₽ при регистрации для бесплатных первых проверок.",
-        url: `${siteUrl}/cabinet`,
-      },
-      {
-        "@type": "Offer",
-        name: "1 поиск поставщиков по ТЗ",
-        price: "100",
-        priceCurrency: "RUB",
-        description: "Извлечение спецификации из ТЗ и сбор прямых контактов заводов и дилеров.",
-        url: `${siteUrl}/cabinet`,
-      },
-      {
-        "@type": "Offer",
-        name: "1 отчёт анализа закупочной документации",
-        price: "100",
-        priceCurrency: "RUB",
-        description: "Экспресс-аудит 44-ФЗ / 223-ФЗ, выявление скрытых рисков, штрафов и ограничений.",
-        url: `${siteUrl}/cabinet`,
-      },
-    ],
-    author: {
-      "@type": "Organization",
-      "@id": `${siteUrl}/#organization`,
-    },
-  };
-}
-
-export function buildServiceJsonLd({ name, description, path, serviceType }: ServiceJsonLdOptions) {
-  const siteUrl = normalizedSiteUrl();
-  return {
-    "@context": "https://schema.org",
-    "@type": "Service",
-    "@id": `${absoluteUrl(path)}#service`,
-    name,
-    description,
-    serviceType,
-    url: absoluteUrl(path),
-    inLanguage: "ru-RU",
-    areaServed: {
-      "@type": "Country",
-      name: "Россия",
-    },
-    provider: {
-      "@type": "Organization",
-      "@id": `${siteUrl}/#organization`,
-      name: "TenderLex",
-      url: siteUrl,
-    },
-    availableChannel: {
-      "@type": "ServiceChannel",
-      serviceUrl: absoluteUrl("/cabinet"),
-      availableLanguage: ["ru"],
-    },
+    description:
+      "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков 44-ФЗ/223-ФЗ и поиска прямых контактов поставщиков.",
+    url: siteUrl,
   };
 }

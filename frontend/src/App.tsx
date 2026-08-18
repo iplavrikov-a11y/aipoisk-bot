@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   X,
   ArrowDown,
@@ -962,8 +962,8 @@ export function App() {
   const [passwordResets, setPasswordResets] = useState<PasswordResetRequest[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
+  const loadAllRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
 
   function setView(nextView: View) {
     setViewState(nextView)
@@ -994,11 +994,6 @@ export function App() {
       } catch {}
     }
   }, [authenticated, view])
-
-  useEffect(() => {
-    const timer = setInterval(() => setNowTs(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
 
   const isReady = authenticated
   const canLogin = username.trim().length > 0 && password.length > 0
@@ -1032,6 +1027,9 @@ export function App() {
       setLoading(false)
     }
   }
+  loadAllRef.current = loadAll
+
+  const stableLoadAll = useCallback(() => loadAllRef.current(), [])
 
   async function loadAnalytics() {
     if (!authenticated) return
@@ -1261,7 +1259,7 @@ export function App() {
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
-        {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={loadAll} />}
+        {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} />}
 
         {showServerModal && opsStatus && (
           <div className="server-modal-backdrop" onClick={() => setShowServerModal(false)}>
@@ -2524,7 +2522,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
           const fallbackStatusLabel = registryFallbackStatusLabel(job)
-          const isFinished = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+          const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
           return (
@@ -2944,7 +2942,7 @@ function SettingsView({
   )
 }
 
-function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
+const AiView = memo(function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
   const [savedModels, setSavedModels] = useState<SavedModel[]>(() => parseJson(settings.saved_models_json, []))
   const [providers, setProviders] = useState<CustomProvider[]>(() => ensureModelProviders(parseJson(settings.custom_ai_providers_json, []), parseJson(settings.saved_models_json, [])))
   const [functionModels, setFunctionModels] = useState<Record<string, string>>(() => parseJson(settings.ai_function_models_json, {}))
@@ -3487,7 +3485,7 @@ function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: (
       </details>
     </section>
   )
-}
+})
 
 function moveArrayItem<T>(items: T[], index: number, delta: number) {
   const nextIndex = index + delta

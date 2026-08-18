@@ -14,6 +14,7 @@ import {
   FileCheck,
   Zap,
   ArrowRight,
+  Send,
 } from "lucide-react";
 
 type Mode = "supplier_search" | "doc_analysis" | "combined";
@@ -49,16 +50,16 @@ const demoSpecs: DemoSpec[] = [
       {
         name: 'ООО "Кавказкабель"',
         role: "Завод-изготовитель",
-        location: "Нальчик / СКФО",
-        matchLevel: "Точное совпадение",
+        location: "Россия (Прямой завод)",
+        matchLevel: "Точное совпадение ГОСТ",
         email: "sales@kavkazkabel.ru",
         phone: "+7 (866) 240-77-11",
       },
       {
         name: 'ООО "Севкабель-Дистрибуция"',
         role: "Официальный дилер",
-        location: "Москва / ЦФО",
-        matchLevel: "Профильный поставщик",
+        location: "Россия (Центральный склад)",
+        matchLevel: "Профильный склад",
         email: "msk@sevkabel.ru",
         phone: "+7 (495) 120-44-88",
       },
@@ -69,12 +70,12 @@ const demoSpecs: DemoSpec[] = [
       {
         type: "warning",
         title: "Срок поставки: 7 рабочих дней",
-        desc: "Риск просрочки при отгрузке в удаленные регионы. Рекомендуется уточнить наличие на складах.",
+        desc: "Короткий срок. Рекомендуется запросить наличие на складах дилеров до подачи заявки.",
       },
       {
         type: "info",
         title: "Сертификация ЕАЭС",
-        desc: "Подтвержден ГОСТ 31996-2012. Требуется паспорт качества производителя на каждую партию.",
+        desc: "Требуется паспорт качества производителя на каждую партию согласно ГОСТ 31996-2012.",
       },
     ],
   },
@@ -87,17 +88,17 @@ const demoSpecs: DemoSpec[] = [
       {
         name: 'ООО "ТЕХНОНИКОЛЬ Продажи"',
         role: "Завод-изготовитель",
-        location: "Рязань / РФ",
+        location: "Россия (Прямой завод)",
         matchLevel: "Точное совпадение",
         email: "tn@technonicol.ru",
         phone: "8 (800) 200-04-00",
       },
       {
         name: 'ООО "СтройКомплект Снаб"',
-        role: "Региональный склад",
-        location: "Санкт-Петербург / СЗФО",
-        matchLevel: "Смежная категория",
-        email: "spb@stroykomplekt.ru",
+        role: "Официальный дистрибьютор",
+        location: "Россия (Федеральная сеть)",
+        matchLevel: "Профильный склад",
+        email: "sales@stroykomplekt.ru",
         phone: "+7 (812) 334-11-22",
       },
     ],
@@ -107,12 +108,12 @@ const demoSpecs: DemoSpec[] = [
       {
         type: "danger",
         title: "Постоплата 100% через 30 дней",
-        desc: "Аванс не предусмотрен контрактом. Требуются собственные оборотные средства.",
+        desc: "Аванс не предусмотрен контрактом. Требуются собственные оборотные средства поставщика.",
       },
       {
         type: "info",
         title: "Требования к упаковке",
-        desc: "Контроль целостности влагозащитной пленки при приемке на объекте.",
+        desc: "Контроль целостности влагозащитной пленки при приемке на объекте заказчика.",
       },
     ],
   },
@@ -125,7 +126,7 @@ const demoSpecs: DemoSpec[] = [
       {
         name: 'АО "Челябинский Завод Арматуры"',
         role: "Завод-изготовитель",
-        location: "Челябинск / Урал",
+        location: "Россия (Прямой завод)",
         matchLevel: "Точное совпадение",
         email: "sales@chza-armatura.ru",
         phone: "+7 (351) 778-90-00",
@@ -133,9 +134,9 @@ const demoSpecs: DemoSpec[] = [
       {
         name: 'ООО "АрмСнаб Поставка"',
         role: "Официальный дистрибьютор",
-        location: "Екатеринбург / УрФО",
+        location: "Россия (Складской хаб)",
         matchLevel: "Профильный поставщик",
-        email: "ekb@armsnab.ru",
+        email: "sales@armsnab.ru",
         phone: "+7 (343) 220-55-44",
       },
     ],
@@ -145,12 +146,12 @@ const demoSpecs: DemoSpec[] = [
       {
         type: "danger",
         title: "Минпромторг № 616 (Нацрежим)",
-        desc: "Обязательное условие: подтверждение происхождения товара выпиской из ГИСП.",
+        desc: "Обязательное условие: подтверждение происхождения товара выпиской из реестра ГИСП.",
       },
       {
         type: "warning",
         title: "Нетипичные штрафные санкции",
-        desc: "Штраф 0.5% за каждый день просрочки представления исполнительной документации.",
+        desc: "Штраф 0.5% за каждый день просрочки предоставления паспортов на арматуру.",
       },
     ],
   },
@@ -169,27 +170,27 @@ export function InteractiveHeroDemo() {
   };
 
   return (
-    <div className="bg-white/95 backdrop-blur-xl border-2 border-slate-200/90 rounded-2xl p-5 sm:p-6 text-slate-800 shadow-xl relative overflow-hidden space-y-5">
+    <div className="bg-white border-2 border-slate-200 rounded-3xl p-5 sm:p-6 text-slate-800 shadow-xl relative overflow-hidden space-y-5">
       {/* Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-teal-600 animate-pulse" />
-          <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900">
+          <span className="text-xs font-black uppercase tracking-wider text-slate-900">
             Симулятор возможностей TenderLex
           </span>
         </div>
-        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-teal-100 border border-teal-300 text-teal-900 font-bold">
-          Реальный функционал ИИ
+        <span className="text-[11px] px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-900 font-extrabold">
+          Поиск по всей России
         </span>
       </div>
 
-      {/* Mode Selector Tabs (Real Backend Scenarios) */}
-      <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-bold">
+      {/* Mode Selector Tabs */}
+      <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-2xl text-xs font-bold">
         <button
           onClick={() => setActiveMode("supplier_search")}
-          className={`py-2 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 ${
+          className={`py-2 px-2 rounded-xl transition-all text-center flex items-center justify-center gap-1.5 ${
             activeMode === "supplier_search"
-              ? "bg-white text-teal-800 shadow-xs border border-slate-200"
+              ? "bg-white text-teal-900 shadow-xs border border-slate-200"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
@@ -200,28 +201,28 @@ export function InteractiveHeroDemo() {
 
         <button
           onClick={() => setActiveMode("doc_analysis")}
-          className={`py-2 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 ${
+          className={`py-2 px-2 rounded-xl transition-all text-center flex items-center justify-center gap-1.5 ${
             activeMode === "doc_analysis"
-              ? "bg-white text-teal-800 shadow-xs border border-slate-200"
+              ? "bg-white text-teal-900 shadow-xs border border-slate-200"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
           <FileCheck className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-          <span className="hidden sm:inline">2. Разбор ЕИС 44-ФЗ</span>
-          <span className="sm:hidden">Анализ</span>
+          <span className="hidden sm:inline">2. Риски 44-ФЗ</span>
+          <span className="sm:hidden">Риски</span>
         </button>
 
         <button
           onClick={() => setActiveMode("combined")}
-          className={`py-2 px-2 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 ${
+          className={`py-2 px-2 rounded-xl transition-all text-center flex items-center justify-center gap-1.5 ${
             activeMode === "combined"
-              ? "bg-white text-teal-800 shadow-xs border border-slate-200"
+              ? "bg-white text-teal-900 shadow-xs border border-slate-200"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
           <Zap className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-          <span className="hidden sm:inline">3. Анализ + Поиск</span>
-          <span className="sm:hidden">Всё вместе</span>
+          <span className="hidden sm:inline">3. Готовый Запрос КП</span>
+          <span className="sm:hidden">Запрос КП</span>
         </button>
       </div>
 
@@ -230,148 +231,141 @@ export function InteractiveHeroDemo() {
         <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
           Пример спецификации из ТЗ:
         </span>
-        <div className="flex flex-nowrap overflow-x-auto pb-1 gap-2 scrollbar-none">
+        <div className="flex flex-wrap gap-2">
           {demoSpecs.map((spec) => (
             <button
               key={spec.id}
               onClick={() => setActiveSpecId(spec.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition-all ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
                 spec.id === activeSpecId
                   ? "bg-teal-600 text-white shadow-xs"
                   : "bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200"
               }`}
             >
-              {spec.name.split(" (")[0]}
+              {spec.name}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Mode 1: Supplier Search Output */}
-      {(activeMode === "supplier_search" || activeMode === "combined") && (
-        <div className="space-y-4 pt-1">
-          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex justify-between items-center text-xs">
-            <div>
-              <span className="font-bold text-teal-700 block">{activeSpec.category}</span>
-              <span className="text-slate-900 font-semibold">{activeSpec.name}</span>
-            </div>
-            <span className="text-[10px] font-bold bg-teal-100 text-teal-800 px-2 py-0.5 rounded border border-teal-200 shrink-0">
-              {activeSpec.itemsCount}
-            </span>
-          </div>
-
-          <div>
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Извлеченная база прямых контактов:
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono">2 завода • 4 дилера</span>
-            </div>
-
-            <div className="space-y-2">
-              {activeSpec.suppliers.map((s) => (
-                <div
-                  key={s.name}
-                  className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs hover:border-teal-400 transition-colors space-y-1.5 text-xs"
-                >
-                  <div className="flex flex-wrap justify-between items-center gap-2">
-                    <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                      <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-                      {s.name}
-                    </span>
-                    <span className="text-[10px] font-bold bg-emerald-50 border border-emerald-300 text-emerald-800 px-2 py-0.5 rounded">
-                      {s.role}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
-                    <span className="text-slate-600 flex items-center gap-1">
-                      <Mail className="w-3 h-3 text-teal-600 shrink-0" />
-                      <strong className="text-teal-700 font-mono">{s.email}</strong>
-                    </span>
-                    <span className="text-slate-600 flex items-center gap-1">
-                      <Phone className="w-3 h-3 text-teal-600 shrink-0" />
-                      <span className="font-mono text-slate-800">{s.phone}</span>
-                    </span>
-                    <span className="text-slate-400 text-[10px] font-medium ml-auto">
-                      {s.matchLevel}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Generated RFQ Email Box */}
-          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
-            <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-              <span className="font-bold text-slate-900 flex items-center gap-1.5 text-[11px]">
-                <FileText className="w-3.5 h-3.5 text-teal-600" /> Сгенерированный Запрос КП:
-              </span>
-              <button
-                onClick={handleCopy}
-                className="text-[10px] font-bold text-teal-700 hover:text-teal-800 flex items-center gap-1 bg-white px-2 py-1 rounded border border-slate-200 shadow-2xs"
-              >
-                <Copy className="w-3 h-3" />
-                {copied ? "Скопировано!" : "Скопировать"}
-              </button>
-            </div>
-            <p className="text-slate-700 font-mono text-[11px] leading-relaxed">
-              {activeSpec.rfqText}
-            </p>
-          </div>
+      {/* Active Spec Info */}
+      <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex justify-between items-center text-xs">
+        <div>
+          <span className="text-slate-500 block text-[10px] uppercase font-bold">Категория номенклатуры:</span>
+          <strong className="text-slate-900 font-extrabold">{activeSpec.category}</strong>
         </div>
-      )}
+        <span className="px-2.5 py-1 bg-white rounded-lg border border-slate-200 font-bold text-slate-700 text-[11px]">
+          {activeSpec.itemsCount}
+        </span>
+      </div>
 
-      {/* Mode 2: Procurement Risk Analysis */}
-      {(activeMode === "doc_analysis" || activeMode === "combined") && (
-        <div className="space-y-3 pt-1">
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-              Аудит рисков контракта (ЕИС / 44-ФЗ / 223-ФЗ):
+      {/* Dynamic Tab Content */}
+      {/* 1. Suppliers Tab */}
+      {(activeMode === "supplier_search" || activeMode === "combined") && (
+        <div className="space-y-3">
+          <div className="flex justify-between items-center text-xs">
+            <span className="font-extrabold text-slate-900 uppercase tracking-wider text-[11px]">
+              Извлеченная база прямых контактов по РФ:
             </span>
-            <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-              Проверка завершена
-            </span>
+            <span className="text-slate-500 text-[11px] font-bold">2 завода • 4 дилера</span>
           </div>
 
-          <div className="space-y-2">
-            {activeSpec.risks.map((r, idx) => (
+          <div className="space-y-2.5">
+            {activeSpec.suppliers.map((supp, sIdx) => (
               <div
-                key={idx}
-                className={`p-3 rounded-xl border text-xs space-y-1 ${
-                  r.type === "danger"
-                    ? "bg-rose-50/80 border-rose-200 text-rose-900"
-                    : r.type === "warning"
-                    ? "bg-amber-50/80 border-amber-200 text-amber-900"
-                    : "bg-teal-50/80 border-teal-200 text-teal-900"
-                }`}
+                key={sIdx}
+                className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs space-y-2 hover:border-teal-500 transition-colors"
               >
-                <div className="flex items-center gap-1.5">
-                  {r.type === "danger" || r.type === "warning" ? (
-                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
-                  )}
-                  <strong className="font-bold">{r.title}</strong>
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="flex items-center gap-1.5 font-black text-slate-900">
+                      <Building2 className="w-3.5 h-3.5 text-teal-600" />
+                      <span>{supp.name}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-500">{supp.location}</span>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-100 text-teal-900 font-extrabold border border-teal-200">
+                    {supp.role}
+                  </span>
                 </div>
-                <p className="text-[11px] text-slate-600 leading-relaxed pl-5.5">{r.desc}</p>
+
+                <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-700 pt-1 border-t border-slate-200/60">
+                  <span className="flex items-center gap-1 font-bold text-teal-700">
+                    <Mail className="w-3 h-3 text-teal-600" />
+                    {supp.email}
+                  </span>
+                  <span className="flex items-center gap-1 font-bold text-slate-800">
+                    <Phone className="w-3 h-3 text-slate-500" />
+                    {supp.phone}
+                  </span>
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Action Footer */}
-      <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <span className="text-slate-500 font-medium text-[11px]">
-          Выгрузка: XLSX таблицы • DOCX отчеты • Telegram и Веб-кабинет
-        </span>
+      {/* 2. Risks Analysis Tab */}
+      {(activeMode === "doc_analysis" || activeMode === "combined") && (
+        <div className="space-y-3">
+          <span className="font-extrabold text-slate-900 uppercase tracking-wider text-[11px] block">
+            Результат анализа рисков документации:
+          </span>
+
+          <div className="space-y-2">
+            {activeSpec.risks.map((r, rIdx) => (
+              <div
+                key={rIdx}
+                className={`p-3 rounded-2xl border text-xs space-y-1 ${
+                  r.type === "danger"
+                    ? "bg-rose-50 border-rose-200 text-rose-900"
+                    : r.type === "warning"
+                    ? "bg-amber-50 border-amber-200 text-amber-900"
+                    : "bg-teal-50 border-teal-200 text-teal-900"
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-black">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                  <span>{r.title}</span>
+                </div>
+                <p className="text-[11px] leading-relaxed opacity-90">{r.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. RFQ Text Output Tab */}
+      {(activeMode === "combined" || activeMode === "supplier_search") && (
+        <div className="space-y-2 pt-2 border-t border-slate-200">
+          <div className="flex justify-between items-center">
+            <span className="font-extrabold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1">
+              <FileText className="w-3.5 h-3.5 text-teal-600" />
+              Сформированный Запрос КП (RFQ):
+            </span>
+            <button
+              onClick={handleCopy}
+              className="text-[10px] font-bold text-teal-700 hover:text-teal-900 flex items-center gap-1 bg-teal-50 px-2.5 py-1 rounded-lg border border-teal-200 transition-colors"
+            >
+              <Copy className="w-3 h-3" />
+              {copied ? "Скопировано!" : "Скопировать"}
+            </button>
+          </div>
+
+          <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-[11px] text-slate-700 font-mono leading-relaxed">
+            {activeSpec.rfqText}
+          </div>
+        </div>
+      )}
+
+      {/* Footer CTA */}
+      <div className="pt-2">
         <a
           href="/cabinet"
-          className="inline-flex items-center gap-1 font-bold text-teal-700 hover:text-teal-800"
+          className="w-full py-3.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
         >
-          Запустить разбор по вашему ТЗ <ArrowRight className="w-3.5 h-3.5" />
+          <span>Запустить поиск по своему ТЗ бесплатно</span>
+          <ArrowRight size={14} />
         </a>
       </div>
     </div>

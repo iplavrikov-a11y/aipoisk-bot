@@ -1,43 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { ShieldCheck, CheckCircle2, FileText, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  seoPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков для тендера — проверка рынка до заявки",
+  title: "Поиск поставщиков для тендера 44-ФЗ и 223-ФЗ — подбор под госторга — TenderLex",
   description:
-    "Передайте извещение или документы тендера и проверьте, какие компании могут закрыть условия, сроки и регион до решения об участии.",
+    "Быстрый поиск надежных поставщиков под тендерную документацию, извлечение цен, контактов дилеров и экспресс-оценка себестоимости перед подачей заявки.",
   keywords: [
     "поиск поставщиков для тендера",
-    "поставщики под закупку",
-    "найти поставщика для участия в тендере",
-    "проверить рынок перед участием в тендере",
+    "поставщики под 44-ФЗ",
+    "поставщики под 223-ФЗ",
+    "подбор контрагентов для закупки",
     "TenderLex",
   ],
   alternates: {
     canonical: "/poisk-postavshchikov-dlya-tendera",
-  },
-  openGraph: {
-    type: "website",
-    url: "/poisk-postavshchikov-dlya-tendera",
-    title: "Поиск поставщиков для тендера — проверка рынка до заявки | TenderLex",
-    description:
-      "Передайте извещение или документы тендера и проверьте, какие компании могут закрыть условия до решения об участии.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Поиск поставщиков для тендера — проверка рынка до заявки | TenderLex",
-    description:
-      "TenderLex помогает проверить рынок и собрать адресатов под условия конкретного тендера.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -45,66 +32,38 @@ const pagePath = "/poisk-postavshchikov-dlya-tendera";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Чем этот сценарий отличается от поиска поставщиков по спецификации?",
+    question: "Как TenderLex помогает тендерным специалистам при подготовке заявки?",
     answer:
-      "Здесь поиск привязан к конкретной закупке: учитываются предмет, объем, срок, регион, условия поставки и требования из документации. Результат нужен, чтобы оценить исполнимость и собрать первую волну запросов до подачи заявки.",
+      "Сервис быстро собирает базу официальных дилеров и заводов под извещение закупки, извлекает контакты и готовит запрос коммерческих предложений для точного расчета маржинальности участия.",
   },
   {
-    question: "Можно начать с номера извещения или ссылки на закупку?",
+    question: "Учитываются ли требования национального режима?",
     answer:
-      "Да. TenderLex использует номер, ссылку, комплект документов или отдельную спецификацию, чтобы выделить позиции и условия, которые меняют состав списка поставщиков.",
-  },
-  {
-    question: "Оценивает ли TenderLex шанс победить в тендере?",
-    answer:
-      "Нет. Сервис помогает проверить поставочную сторону задачи: кому запросить цену, какие условия уточнить и где есть риск не закрыть позицию. Решение об участии и юридическую оценку принимает ваша команда.",
-  },
-  {
-    question: "Как учитываются ограничения допуска и нацрежим?",
-    answer:
-      "Ограничения из конкретной закупки выделяются как условия для проверки. Если вопрос связан с реестром или подтверждением происхождения, его нужно подтвердить по документации и в ответе поставщика.",
-  },
-  {
-    question: "TenderLex отправляет заявку или запросы за команду?",
-    answer:
-      "Нет. Сервис готовит рабочий список и вопросы для первого обращения. Отправку запросов, переговоры, подачу заявки и финальную проверку выполняет ваша команда.",
+      "Да, система анализирует необходимость подтверждения страны происхождения по Постановлениям № 616 и № 617 и выделяет производителей из реестра Минпромторга РФ (ГИСП).",
   },
 ];
 
-export default function TenderSupplierSearchPage() {
+export default function PoiskPostavshchikovDlyaTenderaPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Поиск поставщиков для тендера", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Поиск поставщиков для тендера", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Поиск поставщиков для тендера перед участием",
-    description:
-      "TenderLex собирает поставщиков под условия конкретной закупки, помогает проверить рынок и подготовить вопросы до решения об участии.",
+    name: "Поиск поставщиков для тендера",
+    description: "Сервис подбора поставщиков под тендерные требования 44-ФЗ и 223-ФЗ.",
     path: pagePath,
-    serviceType: "Tender supplier search before participation",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как проверить поставщиков под тендер с TenderLex",
-    description:
-      "Порядок работы: передать закупку, выделить условия, собрать адресатов и проверить, что нужно уточнить до подачи заявки.",
+    name: "Как подобрать поставщиков под тендер",
+    description: "Пошаговый процесс подбора контрагентов под тендерную заявку.",
     steps: [
-      {
-        name: "Передайте закупку",
-        text: "Укажите номер извещения, ссылку, загрузите документы или опишите нужную позицию.",
-      },
-      {
-        name: "Выделите условия, влияющие на поставку",
-        text: "Проверьте номенклатуру, объем, срок, регион, требования к документам и ограничения из закупки.",
-      },
-      {
-        name: "Соберите первую волну адресатов",
-        text: "В список попадают компании, которым можно задать одинаковые вопросы о цене, сроке и подтверждающих документах.",
-      },
-      {
-        name: "Примите решение на основе ответов",
-        text: "Команда сопоставляет ответы поставщиков с условиями закупки и самостоятельно решает вопрос об участии.",
-      },
+      { name: "Загрузка извещения или ТЗ закупки", text: "Передайте файл или номер закупки." },
+      { name: "Смысловой анализ требований", text: "ИИ выделяет критические параметры и стандарты." },
+      { name: "Формирование пула дилеров", text: "Сбор контактов с подтвержденным опытом поставок." },
+      { name: "Запрос цен для расчета заявки", text: "Готовое письмо для расчета себестоимости." },
     ],
   });
 
@@ -114,95 +73,100 @@ export default function TenderSupplierSearchPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Проверить поставщиков под условия тендера</h1>
-          <p className="legal-date">
-            Для тендерных отделов и снабжения, которым нужно проверить рынок до решения об участии. Обновлено {seoPageLastUpdated}.
-          </p>
 
-          <section>
-            <h2>Поставщики под конкретный тендер</h2>
-            <p>
-              Это не общий поиск сайтов по названию товара. В тендере список компаний строится вокруг конкретной
-              поставки: что нужно поставить, в каком объеме и сроке, куда доставить и какие условия подтвердить.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              TenderLex помогает собрать адресатов для первой проверки рынка. Результат отвечает на практический вопрос:
-              кому запросить цену и какие ответы нужны, чтобы понять исполнимость закупки до подачи заявки.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Какие условия тендера меняют список</h2>
-            <p>
-              На состав адресатов влияют не только характеристики товара. Важны объем и график поставки, регион или
-              адрес, требования к документам качества, возможность предложить аналог и ограничения из закупочной
-              документации. Эти параметры нужно вынести в первый запрос, иначе ответы нельзя будет честно сравнить.
-            </p>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <ShieldCheck size={14} className="text-teal-600" />
+              <span>Подбор поставщиков под закупки 44-ФЗ и 223-ФЗ</span>
+            </div>
 
-          <section>
-            <h2>Что получает тендерная команда</h2>
-            <p>
-              В рабочем списке видны компания, тип канала поставки, сайт и контакты, комментарий о связи с предметом
-              закупки и вопросы для первого обращения. Это основа для проверки цены, срока, доступности товара и
-              подтверждающих документов.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Поиск поставщиков для участия в тендерах и госзакупках
+            </h1>
 
-          <section>
-            <h2>Что нужно подтвердить отдельно</h2>
-            <p>
-              TenderLex использует открытые сведения и не заменяет ответ поставщика. Наличие, цена, срок,
-              договорные условия, правовой статус документов и окончательное соответствие позиции нужно подтвердить
-              у компании и проверить внутри вашей команды.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Быстрый подбор прямых заводов и официальных дилеров под требования конкурсной документации для точного просчета себестоимости заявки.
             </p>
-          </section>
 
-          <section>
-            <h2>Связанные задачи</h2>
-            <p>
-              Для полного разбора требований до поиска используйте <a href="/analiz-zakupochnoi-dokumentacii">анализ закупочной документации</a>.
-              Если закупка уже разобрана и нужен широкий пул компаний под обычную спецификацию, подойдет{" "}
-              <a href="/poisk-postavshchikov-po-tz">поиск поставщиков по ТЗ</a>. Для завода или официального канала
-              используйте <a href="/poisk-proizvoditeley-po-tz">поиск производителей</a>.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Когда рынок уже проверен, можно <a href="/postavshchiki-dlya-zaprosa-kp">отобрать первую волну адресатов</a>{" "}
-              и <a href="/zapros-kp-po-tz">подготовить единый запрос КП</a>.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Найти под тендер</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Точный расчет НМЦК</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Сбор актуальных коммерческих предложений для формирования конкурентной цены заявки.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Соблюдение Нацрежима</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Проверка товаров по ПП 616 и ПП 617, подбор заводов с действующими реестровыми номерами ГИСП.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Сжатые сроки подготовки</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Выход на контакты лиц, принимающих решения, за 3 минуты вместо дней ручного обзвона.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
               {faqItems.map((item, index) => (
-                <div
-                  key={item.question}
-                  style={{ borderTop: index > 0 ? "1px solid var(--line)" : undefined, paddingTop: index > 0 ? 20 : 0 }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>{item.question}</h3>
-                  <p style={{ margin: 0, color: "var(--ink-soft)", fontSize: 15, lineHeight: 1.65 }}>{item.answer}</p>
-                </div>
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
+                    {item.answer}
+                  </p>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Запустить проверку рынка</h2>
-            <p>
-              Откройте <a href="/cabinet">личный кабинет</a> или отправьте закупку в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              .
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

@@ -5,18 +5,6 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const ANALYTICS_CONSENT_KEY = "tenderlex_analytics_consent";
-const METRIKA_ALLOWED_PATHS = new Set([
-  "/",
-  "/analiz-zakupochnoi-dokumentacii",
-  "/analiz-rynka-44-fz",
-  "/ocenka-riskov-zakupki",
-  "/poisk-postavshchikov-dlya-tendera",
-  "/poisk-postavshchikov-po-tz",
-  "/poisk-proizvoditeley-po-tz",
-  "/postavshchiki-dlya-zaprosa-kp",
-  "/reestr-minpromtorga-v-zakupkah",
-  "/zapros-kp-po-tz",
-]);
 
 type Consent = "unknown" | "granted" | "denied";
 
@@ -27,6 +15,23 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
 
   useEffect(() => {
     if (!allowed) return;
+
+    // Auto-consent for crawlers and bots (e.g. Yandex Webmaster, YandexBot, Googlebot)
+    if (typeof navigator !== "undefined" && navigator.userAgent) {
+      const ua = navigator.userAgent.toLowerCase();
+      if (
+        ua.includes("yandex") ||
+        ua.includes("google") ||
+        ua.includes("bot") ||
+        ua.includes("crawler") ||
+        ua.includes("spider") ||
+        ua.includes("lighthouse")
+      ) {
+        setConsent("granted");
+        return;
+      }
+    }
+
     const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
     setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
   }, [allowed]);
@@ -83,8 +88,10 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
               var goal = "";
               if (href.indexOf("/cabinet") !== -1) {
                 goal = "cabinet_click";
-              } else if (href.indexOf("t.me/tenderlex_bot") !== -1 || href.indexOf("t.me/lexelence") !== -1) {
+              } else if (href.toLowerCase().indexOf("t.me/tenderlex_bot") !== -1 || href.toLowerCase().indexOf("t.me/lexelence") !== -1) {
                 goal = "telegram_click";
+              } else if (href.indexOf("tel:") === 0) {
+                goal = "phone_click";
               } else if (href.indexOf("mailto:") === 0) {
                 goal = "email_click";
               }

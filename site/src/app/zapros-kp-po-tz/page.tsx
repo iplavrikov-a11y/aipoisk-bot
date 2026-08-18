@@ -1,36 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { FileText, CheckCircle2, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  seoPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Запрос КП по ТЗ — цены и сроки поставки",
+  title: "Генератор запроса КП по ТЗ — автосоставление делового письма — TenderLex",
   description:
-    "Передайте ТЗ, спецификацию или документы закупки и получите единый запрос КП с позициями, условиями поставки и вопросами для сравнения ответов.",
+    "Автоматическое составление официального запроса коммерческого предложения (RFQ) по спецификации. Структурированная таблица, объемы, ГОСТы и дедлайн.",
+  keywords: [
+    "запрос КП по ТЗ",
+    "генератор запроса коммерческого предложения",
+    "составить RFQ по спецификации",
+    "шаблон запроса цен поставщикам",
+    "TenderLex",
+  ],
   alternates: {
     canonical: "/zapros-kp-po-tz",
-  },
-  openGraph: {
-    type: "website",
-    url: "/zapros-kp-po-tz",
-    title: "Запрос КП по ТЗ — цены и сроки поставки | TenderLex",
-    description:
-      "Из спецификации в понятный запрос цены: что поставить, какие параметры подтвердить и какие условия указать.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Запрос КП по ТЗ — цены и сроки поставки | TenderLex",
-    description:
-      "Из спецификации в понятный запрос цены: позиции, характеристики, условия и документы качества.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -38,190 +32,141 @@ const pagePath = "/zapros-kp-po-tz";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Что входит в запрос цены поставщику?",
+    question: "Как работает авто-генератор запроса КП?",
     answer:
-      "Это текст для первого обращения: перечень позиций, характеристики, количество, условия поставки, оплаты, документы качества и вопросы, которые поставщик должен закрыть в ответе.",
+      "TenderLex извлекает из вашего ТЗ перечень позиций, маркоразмеры, единицы измерения и объемы, после чего автоматически собирает деловое обращение с таблицей, требованиями к паспортам качества и сроками ответа.",
   },
   {
-    question: "Чем запрос цены отличается от списка поставщиков?",
+    question: "Можно ли отредактировать сформированный текст?",
     answer:
-      "Список поставщиков отвечает на вопрос, кому писать. Запрос цены отвечает на вопрос, что именно отправить, чтобы получить сравнимые ответы по цене, срокам и условиям.",
-  },
-  {
-    question: "Можно ли подготовить запрос цены из закупочной документации?",
-    answer:
-      "Да. TenderLex может взять номер извещения, ссылку, документы или отдельную спецификацию и собрать из них компактный запрос для поставщиков без лишних условий закупочной процедуры.",
-  },
-  {
-    question: "Как учесть реестровые требования в запросе цены?",
-    answer:
-      "В запрос цены нужно включать только требования, которые прямо следуют из конкретной закупки. Вопросы нацрежима и реестров лучше сначала сверить на отдельной странице о требованиях Минпромторга, а затем сформулировать их для поставщика.",
-  },
-  {
-    question: "Нужно ли проверять запрос перед отправкой поставщикам?",
-    answer:
-      "Да. TenderLex ускоряет подготовку и структурирует требования, но перед рассылкой команда должна проверить формулировки, сроки, адрес поставки, количество и юридически значимые условия.",
+      "Да, текст формируется в удобном формате для копирования и редактирования в вашем почтовом клиенте или корпоративной CRM.",
   },
 ];
 
-export default function QuoteRequestPage() {
+export default function ZaprosKpPoTzPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Запрос КП по ТЗ", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Запрос КП по ТЗ", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Подготовка запроса цены по спецификации",
-    description:
-      "TenderLex превращает спецификацию или закупочную документацию в понятный запрос цены для найденных производителей, дилеров и профильных поставщиков.",
+    name: "Генератор запроса КП по ТЗ",
+    description: "Сервис автогенерации текстов запросов коммерческих предложений по спецификациям.",
     path: pagePath,
-    serviceType: "Request for quotation preparation",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как подготовить запрос цены поставщику в TenderLex",
-    description:
-      "Подготовка запроса цены по спецификации: от загрузки материалов до текста, который можно отправить поставщикам.",
+    name: "Как составить запрос КП по ТЗ",
+    description: "Пошаговый процесс автоматического формирования RFQ.",
     steps: [
-      {
-        name: "Передайте спецификацию или закупку",
-        text: "Загрузите описание позиции, комплект документов, вставьте ссылку или укажите номер извещения.",
-      },
-      {
-        name: "TenderLex выделяет предмет запроса",
-        text: "Сервис извлекает позиции, характеристики, количество, требования к качеству, срокам, доставке и оплате.",
-      },
-      {
-        name: "Формируется запрос поставщику",
-        text: "Из лишнего закупочного текста остается понятное обращение: что поставить, какие документы приложить и какие условия указать в ответе.",
-      },
-      {
-        name: "Проверьте и отправьте поставщикам",
-        text: "Команда сверяет формулировки и отправляет запрос выбранным производителям, дилерам или профильным поставщикам.",
-      },
+      { name: "Загрузка спецификации", text: "Передайте файл или текст номенклатуры." },
+      { name: "ИИ-структурирование", text: "Формирование таблицы параметров и объемов." },
+      { name: "Добавление условий", text: "Указание адреса доставки, фасовки и дедлайна." },
+      { name: "Копирование текста", text: "Готовое письмо для отправки поставщикам." },
     ],
   });
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }}
-      />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Подготовить запрос КП по ТЗ</h1>
-          <p className="legal-date">
-            Для снабжения и тендерных отделов, которым нужны сравнимые ответы от поставщиков. Обновлено {seoPageLastUpdated}.
-          </p>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
 
-          <section>
-            <h2>Зачем готовить запрос цены отдельно</h2>
-            <p>
-              Спецификация или закупочная документация часто написана для процедуры, а не для поставщика. В ней много
-              служебных условий, ссылок на документы, формулировок договора и требований, которые мешают быстро
-              получить сопоставимый ответ по цене и срокам.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              TenderLex превращает исходные материалы в рабочий запрос: выделяет закупаемые позиции, характеристики,
-              количество, требования к качеству, условия поставки, оплаты и вопросы, которые поставщик должен
-              закрыть в ответе.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Что входит в запрос цены</h2>
-            <p>
-              В запрос цены попадают позиции из спецификации, ключевые характеристики, единицы измерения, количество, город или
-              адрес поставки, срок поставки, условия оплаты, упаковка, документы качества, гарантия и требования,
-              которые важно подтвердить до сравнения цен.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Такой запрос проще отправить нескольким поставщикам: ответы легче сравнивать по цене, срокам,
-              комплектности, документам и условиям доставки, потому что все поставщики получают одинаковую
-              структуру вопроса.
-            </p>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <FileText size={14} className="text-teal-600" />
+              <span>Автоматическая генерация текста RFQ</span>
+            </div>
 
-          <section>
-            <h2>Как это связано с поиском поставщиков</h2>
-            <p>
-              После <a href="/poisk-postavshchikov-po-tz">поиска поставщиков по ТЗ</a> команда получает компании,
-              сайты и контакты. Запрос цены нужен для следующего шага: быстро обратиться к найденным производителям,
-              дилерам или профильным поставщикам с одинаковым набором требований.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Если сначала нужен разбор закупки, можно запустить{" "}
-              <a href="/analiz-zakupochnoi-dokumentacii">анализ закупочной документации</a>, а затем использовать
-              результат как основу для запроса цены.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Генератор запроса коммерческого предложения (КП) по ТЗ
+            </h1>
 
-          <section>
-            <h2>Реестровые требования в запросе</h2>
-            <p>
-              Не добавляйте требования о реестрах автоматически: они зависят от конкретной закупки. Сначала разберите
-              условия нацрежима, затем включите в запрос только те вопросы и документы, которые нужно подтвердить.
-              Подробнее: <a href="/reestr-minpromtorga-v-zakupkah">нацрежим и реестр Минпромторга в закупках</a>.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Преобразуйте сырую спецификацию или проект в структурированное деловое письмо с таблицей номенклатуры, объемами и требованиями к сертификатам.
             </p>
-          </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
-              {faqItems.map((item, i) => (
-                <div
-                  key={i}
-                  style={{
-                    borderTop: i > 0 ? "1px solid var(--line)" : undefined,
-                    paddingTop: i > 0 ? 20 : 0,
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>
-                    {item.question}
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: "var(--ink-soft)",
-                      fontSize: 15,
-                      lineHeight: 1.65,
-                    }}
-                  >
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Сформировать запрос КП</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
+
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Без ручного набора</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Исключение ошибок в маркировках сталей, ГОСТах и типоразмерах.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Четкий регламент</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Фиксация сроков ответа, условий доставки и запроса паспортов качества.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Готов к копированию</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Удобная вставка в Outlook, Thunderbird или корпоративную CRM за 1 клик.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
+              {faqItems.map((item, index) => (
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
                     {item.answer}
                   </p>
-                </div>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Подготовить запрос цены</h2>
-            <p>
-              Откройте <a href="/cabinet">личный кабинет</a> или отправьте спецификацию в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              . Если компаний ещё нет, начните с <a href="/poisk-postavshchikov-po-tz">поиска поставщиков по ТЗ</a>.
-              Если список уже собран, но нужна первая волна, используйте{" "}
-              <a href="/postavshchiki-dlya-zaprosa-kp">отбор адресатов для запроса КП</a>.
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

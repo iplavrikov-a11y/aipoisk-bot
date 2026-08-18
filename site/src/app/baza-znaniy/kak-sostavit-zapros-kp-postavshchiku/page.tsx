@@ -1,123 +1,53 @@
 import type { Metadata } from "next";
-
 import { buildBreadcrumbJsonLd, buildHowToJsonLd } from "@/lib/seo";
+import { KnowledgeArticleLayout } from "@/components/knowledge-article-layout";
 
 export const metadata: Metadata = {
-  title: "Как правильно составить запрос коммерческого предложения (КП) поставщику",
-  description:
-    "Образец и структура эффективного запроса коммерческих предложений (КП) для отдела снабжения: позиция, объём, условия оплаты, сертификаты и варианты замены.",
-  keywords: [
-    "запрос КП поставщику",
-    "составить запрос коммерческого предложения",
-    "образец запроса цены закупка",
-    "Запрос КП снабжение",
-  ],
-  alternates: {
-    canonical: "/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku",
-  },
-  openGraph: {
-    type: "article",
-    url: "/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku",
-    title: "Как составить запрос коммерческого предложения поставщику | TenderLex",
-    description:
-      "Практическое руководство для закупщиков по составлению коммерческих запросов, экономящих время переписки.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
+  title: "Как составить запрос коммерческого предложения (КП) поставщику — Руководство TenderLex",
+  description: "Правильная структура делового письма для закупки: номенклатура, ГОСТы, объемы, требования к фасовке и условиям отгрузки.",
+  alternates: { canonical: "/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku" },
 };
 
 const steps = [
-  {
-    name: "Четкое описание номенклатуры и параметров",
-    text: "Укажите марку, стандарты ГОСТ/ТУ, требуемые характеристики и возможные варианты аналогичных замен.",
-  },
-  {
-    name: "Фиксация объёма и условий отгрузки",
-    text: "Укажите требуемый объем партии, фасовку (барабаны, поддоны, коробки) и адрес/регион доставки.",
-  },
-  {
-    name: "Перечень обязательных документов качества",
-    text: "Запросите паспорт изделия, сертификат соответствия или выписку из реестра Минпромторга на этапе первого письма.",
-  },
-  {
-    name: "Срок действия предложения и контактное лицо",
-    text: "Укажите крайний срок приема коммерческих предложений и прямое ответственное лицо со стороны снабжения.",
-  },
+  { name: "Четкая структурированная таблица", text: "Указывайте наименование, марку, ГОСТ/ТУ, объем и единицы измерения в понятной таблице." },
+  { name: "Сроки ответа и дедлайн", text: "Всегда фиксируйте желаемую дату предоставления коммерческого предложения." },
+  { name: "Условия логистики и оплаты", text: "Указывайте точный адрес доставки (или самовывоз) и предпочтительные условия расчетов." },
+  { name: "Запрос документов качества", text: "Сразу запрашивайте паспорта качества, сертификаты соответствия и гарантийные сроки." },
 ];
 
 export default function GuideRfqPage() {
   const breadcrumbSchema = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "База знаний", path: "/baza-znaniy" },
-    { name: "Запрос КП поставщику", path: "/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku" },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "База знаний", item: "https://tenderlex.ru/baza-znaniy" },
+    { name: "Запрос КП поставщику", item: "https://tenderlex.ru/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku" },
   ]);
 
   const howToSchema = buildHowToJsonLd({
-    name: "Как составить запрос коммерческого предложения (КП)",
-    description:
-      "Пошаговая структура первого обращения снабжения к заводам и дилерам для получения сравнимых цен.",
+    name: "Как составить запрос коммерческого предложения",
+    description: "Инструкция по составлению официального письма запроса КП.",
     steps,
   });
 
   return (
-    <article className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }}
-      />
-
-      <nav className="mb-6">
-        <a href="/baza-znaniy" className="text-sm font-medium text-teal-700 font-bold hover:underline">
-          ← Назад в базу знаний
-        </a>
-      </nav>
-
-      <header className="mb-8 border-b pb-6 border-gray-200">
-        <span className="text-xs font-semibold text-teal-900 font-extrabold bg-teal-50/80 px-3 py-1 rounded-full uppercase">
-          Практика снабжения
-        </span>
-        <h1 className="text-3xl font-extrabold text-gray-900 mt-3 mb-4">
-          Как правильно составить запрос коммерческого предложения (КП)
-        </h1>
-        <p className="text-lg text-gray-600">
-          Чек-лист для специалиста по закупкам: как составить одно письмо, на которое менеджеры продаж поставщиков ответят в тот же день.
-        </p>
-      </header>
-
-      <div className="prose prose-teal max-w-none text-gray-800 space-y-6">
-        <h2>Структура правильного запроса КП</h2>
-        <ol className="list-decimal pl-6 space-y-4">
-          {steps.map((s, idx) => (
-            <li key={idx}>
-              <strong>{s.name}:</strong> {s.text}
-            </li>
-          ))}
-        </ol>
-
-        <h2>Автоматическое формирование запросов в TenderLex</h2>
+    <KnowledgeArticleLayout
+      tag="Практика снабжения"
+      title="Как правильно составить запрос коммерческого предложения (КП)"
+      subtitle="Структура идеального обращения закупщика к заводам и дилерам для получения минимальной цены в кратчайшие сроки."
+      steps={steps}
+      breadcrumbSchema={breadcrumbSchema}
+      howToSchema={howToSchema}
+    >
+      <div className="space-y-6">
+        <h2 className="text-xl font-bold text-white">1. Почему грамотный запрос КП экономит время</h2>
         <p>
-          Сервис <strong>TenderLex</strong> автоматически генерирует текст единого обращения для отдела продаж на основе загруженной спецификации.
+          Четко сформулированный запрос коммерческого предложения позволяет менеджеру поставщика сразу рассчитать стоимость и логистику без дополнительных уточняющих звонков и переписок.
         </p>
 
-        <div className="my-8 p-6 bg-teal-50/80 rounded-2xl border border-teal-200 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-bold text-gray-900 m-0">Подготовить запрос цены в TenderLex</h3>
-            <p className="text-sm text-gray-600 m-0 mt-1">
-              Автоматически соберите список позиций и условий для единой рассылки.
-            </p>
-          </div>
-          <a
-            href="/zapros-kp-po-tz"
-            className="px-5 py-2.5 bg-teal-600 text-white font-extrabold font-medium rounded-lg text-sm hover:bg-teal-700 transition-colors whitespace-nowrap"
-          >
-            Подготовить запрос КП
-          </a>
-        </div>
+        <h2 className="text-xl font-bold text-white">2. Автогенерация КП через TenderLex</h2>
+        <p>
+          TenderLex автоматически преобразует загруженное ТЗ в готовый текст электронного письма с таблицей номенклатуры и всеми необходимыми юридическими оговорками.
+        </p>
       </div>
-    </article>
+    </KnowledgeArticleLayout>
   );
 }

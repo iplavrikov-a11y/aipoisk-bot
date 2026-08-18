@@ -116,6 +116,42 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
     },
     {
+      url: `${siteUrl}/otrasli`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/otrasli/metalloprokat`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/otrasli/kabel-i-provod`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/otrasli/truboprovodnaya-armatura`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/otrasli/stroitelnye-materialy`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
+      url: `${siteUrl}/otrasli/siz-i-specodezhda`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
       url: `${siteUrl}/regiony`,
       lastModified: seoUpdated,
       changeFrequency: "weekly",

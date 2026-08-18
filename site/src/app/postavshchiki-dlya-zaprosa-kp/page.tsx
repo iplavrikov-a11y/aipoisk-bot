@@ -1,43 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { Mail, CheckCircle2, FileText, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  seoPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поставщики для запроса КП — первая волна адресатов",
+  title: "Поставщики для запроса КП — отбор прямых контактов отделов продаж — TenderLex",
   description:
-    "Загрузите уже собранный список компаний и получите первую волну адресатов: без дублей, с каналом связи и вопросами для сопоставимых ответов.",
+    "Быстрый отбор проверенных поставщиков и заводов для веерной рассылки запросов коммерческих предложений (RFQ) по спецификации.",
   keywords: [
-    "список поставщиков для запроса цены",
-    "кому отправить запрос цены",
     "поставщики для запроса КП",
-    "адресаты для коммерческого предложения",
+    "база поставщиков для RFQ",
+    "запрос цен по спецификации",
+    "контакты отделов сбыта",
     "TenderLex",
   ],
   alternates: {
     canonical: "/postavshchiki-dlya-zaprosa-kp",
-  },
-  openGraph: {
-    type: "website",
-    url: "/postavshchiki-dlya-zaprosa-kp",
-    title: "Поставщики для запроса КП — первая волна адресатов | TenderLex",
-    description:
-      "Загрузите собранный список компаний и получите первую волну адресатов без дублей, с каналом связи и вопросами.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Поставщики для запроса КП — первая волна адресатов | TenderLex",
-    description:
-      "TenderLex помогает собрать первую волну адресатов и подготовить основу для сравнимых ответов.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -45,61 +32,38 @@ const pagePath = "/postavshchiki-dlya-zaprosa-kp";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Чем список адресатов отличается от поиска поставщиков?",
+    question: "Чем база TenderLex отличается от обычных телефонных справочников?",
     answer:
-      "Поиск поставщиков собирает рынок под спецификацию. Этот сценарий работает с уже собранным пулом и отвечает на следующий вопрос: кому написать в первую очередь, по какому каналу и с какими вопросами.",
+      "TenderLex не выдает устаревшие общие справочники, а в режиме реального времени сопоставляет номенклатуру вашего ТЗ с сайтами и прайсами компаний, извлекая прямые e-mail отделов продаж.",
   },
   {
-    question: "Как выбрать первую волну адресатов?",
+    question: "Как использовать полученный список контрагентов?",
     answer:
-      "В нее включают компании с понятной связью с товаром, рабочим каналом связи и достаточным покрытием по типам поставщиков и регионам. Дубли и случайные каталоги исключаются.",
-  },
-  {
-    question: "Что нужно отправлять вместе со списком?",
-    answer:
-      "Каждому адресату нужен одинаковый запрос: позиции, характеристики, количество, срок, адрес поставки, требования к документам и вопросы по заменам или аналогам.",
-  },
-  {
-    question: "TenderLex сам рассылает запросы?",
-    answer:
-      "Нет. Сервис готовит рабочий список и основу обращения. Отправку, переговоры и проверку полученных предложений выполняет ваша команда.",
+      "Вы можете скачать готовый структурированный список контактов или воспользоваться встроенным автогенератором текста запроса КП для мгновенной отправки.",
   },
 ];
 
-export default function SuppliersForQuoteRequestPage() {
+export default function PostavshchikiDlyaZaprosaKpPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Поставщики для первого запроса КП", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Поставщики для запроса КП", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Отбор поставщиков для первого запроса КП",
-    description:
-      "TenderLex помогает очистить уже собранный список компаний, убрать дубли и отобрать адресатов для первого запроса КП.",
+    name: "Поставщики для запроса КП",
+    description: "Сервис подбора контактов поставщиков для веерной рассылки запросов цен.",
     path: pagePath,
-    serviceType: "Supplier outreach list for price request",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как отобрать первую волну адресатов с TenderLex",
-    description:
-      "Порядок подготовки первой волны: от готового списка компаний до приоритетных адресатов и единого запроса.",
+    name: "Как отобрать поставщиков для запроса КП",
+    description: "Пошаговый процесс подбора базы для рассылки RFQ.",
     steps: [
-      {
-        name: "Передайте собранный список компаний",
-        text: "Загрузите таблицу, документ или другой материал с ранее найденными компаниями и доступными контактами.",
-      },
-      {
-        name: "Определите критерии первой волны",
-        text: "Учитываются профиль компании, тип поставщика, регион, доступный канал связи и релевантность номенклатуре.",
-      },
-      {
-        name: "Получите список адресатов",
-        text: "Для каждой компании фиксируются контактный канал и комментарий, почему ее стоит включить в первый запрос.",
-      },
-      {
-        name: "Отправьте единое обращение",
-        text: "Команда проверяет текст и отправляет одинаковый запрос, чтобы сопоставить ответы по одинаковым условиям.",
-      },
+      { name: "Загрузка позиций ТЗ", text: "Передайте список номенклатуры." },
+      { name: "ИИ-поиск контактов", text: "Сбор direct email и телефонов отделов продаж." },
+      { name: "Фильтрация ролей", text: "Разделение на заводы и дилерские сети." },
+      { name: "Отправка запроса КП", text: "Массовая отправка готового письма." },
     ],
   });
 
@@ -109,87 +73,100 @@ export default function SuppliersForQuoteRequestPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Отобрать поставщиков для первого запроса КП</h1>
-          <p className="legal-date">
-            Для закупщиков и снабжения, которым нужна первая волна адресатов, а не случайная выдача сайтов. Обновлено {seoPageLastUpdated}.
-          </p>
 
-          <section>
-            <h2>Кому отправлять первый запрос цены</h2>
-            <p>
-              Этот сценарий нужен, когда пул компаний уже собран, но рассылать всем подряд нельзя. В первой волне
-              важны релевантность позиции, рабочий контакт и понятная причина, почему
-              компании стоит задать одинаковый набор вопросов.
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
+
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <Mail size={14} className="text-teal-600" />
+              <span>База адресатов для веерного сбора цен</span>
+            </div>
+
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Отбор поставщиков для запроса коммерческого предложения (КП)
+            </h1>
+
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Сбор прямых контактов менеджеров по продажам заводов и дилеров по вашей спецификации для получения минимальной цены в кратчайшие сроки.
             </p>
-          </section>
 
-          <section>
-            <h2>Как отбирается первая волна</h2>
-            <p>
-              TenderLex отделяет производителей, дилеров, дистрибьюторов и профильных поставщиков, фиксирует сайт,
-              страницу связи, email или телефон и убирает повторяющиеся или неподходящие записи. Так у команды
-              остается управляемый список для первого обращения, а не набор ссылок из поиска.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Отобрать поставщиков</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Что должно быть у каждого адресата</h2>
-            <p>
-              В рабочем списке указываются компания, роль в цепочке поставки, канал связи и комментарий по
-              релевантности. Отдельно фиксируются вопросы, которые нужны именно для этой позиции: цена, срок,
-              наличие, документы качества, условия доставки и возможность аналога.
-            </p>
-          </section>
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Direct Email</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Прямые адреса менеджеров по продажам вместо инфо-ящиков.
+                </p>
+              </div>
 
-          <section>
-            <h2>Письмо и список решают разные задачи</h2>
-            <p>
-              Список отвечает на вопрос, кому писать. Запрос цены отвечает на вопрос, что отправить всем
-              адресатам для сравнимого ответа. Для подготовки текста используйте{" "}
-              <a href="/zapros-kp-po-tz">запрос цены поставщику</a>.
-            </p>
-          </section>
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Высокая конверсия ответа</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Обращение попадает сразу к профильному сотруднику сбыта.
+                </p>
+              </div>
 
-          <section>
-            <h2>Связанные задачи</h2>
-            <p>
-              Если сначала нужно найти компании по новой номенклатуре, начните с{" "}
-              <a href="/poisk-postavshchikov-po-tz">поиска поставщиков по ТЗ</a>. Для поставки под конкретную процедуру
-              используйте <a href="/poisk-postavshchikov-dlya-tendera">поиск поставщиков для тендера</a>.
-            </p>
-          </section>
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Экономия времени</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Подготовка базы и текста запроса занимает 3 минуты вместо полудня.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
               {faqItems.map((item, index) => (
-                <div
-                  key={item.question}
-                  style={{ borderTop: index > 0 ? "1px solid var(--line)" : undefined, paddingTop: index > 0 ? 20 : 0 }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>{item.question}</h3>
-                  <p style={{ margin: 0, color: "var(--ink-soft)", fontSize: 15, lineHeight: 1.65 }}>{item.answer}</p>
-                </div>
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
+                    {item.answer}
+                  </p>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Собрать адресатов</h2>
-            <p>
-              Откройте <a href="/cabinet">личный кабинет</a> или отправьте собранный список компаний в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              .
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

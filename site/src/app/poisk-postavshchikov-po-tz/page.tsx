@@ -1,46 +1,30 @@
 import type { Metadata } from "next";
-
+import Link from "next/link";
+import { Search, CheckCircle2, FileText, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
   buildHowToJsonLd,
   buildServiceJsonLd,
-  seoPageLastUpdated,
   type FaqItem,
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ — список для закупки",
+  title: "Поиск поставщиков по ТЗ и спецификации — сбор email и контактов — TenderLex",
   description:
-    "Передайте ТЗ или спецификацию и получите список производителей, дилеров и поставщиков с контактами, ролью компании и вопросами для первого обращения.",
+    "ИИ-подбор поставщиков и заводов под техническое задание. Сбор прямых email отделов продаж, номеров телефонов и формирование текста запроса КП за 3 минуты.",
   keywords: [
-    "поиск поставщиков",
     "поиск поставщиков по ТЗ",
-    "поиск поставщиков по техническому заданию",
-    "поиск поставщиков под спецификацию",
-    "как найти поставщика",
-    "подбор поставщиков",
-    "найти поставщика по ТЗ",
+    "подбор поставщиков по спецификации",
+    "контакты отделов продаж заводов",
+    "запрос коммерческого предложения",
     "TenderLex",
   ],
   alternates: {
     canonical: "/poisk-postavshchikov-po-tz",
-  },
-  openGraph: {
-    type: "website",
-    url: "/poisk-postavshchikov-po-tz",
-    title: "Поиск поставщиков по ТЗ — список для закупки | TenderLex",
-    description:
-      "Передайте ТЗ или спецификацию и получите список производителей, дилеров и поставщиков с контактами, ролью компании и вопросами для первого обращения.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Поиск поставщиков по ТЗ — список для закупки | TenderLex",
-    description:
-      "Передайте ТЗ или спецификацию и получите список производителей, дилеров и поставщиков с контактами и ролью компании.",
-    images: ["/tenderlex-product-preview.png"],
   },
 };
 
@@ -48,262 +32,146 @@ const pagePath = "/poisk-postavshchikov-po-tz";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Как найти поставщика по техническому заданию?",
+    question: "Как TenderLex находит поставщиков под сложное техническое задание?",
     answer:
-      "Сначала из ТЗ выделяют товар, обязательные характеристики, стандарты, ограничения и регион поставки. Затем отбирают не сайты из выдачи, а компании с подходящим профилем и рабочими контактами. TenderLex автоматизирует этот путь и готовит список для первого запроса цены.",
+      "ИИ-сервис парсит спецификацию, определяет технические стандарты (ГОСТ, ТУ, маркоразмеры) и сопоставляет их с реальной номенклатурой предприятий по всей России, отбирая прямые контакты отделов сбыта.",
   },
   {
-    question: "Что нужно загрузить для поиска поставщиков?",
+    question: "В каком формате выгружаются контакты?",
     answer:
-      "Достаточно прислать спецификацию, описание товара или ссылку на закупку. TenderLex извлечёт товарную группу, характеристики, требования к маркам и стандартам.",
+      "Вы получаете структурированный список с названиями компаний, их ролью (завод / дилер), прямыми e-mail адресами, телефонами, регионом и готовым текстом запроса КП.",
   },
   {
-    question: "Сколько поставщиков найдёт сервис?",
+    question: "Можно ли попробовать сервис бесплатно?",
     answer:
-      "Количество зависит от товара, региона и доступности открытых источников. В список попадают не все найденные сайты, а компании с понятным профилем, связью с нужной номенклатурой и подтвержденными способами связи.",
-  },
-  {
-    question: "Что входит в результат поиска поставщиков?",
-    answer:
-      "Для каждой компании указываются название, тип компании, сайт, страница связи, найденные контакты, регион, краткий комментарий о релевантности и вопросы для первого обращения. Такой список можно передать снабжению или использовать для подготовки запроса цены.",
-  },
-  {
-    question: "Что TenderLex проверяет, а что нужно проверить команде?",
-    answer:
-      "Сервис проверяет открытые сведения: профиль компании, сайт, каналы связи и связь с номенклатурой. Цена, наличие, договорные условия, юридические риски и окончательное соответствие позиции подтверждаются только в ответе поставщика и проверяются вашей командой.",
-  },
-  {
-    question: "Когда нужен отдельный поиск производителя?",
-    answer:
-      "Отдельный сценарий нужен, когда важно подтвердить происхождение товара, найти завод, бренд или официального представителя. Для обычного запроса цены основной поиск поставщиков охватывает также дилеров и дистрибьюторов.",
-  },
-  {
-    question: "Как учитываются требования нацрежима и реестра Минпромторга?",
-    answer:
-      "Сервис выделяет вид меры: запрет, ограничение или преимущество. Реестровую запись включают в обязательные требования только когда этого требует конкретная закупка; иначе она не должна автоматически отсекать потенциальных поставщиков.",
-  },
-  {
-    question: "Можно ли сразу подготовить запрос цены?",
-    answer:
-      "Да. После подбора можно перейти к подготовке единого запроса цены: позиции, характеристики, документы качества, сроки, доставка и условия оплаты собираются в понятное письмо для всех адресатов.",
+      "Да. При регистрации в кабинете предоставляется бесплатный пробный доступ, что позволяет протестировать поиск на реальном ТЗ.",
   },
 ];
 
-export default function SupplierSearchPage() {
+export default function PoiskPostavshchikovPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Поиск поставщиков по ТЗ", path: pagePath },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Поиск поставщиков по ТЗ", item: "https://tenderlex.ru" + pagePath },
   ]);
+
   const schemaService = buildServiceJsonLd({
-    name: "Поиск поставщиков по техническому заданию",
-    description:
-      "TenderLex подбирает производителей, дилеров, дистрибьюторов и профильные B2B-компании по спецификации, проверяет сайты и контакты, помогает подготовить первый запрос.",
+    name: "Поиск поставщиков по ТЗ",
+    description: "Сервис подбора поставщиков и извлечения прямых контактов по техническому заданию.",
     path: pagePath,
-    serviceType: "Supplier search by technical specification",
   });
+
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
-    name: "Как найти поставщиков по техническому заданию с TenderLex",
-    description:
-      "Автоматический подбор поставщиков по спецификации: от загрузки документа до списка компаний с контактами и основы для первого запроса.",
+    name: "Как подобрать поставщиков по ТЗ",
+    description: "Пошаговый процесс подбора контрагентов под спецификацию.",
     steps: [
-      {
-        name: "Загрузите спецификацию",
-        text: "Прикрепите спецификацию, вставьте описание товара или ссылку на закупку в Telegram-бот или личный кабинет.",
-      },
-      {
-        name: "TenderLex анализирует позицию",
-        text: "Сервис автоматически извлекает товарную группу, номенклатуру, характеристики, марки, стандарты и ограничения.",
-      },
-      {
-        name: "Формируются поисковые запросы",
-        text: "На основе технического задания генерируются точечные поисковые запросы: по широкой товарной группе и по конкретным характеристикам.",
-      },
-      {
-        name: "TenderLex проверяет каждую компанию",
-        text: "Для каждого кандидата проверяется сайт, контакты, соответствие профилю. Нерелевантные источники отсеиваются.",
-      },
-      {
-        name: "Готовый список и первый запрос",
-        text: "Вы получаете список поставщиков с контактами и понимаете, какие характеристики, документы и условия запросить для сравнения ответов.",
-      },
+      { name: "Загрузка файла ТЗ", text: "Загрузите файл Excel, Word или PDF." },
+      { name: "Распознавание позиций", text: "Алгоритм извлекает ключевые параметры и стандарты." },
+      { name: "Формирование пула поставщиков", text: "Выгрузка проверенных компаний с прямыми контактами." },
+      { name: "Подготовка запроса КП", text: "Единый текст обращения для сбора ценовых предложений." },
     ],
   });
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }}
-      />
-  <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Подобрать поставщиков по ТЗ и спецификации</h1>
-          <p className="legal-date">
-            Для снабжения и тендерных отделов, которым нужно быстро перейти от спецификации к проверяемому списку компаний. Обновлено {seoPageLastUpdated}.
-          </p>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
 
-          <section>
-            <h2>Как найти поставщиков по ТЗ</h2>
-            <p>
-              Поиск поставщиков по ТЗ начинается не с десятков запросов в поиске, а с выделения товара, обязательных
-              характеристик, стандартов, ограничений и региона поставки. Затем нужно отобрать компании, для которых
-              эта номенклатура действительно профильная, и найти канал связи для первого обращения.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              TenderLex делает эту подготовку по спецификации, описанию товара или материалам закупки. На выходе не
-              перечень ссылок, а рабочий список производителей, дилеров, дистрибьюторов и профильных поставщиков с
-              пояснением, почему с ними стоит начать диалог.
-            </p>
-          </section>
+      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Что входит в список поставщиков</h2>
-            <p>
-              Состав результата одинаково понятен для снабженца, тендерного специалиста и руководителя: видно, кому
-              писать, почему компания включена и какие вопросы нужны для сравнения предложений.
-            </p>
-            <div style={{ overflowX: "auto", marginTop: 16 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: "left", padding: "10px 12px 10px 0", borderBottom: "1px solid var(--line)" }}>Поле</th>
-                    <th style={{ textAlign: "left", padding: "10px 0", borderBottom: "1px solid var(--line)" }}>Для чего оно нужно</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td style={{ padding: "12px 12px 12px 0", borderBottom: "1px solid var(--line)" }}>Компания и тип</td>
-                    <td style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>Понять, перед вами производитель, дилер, дистрибьютор или профильный поставщик.</td>
-                  </tr>
-                  <tr>
-                    <td style={{ padding: "12px 12px 12px 0", borderBottom: "1px solid var(--line)" }}>Сайт и контакты</td>
-                    <td style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>Сразу перейти к отделу продаж, странице связи, email или телефону.</td>
-                  </tr>
-                  <tr>
-                    <td style={{ padding: "12px 12px 12px 0", borderBottom: "1px solid var(--line)" }}>Комментарий по релевантности</td>
-                    <td style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>Не тратить время на случайные сайты и понимать, что именно соответствует ТЗ.</td>
-                  </tr>
-                  <tr>
-                    <td style={{ padding: "12px 12px 12px 0" }}>Вопросы для первого письма</td>
-                    <td style={{ padding: "12px 0" }}>Получить сопоставимые ответы по цене, срокам, документам качества и условиям поставки.</td>
-                  </tr>
-                </tbody>
-              </table>
+        {/* HERO */}
+        <section className="relative pt-12 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold uppercase tracking-wider shadow-2xs">
+              <Search size={14} className="text-teal-600" />
+              <span>Автоматический подбор поставщиков под ТЗ</span>
             </div>
-          </section>
 
-          <section>
-            <h2>Как отбираются компании</h2>
-            <p>
-              TenderLex выделяет товарную группу, назначение, характеристики, марки, стандарты и ограничения.
-              По ним строятся точные и расширенные запросы, чтобы найти не только совпадение по названию, но и
-              компании с релевантным профилем.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Для каждого кандидата проверяются открытые сведения: сайт, профиль, связь с нужной номенклатурой,
-              доступность контактов и тип компании. Маркетплейсы, каталоги, тендерные площадки и очевидно
-              нерелевантные сайты не становятся адресатами запроса только потому, что встретились в выдаче.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-extrabold text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Поиск поставщиков по техническому заданию и спецификации
+            </h1>
 
-          <section>
-            <h2>Что сервис проверяет, а что остается команде</h2>
-            <p>
-              Сервис помогает найти и предварительно отобрать компании по открытым данным. Он не заменяет проверку
-              наличия, цены, условий договора, юридических рисков и фактического соответствия товара: эти условия
-              подтверждаются в ответе поставщика и проверяются вашей командой.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-normal leading-relaxed">
+              Загрузите файл документации — TenderLex выделит номенклатуру, найдет прямые контакты отделов сбыта заводов и подготовит единый запрос КП за 3 минуты.
             </p>
-            <p style={{ marginTop: 14 }}>
-              Такой раздел важен для закупочной работы: подбор сокращает рутину и число случайных контактов, но
-              финальное решение остается за снабжением, тендерным отделом и юристом там, где это требуется.
-            </p>
-          </section>
 
-          <section>
-            <h2>Когда нужен производитель, тендерный поиск или запрос цены</h2>
-            <p>
-              Основной сценарий подходит, когда нужен широкий пул компаний под спецификацию. Если важно выйти именно
-              на завод, бренд или официального представителя, используйте <a href="/poisk-proizvoditeley-po-tz">поиск производителей по ТЗ</a>.
-              Если подбор привязан к условиям конкретной процедуры, подойдет <a href="/poisk-postavshchikov-dlya-tendera">поиск поставщиков для тендера</a>.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              После подбора можно подготовить <a href="/zapros-kp-po-tz">запрос цены поставщику</a>, чтобы
-              всем компаниям ушел одинаковый набор позиций, условий и вопросов. Это делает ответы сравнимыми, а не
-              превращает список контактов в еще одну ручную работу.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Если список компаний уже собран и нужно убрать дубли и определить первую волну, используйте{" "}
-              <a href="/postavshchiki-dlya-zaprosa-kp">отбор адресатов для запроса КП</a>.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Найти поставщиков</span>
+                <ArrowRight size={16} />
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Нацрежим и реестровые требования</h2>
-            <p>
-              Если в закупке есть требования нацрежима, TenderLex выделяет вид меры: запрет, ограничение или
-              преимущество. Реестровая запись Минпромторга включается в обязательные условия только когда это следует
-              из конкретной закупки, а не автоматически для любой компании из списка. Перед отбором компаний сверяйте
-              <a href="/reestr-minpromtorga-v-zakupkah"> алгоритм проверки нацрежима и реестровой записи</a>.
-            </p>
-          </section>
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Direct Email отделов сбыта</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Прямые адреса менеджеров по продажам вместо общих инфо-ящиков с долгой обработкой.
+                </p>
+              </div>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
-              {faqItems.map((item, i) => (
-                <div
-                  key={i}
-                  style={{
-                    borderTop: i > 0 ? "1px solid var(--line)" : undefined,
-                    paddingTop: i > 0 ? 20 : 0,
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>
-                    {item.question}
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: "var(--ink-soft)",
-                      fontSize: 15,
-                      lineHeight: 1.65,
-                    }}
-                  >
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Распознавание ГОСТ и ТУ</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Глубокий смысловой разбор технических характеристик сложных промышленных позиций.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Готовый шаблон КП</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Автоматически скомпонованное деловое письмо для мгновенной веерной рассылки.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
+              {faqItems.map((item, index) => (
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
                     {item.answer}
                   </p>
-                </div>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Запустить поиск</h2>
-            <p>
-              Загрузите спецификацию в{" "}
-              <a href="/cabinet">личном кабинете</a> или отправьте описание товара в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              . Если нужен больший объём работы или индивидуальные условия — напишите нам напрямую.
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

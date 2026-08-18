@@ -1,28 +1,50 @@
 import type { Metadata } from "next";
 import { buildBreadcrumbJsonLd, buildServiceJsonLd } from "@/lib/seo";
+import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ в Новосибирске и Сибири",
-  description: "Подбор B2B-поставщиков, заводов и официальных дилеров по спецификациям в Новосибирске и СФО.",
+  title: "Поиск поставщиков и заводов в Новосибирске и Сибири — TenderLex",
+  description: "Подбор промышленных предприятий, поставщиков оборудования и стройматериалов в СФО.",
   alternates: { canonical: "/regiony/novosibirsk" },
 };
 
-export default function NovosibirskRegionPage() {
+export default function NskRegionPage() {
   const breadcrumbSchema = buildBreadcrumbJsonLd([
-    { name: "TenderLex", path: "/" },
-    { name: "Регионы", path: "/regiony" },
-    { name: "Новосибирск и СФО", path: "/regiony/novosibirsk" },
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Регионы", item: "https://tenderlex.ru/regiony" },
+    { name: "Новосибирск и СФО", item: "https://tenderlex.ru/regiony/novosibirsk" },
   ]);
 
+  const serviceSchema = buildServiceJsonLd({
+    name: "Поиск поставщиков по ТЗ в Новосибирске и СФО",
+    description: "Подбор заводов и поставщиков в Сибирском федеральном округе.",
+    path: "/regiony/novosibirsk",
+  });
+
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900 font-sans py-12 px-4 max-w-4xl mx-auto">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }} />
-      <nav className="mb-6"><a href="/regiony" className="text-xs text-teal-700 font-bold hover:underline">← Все регионы</a></nav>
-      <header className="mb-8 border-b border-slate-200 pb-6">
-        <span className="text-xs font-bold text-teal-700 font-bold bg-teal-100 px-3 py-1 rounded border border-teal-300">Регион: Новосибирск и СФО</span>
-        <h1 className="text-3xl font-extrabold text-slate-900 mt-3">Поиск поставщиков и заводов по ТЗ в Новосибирске</h1>
-      </header>
-      <p className="text-slate-700 font-medium text-sm">Подбор сибирских производителей оборудования, кабеля и строительных материалов под ваши закупки.</p>
-    </main>
+    <RegionalPageLayout
+      regionName="Новосибирске и Сибири"
+      regionDistrict="Сибирский федеральный округ (СФО)"
+      headline="Поиск поставщиков и заводов в Новосибирске и Сибири"
+      description="Главный логистический и промышленный узел Сибири: электротехника, генераторы, стройматериалы и горное оборудование."
+      breadcrumbSchema={breadcrumbSchema}
+      serviceSchema={serviceSchema}
+      features={[
+        "Подбор поставщиков с учетом сибирской транспортной логистики",
+        "Прямые контакты машиностроительных и приборостроительных заводов",
+        "Проверка дилеров с региональными распределительными складами",
+        "Автогенерация запроса КП под требования сибирских заказчиков",
+      ]}
+      industrialSpecialties={[
+        {
+          title: "Электротехника и приборостроение",
+          desc: "Трансформаторы, щитовое оборудование, автоматика и контрольно-измерительные приборы.",
+        },
+        {
+          title: "Промышленные стройматериалы",
+          desc: "Железобетонные конструкции, теплоизоляция, сухие смеси с учетом северных стандартов.",
+        },
+      ]}
+    />
   );
 }
