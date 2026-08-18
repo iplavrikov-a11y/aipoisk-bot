@@ -1561,7 +1561,7 @@ export function CabinetClient() {
             <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 bg-slate-100/80 p-1 rounded-lg" role="tablist" aria-label="Тип задачи">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl" role="tablist" aria-label="Тип задачи">
             {scenarioOptions.map((item) => {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
@@ -1569,14 +1569,14 @@ export function CabinetClient() {
                 <button
                   key={item.id}
                   type="button"
-                  className={`py-1.5 px-2.5 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer border ${
                     isSelected
-                      ? "bg-teal-600 text-white shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
+                      ? "bg-teal-600 border-teal-700 text-white shadow-sm ring-1 ring-teal-500/30"
+                      : "bg-white border-slate-200/90 text-slate-700 hover:text-teal-800 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
                   onClick={() => selectScenario(item.id)}
                 >
-                  <ItemIcon size={13} aria-hidden="true" />
+                  <ItemIcon size={14} className={isSelected ? "text-teal-100" : "text-teal-600"} aria-hidden="true" />
                   <span>{item.label}</span>
                 </button>
               );
@@ -1584,25 +1584,25 @@ export function CabinetClient() {
           </div>
 
           {scenario !== "procurement_report" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1.5 bg-slate-50 border border-slate-200/80 rounded-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
               {supplierPolicyOptions.map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
-                  className={`p-1.5 rounded-md text-left border text-xs transition-all cursor-pointer flex items-start gap-1.5 ${
+                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
                     supplierSearchPolicy === opt.id
-                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-2xs font-bold text-slate-900"
-                      : "bg-white/60 border-slate-200 text-slate-600 hover:border-slate-300"
+                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
+                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
                   onClick={() => setSupplierSearchPolicy(opt.id)}
                 >
-                  <div className={`w-3 h-3 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${
-                    supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300"
+                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                    supplierSearchPolicy === opt.id ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
                   }`}>
-                    {supplierSearchPolicy === opt.id ? <div className="w-1 h-1 rounded-full bg-white" /> : null}
+                    {supplierSearchPolicy === opt.id ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
                   </div>
                   <div className="min-w-0">
-                    <strong className="block font-bold text-[11px] leading-tight truncate">{opt.label}</strong>
+                    <strong className="block font-bold text-xs leading-tight text-slate-900 truncate">{opt.label}</strong>
                     <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">{opt.description}</span>
                   </div>
                 </button>
@@ -1612,8 +1612,8 @@ export function CabinetClient() {
 
           <div className="space-y-2">
             <div
-              className={`border-2 border-dashed rounded-lg p-2.5 sm:p-3 text-center cursor-pointer transition-colors flex flex-col sm:flex-row items-center justify-center gap-2 ${
-                dragActive ? "border-teal-500 bg-teal-50/50" : "border-slate-300 hover:border-teal-400 bg-slate-50/50"
+              className={`border-2 border-dashed rounded-xl p-2.5 sm:p-3 text-center cursor-pointer transition-colors flex flex-col sm:flex-row items-center justify-center gap-2 ${
+                dragActive ? "border-teal-500 bg-teal-50/60 shadow-xs" : "border-teal-300/90 hover:border-teal-500 bg-teal-50/20 hover:bg-teal-50/50"
               }`}
               onDragOver={(event) => {
                 event.preventDefault();
