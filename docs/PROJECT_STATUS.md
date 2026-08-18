@@ -84,6 +84,10 @@ UI must not show those markers as Telegram accounts or Telegram IDs. Telegram
 access remains tied to real Telegram accounts unless the owner explicitly
 changes the account model.
 
+The admin panel provides full visibility into multi-login registrations and AI execution:
+- **Clients view**: Displays the customer system registration date in the card header, registration/linking timestamps for every linked Telegram account, and registration + last login timestamps for each web-cabinet user.
+- **Tasks view**: Displays the AI provider and model used for each task (`ai_provider`, `ai_model`, `ai_label`), resolved from job execution metadata, audit records (`evidence.json`), or current routing, with search filter support by model and provider name.
+
 The active paid model is money balance plus effective per-function prices:
 
 - supplier search;

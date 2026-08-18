@@ -618,9 +618,9 @@ def job_has_unsettled_reservation(db: Session, job: Job) -> bool:
     )
 
 
-def job_reserved_amount_kopeks(db: Session, job: Job, kind: str | None = None) -> int:
+def job_reserved_amount_kopeks(db: Session | None, job: Job, kind: str | None = None) -> int:
     """Return the still-reserved monetary amount shown before an offer is accepted."""
-    if not job.client_id:
+    if db is None or not getattr(job, "id", None):
         return 0
     if kind:
         return _job_reserved_amount_remaining(db, job.id, kind)

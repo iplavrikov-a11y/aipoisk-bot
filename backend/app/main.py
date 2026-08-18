@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 import tempfile
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -20,7 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from .ai import call_llm
+from .ai import call_llm, resolve_job_ai_info
+from .result_offers import result_offer_to_dict
 from .billing import (
     BillingError,
     KIND_MONEY,
@@ -1610,7 +1611,8 @@ def list_jobs(
     safe_limit = max(1, min(500, int(limit or 200)))
     jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 3).all()
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job)]
-    return [job_to_dict(job) for job in visible_jobs[:safe_limit]]
+    settings = get_or_create_settings(db)
+    return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
 
 
 @app.get("/api/jobs/{job_id}", dependencies=[Depends(require_admin)])
@@ -1618,7 +1620,8 @@ def get_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job_to_dict(job, include_files=True)
+    settings = get_or_create_settings(db)
+    return job_to_dict(job, include_files=True, settings=settings, db=db)
 
 
 @app.get("/api/jobs/{job_id}/download", dependencies=[Depends(require_admin)])
@@ -3476,10 +3479,15 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
     }
 
 
-def job_to_dict(job: Job, include_files: bool = False) -> dict:
+def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings | None = None, db: Session | None = None) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     result_files = admin_job_result_files(job)
+    ai_info = resolve_job_ai_info(job, settings=settings)
+    confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
+    confirmation_outcome = str(getattr(job, "confirmation_outcome", "") or "")
+    offer_delivery_outcome = str(getattr(job, "offer_delivery_outcome", "") or "")
+    result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -3492,6 +3500,10 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "confirmation_kind": confirmation_kind,
+        "confirmation_outcome": confirmation_outcome,
+        "offer_delivery_outcome": offer_delivery_outcome,
+        "result_offer": result_offer,
         "status": job.status,
         "progress": job.progress,
         "message": job.message,
@@ -3507,6 +3519,10 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "result_files": result_files,
         "has_evidence": bool(evidence_path),
         "error": job.error,
+        "ai_provider": ai_info.get("ai_provider", ""),
+        "ai_provider_name": ai_info.get("ai_provider_name", ""),
+        "ai_model": ai_info.get("ai_model", ""),
+        "ai_label": ai_info.get("ai_label", ""),
         "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
         "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
         "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",

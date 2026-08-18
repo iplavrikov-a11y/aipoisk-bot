@@ -129,6 +129,8 @@ def _ensure_schema() -> None:
         "active_entitlements_json": "TEXT DEFAULT '[]'",
         "yandex_requests_count": "INTEGER DEFAULT 0",
         "yandex_cost_rub": "REAL DEFAULT 0.0",
+        "ai_provider": "VARCHAR(80) DEFAULT ''",
+        "ai_model": "VARCHAR(160) DEFAULT ''",
     }
     billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
     client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")

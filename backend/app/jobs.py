@@ -14,6 +14,7 @@ from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session, aliased
 
 from . import document_parser
+from .ai import get_model_selection
 from .billing import (
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
@@ -1048,8 +1049,25 @@ def _build_registry_fallback_supplier_outputs(
     return xlsx_path, files
 
 
+def _populate_job_ai_metadata(job: Job, settings, mode: str) -> None:
+    try:
+        tier = "primary" if mode == MODE_PROCUREMENT_REPORT else "supplier_search"
+        routing_key = "procurement_document_analysis" if mode == MODE_PROCUREMENT_REPORT else "supplier_query_generation"
+        selection = get_model_selection(settings, tier=tier, routing_key=routing_key)
+        job.ai_provider = selection.provider_id
+        job.ai_model = selection.model
+    except Exception:
+        if mode == MODE_PROCUREMENT_REPORT:
+            job.ai_provider = str(getattr(settings, "primary_provider", "") or "")
+            job.ai_model = str(getattr(settings, "primary_model", "") or "")
+        else:
+            job.ai_provider = str(getattr(settings, "supplier_ai_provider", "") or getattr(settings, "light_provider", "") or "")
+            job.ai_model = str(getattr(settings, "supplier_ai_model", "") or getattr(settings, "light_model", "") or "")
+
+
 def _process_supplier_search(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=25, message="Запускаю ИИ-поиск поставщиков")
 
     async def progress_callback(progress: int, message: str) -> None:
@@ -1214,6 +1232,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
 
 def _process_procurement_report(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=45, message="ИИ готовит анализ документации")
     result = asyncio.run(generate_procurement_report(settings, context))
     _check_cancelled(job.id)
@@ -1289,6 +1308,7 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
     report = asyncio.run(generate_procurement_report(settings, context))
     _check_cancelled(job.id)

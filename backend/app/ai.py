@@ -235,6 +235,75 @@ def get_model_selection(
     )
 
 
+def resolve_job_ai_info(job: Any, settings: SystemSettings | None = None) -> dict[str, str]:
+    provider_id = str(getattr(job, "ai_provider", "") or "").strip()
+    model = str(getattr(job, "ai_model", "") or "").strip()
+    provider_name = ""
+
+    # If provider/model missing on Job, try reading from evidence.json
+    evidence_path = str(getattr(job, "evidence_path", "") or "").strip()
+    if not model and evidence_path:
+        try:
+            from pathlib import Path
+            p = Path(evidence_path)
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    if data.get("ai_model"):
+                        model = str(data["ai_model"]).strip()
+                    elif isinstance(data.get("report"), dict) and data["report"].get("ai_model"):
+                        model = str(data["report"]["ai_model"]).strip()
+                    if data.get("ai_provider"):
+                        provider_id = str(data["ai_provider"]).strip()
+        except Exception:
+            pass
+
+    # If still missing and settings available, determine from mode
+    if settings is not None:
+        providers = custom_provider_map(settings)
+        if not model or not provider_id:
+            try:
+                mode = str(getattr(job, "mode", "") or "")
+                tier = "primary" if mode == "procurement_report" else "supplier_search"
+                routing_key = "procurement_document_analysis" if mode == "procurement_report" else "supplier_query_generation"
+                selection = get_model_selection(settings, tier=tier, routing_key=routing_key)
+                if not provider_id:
+                    provider_id = selection.provider_id
+                if not model:
+                    model = selection.model
+                if not provider_name:
+                    provider_name = selection.provider_name
+            except Exception:
+                pass
+
+        if provider_id and not provider_name:
+            p_obj = providers.get(provider_id)
+            if p_obj:
+                provider_name = str(p_obj.get("name") or "").strip()
+
+    if provider_id and not provider_name:
+        known = {
+            "gemini": "Gemini",
+            "openrouter": "OpenRouter",
+            "open-ai": "OpenAI",
+            "openai": "OpenAI",
+            "polza": "Polza",
+            "z.ai": "Z.AI",
+            "opencode": "Opencode",
+        }
+        provider_name = known.get(provider_id.lower(), provider_id.capitalize())
+
+    label_parts = [p for p in (provider_name or provider_id, model) if p]
+    ai_label = " · ".join(label_parts)
+
+    return {
+        "ai_provider": provider_id,
+        "ai_provider_name": provider_name,
+        "ai_model": model,
+        "ai_label": ai_label,
+    }
+
+
 def model_fallbacks_for(model: str) -> tuple[str, ...]:
     return DEFAULT_MODEL_FALLBACKS.get(str(model or "").strip(), ())
 

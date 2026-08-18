@@ -398,6 +398,8 @@ class Job(Base):
     active_entitlements_json: Mapped[str] = mapped_column(Text, default="[]")
     yandex_requests_count: Mapped[int] = mapped_column(Integer, default=0)
     yandex_cost_rub: Mapped[float] = mapped_column(Float, default=0.0)
+    ai_provider: Mapped[str] = mapped_column(String(80), default="")
+    ai_model: Mapped[str] = mapped_column(String(160), default="")
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)

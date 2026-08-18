@@ -390,6 +390,12 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .account-edit-row:first-child { padding-top: 0; border-top: 0; }
 .account-edit-row input { min-height: 32px; padding: 6px 8px; font-size: 12px; }
 .account-edit-actions { display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.account-meta-line {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 11px;
+  padding-top: 2px;
+}
 .client-card-list, .failure-list { display: grid; gap: 12px; }
 .job-list { display: grid; gap: 8px; }
 .client-card, .job-card, .failure-card, .list-toolbar {
@@ -425,6 +431,18 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .client-name-line h2, .client-card-head h2 { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.2; }
 .client-card-head p, .client-name-wrap p { margin: 2px 0 0; color: #64748b; font-size: 12px; }
 .client-name-wrap small { display: block; font-size: 11px; color: #94a3b8; margin-top: 1px; }
+.client-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.client-registered-date {
+  color: #0f766e;
+  font-weight: 600;
+  font-size: 11px;
+}
 .client-summary-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
 .client-summary-pills span, .client-summary-pills .pill {
   min-height: 24px;
@@ -801,6 +819,18 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   background: #f8fafc;
   border: 1px solid #e2e8f0;
 }
+.badge-pill.ai-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f5f3ff;
+  color: #5b21b6;
+  border: 1px solid #ddd6fe;
+  font-weight: 650;
+}
+.badge-pill.ai-model svg {
+  color: #7c3aed;
+}
 .badge-pill.supplier-policy {
   background: #eef2ff;
   color: #3730a3;
@@ -825,6 +855,14 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   background: #fffbeb;
   color: #b45309;
   font-weight: 700;
+}
+.job-detail-section.ai-metrics {
+  color: #4338ca;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
 }
 .job-inline-downloads {
   display: flex;

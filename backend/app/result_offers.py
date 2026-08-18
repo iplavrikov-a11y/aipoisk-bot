@@ -326,7 +326,7 @@ def billing_kinds_for_result_delivery(job: Job, file_kind: str | None = None) ->
     )
 
 
-def result_offer_to_dict(db: Session, job: Job, _evidence: dict | None = None) -> dict | None:
+def result_offer_to_dict(db: Session | None, job: Job, _evidence: dict | None = None) -> dict | None:
     kind = str(job.confirmation_kind or "")
     if not kind:
         return None

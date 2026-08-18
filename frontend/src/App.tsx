@@ -70,6 +70,8 @@ type Client = {
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
   recent_billing: BillingTransaction[]
+  created_at?: string | null
+  updated_at?: string | null
   onboarding?: {
     last_event: string
     last_channel: string
@@ -134,6 +136,8 @@ type TelegramAccount = {
   is_active: boolean
   is_pending: boolean
   notes: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 type WebUser = {
@@ -202,6 +206,10 @@ type Job = {
   result_files: JobResultFile[]
   has_evidence: boolean
   error: string
+  ai_provider?: string
+  ai_provider_name?: string
+  ai_model?: string
+  ai_label?: string
   created_at: string
   updated_at: string | null
   completed_at: string | null
@@ -2018,9 +2026,16 @@ function ClientsView({
                       {!client.is_active && <StatusBadge status="disabled" />}
                     </div>
                     <p>{clientSummaryLine(client, accounts)}</p>
-                    {client.onboarding?.last_event && (
-                      <small>Шаг: {onboardingStageLabel(client.onboarding.last_event)} · {formatDate(client.onboarding.last_event_at)}</small>
-                    )}
+                    <div className="client-meta-line">
+                      {client.created_at && (
+                        <small className="client-registered-date">
+                          Регистрация: {formatDate(client.created_at)}
+                        </small>
+                      )}
+                      {client.onboarding?.last_event && (
+                        <small> · Шаг: {onboardingStageLabel(client.onboarding.last_event)} · {formatDate(client.onboarding.last_event_at)}</small>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="client-summary-pills compact">
@@ -2063,7 +2078,12 @@ function ClientsView({
                             <div>
                               <strong>{user.email}</strong>
                               <small>
-                                {[user.name || 'web-кабинет', user.is_email_verified ? 'email подтверждён' : 'email не подтверждён', user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было'].join(' · ')}
+                                {[
+                                  user.name || 'web-кабинет',
+                                  user.created_at ? `рег. ${formatDate(user.created_at)}` : '',
+                                  user.is_email_verified ? 'email подтверждён' : 'email не подтверждён',
+                                  user.last_login_at ? `вход ${formatDate(user.last_login_at)}` : 'входа ещё не было',
+                                ].filter(Boolean).join(' · ')}
                               </small>
                             </div>
                             <div className="web-user-actions">
@@ -2121,6 +2141,11 @@ function ClientsView({
                                 <Trash2 size={14} />
                               </button>
                             </div>
+                            {account.created_at && (
+                              <div className="account-meta-line">
+                                <small>Зарегистрирован / привязан: {formatDate(account.created_at)}</small>
+                              </div>
+                            )}
                           </div>
                         )
                       })}
@@ -2406,6 +2431,10 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
+        job.ai_model,
+        job.ai_provider,
+        job.ai_provider_name,
+        job.ai_label,
         supplierSearchPolicyLabel(job),
         supplierRunTypeLabel(job),
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
@@ -2563,6 +2592,15 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             <div className="job-card-meta-line">
               <div className="job-meta-badges">
                 <span className="badge-pill mode">{job.mode_label || humanMode(job.mode)}</span>
+                {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
+                  <span
+                    className="badge-pill ai-model"
+                    title={`ИИ: ${job.ai_provider_name || job.ai_provider || 'Провайдер не указан'} · Модель: ${job.ai_model || 'не указана'}`}
+                  >
+                    <BrainCircuit size={12} />
+                    {job.ai_label || [job.ai_provider_name || job.ai_provider, job.ai_model].filter(Boolean).join(' · ')}
+                  </span>
+                )}
                 {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
                 {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
                 {fallbackStatusLabel && <span className="badge-pill supplier-policy registry-fallback">{fallbackStatusLabel}</span>}
@@ -2651,6 +2689,12 @@ function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?
         </div>
       )}
       {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
+      {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
+        <div className="job-detail-section ai-metrics">
+          <strong>Искусственный интеллект:</strong>
+          <span> Провайдер: {job.ai_provider_name || job.ai_provider || '—'}</span> · <span>Модель: {job.ai_model || '—'}</span>
+        </div>
+      )}
       {Boolean(job.yandex_requests_count || job.yandex_cost_rub) && (
         <div className="job-detail-section yandex-metrics">
           <strong>Расход Yandex Search API:</strong>

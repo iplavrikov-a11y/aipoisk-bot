@@ -61,6 +61,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   customers, and manual top-up indicators.
 - AI settings separate documentation-analysis models from one cheaper/faster
   supplier-search model used by the whole supplier-search flow.
+- Admin tasks list displays the exact AI provider and model used for every task
+  (e.g., `Gemini · gemini-3.1-flash-lite`, `OpenRouter · claude-3.5-sonnet`), with
+  search and filter support by AI model and provider name.
+- Admin customer cards display exact registration dates for each client in the
+  card header, per-account registration/linking dates for Telegram accounts, and
+  both registration and last login dates for web-cabinet users.
 - Online checkout is not enabled. Customers top up through the manager, and the
   owner credits or debits only a money amount in the admin client card. Legacy
   YooKassa fields remain in the backend schema for a future integration, but
