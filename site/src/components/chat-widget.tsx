@@ -190,29 +190,29 @@ export function ChatWidget() {
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 font-sans">
+    <div className="fixed bottom-4 right-4 z-50 font-sans">
       {/* Floating Action Button */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="relative group flex items-center gap-2 bg-gradient-to-r from-teal-600 via-teal-700 to-slate-900 text-white px-3 py-2 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-105 transition-all duration-200 border border-teal-400/30"
+          className="relative group flex items-center gap-1.5 bg-gradient-to-r from-teal-600 via-teal-700 to-slate-900 text-white px-2.5 py-1.5 rounded-full shadow-md hover:shadow-teal-900/30 hover:scale-105 transition-all duration-200 border border-teal-400/30"
           aria-label="Чат с администратором TenderLex"
         >
-          <div className="relative flex items-center justify-center w-6 h-6 rounded-full bg-teal-500/30 text-teal-200 shrink-0">
-            <MessageSquare className="w-3.5 h-3.5 text-white" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full border border-slate-900 animate-ping" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full border border-slate-900" />
+          <div className="relative flex items-center justify-center w-5 h-5 rounded-full bg-teal-500/30 text-teal-200 shrink-0">
+            <MessageSquare className="w-3 h-3 text-white" />
+            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-slate-900 animate-ping" />
+            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-slate-900" />
           </div>
 
-          <div className="flex flex-col text-left pr-1">
-            <span className="font-bold text-xs leading-tight text-white">
+          <div className="flex flex-col text-left pr-0.5">
+            <span className="font-bold text-[11px] leading-tight text-white">
               Чат TenderLex
             </span>
-            <span className="text-[10px] text-teal-200/90 font-medium leading-none mt-0.5">Онлайн • Ответ 2 мин</span>
+            <span className="text-[9px] text-teal-200/90 font-medium leading-none mt-0.5">Онлайн • Ответ 2 мин</span>
           </div>
 
           {unreadCount > 0 && (
-            <span className="ml-0.5 bg-emerald-400 text-slate-900 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-xs">
+            <span className="ml-0.5 bg-emerald-400 text-slate-900 text-[9px] font-black px-1 py-0.2 rounded-full shadow-xs">
               {unreadCount}
             </span>
           )}
