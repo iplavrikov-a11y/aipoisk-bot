@@ -133,10 +133,9 @@ export function SiteHeader() {
           </a>
           <a
             href={cabinetUrl}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-md shadow-teal-600/20 transition-all hover:scale-[1.02]"
+            className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-md shadow-teal-600/20 transition-all hover:scale-[1.02]"
           >
             <span>Войти в кабинет</span>
-            <ArrowRight size={14} />
           </a>
         </div>
       </div>
