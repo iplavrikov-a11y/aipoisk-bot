@@ -14,8 +14,9 @@ omx_wiki/
 node_modules/
 .next/
 site/.next*
-data/
-storage/
+/data/
+/backend/data/
+/storage/
 output/
 outputs/
 scratch/

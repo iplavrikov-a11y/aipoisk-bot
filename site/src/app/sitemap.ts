@@ -5,6 +5,7 @@ import {
   normalizedSiteUrl,
   seoPageLastModified,
 } from "@/lib/seo";
+import { KNOWLEDGE_ARTICLES } from "@/data/knowledge-base";
 
 const siteUrl = normalizedSiteUrl();
 const commercialUpdated = new Date(`${commercialPageLastModified}T00:00:00.000Z`);
@@ -77,38 +78,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
       url: `${siteUrl}/baza-znaniy`,
       lastModified: seoUpdated,
       changeFrequency: "weekly",
-      priority: 0.8,
-    },
-    {
-      url: `${siteUrl}/baza-znaniy/kak-naiti-postavshchika-po-tz`,
-      lastModified: seoUpdated,
-      changeFrequency: "weekly",
       priority: 0.85,
     },
-    {
-      url: `${siteUrl}/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz`,
+    ...KNOWLEDGE_ARTICLES.map((art) => ({
+      url: `${siteUrl}/baza-znaniy/${art.slug}`,
       lastModified: seoUpdated,
-      changeFrequency: "weekly",
+      changeFrequency: "weekly" as const,
       priority: 0.85,
-    },
-    {
-      url: `${siteUrl}/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617`,
-      lastModified: seoUpdated,
-      changeFrequency: "weekly",
-      priority: 0.85,
-    },
-    {
-      url: `${siteUrl}/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku`,
-      lastModified: seoUpdated,
-      changeFrequency: "weekly",
-      priority: 0.85,
-    },
-    {
-      url: `${siteUrl}/baza-znaniy/proverka-dilerskih-sertifikatov-b2b`,
-      lastModified: seoUpdated,
-      changeFrequency: "weekly",
-      priority: 0.85,
-    },
+    })),
     {
       url: `${siteUrl}/about`,
       lastModified: seoUpdated,

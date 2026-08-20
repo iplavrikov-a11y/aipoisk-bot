@@ -42,22 +42,35 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - `contacts.telegram_url` is used for owner/contact and purchase CTAs such as "Выбрать пакет".
 - Current production values are `@tenderlex_bot` for bot use and `@lexelence` for owner contact.
 
+## Knowledge Base & Content Hub (`/baza-znaniy`)
+
+- The Knowledge Base (`site/src/app/baza-znaniy`) is an SEO and educational hub containing 55 comprehensive, authoritative procurement guides.
+- Structured into 8 primary procurement clusters:
+  1. *Поиск поставщиков и заводов* (8 articles)
+  2. *ИИ и сопоставление номенклатуры* (7 articles)
+  3. *ТЗ, КТРУ и стандарты ГОСТ* (7 articles)
+  4. *Госзакупки 44-ФЗ / 223-ФЗ* (7 articles)
+  5. *Нацрежим и Минпромторг* (7 articles)
+  6. *НМЦК, КП и обоснование цен* (7 articles)
+  7. *Логистика и снижение затрат на 30%* (6 articles)
+  8. *Проверка контрагентов и дилеров* (6 articles)
+- Built on a dynamic static generation architecture: `site/src/app/baza-znaniy/[slug]/page.tsx` renders all 55 articles at build time using `generateStaticParams()` and dataset in `site/src/data/knowledge-base.ts`.
+- Uses a light, clean aesthetic aligned with the homepage design system (`bg-[#f6f8f7]`, `bg-white`, `border-[#d8e3e1]`, `text-[#075b63]`, `text-[#172120]`).
+- Includes comprehensive Schema.org JSON-LD microdata on every page (`TechArticle`, `HowTo`, `FAQPage`, `BreadcrumbList`, `CollectionPage`).
+- All 55 article URLs are dynamically published in `sitemap.xml` and registered in `llms.txt` for AI/LLM search indexing.
+
 ## SEO And Verification
 
 - `site/src/app/layout.tsx` owns the public metadata, canonical URLs, Open Graph tags, and optional verification/analytics wiring.
-- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component.
-- `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster.
-- `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property.
+- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component (Counter ID `109753178`).
+- `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster (`b3b74a829ce4a7c6`).
+- `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property (`SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY`).
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
-- `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
+- `site/src/app/sitemap.ts` includes all public SEO pages and 55 knowledge base articles so Search Console and Yandex discover them from the canonical sitemap.
 - `robots.txt` allows public pages, keeps `/api/` and `/cabinet` out of indexing, and points crawlers to the canonical sitemap. The deprecated `Host` directive is intentionally omitted.
-- `site/src/app/layout.tsx` default metadata should align with the homepage
-  positioning. The current root title is supplier-search led rather than
-  documentation-analysis led.
-- `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths must include a `120x120` asset.
-- Yandex Webmaster has both `http:tenderlex.ru:80` and `https:tenderlex.ru:443` properties. Keep the HTTP favicon paths returning `200 OK` instead of only redirecting, because the HTTP property can diagnose `http://tenderlex.ru/favicon.ico` and `http://tenderlex.ru/favicon.png` directly.
-- On 2026-06-23 the Yandex Webmaster DNS check was resent and the following URLs were queued for re-crawl: `http://tenderlex.ru/`, `http://tenderlex.ru/favicon.ico`, `http://tenderlex.ru/favicon.png`, and `https://tenderlex.ru/` in the HTTPS property.
-- Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site can pick them up without touching backend or bot services.
+- `site/src/app/layout.tsx` default metadata aligns with homepage positioning.
+- `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths include a `120x120` asset.
+- Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site picks them up automatically.
 
 ## Customer API Contract
 

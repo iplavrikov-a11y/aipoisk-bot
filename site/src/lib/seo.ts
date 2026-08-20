@@ -148,11 +148,6 @@ export function buildWebSiteJsonLd() {
       "@type": "Organization",
       "@id": `${siteUrl}/#organization`,
     },
-    potentialAction: {
-      "@type": "SearchAction",
-      target: `${siteUrl}/poisk-postavshchikov-po-tz?q={search_term_string}`,
-      "query-input": "required name=search_term_string",
-    },
   };
 }
 
@@ -220,3 +215,57 @@ export function buildSoftwareApplicationJsonLd() {
     url: siteUrl,
   };
 }
+
+export function buildArticleJsonLd({
+  title,
+  description,
+  path,
+  datePublished = "2026-03-15",
+  dateModified = "2026-08-20",
+  authorName = "Экспертная редакция TenderLex",
+  category = "Закупки и снабжение",
+}: {
+  title: string;
+  description: string;
+  path: string;
+  datePublished?: string;
+  dateModified?: string;
+  authorName?: string;
+  category?: string;
+}) {
+  const siteUrl = normalizedSiteUrl();
+  const articleUrl = absoluteUrl(path);
+
+  return {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "@id": `${articleUrl}#article`,
+    headline: title,
+    description,
+    url: articleUrl,
+    datePublished,
+    dateModified,
+    articleSection: category,
+    inLanguage: "ru-RU",
+    mainEntityOfPage: {
+      "@type": "WebPage",
+      "@id": articleUrl,
+    },
+    author: {
+      "@type": "Organization",
+      name: authorName,
+      url: siteUrl,
+    },
+    publisher: {
+      "@type": "Organization",
+      "@id": `${siteUrl}/#organization`,
+      name: "TenderLex",
+      logo: {
+        "@type": "ImageObject",
+        url: `${siteUrl}/icon.png`,
+      },
+    },
+    image: `${siteUrl}/tenderlex-product-preview.png`,
+  };
+}
+

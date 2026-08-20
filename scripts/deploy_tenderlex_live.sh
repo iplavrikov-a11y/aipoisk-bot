@@ -222,7 +222,14 @@ build_site_release() {
   tar -C "$SITE_DIR" --exclude='./.next*' --exclude='./node_modules' -cf - . | tar -C "$site_release_dir" -xf -
   cp -al "$SITE_DIR/node_modules" "$site_release_dir/node_modules"
 
-  (cd "$site_release_dir" && npm run typecheck && npm run build)
+  (
+    cd "$site_release_dir"
+    export NEXT_TELEMETRY_DISABLED=1
+    export NEXT_CPU_COUNT="${AIPOISK_BUILD_CPU_COUNT:-2}"
+    export NODE_OPTIONS="${AIPOISK_NODE_OPTIONS:---max-old-space-size=2048}"
+    nice -n 15 ionice -c 3 npm run typecheck
+    nice -n 15 ionice -c 3 npm run build
+  )
   validate_site_release "$site_release_dir/.next"
 }
 
@@ -259,7 +266,11 @@ fi
 
 if [[ "$deploy_scope" == "full" ]]; then
   log "building admin frontend"
-  (cd "$FRONTEND_DIR" && npm run build)
+  (
+    cd "$FRONTEND_DIR"
+    export NODE_OPTIONS="${AIPOISK_NODE_OPTIONS:---max-old-space-size=2048}"
+    nice -n 15 ionice -c 3 npm run build
+  )
 
   log "building isolated public site release"
   build_site_release

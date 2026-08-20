@@ -27,10 +27,18 @@
 - Региональный охват: https://tenderlex.ru/regiony
 - База знаний: https://tenderlex.ru/baza-znaniy
 - Инструкция по поиску поставщиков: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
+- Как выйти на завод-изготовитель напрямую: https://tenderlex.ru/baza-znaniy/kak-vyiti-napryamuyu-na-zavod-izgotovitel
 - Руководство по рискам 44-ФЗ / 223-ФЗ: https://tenderlex.ru/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz
 - Инструкция по Постановлениям № 616 и 617: https://tenderlex.ru/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617
 - Как составить Запрос КП: https://tenderlex.ru/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku
+- Расчет НМЦК методом анализа рынка: https://tenderlex.ru/baza-znaniy/raschet-nmck-metodom-sopostavimyh-cen
 - Проверка дилерских сертификатов: https://tenderlex.ru/baza-znaniy/proverka-dilerskih-sertifikatov-b2b
+- Чек-лист проверки контрагента (ст. 54.1 НК): https://tenderlex.ru/baza-znaniy/proverka-kontragenta-dolzhnaya-osmotritelnost-54-1-nk
+- КТРУ в 44-ФЗ и обоснование характеристик: https://tenderlex.ru/baza-znaniy/ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik
+- Сопоставление номенклатуры с ИИ (AI SKU Matching): https://tenderlex.ru/baza-znaniy/sopostavlenie-nomenklatury-ai-sku-matching
+- Генератор и аудит ТЗ по ГОСТ 2.105: https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty
+- Расчет логистики и снижение затрат на 30%: https://tenderlex.ru/baza-znaniy/raschet-logistiki-dostavki-v-zakupkah-snizhenie-zatrat
+- Подбор аналогов и эквивалентов оборудования: https://tenderlex.ru/baza-znaniy/podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz
 - О сервисе TenderLex: https://tenderlex.ru/about
 - Правовая информация и реквизиты: https://tenderlex.ru/legal
 
