@@ -254,7 +254,7 @@ cd "$ROOT_DIR"
 
 if [[ "$deploy_scope" != "site" ]]; then
   log "running backend tests"
-  PYTHONPATH="$BACKEND_DIR" pytest backend/tests -q
+  PYTHONPATH="$BACKEND_DIR" pytest ${AIPOISK_DEPLOY_TESTS:-backend/tests} -q
 fi
 
 if [[ "$deploy_scope" == "full" ]]; then

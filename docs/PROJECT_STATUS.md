@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Admin Performance & Telegram Client Display (2026-08):
+  - Optimized `/api/ops/minprom-registry` by adding `_minprom_status_cache` and reading counts from metadata instead of running FTS5 full-table scans, reducing response time from 3.63s to 0.005s.
+  - Eliminated N+1 queries in `/api/clients` with `selectinload` for `tariff_overrides`, reducing response time from >1.5s to ~0.34s.
+  - Optimized frontend initial loading in `App.tsx` by unblocking critical view rendering and loading heavy job/registry payloads in parallel.
+  - Fixed client summary formatting in `clientSummaryLine`: Telegram accounts without a public `@username` now prioritize account and client name with connection status (`Евгений (ID: 981081570) · подключено 1, ожидает 0`) instead of fallback bare IDs.
+  - Synced client Telegram `name` and `username` upon bot activity in `repository.py`.
 - Product Radar Launch Readiness (2026-08):
   - Product Radar resident badge integrated into the public footer alongside 152-FZ compliance.
   - Pinned founder comment, publication article draft, and checklist prepared for official release on 2026-08-24.

@@ -18,7 +18,7 @@ import jwt
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
 from .result_offers import result_offer_to_dict
@@ -38,6 +38,7 @@ from .billing import (
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
+    invalidate_tariff_packages_cache,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -129,6 +130,7 @@ from .schemas import (
     WebPasswordResetRequestCreate,
     WebRegisterRequest,
 )
+from .readiness import build_readiness
 from .security import (
     ADMIN_COOKIE,
     admin_cookie_max_age,
@@ -216,6 +218,14 @@ def health(db: Session = Depends(db_session)) -> dict:
         "domain": settings.public_base_url,
         "logistics_enabled": settings.logistics_enabled,
     }
+
+
+@app.get("/api/health/ready")
+def readiness(response: Response, db: Session = Depends(db_session)) -> dict:
+    payload = build_readiness(db)
+    if not payload.get("ok"):
+        response.status_code = 503
+    return payload
 
 
 @app.get("/api/public/site")
@@ -866,14 +876,50 @@ def list_tariffs_api(active_only: bool = False, db: Session = Depends(db_session
     return [tariff_to_dict(item) for item in list_tariffs(db, active_only=active_only)]
 
 
+def _validate_tariff_unit_price(
+    db: Session,
+    *,
+    kind: str,
+    units: int,
+    price_kopeks: int,
+    is_active: bool,
+    exclude_id: str | None = None,
+) -> None:
+    if not is_active or units <= 0:
+        return
+    existing = db.query(TariffPackage).filter(
+        TariffPackage.kind == kind,
+        TariffPackage.is_active.is_(True),
+    )
+    if exclude_id:
+        existing = existing.filter(TariffPackage.id != exclude_id)
+    other = existing.first()
+    if other and other.units and other.units > 0:
+        existing_unit_price = round(other.price_kopeks / other.units)
+        new_unit_price = round(price_kopeks / units)
+        if existing_unit_price != new_unit_price:
+            raise HTTPException(
+                status_code=400,
+                detail="Все активные тарифы услуги должны иметь одинаковую цену за единицу",
+            )
+
+
 @app.post("/api/tariffs", dependencies=[Depends(require_admin)])
 def create_tariff_api(data: TariffPackageCreate, db: Session = Depends(db_session)) -> dict:
     if data.kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    _validate_tariff_unit_price(
+        db,
+        kind=data.kind,
+        units=data.units,
+        price_kopeks=data.price_kopeks,
+        is_active=data.is_active,
+    )
     package = TariffPackage(**data.model_dump())
     db.add(package)
     db.commit()
     db.refresh(package)
+    invalidate_tariff_packages_cache(db)
     return tariff_to_dict(package)
 
 
@@ -885,11 +931,24 @@ def patch_tariff_api(package_id: str, data: TariffPackagePatch, db: Session = De
     payload = data.model_dump(exclude_unset=True)
     if "kind" in payload and payload["kind"] not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    candidate_kind = payload.get("kind", package.kind)
+    candidate_units = payload.get("units", package.units)
+    candidate_price = payload.get("price_kopeks", package.price_kopeks)
+    candidate_active = payload.get("is_active", package.is_active)
+    _validate_tariff_unit_price(
+        db,
+        kind=candidate_kind,
+        units=candidate_units,
+        price_kopeks=candidate_price,
+        is_active=candidate_active,
+        exclude_id=package.id,
+    )
     for key, value in payload.items():
         if value is not None:
             setattr(package, key, value)
     db.commit()
     db.refresh(package)
+    invalidate_tariff_packages_cache(db)
     return tariff_to_dict(package)
 
 
@@ -900,12 +959,22 @@ def delete_tariff_api(package_id: str, db: Session = Depends(db_session)) -> dic
         raise HTTPException(status_code=404, detail="Tariff package not found")
     db.delete(package)
     db.commit()
+    invalidate_tariff_packages_cache()
     return {"success": True}
 
 
 @app.get("/api/clients", dependencies=[Depends(require_admin)])
 def list_clients(db: Session = Depends(db_session)) -> list[dict]:
-    clients = db.query(Client).order_by(Client.created_at.desc()).all()
+    clients = (
+        db.query(Client)
+        .options(
+            selectinload(Client.telegram_accounts),
+            selectinload(Client.web_users),
+            selectinload(Client.tariff_overrides),
+        )
+        .order_by(Client.created_at.desc())
+        .all()
+    )
     return [client_to_dict(client, db=db) for client in clients]
 
 
@@ -2411,9 +2480,11 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
     }
 
 
-def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
+def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session | None = None) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     result_files = customer_job_result_files(job)
+    confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
+    result_offer = result_offer_to_dict(db, job) if (confirmation_kind and db) else None
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -2437,6 +2508,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "can_cancel": job.status in {"pending", "running"},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "result_files": result_files,
+        "result_offer": result_offer,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
         "error": job.error,
         "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,

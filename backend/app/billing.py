@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import fcntl
+import time
 from copy import deepcopy
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -256,6 +257,31 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
     return 0
 
 
+def invalidate_tariff_packages_cache(db: Session | None = None) -> None:
+    if db is not None and hasattr(db, "info"):
+        db.info.pop("active_tariff_packages", None)
+
+
+def _active_tariff_packages(db: Session) -> dict[str, TariffPackage]:
+    if hasattr(db, "info"):
+        cached = db.info.get("active_tariff_packages")
+        if cached is not None:
+            return cached
+    packages = (
+        db.query(TariffPackage)
+        .filter(TariffPackage.is_active.is_(True))
+        .order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc())
+        .all()
+    )
+    result: dict[str, TariffPackage] = {}
+    for pkg in packages:
+        if pkg.kind not in result:
+            result[pkg.kind] = pkg
+    if hasattr(db, "info"):
+        db.info["active_tariff_packages"] = result
+    return result
+
+
 def _explicit_effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int | None:
     if client:
         override = _client_tariff_override(db, client, kind)
@@ -263,13 +289,7 @@ def _explicit_effective_price_kopeks(db: Session, client: Client | None, kind: s
             if not override.is_enabled:
                 return 0
             return max(0, int(override.price_kopeks or 0))
-    package = (
-        db.query(TariffPackage)
-        .filter(TariffPackage.kind == kind)
-        .filter(TariffPackage.is_active.is_(True))
-        .order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc())
-        .first()
-    )
+    package = _active_tariff_packages(db).get(kind)
     if not package:
         return None
     units = max(1, int(package.units or 1))
@@ -282,6 +302,12 @@ def _default_supplier_search_extra_price_kopeks(db: Session, client: Client | No
 
 
 def _client_tariff_override(db: Session, client: Client, kind: str) -> ClientTariffOverride | None:
+    overrides = getattr(client, "tariff_overrides", None)
+    if overrides is not None and isinstance(overrides, list):
+        matching = [ov for ov in overrides if ov.kind == kind]
+        if matching:
+            return max(matching, key=lambda ov: ov.updated_at or ov.created_at or datetime.min)
+        return None
     return (
         db.query(ClientTariffOverride)
         .filter(ClientTariffOverride.client_id == client.id)

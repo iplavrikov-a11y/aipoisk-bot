@@ -1011,24 +1011,28 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, jobsData, opsStatusData, minpromRegistryData, settingsData, tariffData, passwordResetData] = await Promise.all([
+      const [dashboardData, clientsData, opsStatusData, settingsData, tariffData, passwordResetData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
-        api<Job[]>('/api/jobs?include_internal=true&limit=200'),
         api<OpsStatus>('/api/ops/system-status'),
-        api<MinpromRegistryStatus>('/api/ops/minprom-registry'),
         api<SettingsPayload>('/api/settings'),
         api<TariffPackage[]>('/api/tariffs'),
         api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
-      setJobs(jobsData)
       setOpsStatus(opsStatusData)
-      setMinpromRegistry(minpromRegistryData)
       setSettings(settingsData)
       setTariffs(tariffData)
       setPasswordResets(passwordResetData)
+
+      // Fetch background / secondary data without delaying core view rendering
+      void api<Job[]>('/api/jobs?include_internal=true&limit=200')
+        .then(jobsData => { if (jobsData) setJobs(jobsData) })
+        .catch(() => {})
+      void api<MinpromRegistryStatus>('/api/ops/minprom-registry')
+        .then(minpromData => { if (minpromData) setMinpromRegistry(minpromData) })
+        .catch(() => {})
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -2345,14 +2349,27 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
   if (client.web_users?.[0]?.email) {
     return client.web_users[0].email
   }
-  const usernames = accounts.filter(account => account.username).map(account => `@${account.username}`).slice(0, 3)
-  const connected = accounts.filter(account => !account.is_pending)
-  const pending = accounts.filter(account => account.is_pending)
-  if (usernames.length) {
-    const more = accounts.length > usernames.length ? ` +${accounts.length - usernames.length}` : ''
-    return `${usernames.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
+  const realAccounts = accounts.filter(account => !isSyntheticWebTelegramAccount(account))
+  const connected = realAccounts.filter(account => !account.is_pending)
+  const pending = realAccounts.filter(account => account.is_pending)
+  const accountLabels = realAccounts
+    .map(account => {
+      if (account.username) return `@${account.username}`
+      if (account.name && account.telegram_id) return `${account.name} (ID: ${account.telegram_id})`
+      if (account.name) return account.name
+      if (account.telegram_id) return `Telegram ID: ${account.telegram_id}`
+      return ''
+    })
+    .filter(Boolean)
+    .slice(0, 3)
+
+  if (accountLabels.length) {
+    const more = realAccounts.length > accountLabels.length ? ` +${realAccounts.length - accountLabels.length}` : ''
+    return `${accountLabels.join(', ')}${more} · подключено ${connected.length}, ожидает ${pending.length}`
   }
-  if (client.telegram_id) return `Telegram ID: ${client.telegram_id}`
+  if (client.telegram_id) {
+    return client.name ? `${client.name} (ID: ${client.telegram_id})` : `Telegram ID: ${client.telegram_id}`
+  }
   return 'Telegram-аккаунты ожидают подключения'
 }
 

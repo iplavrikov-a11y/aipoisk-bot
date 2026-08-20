@@ -74,7 +74,7 @@ def get_or_create_settings(db: Session) -> SystemSettings:
 def supplier_target_for_client(settings: SystemSettings, client: Client | None) -> int:
     client_target = int(getattr(client, "supplier_target_min", 0) or 0)
     configured_target = client_target if client_target > 0 else int(getattr(settings, "default_supplier_target", 0) or DEFAULT_SUPPLIER_TARGET)
-    return max(50, min(MAX_SUPPLIER_TARGET, configured_target))
+    return max(1, min(MAX_SUPPLIER_TARGET, configured_target))
 
 
 def seed_owner_client(db: Session) -> None:
@@ -202,13 +202,23 @@ def ensure_client_telegram_account(
     if not normalized:
         raise ValueError("telegram_id is required")
     existing = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == normalized).first()
+    clean_username = normalize_telegram_username(username)
+    clean_name = str(name or "").strip()
     if existing:
+        if clean_username and not existing.username:
+            existing.username = clean_username
+        if clean_name and (not existing.name or existing.name.startswith("Trial ") or existing.name == "Без имени"):
+            existing.name = clean_name
+        if clean_username and not client.username:
+            client.username = clean_username
+        if clean_name and (not client.name or client.name.startswith("Trial ") or client.name == "Без имени"):
+            client.name = clean_name
         return existing
     account = ClientTelegramAccount(
         client_id=client.id,
         telegram_id=normalized,
-        username=username or client.username,
-        name=name or client.name,
+        username=clean_username or client.username,
+        name=clean_name or client.name,
         is_active=True,
         notes=notes,
     )
@@ -325,7 +335,9 @@ def get_or_create_trial_client_by_telegram_id(
     client, account_error = get_client_by_telegram_id(db, telegram_id)
     if client or account_error:
         if client and not account_error:
+            ensure_client_telegram_account(db, client, telegram_id, username=username, name=name)
             ensure_unused_trial_balance(db, client)
+            db.commit()
         return client, account_error
     pending_client, pending_error = resolve_pending_telegram_account_by_username(
         db,

@@ -188,6 +188,10 @@ class Client(Base):
         back_populates="client",
         cascade="all, delete-orphan",
     )
+    tariff_overrides: Mapped[list["ClientTariffOverride"]] = relationship(
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
     billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
 
 
@@ -466,6 +470,8 @@ class ClientTariffOverride(Base):
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship(back_populates="tariff_overrides")
 
 
 class JobFile(Base):

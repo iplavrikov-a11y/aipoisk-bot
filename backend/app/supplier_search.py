@@ -491,12 +491,35 @@ async def filter_minprom_registry_entries_for_profile(
     return [entries[index] for index in accepted_indexes]
 
 
+_minprom_status_cache: dict[str, Any] = {"sig": None, "data": None}
+_minprom_status_lock = threading.Lock()
+
+
+def _minprom_file_sig(path: Path) -> tuple[bool, int, int]:
+    try:
+        if not path.is_file():
+            return False, 0, 0
+        stat = path.stat()
+        return True, stat.st_size, stat.st_mtime_ns
+    except Exception:
+        return False, 0, 0
+
+
 def get_minprom_registry_cache_status() -> dict[str, Any]:
     xlsx_path = _minprom_registry_xlsx_path()
     index_path = _minprom_registry_index_path()
     sqlite_path = _minprom_registry_sqlite_path()
+    sig = (
+        _minprom_file_sig(xlsx_path),
+        _minprom_file_sig(index_path),
+        _minprom_file_sig(sqlite_path),
+    )
+    with _minprom_status_lock:
+        if _minprom_status_cache["sig"] == sig and _minprom_status_cache["data"] is not None:
+            return dict(_minprom_status_cache["data"])
+
     sqlite_meta = _minprom_registry_sqlite_meta(sqlite_path)
-    return {
+    result = {
         "xlsx_exists": xlsx_path.is_file(),
         "xlsx_path": str(xlsx_path),
         "xlsx_size_bytes": xlsx_path.stat().st_size if xlsx_path.is_file() else 0,
@@ -509,6 +532,10 @@ def get_minprom_registry_cache_status() -> dict[str, Any]:
         "source_url": GISP_PRODUCT_REGISTRY_URL,
         **sqlite_meta,
     }
+    with _minprom_status_lock:
+        _minprom_status_cache["sig"] = sig
+        _minprom_status_cache["data"] = result
+    return result
 
 
 def minprom_registry_preflight_error(policy: str) -> str:
@@ -562,9 +589,17 @@ def store_minprom_registry_xlsx_cache(payload: bytes, *, filename: str = "") -> 
 
 
 def _minprom_registry_cache_dir() -> Path:
-    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_CACHE_DIR", "").strip()
+    configured = os.getenv("SUPPLIER_MINPROM_REGISTRY_CACHE_DIR", "").strip() or str(getattr(config, "minprom_registry_cache_dir", "") or "").strip()
     if configured:
         return Path(configured)
+    db_url = str(getattr(config, "database_url", "") or "")
+    if db_url.startswith("sqlite:///"):
+        raw_path = db_url.removeprefix("sqlite:///")
+        if not raw_path.startswith("/"):
+            resolved_db = (Path(__file__).resolve().parents[1] / raw_path).resolve()
+        else:
+            resolved_db = Path(raw_path)
+        return resolved_db.parent / "minprom_registry"
     return Path(__file__).resolve().parents[2] / "data" / "minprom_registry"
 
 
@@ -606,8 +641,12 @@ def _minprom_registry_sqlite_meta(sqlite_path: Path | None = None) -> dict[str, 
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             rows = dict(conn.execute("SELECT key, value FROM meta").fetchall())
-            entry_count = int(conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0] or 0)
-            fts_count = int(conn.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0] or 0)
+            meta_count = rows.get("entry_count")
+            if meta_count is not None:
+                entry_count = int(meta_count or 0)
+            else:
+                entry_count = int(conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0] or 0)
+            fts_count = entry_count
         finally:
             conn.close()
         index_path = _minprom_registry_index_path()
