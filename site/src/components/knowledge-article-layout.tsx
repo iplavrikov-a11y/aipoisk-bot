@@ -242,20 +242,23 @@ export function KnowledgeArticleLayout({
                     Найдите надежных поставщиков по вашему ТЗ за 3 минуты
                   </h3>
                   <p className="text-[#2f3f3d] text-sm sm:text-base leading-relaxed">
-                    Загрузите техническое задание или спецификацию. ИИ TenderLex сопоставит номенклатуру, найдет прямые контакты отделов сбыта заводов и официальных дилеров по всей России и сформирует готовый запрос КП.
+                    Загрузите техническое задание или спецификацию в веб-кабинет. ИИ TenderLex сопоставит номенклатуру, найдет прямые контакты отделов сбыта заводов и официальных дилеров по всей России и сформирует готовый запрос КП.
                   </p>
-                  <div className="flex flex-wrap gap-3 pt-2">
+                  <div className="flex flex-wrap items-center gap-3 pt-2">
                     <Button asChild size="lg" className="bg-[#075b63] hover:bg-[#06464c] text-white font-black shadow-md shadow-[#075b63]/20">
-                      <a href={botUrl} target="_blank" rel="noopener noreferrer">
-                        Запустить в Telegram <ArrowRight size={16} className="ml-1" />
-                      </a>
-                    </Button>
-                    <Button asChild variant="secondary" size="lg" className="border-[#b8c8c5] bg-white text-[#172120] hover:bg-[#eef3f2] font-bold">
-                      <Link href="/poisk-postavshchikov-po-tz">
-                        Узнать подробнее
+                      <Link href="/cabinet">
+                        Попробовать бесплатно <ArrowRight size={16} className="ml-1" />
                       </Link>
                     </Button>
+                    <Button asChild variant="secondary" size="lg" className="border-[#b8c8c5] bg-white text-[#172120] hover:bg-[#eef3f2] font-bold">
+                      <a href={botUrl} target="_blank" rel="noopener noreferrer">
+                        Или в Telegram
+                      </a>
+                    </Button>
                   </div>
+                  <p className="text-xs text-[#697a77] font-semibold pt-1">
+                    ✓ Бесплатный тестовый период • Мгновенная регистрация • Доступ в веб-кабинет
+                  </p>
                 </div>
               </article>
 
@@ -271,13 +274,21 @@ export function KnowledgeArticleLayout({
                       Экспресс-поиск поставщиков и аудит 44-ФЗ
                     </h4>
                     <p className="text-xs text-[#2f3f3d] leading-relaxed">
-                      Автоматический анализ извещений, ТЗ и спецификаций. Экономьте до 85% времени на рутинном поиске контактов.
+                      Автоматический анализ извещений, ТЗ и спецификаций. Бесплатный тестовый период в веб-кабинете.
                     </p>
-                    <Button asChild className="w-full bg-[#075b63] hover:bg-[#06464c] text-white font-bold text-sm">
-                      <a href={botUrl} target="_blank" rel="noopener noreferrer">
-                        Попробовать бесплатно
-                      </a>
+                    <Button asChild className="w-full bg-[#075b63] hover:bg-[#06464c] text-white font-bold text-sm shadow-xs">
+                      <Link href="/cabinet">
+                        Начать бесплатно в кабинете
+                      </Link>
                     </Button>
+                    <a
+                      href={botUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-center text-xs text-[#697a77] hover:text-[#075b63] font-bold transition-colors"
+                    >
+                      Или запустить Telegram-бот →
+                    </a>
                   </div>
 
                   {/* RELATED ARTICLES */}
