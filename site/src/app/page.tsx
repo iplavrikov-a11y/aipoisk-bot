@@ -34,6 +34,7 @@ import { RfqPreviewWidget } from "@/components/rfq-preview-widget";
 import { ProcurementCalculator } from "@/components/procurement-calculator";
 import { ComparisonSection } from "@/components/comparison-section";
 import { ScrollWorldViewer } from "@/components/scroll-world/scroll-world-viewer";
+import { TrustRegistryBar } from "@/components/trust-registry-bar";
 
 export const revalidate = 300;
 
@@ -117,7 +118,7 @@ export default async function HomePage() {
         <section className="relative pt-10 pb-16 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             {/* Hero Top Copy */}
-            <div className="max-w-3xl mx-auto text-center space-y-4 mb-10">
+            <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
                 <Sparkles size={14} className="text-teal-600 animate-pulse" />
                 <span>ИИ-поиск поставщиков по всей России & Экспресс-аудит 44-ФЗ</span>
@@ -127,9 +128,43 @@ export default async function HomePage() {
                 Поиск поставщиков по ТЗ и анализ рисков закупок за 3 минуты
               </h1>
 
-              <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed">
+              <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
                 От загрузки технического задания и проверки условий до поиска прямых заводов РФ и подготовки запроса цен.
               </p>
+
+              {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
+              <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
+                <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
+                  <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
+                    <span>Попробовать бесплатно</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </Link>
+                </Button>
+                <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">
+                  <a href={botUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2">
+                    <Send className="w-4 h-4 text-cyan-600" />
+                    <span>Запустить в Telegram</span>
+                  </a>
+                </Button>
+              </div>
+
+              {/* Conversion Trust Micro-Badges */}
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-slate-500 font-medium pt-1">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  1 бесплатный поиск и аудит при регистрации
+                </span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  Без привязки банковской карты
+                </span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  Живой поиск в Яндекс & Google
+                </span>
+              </div>
             </div>
 
             {/* WOW SCROLL-WORLD INTERACTIVE COMPONENT */}
@@ -144,8 +179,8 @@ export default async function HomePage() {
                 <span className="text-xs text-slate-500">на разбор любого ТЗ</span>
               </div>
               <div>
-                <strong className="block text-2xl font-black text-teal-700">350 000+</strong>
-                <span className="text-xs text-slate-500">предприятий в базе РФ</span>
+                <strong className="block text-2xl font-black text-teal-700">Яндекс & Google</strong>
+                <span className="text-xs text-slate-500">живой поиск по сайтам РФ</span>
               </div>
               <div>
                 <strong className="block text-2xl font-black text-teal-700">до 22%</strong>
@@ -156,6 +191,9 @@ export default async function HomePage() {
                 <span className="text-xs text-slate-500">защита от штрафов и РНП</span>
               </div>
             </div>
+
+            {/* OFFICIAL REGISTRIES & TRUST VERIFICATION BAR */}
+            <TrustRegistryBar />
           </div>
         </section>
 

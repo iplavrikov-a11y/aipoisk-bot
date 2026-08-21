@@ -14,6 +14,14 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
   documentation analysis remains visible, but it is positioned as an optional
   supporting check for complex tender work, not as the dominant public-site
   message.
+- Search technology positioning: TenderLex performs live web search across Yandex
+  and Google with deep crawling of manufacturer websites and direct contact parsing,
+  rather than querying a static/stale directory.
+- Trust Architecture (`TrustRegistryBar`): Highlights 4 authentic data and technology pillars:
+  1. Live Web Search (Yandex & Google Search API queries)
+  2. Deep Crawling (direct parsing of supplier website catalogs, contacts, prices)
+  3. Minpromtorg Registry / GISP (PP 616 / 617 national regime)
+  4. EIS Zakupki (44-FZ / 223-FZ contract analysis & risk review)
 - Public copy should offer both entry points: work on the site and work in Telegram.
 - Customer-facing copy must explain the business result, not implementation details such as file formats, internal balances, protected sessions, or exact free-run counters.
 - Homepage copy should avoid leading with internal or overloaded abbreviations

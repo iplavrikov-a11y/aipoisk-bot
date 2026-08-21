@@ -12,6 +12,15 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Live Web Search & Deep Crawling Trust Architecture (2026-08):
+  - Aligned website positioning with actual backend capabilities: eliminated inaccurate references to static "supplier databases" in favor of live real-time search across Yandex and Google Search APIs.
+  - Implemented sleek, authentic `TrustRegistryBar` component featuring the 4 real pillars of TenderLex:
+    1. *Живой поиск Яндекс & Google (Live Web Search)* — формирование поисковых запросов по ГОСТам, маркам и спецификациям без ограничений устаревшими базами.
+    2. *Глубокий краулинг сайтов (Deep Crawling)* — автоматический обход страниц производителей/дилеров, парсинг контактов отделов сбыта и прайс-листов.
+    3. *Реестр Минпромторга (ГИСП)* — сверка с Реестром российской промышленной продукции под ПП РФ № 616 и № 617.
+    4. *ЕИС Закупки (44-ФЗ / 223-ФЗ)* — экспресс-аудит рисков контрактов, извещений и нетипичных штрафов по ПП № 1042.
+  - Added high-converting, mobile-first Hero Action CTAs ("Попробовать бесплатно" / "Запустить в Telegram") with conversion trust micro-badges (1 пробный поиск/аудит при регистрации, без привязки карты).
+  - Deployed live to production via `./scripts/deploy_tenderlex_live.sh`.
 - Telegram Bot Navigation & UX Modernization (2026-08):
   - Removed persistent bottom reply keyboard (`ReplyKeyboardRemove`) across all bot interactions, eliminating screen crowding and mobile keypad clutter.
   - Built pure in-chat inline navigation architecture with zero dead ends: all scenario cards, confirmation prompts, and after-delivery output messages feature clean next-action buttons and return paths.
