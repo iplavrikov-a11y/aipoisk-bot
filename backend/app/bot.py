@@ -115,6 +115,7 @@ BUTTON_CONTACTS = "📞 Контакты"
 BUTTON_LEGAL = "⚖️ Правовая информация"
 BUTTON_RUN_BATCH = "▶️ Запустить"
 BUTTON_CANCEL_BATCH = "🗑 Очистить"
+BUTTON_POLICY = "⚙️ Режим поиска"
 BUTTON_BACK_MAIN = "⬅️ Меню"
 BUTTON_PROCESSING_STATUS = "⏳ В работе"
 BUTTON_CANCEL_PROCESSING = "⛔ Отменить"
@@ -270,28 +271,46 @@ def _supplier_policy_for_chat(chat_id: int) -> str:
 
 def _supplier_policy_label(policy: str) -> str:
     if policy == SUPPLIER_POLICY_MINPROM_ONLY:
-        return "Только реестр"
+        return "Только реестр (ПП 616)"
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
-        return "Реестр в приоритете"
+        return "Реестр в приоритете (ПП 617 / 878)"
     return "Обычный поиск"
 
 
-def supplier_policy_keyboard() -> InlineKeyboardMarkup:
+def supplier_policy_keyboard(selected_policy: str = SUPPLIER_POLICY_NORMAL) -> InlineKeyboardMarkup:
+    normal_mark = "✅ " if selected_policy == SUPPLIER_POLICY_NORMAL else ""
+    only_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_ONLY else ""
+    priority_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_PRIORITY else ""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
-            [InlineKeyboardButton(text="Только реестр", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
-            [InlineKeyboardButton(text="Реестр в приоритете", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
+            [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
+            [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
+            [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
         ]
     )
 
 
-def _supplier_policy_prompt_text(scenario: str) -> str:
+def _supplier_policy_prompt_text(scenario: str, policy: str = SUPPLIER_POLICY_NORMAL) -> str:
     prefix = "📄🔎 Анализ + поиск" if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS else "🔎 Поставщики по ТЗ"
+    label = _supplier_policy_label(policy)
+    if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
+        return (
+            f"<b>{prefix}</b>\n\n"
+            f"Текущий режим: <b>{label}</b>\n\n"
+            "Выберите режим поиска поставщиков по реестру Минпромторга:\n"
+            "• <b>Обычный поиск</b> — по всем производителям и дилерам РФ\n"
+            "• <b>Только реестр</b> — строгий фильтр ГИСП (для нацрежима ПП 616)\n"
+            "• <b>Реестр в приоритете</b> — производители из реестра в начале (ПП 617 / 878)\n\n"
+            "Отправьте номер извещения, ссылку, архив или документы закупки."
+        )
     return (
-        f"{prefix}\n\n"
-        "Выберите режим поиска поставщиков по реестру Минпромторга. "
-        "Если не выбирать, будет обычный поиск."
+        f"<b>{prefix}</b>\n\n"
+        f"Текущий режим: <b>{label}</b>\n\n"
+        "Выберите режим поиска поставщиков по реестру Минпромторга:\n"
+        "• <b>Обычный поиск</b> — по всем производителям и дилерам РФ\n"
+        "• <b>Только реестр</b> — строгий фильтр ГИСП (для нацрежима ПП 616)\n"
+        "• <b>Реестр в приоритете</b> — производители из реестра в начале (ПП 617 / 878)\n\n"
+        "Отправьте ТЗ файлом (.docx, .pdf, .xlsx, .zip), текстом или архивом."
     )
 
 
@@ -449,10 +468,12 @@ def _supplier_multi_intro_text() -> str:
 
 
 def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources: int = 0) -> str:
+    policy_label = _supplier_policy_label(pending.supplier_search_policy)
     if pending.mode == MODE_SUPPLIER_SEARCH:
         lines = [
             "✅ ТЗ добавлено",
             f"• В комплекте: {len(pending.files)}/{max_files}",
+            f"• Режим поиска: {policy_label}",
             "",
         ]
         if len(pending.files) > 1:
@@ -470,6 +491,8 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
     ]
     if pending.sources:
         lines.append(f"• Источников: {len(pending.sources)}")
+    if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        lines.append(f"• Режим поиска: {policy_label}")
     lines.extend(["", f"Добавьте ещё документы или нажмите «{BUTTON_RUN_BATCH}»."])
     return "\n".join(lines)
 
@@ -587,12 +610,18 @@ def create_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def batch_menu() -> ReplyKeyboardMarkup:
+def batch_menu(chat_id: int | None = None) -> ReplyKeyboardMarkup:
+    scenario = PENDING_MODES.get(chat_id or 0) if chat_id else None
+    show_policy = bool(scenario and _scenario_uses_supplier_policy(scenario))
+    rows = [
+        [KeyboardButton(text=BUTTON_RUN_BATCH), KeyboardButton(text=BUTTON_CANCEL_BATCH)],
+    ]
+    if show_policy:
+        rows.append([KeyboardButton(text=BUTTON_POLICY), KeyboardButton(text=BUTTON_BACK_MAIN)])
+    else:
+        rows.append([KeyboardButton(text=BUTTON_BACK_MAIN)])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BUTTON_RUN_BATCH), KeyboardButton(text=BUTTON_CANCEL_BATCH)],
-            [KeyboardButton(text=BUTTON_BACK_MAIN)],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
         input_field_placeholder="Добавьте материалы или запустите обработку",
     )
@@ -1731,8 +1760,16 @@ async def supplier_mode(message: Message) -> None:
         return
     cleared = _select_scenario(message.chat.id, SCENARIO_SUPPLIERS)
     _record_telegram_event(message, "mode_selected", mode=MODE_SUPPLIER_SEARCH)
-    await message.answer(_supplier_policy_prompt_text(SCENARIO_SUPPLIERS), reply_markup=supplier_policy_keyboard())
-    await message.answer(_supplier_multi_intro_text() + _scenario_switch_note(cleared), reply_markup=batch_menu())
+    policy = _supplier_policy_for_chat(message.chat.id)
+    await message.answer(
+        _supplier_policy_prompt_text(SCENARIO_SUPPLIERS, policy=policy) + _scenario_switch_note(cleared),
+        reply_markup=supplier_policy_keyboard(selected_policy=policy),
+    )
+    await message.answer(
+        "💡 Если ТЗ несколько, отправьте их по очереди. По каждому будет отдельный поиск поставщиков.\n"
+        f"Когда материалы загружены, нажмите «{BUTTON_RUN_BATCH}».",
+        reply_markup=batch_menu(message.chat.id),
+    )
 
 
 @router.message(Command("report"))
@@ -1745,7 +1782,7 @@ async def report_mode(message: Message) -> None:
         "📄 Анализ закупки\n\n"
         "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
         f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}»." + _scenario_switch_note(cleared),
-        reply_markup=batch_menu(),
+        reply_markup=batch_menu(message.chat.id),
     )
 
 
@@ -1788,12 +1825,15 @@ async def analysis_and_suppliers_button(message: Message) -> None:
         return
     cleared = _select_scenario(message.chat.id, SCENARIO_ANALYSIS_AND_SUPPLIERS)
     _record_telegram_event(message, "mode_selected", mode=MODE_ANALYSIS_AND_SUPPLIERS)
-    await message.answer(_supplier_policy_prompt_text(SCENARIO_ANALYSIS_AND_SUPPLIERS), reply_markup=supplier_policy_keyboard())
+    policy = _supplier_policy_for_chat(message.chat.id)
     await message.answer(
-        "📄🔎 Анализ + поиск\n\n"
-        "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        "Результат: анализ закупки и отдельный список поставщиков по найденному ТЗ." + _scenario_switch_note(cleared),
-        reply_markup=batch_menu(),
+        _supplier_policy_prompt_text(SCENARIO_ANALYSIS_AND_SUPPLIERS, policy=policy) + _scenario_switch_note(cleared),
+        reply_markup=supplier_policy_keyboard(selected_policy=policy),
+    )
+    await message.answer(
+        "Результат: подробный аудит документации закупки и отдельный список поставщиков по найденному ТЗ.\n"
+        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}»." + _scenario_switch_note(cleared),
+        reply_markup=batch_menu(message.chat.id),
     )
 
 
@@ -1815,8 +1855,32 @@ async def supplier_policy_callback(callback: CallbackQuery) -> None:
     pending = PENDING_UPLOADS.get(chat_id)
     if pending:
         pending.supplier_search_policy = policy
-    await callback.answer("Режим выбран.")
-    await callback.message.answer(f"Режим поиска: {_supplier_policy_label(policy)}.", reply_markup=batch_menu())
+    label = _supplier_policy_label(policy)
+    await callback.answer(f"✅ Режим: {label}")
+    try:
+        await callback.message.edit_text(
+            _supplier_policy_prompt_text(scenario, policy=policy),
+            reply_markup=supplier_policy_keyboard(selected_policy=policy),
+        )
+    except Exception:
+        pass
+
+
+@router.message(Command("policy"))
+@router.message(Command("mode"))
+@router.message(F.text == BUTTON_POLICY)
+async def policy_button(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
+    if not _scenario_uses_supplier_policy(scenario):
+        await message.answer("Для текущего сценария выбор режима Минпромторга не требуется.", reply_markup=batch_menu(message.chat.id))
+        return
+    policy = _supplier_policy_for_chat(message.chat.id)
+    await message.answer(
+        _supplier_policy_prompt_text(scenario, policy=policy),
+        reply_markup=supplier_policy_keyboard(selected_policy=policy),
+    )
 
 
 @router.message(F.text == BUTTON_STATUS)
