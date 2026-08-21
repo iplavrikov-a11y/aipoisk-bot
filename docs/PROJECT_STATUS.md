@@ -12,6 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Customer Web Cabinet Notifications, Real-Time Chime & UI Polish (2026-08):
+  - In-browser synthesized dual-tone Web Audio chime (`playNotificationChime`: 659.25Hz → 880Hz sine wave) triggered upon completion of background supplier search or document analysis jobs without external audio assets.
+  - Header notification toggle (`Уведомления: вкл / выкл`) persisted in `localStorage`.
+  - Minimalist light pill floating toast at `bottom-5 left-1/2` with quick "Смотреть" navigation and auto-scroll to the completed job card.
+  - Dynamic pulsing highlights and `✨ Новая` badges on unviewed completed jobs created after feature activation (`NOTIFICATION_FEATURE_START_TS`).
+  - Interaction-based view tracking: clicking any result action ("Поставщики", "Анализ", "Запрос КП", "Найти ещё") or the card immediately marks the job viewed in `localStorage` and turns off the pulsing highlight.
+  - Color palette refinement: removed heavy dark elements in favor of clean light B2B styling (white toast pill with teal accents, brighter teal balance badge `from-teal-700 to-teal-800`, light amber trial badge `bg-amber-100 text-amber-800`).
+  - Floating chat widget UX: added close `✕` button to the floating `Чат TenderLex` action button at bottom-right with persistent dismissal in `localStorage` (`tenderlex_chat_pill_dismissed`), keeping chat accessible on demand via the header `Чат сайта` button.
 - Extra Supplier Search Tariff (49 ₽) & Client Tariff Management (2026-08):
   - Added default global tariff package for `supplier_search_extra` (1 добор поставщиков: 49 ₽) in database seeding and runtime fallback.
   - Enabled full web admin editing in the "Тарифы" tab for "Добор поставщиков" (change price, units, title, visibility).

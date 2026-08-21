@@ -38,9 +38,13 @@ export function ChatWidget() {
   useEffect(() => {
     const handleOpen = () => setIsOpen(true);
     window.addEventListener("open_tenderlex_chat", handleOpen);
-    return () => window.removeEventListener("open_tenderlex_chat", handleOpen);
+    (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat = handleOpen;
+    return () => {
+      window.removeEventListener("open_tenderlex_chat", handleOpen);
+    };
   }, []);
   const [isOpen, setIsOpen] = useState(false);
+  const [isPillDismissed, setIsPillDismissed] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -53,6 +57,13 @@ export function ChatWidget() {
 
   // 1. Initialize session & storage
   useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem('tenderlex_chat_pill_dismissed');
+      if (dismissed === 'true') {
+        setIsPillDismissed(true);
+      }
+    } catch {}
+
     let sid = localStorage.getItem('tenderlex_chat_session_id');
     if (!sid) {
       sid = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
@@ -189,34 +200,58 @@ export function ChatWidget() {
     }
   }
 
+  // 6. Dismiss floating pill
+  function dismissFloatingPill() {
+    setIsPillDismissed(true);
+    try {
+      localStorage.setItem('tenderlex_chat_pill_dismissed', 'true');
+    } catch {}
+  }
+
   return (
     <div className="fixed bottom-4 right-4 z-50 font-sans">
       {/* Floating Action Button */}
-      {!isOpen && (
-        <button
-          onClick={() => setIsOpen(true)}
-          className="relative group flex items-center gap-1.5 bg-gradient-to-r from-teal-600 via-teal-700 to-slate-900 text-white px-2.5 py-1.5 rounded-full shadow-md hover:shadow-teal-900/30 hover:scale-105 transition-all duration-200 border border-teal-400/30"
-          aria-label="Чат с администратором TenderLex"
-        >
-          <div className="relative flex items-center justify-center w-5 h-5 rounded-full bg-teal-500/30 text-teal-200 shrink-0">
-            <MessageSquare className="w-3 h-3 text-white" />
-            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-slate-900 animate-ping" />
-            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-slate-900" />
-          </div>
+      {!isOpen && !isPillDismissed && (
+        <div className="relative group flex items-center bg-gradient-to-r from-teal-600 via-teal-700 to-teal-800 text-white pl-2.5 pr-1 py-1 rounded-full shadow-lg hover:shadow-teal-900/30 hover:scale-[1.03] transition-all duration-200 border border-teal-400/40">
+          <button
+            type="button"
+            onClick={() => setIsOpen(true)}
+            className="flex items-center gap-2 cursor-pointer text-left py-0.5"
+            aria-label="Чат с администратором TenderLex"
+          >
+            <div className="relative flex items-center justify-center w-5 h-5 rounded-full bg-white/20 text-teal-100 shrink-0">
+              <MessageSquare className="w-3 h-3 text-white" />
+              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-teal-800 animate-ping" />
+              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-teal-800" />
+            </div>
 
-          <div className="flex flex-col text-left pr-0.5">
-            <span className="font-bold text-[11px] leading-tight text-white">
-              Чат TenderLex
-            </span>
-            <span className="text-[9px] text-teal-200/90 font-medium leading-none mt-0.5">Онлайн • Ответ 2 мин</span>
-          </div>
+            <div className="flex flex-col text-left pr-0.5">
+              <span className="font-bold text-[11px] leading-tight text-white">
+                Чат TenderLex
+              </span>
+              <span className="text-[9px] text-teal-100/90 font-medium leading-none mt-0.5">Онлайн • Ответ 2 мин</span>
+            </div>
 
-          {unreadCount > 0 && (
-            <span className="ml-0.5 bg-emerald-400 text-slate-900 text-[9px] font-black px-1 py-0.2 rounded-full shadow-xs">
-              {unreadCount}
-            </span>
-          )}
-        </button>
+            {unreadCount > 0 && (
+              <span className="ml-0.5 bg-emerald-400 text-slate-900 text-[9px] font-black px-1.5 py-0.2 rounded-full shadow-xs">
+                {unreadCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              dismissFloatingPill();
+            }}
+            className="p-1 text-teal-200/80 hover:text-white hover:bg-white/15 rounded-full transition-colors cursor-pointer ml-1"
+            title="Скрыть кнопку чата"
+            aria-label="Скрыть кнопку чата"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
       )}
 
       {/* Chat Window Modal */}

@@ -15,7 +15,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
-- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`) and calculator (`ProcurementCalculator`).
+- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (real-time Web Audio task completion chime, header notification switch, bottom floating toast pill, pulsing badges for new jobs, and dismissible live chat).
 - Admin panel & Telegram client display: Optimized loading for clients and Minprom registry cache (FTS count and N+1 query elimination); improved Telegram account formatting to display client name and ID when `@username` is absent.
 - Public site SEO and verification wiring live in the site app and the `tenderlex-site.service.d/seo.conf` drop-in; Google Search Console uses DNS TXT, Yandex Webmaster uses the public HTML verification file, and Yandex Metrika is enabled by env.
 - SEO & Semantic Architecture: Complete Schema.org graph (Organization with Moscow HQ `PostalAddress` and `GeoCoordinates`, regional `Service` schemas with `serviceArea` GeoCircles, `FAQPage`, `HowTo`, `TechArticle`, `BreadcrumbList`), 8 regional industrial sourcing hubs (`/regiony/*`) with cluster and logistics data, and internal cross-linking across 55 knowledge base articles (`/baza-znaniy/*`).

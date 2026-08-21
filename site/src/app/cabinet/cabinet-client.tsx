@@ -4,6 +4,9 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
   ArrowRight,
+  Bell,
+  BellOff,
+  BellRing,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -22,6 +25,7 @@ import {
   RotateCcw,
   Search,
   Sliders,
+  Sparkles,
   Upload,
   User,
   X,
@@ -137,6 +141,13 @@ type QuoteRequestModal = {
   copied: boolean;
 };
 
+type ActiveToast = {
+  id: string;
+  jobId: string;
+  title: string;
+  modeLabel?: string;
+};
+
 type CustomerJobsResponse = {
   items: CustomerJob[];
   total: number;
@@ -149,6 +160,7 @@ const CUSTOMER_JOB_FETCH_OPTIONS: RequestInit = {
   credentials: "same-origin",
   cache: "no-store",
 };
+const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime();
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
@@ -651,6 +663,49 @@ async function writeClipboardText(text: string, htmlText?: string) {
   if (!copied) throw new Error("Не удалось скопировать текст.");
 }
 
+function playNotificationChime() {
+  if (typeof window === "undefined") return;
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    const now = ctx.currentTime;
+
+    // First tone (E5 - ~659Hz)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(659.25, now);
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.18, now + 0.02);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.36);
+
+    // Second tone (A5 - 880Hz)
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(880, now + 0.12);
+    gain2.gain.setValueAtTime(0, now + 0.12);
+    gain2.gain.linearRampToValueAtTime(0.22, now + 0.14);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.12);
+    osc2.stop(now + 0.66);
+  } catch (err) {
+    console.warn("Notification chime error:", err);
+  }
+}
+
 export function CabinetClient() {
   const [nowTs, setNowTs] = useState(() => Date.now());
   useEffect(() => {
@@ -682,6 +737,12 @@ export function CabinetClient() {
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [showTariffs, setShowTariffs] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [viewedJobIds, setViewedJobIds] = useState<string[]>([]);
+  const [activeToast, setActiveToast] = useState<ActiveToast | null>(null);
+  const prevJobStatusesRef = useRef<Map<string, string>>(new Map());
+  const hasInitializedJobsRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const quoteEditorRef = useRef<HTMLDivElement | null>(null);
 
@@ -723,6 +784,39 @@ export function CabinetClient() {
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
+      const incomingItems = Array.isArray(payload) ? payload : payload.items;
+
+      if (!hasInitializedJobsRef.current) {
+        const map = new Map<string, string>();
+        incomingItems.forEach((j) => map.set(j.id, j.status));
+        prevJobStatusesRef.current = map;
+        hasInitializedJobsRef.current = true;
+      } else {
+        const newlyFinished: CustomerJob[] = [];
+        incomingItems.forEach((j) => {
+          const prev = prevJobStatusesRef.current.get(j.id);
+          const isDone = j.status === "done" || (j.has_result && j.status !== "pending" && j.status !== "running");
+          const wasRunning = prev === "pending" || prev === "running";
+          if (isDone && wasRunning) {
+            newlyFinished.push(j);
+          }
+          prevJobStatusesRef.current.set(j.id, j.status);
+        });
+
+        if (newlyFinished.length > 0) {
+          const latest = newlyFinished[0];
+          if (notificationsEnabled) {
+            playNotificationChime();
+            setActiveToast({
+              id: `${latest.id}-${Date.now()}`,
+              jobId: latest.id,
+              title: latest.human_title || latest.mode_label || "Задача выполнена",
+              modeLabel: latest.mode_label,
+            });
+          }
+        }
+      }
+
       if (Array.isArray(payload)) {
         setJobs(payload);
         setJobsTotal(payload.length);
@@ -823,6 +917,61 @@ export function CabinetClient() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [findMoreConfirmJob]);
+
+  useEffect(() => {
+    try {
+      const savedViewed = localStorage.getItem("tenderlex_viewed_job_ids");
+      if (savedViewed) {
+        const parsed = JSON.parse(savedViewed);
+        if (Array.isArray(parsed)) setViewedJobIds(parsed);
+      }
+      const savedNotif = localStorage.getItem("tenderlex_notifications_enabled");
+      if (savedNotif !== null) {
+        setNotificationsEnabled(savedNotif === "true");
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeToast) return;
+    const timer = setTimeout(() => setActiveToast(null), 15000);
+    return () => clearTimeout(timer);
+  }, [activeToast]);
+
+  function toggleNotifications() {
+    setNotificationsEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("tenderlex_notifications_enabled", String(next));
+      } catch {}
+      return next;
+    });
+  }
+
+  function markJobAsViewed(jobId: string) {
+    setViewedJobIds((prev) => {
+      if (prev.includes(jobId)) return prev;
+      const next = [jobId, ...prev].slice(0, 500);
+      try {
+        localStorage.setItem("tenderlex_viewed_job_ids", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
+
+  function scrollToJob(jobId: string) {
+    markJobAsViewed(jobId);
+    const el = document.getElementById(`job-${jobId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-teal-500", "bg-teal-50/70");
+      setTimeout(() => {
+        el.classList.remove("ring-2", "ring-teal-500", "bg-teal-50/70");
+      }, 2500);
+    }
+  }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1173,8 +1322,6 @@ export function CabinetClient() {
     }
   }
 
-  const [showTariffs, setShowTariffs] = useState(false);
-
   async function retryJob(job: CustomerJob) {
     try {
       setBusy(true);
@@ -1462,16 +1609,16 @@ export function CabinetClient() {
       <section className="bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {/* Balance Badge */}
-          <div className="flex items-center gap-2 bg-gradient-to-br from-teal-900 to-slate-900 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
-            <Receipt size={15} className="text-teal-300" aria-hidden="true" />
+          <div className="flex items-center gap-2 bg-gradient-to-r from-teal-700 to-teal-800 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
+            <Receipt size={15} className="text-teal-200" aria-hidden="true" />
             <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-semibold text-teal-200 uppercase tracking-wider">Баланс</span>
+              <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
               <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap">
                 {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
               </strong>
             </div>
             {session?.user?.is_trial ? (
-              <span className="text-[9px] font-bold text-amber-300 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-500/30 shrink-0 ml-1">
+              <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1">
                 пробный доступ
               </span>
             ) : null}
@@ -1521,6 +1668,25 @@ export function CabinetClient() {
               <span>Email</span>
             </a>
           ) : null}
+
+          <button
+            type="button"
+            className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 ${
+              notificationsEnabled
+                ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-200"
+            }`}
+            onClick={toggleNotifications}
+            title={notificationsEnabled ? "Звуковые уведомления и всплывающие плашки включены" : "Уведомления выключены"}
+            aria-label={notificationsEnabled ? "Выключить уведомления" : "Включить уведомления"}
+          >
+            {notificationsEnabled ? (
+              <Bell size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+            ) : (
+              <BellOff size={13} className="text-slate-400 shrink-0" aria-hidden="true" />
+            )}
+            <span>{notificationsEnabled ? "Уведомления: вкл" : "Уведомления: выкл"}</span>
+          </button>
         </div>
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
@@ -1809,14 +1975,34 @@ export function CabinetClient() {
               const isFailed = job.status === "failed" || job.status === "error";
               const isPending = job.status === "pending" || job.status === "running";
               const isAwaiting = job.status === "awaiting_customer_confirmation";
+              const isCompletedWithResult = job.status === "done" || (Boolean(job.result_files?.length) && !isPending && !isFailed);
+              const jobCreatedTs = job.created_at ? new Date(apiDateValue(job.created_at)).getTime() : 0;
+              const isCreatedAfterFeature = !Number.isNaN(jobCreatedTs) && jobCreatedTs >= NOTIFICATION_FEATURE_START_TS;
+              const isUnviewed = isCreatedAfterFeature && isCompletedWithResult && !viewedJobIds.includes(job.id);
 
               return (
                 <article
                   key={job.id}
-                  className="p-4 bg-slate-50/60 hover:bg-slate-100/70 border border-slate-200/80 rounded-2xl transition-all space-y-3 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-center text-xs font-medium text-slate-800 shadow-2xs"
+                  id={`job-${job.id}`}
+                  onClick={() => {
+                    if (isUnviewed) markJobAsViewed(job.id);
+                  }}
+                  className={`p-4 rounded-2xl transition-all space-y-3 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-center text-xs font-medium text-slate-800 shadow-2xs border ${
+                    isUnviewed
+                      ? "bg-teal-50/40 hover:bg-teal-50/70 border-teal-300 ring-1 ring-teal-400/40"
+                      : "bg-slate-50/60 hover:bg-slate-100/70 border-slate-200/80"
+                  }`}
                 >
                   <div className="col-span-12 md:col-span-4 flex flex-col gap-0.5 min-w-0">
-                    <strong className="font-bold text-xs text-slate-900 leading-snug break-words block">{job.human_title}</strong>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <strong className="font-bold text-xs text-slate-900 leading-snug break-words">{job.human_title}</strong>
+                      {isUnviewed ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-600 text-white animate-pulse shadow-2xs shrink-0">
+                          <Sparkles size={10} aria-hidden="true" />
+                          Новая
+                        </span>
+                      ) : null}
+                    </div>
                     <span className="text-[11px] font-medium text-slate-400 block mt-0.5">
                       {formatDate(job.created_at)}{formatJobDuration(job, nowTs) ? ` · ${formatJobDuration(job, nowTs)}` : ""} · файлов: {job.file_count}
                     </span>
@@ -1859,7 +2045,10 @@ export function CabinetClient() {
                       <button
                         type="button"
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-                        onClick={() => void retryJob(job)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void retryJob(job);
+                        }}
                         disabled={busy}
                       >
                         <RotateCcw size={15} aria-hidden="true" />
@@ -1873,7 +2062,11 @@ export function CabinetClient() {
                           <button
                             type="button"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={() => acceptPartial(job)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              acceptPartial(job);
+                            }}
                             disabled={busy}
                           >
                             <CheckCircle2 size={16} aria-hidden="true" />
@@ -1884,7 +2077,11 @@ export function CabinetClient() {
                           <button
                             type="button"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={() => declinePartial(job)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              declinePartial(job);
+                            }}
                             disabled={busy}
                           >
                             <XCircle size={16} aria-hidden="true" />
@@ -1898,7 +2095,10 @@ export function CabinetClient() {
                           <button
                             type="button"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={() => void cancelJob(job)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void cancelJob(job);
+                            }}
                             disabled={busy}
                           >
                             <XCircle size={16} aria-hidden="true" />
@@ -1912,8 +2112,17 @@ export function CabinetClient() {
                               <button
                                 key={`${job.id}-${file.kind}`}
                                 type="button"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-                                onClick={() => (isQuoteRequest ? openQuoteRequest(job, file) : downloadJobFile(job, file))}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all shadow-2xs cursor-pointer shrink-0 border ${
+                                  isUnviewed
+                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse shadow-teal-600/30 font-extrabold"
+                                    : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300 font-bold"
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  markJobAsViewed(job.id);
+                                  if (isQuoteRequest) openQuoteRequest(job, file);
+                                  else downloadJobFile(job, file);
+                                }}
                                 disabled={busy}
                               >
                                 {isQuoteRequest ? <Eye size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
@@ -1926,7 +2135,11 @@ export function CabinetClient() {
                           <button
                             type="button"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0"
-                            onClick={() => setFindMoreConfirmJob(job)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              setFindMoreConfirmJob(job);
+                            }}
                             disabled={busy}
                           >
                             <Search size={15} aria-hidden="true" />
@@ -1945,7 +2158,10 @@ export function CabinetClient() {
                               <button
                                 type="button"
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-                                onClick={() => void retryJob(job)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void retryJob(job);
+                                }}
                                 disabled={busy}
                                 title="Продолжить поиск поставщиков"
                               >
@@ -2043,6 +2259,42 @@ export function CabinetClient() {
               </button>
             </div>
           </section>
+        </div>
+      ) : null}
+
+      {/* Floating Bottom-Center Task Notification Toast (Minimalist Light Pill) */}
+      {activeToast ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="tenderlex-toast-slide-up fixed bottom-5 left-1/2 z-[9999] flex items-center gap-2.5 bg-white/95 text-slate-900 backdrop-blur-md px-4 py-1.5 rounded-full shadow-xl border border-teal-300/80 ring-1 ring-slate-900/5 text-xs font-medium max-w-[92vw] pointer-events-auto"
+        >
+          <span className="relative flex h-2 w-2 shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-500 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-600" />
+          </span>
+          <span className="text-[11px] font-extrabold text-teal-700 shrink-0">Готово:</span>
+          <span className="text-[11px] font-semibold text-slate-800 truncate max-w-[160px] sm:max-w-xs">
+            {activeToast.title}
+          </span>
+          <button
+            type="button"
+            className="px-2.5 py-0.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-full text-[10px] font-bold transition-all shrink-0 cursor-pointer shadow-xs active:scale-95"
+            onClick={() => {
+              scrollToJob(activeToast.jobId);
+              setActiveToast(null);
+            }}
+          >
+            Смотреть
+          </button>
+          <button
+            type="button"
+            className="p-0.5 text-slate-400 hover:text-slate-700 rounded-full transition-colors cursor-pointer ml-0.5"
+            onClick={() => setActiveToast(null)}
+            aria-label="Закрыть оповещение"
+          >
+            <X size={12} aria-hidden="true" />
+          </button>
         </div>
       ) : null}
     </main>

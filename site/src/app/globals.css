@@ -3752,3 +3752,19 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+@keyframes toastSlideUpFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 30px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.tenderlex-toast-slide-up {
+  animation: toastSlideUpFade 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
