@@ -34,6 +34,7 @@ from app.jobs import (
     _update_job_title_from_source_context,
     build_failure_evidence,
     claim_next_job,
+    extract_yandex_job_metrics,
     package_job_output_files,
     should_requeue_stale_job,
 )
@@ -1392,6 +1393,29 @@ class JobRecoveryTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_extract_yandex_job_metrics_handles_nested_combo_evidence(self) -> None:
+        evidence = {
+            "mode": "analysis_and_suppliers",
+            "supplier_search": {
+                "search": {
+                    "yandex_requests_count": 34,
+                    "yandex_cost_rub": 1.36,
+                },
+                "recovery_rounds": [
+                    {
+                        "search": {
+                            "yandex_requests_count": 36,
+                            "yandex_cost_rub": 1.44,
+                        }
+                    }
+                ],
+            },
+        }
+        reqs, cost = extract_yandex_job_metrics(evidence, price_per_request=0.04)
+        self.assertEqual(reqs, 70)
+        self.assertEqual(cost, 2.80)
+
 
 if __name__ == "__main__":
     unittest.main()
+

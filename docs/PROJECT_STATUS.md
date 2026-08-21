@@ -12,6 +12,11 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Search API Metrics & Cost Visibility Fix (2026-08):
+  - Fixed Yandex Search API cost and request count extraction for combined jobs (`analysis_and_suppliers`).
+  - Extended `extract_yandex_job_metrics` in `backend/app/jobs.py` to inspect nested `supplier_search` evidence dictionaries and calculate costs across primary and recovery search rounds.
+  - Ensured `yandex_requests_count` and `yandex_cost_rub` are persisted to the database on all completion and offer paths.
+  - Added automated unit test in `backend/tests/test_jobs_recovery.py` and updated existing production job records.
 - Live Web Search & Deep Crawling Trust Architecture (2026-08):
   - Aligned website positioning with actual backend capabilities: eliminated inaccurate references to static "supplier databases" in favor of live real-time search across Yandex and Google Search APIs.
   - Implemented sleek, authentic `TrustRegistryBar` component featuring the 4 real pillars of TenderLex:

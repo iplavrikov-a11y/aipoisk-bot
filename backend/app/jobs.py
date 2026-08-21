@@ -1095,6 +1095,9 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
+    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    job.yandex_requests_count = y_reqs
+    job.yandex_cost_rub = y_cost
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(evidence)
@@ -1206,9 +1209,6 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     evidence_path = write_evidence(out_dir / "evidence.json", evidence)
     job.evidence_path = str(evidence_path)
     job.result_path = str(xlsx_path)
-    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
-    job.yandex_requests_count = y_reqs
-    job.yandex_cost_rub = y_cost
     if len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         status = "completed"
         message = _supplier_count_message("Готово", len(accepted), job.target_suppliers)
@@ -1341,6 +1341,9 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     persisted_rows = accepted or fallback_rows
     _persist_supplier_rows(db, job, persisted_rows)
     job.verified_count = len(persisted_rows)
+    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    job.yandex_requests_count = y_reqs
+    job.yandex_cost_rub = y_cost
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(supplier_evidence) or _subject_from_report_text(report.report)
     stem = _result_stem(job, subject)
@@ -1677,6 +1680,8 @@ def clear_storage() -> None:
 def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.04) -> tuple[int, float]:
     if not isinstance(evidence, dict):
         return 0, 0.0
+    if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
+        return extract_yandex_job_metrics(evidence["supplier_search"], price_per_request=price_per_request)
     req_count = 0
     search_info = evidence.get("search")
     if isinstance(search_info, dict):
@@ -1685,8 +1690,12 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
     recovery_rounds = evidence.get("recovery_rounds", [])
     if isinstance(recovery_rounds, list):
         for r in recovery_rounds:
-            if isinstance(r, dict) and "yandex_requests_count" in r:
-                req_count += int(r["yandex_requests_count"])
+            if isinstance(r, dict):
+                r_search = r.get("search")
+                if isinstance(r_search, dict) and "yandex_requests_count" in r_search:
+                    req_count += int(r_search["yandex_requests_count"])
+                elif "yandex_requests_count" in r:
+                    req_count += int(r["yandex_requests_count"])
     if req_count == 0:
         queries = evidence.get("queries", [])
         reports = search_info.get("reports", []) if isinstance(search_info, dict) else []
@@ -1696,5 +1705,6 @@ def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float =
             q_len = len(queries) if isinstance(queries, list) else 0
             pages_per_q = 2.0 if added > 50 else 1.5
             req_count = int(q_len * pages_per_q)
-    cost_rub = round(req_count * (price_per_request or 0.40), 2)
+    unit_price = float(price_per_request) if price_per_request else 0.04
+    cost_rub = round(req_count * unit_price, 2)
     return req_count, cost_rub
