@@ -312,24 +312,17 @@ def supplier_policy_keyboard(
         [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
         [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
         [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
-        [
-            InlineKeyboardButton(text="📄 Анализ закупки", callback_data="scenario:report"),
-            InlineKeyboardButton(text="📄🔎 Анализ + поиск", callback_data="scenario:analysis_and_suppliers"),
-        ],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def report_scenario_keyboard() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers"),
-            InlineKeyboardButton(text="📄🔎 Анализ + поиск", callback_data="scenario:analysis_and_suppliers"),
-        ],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
 
 
 def analysis_and_suppliers_keyboard(
@@ -342,10 +335,6 @@ def analysis_and_suppliers_keyboard(
         [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
         [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
         [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
-        [
-            InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers"),
-            InlineKeyboardButton(text="📄 Анализ закупки", callback_data="scenario:report"),
-        ],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -422,34 +411,37 @@ def _suppliers_scenario_text(policy: str = SUPPLIER_POLICY_NORMAL) -> str:
         "• Только реестр — строгий фильтр ГИСП (нацрежим ПП 616)\n"
         "• Реестр в приоритете — заводы из реестра в начале (ПП 617 / 878)\n\n"
         "📋 Что нужно сделать:\n"
-        "1. Отправьте файл ТЗ / спецификации (.docx, .pdf, .xlsx, .zip)\n"
-        "2. Или напишите описание нужного товара прямо в чат\n\n"
-        "💡 После загрузки нажмите «▶️ Запустить поиск»."
+        "1. Прикрепите файл ТЗ / спецификации (.docx, .pdf, .xlsx, .zip)\n"
+        "2. Либо напишите текстом наименование или параметры товара\n\n"
+        "👇 Отправьте файл через скрепку 📎 или напишите текст в поле ввода внизу:"
     )
 
 
 def _report_scenario_text() -> str:
     return (
-        "📄 Анализ закупки\n\n"
+        "📄 Анализ закупки (44-ФЗ / 223-ФЗ)\n\n"
         "📋 Что нужно сделать:\n"
         "1. Отправьте 19-значный номер извещения ЕИС (например, 0373200001424000123)\n"
         "2. Отправьте прямую ссылку на закупку (ЕИС, Сбер А, Росэлторг и др.)\n"
-        "3. Либо прикрепите файлы / архив закупочной документации\n\n"
-        "💡 Бот проверит закупку на риски, нацрежим, сроки и скрытые требования."
+        "3. Либо прикрепите файлы документации через скрепку 📎\n\n"
+        "💡 Бот проверит закупку на риски, нацрежим, сроки и скрытые требования.\n\n"
+        "👇 Напишите номер / ссылку или прикрепите файлы в поле ввода внизу:"
     )
 
 
 def _analysis_and_suppliers_scenario_text(policy: str = SUPPLIER_POLICY_NORMAL) -> str:
     label = _supplier_policy_label(policy)
     return (
-        "📄🔎 Анализ + поиск\n\n"
+        "📄🔎 Анализ + поиск поставщиков\n\n"
         f"Режим реестра Минпромторга: {label}\n"
         "• Обычный поиск — по всем производителям и дилерам РФ\n"
         "• Только реестр — строгий фильтр ГИСП (нацрежим ПП 616)\n"
         "• Реестр в приоритете — заводы из реестра в начале (ПП 617 / 878)\n\n"
         "📋 Что нужно сделать:\n"
-        "Отправьте номер извещения ЕИС (19 цифр), ссылку на закупку или файлы документации.\n\n"
-        "💡 Бот проверит документацию на риски и подберет поставщиков по найденному ТЗ."
+        "1. Отправьте номер извещения ЕИС (19 цифр) или ссылку на закупку\n"
+        "2. Либо прикрепите файлы закупочной документации через скрепку 📎\n\n"
+        "💡 Бот проверит закупку на риски и подберет поставщиков по найденному ТЗ.\n\n"
+        "👇 Напишите номер / ссылку или прикрепите файлы в поле ввода внизу:"
     )
 
 
@@ -628,7 +620,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
             )
         else:
             lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
-        lines.append("Добавьте ещё отдельное ТЗ или нажмите кнопку ниже:")
+        lines.append("👇 Добавьте ещё ТЗ через скрепку 📎 или нажмите «▶️ Запустить поиск» под сообщением:")
         return "\n".join(lines)
     lines = [
         "✅ Материалы добавлены",
@@ -638,7 +630,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         lines.append(f"• Источников: {len(pending.sources)}")
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
-    lines.extend(["", "Добавьте ещё документы или нажмите кнопку ниже:"])
+    lines.extend(["", "👇 Добавьте ещё материалы через скрепку 📎 или нажмите кнопку «▶️ Запустить» под сообщением:"])
     return "\n".join(lines)
 
 
@@ -652,7 +644,7 @@ def _source_added_text(pending: PendingBatch) -> str:
         lines.append(f"• Файлов: {len(pending.files)}")
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
-    lines.extend(["", "Можно добавить ещё материалы или запустить обработку:"])
+    lines.extend(["", "👇 Можно прикрепить ещё файлы через скрепку 📎 или нажать «▶️ Запустить» под сообщением:"])
     return "\n".join(lines)
 
 

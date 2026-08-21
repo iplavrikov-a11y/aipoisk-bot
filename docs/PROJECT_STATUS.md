@@ -14,8 +14,10 @@ Date: 2026-07-08
   `tenderlex-site.service` on `127.0.0.1:3093`.
 - Telegram Bot Navigation & UX Modernization (2026-08):
   - Removed persistent bottom reply keyboard (`ReplyKeyboardRemove`) across all bot interactions, eliminating screen crowding and mobile keypad clutter.
-  - Built pure in-chat inline navigation architecture with zero dead ends: all scenario cards, confirmation prompts, and after-delivery output messages now feature clean next-action buttons and return paths.
-  - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (e.g. Minpromtorg policy buttons no longer get clipped in multi-column grids).
+  - Built pure in-chat inline navigation architecture with zero dead ends: all scenario cards, confirmation prompts, and after-delivery output messages feature clean next-action buttons and return paths.
+  - Scenario Isolation: entering a scenario (`Поставщики по ТЗ`, `Анализ закупки`, `Анализ + поиск`) displays only options specific to that mode plus `🏠 Главное меню`, eliminating confusing cross-mode button clutter.
+  - Clear Action Prompts (CTAs): added explicit downward arrow hints (`👇`) guiding users to attach files via clip 📎 or input text/notices directly into the chat input bar below.
+  - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (Minpromtorg policy buttons no longer get clipped in multi-column grids).
   - Main menu (`/start`, `🏠 Главное меню`) acts as the unified hub with 3 prominent scenario buttons, 2 service shortcuts (Кабинет, Задачи), and 3 info buttons (Тарифы, Помощь, Контакты).
   - Verified with 144 automated unit tests, journey simulations, and deployed live to production.
 - Public site SEO is now wired with dedicated scenario pages, canonical

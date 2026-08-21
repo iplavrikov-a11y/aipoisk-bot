@@ -748,7 +748,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("В комплекте: 2/20", text)
         self.assertIn("разные ТЗ", text)
         self.assertIn("одним архивом", text)
-        self.assertIn("нажмите кнопку ниже", text)
+        self.assertIn("Запустить поиск", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
         text = _batch_running_text()
@@ -898,7 +898,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("📎 Источник добавлен", text)
         self.assertIn("Источников: 1", text)
-        self.assertIn("запустить обработку", text)
+        self.assertIn("Запустить", text)
         self.assertNotIn("Tenderplan", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
