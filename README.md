@@ -39,9 +39,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   price: supplier search, procurement-document analysis, and additional
   supplier search (`Найти ещё` / добор поставщиков). `📄🔎 Анализ + поиск`
   reserves and charges the supplier-search and analysis prices together.
-  Additional supplier search defaults to 50% of the effective supplier-search
-  price when no explicit global package or per-customer override is configured;
-  per-customer `Добор` prices remain editable in the admin client card.
+  Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
+  tariff package in the admin panel) with automatic fallback, and per-customer
+  `Добор` prices remain editable in the admin client card.
   Reserved funds are settled immediately upon job completion (`status == completed`),
   and runs finding 20 or more verified suppliers complete automatically without
   requiring partial-result confirmation.
