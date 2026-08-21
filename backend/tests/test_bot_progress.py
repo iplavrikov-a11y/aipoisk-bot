@@ -360,7 +360,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Поставщики 20", text)
         self.assertIn("1 500 ₽", text)
         self.assertIn("1 добор поставщиков", text)
-        self.assertIn("50% от цены поиска поставщиков", text)
+        self.assertIn("по тому же ТЗ", text)
         self.assertIn(BOT_PAYMENT_INSTRUCTIONS, text)
         self.assertNotIn("MAX", text)
         self.assertIn(INDIVIDUAL_TERMS_NOTE, text)

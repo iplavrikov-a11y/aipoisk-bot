@@ -12,6 +12,11 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Extra Supplier Search Tariff (49 ₽) & Client Tariff Management (2026-08):
+  - Added default global tariff package for `supplier_search_extra` (1 добор поставщиков: 49 ₽) in database seeding and runtime fallback.
+  - Enabled full web admin editing in the "Тарифы" tab for "Добор поставщиков" (change price, units, title, visibility).
+  - Maintained per-client individual price overrides under "Клиенты" -> "Индивидуальные цены" (Поиск, Анализ, Добор).
+  - Updated web cabinet (`site/src/app/cabinet/cabinet-client.tsx`) tariff dropdown to dynamically display client-specific overrides and default 49 ₽.
 - Search API Metrics & Cost Visibility Fix (2026-08):
   - Fixed Yandex Search API cost and request count extraction for combined jobs (`analysis_and_suppliers`).
   - Extended `extract_yandex_job_metrics` in `backend/app/jobs.py` to inspect nested `supplier_search` evidence dictionaries and calculate costs across primary and recovery search rounds.

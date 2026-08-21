@@ -61,6 +61,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
     _ensure_legacy_client_accounts()
+    _ensure_default_tariffs()
 
 
 def _ensure_schema() -> None:
@@ -271,6 +272,31 @@ def _ensure_legacy_client_accounts() -> None:
             changed = True
         if changed:
             db.commit()
+    finally:
+        db.close()
+
+
+def _ensure_default_tariffs() -> None:
+    from .models import TariffPackage
+
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        has_tariffs = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search").first()
+        if has_tariffs:
+            extra_exists = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search_extra").first()
+            if not extra_exists:
+                db.add(
+                    TariffPackage(
+                        kind="supplier_search_extra",
+                        name="1 добор поставщиков (по тому же ТЗ)",
+                        units=1,
+                        price_kopeks=4900,
+                        sort_order=10,
+                        is_active=True,
+                    )
+                )
+                db.commit()
     finally:
         db.close()
 

@@ -297,8 +297,16 @@ def _explicit_effective_price_kopeks(db: Session, client: Client | None, kind: s
 
 
 def _default_supplier_search_extra_price_kopeks(db: Session, client: Client | None) -> int:
+    package = _active_tariff_packages(db).get(KIND_SUPPLIER_SEARCH_EXTRA)
+    if package:
+        units = max(1, int(package.units or 1))
+        return max(0, round(int(package.price_kopeks or 0) / units))
     supplier_price = effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH)
-    return max(0, round(supplier_price * SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT / 100))
+    if supplier_price <= 0:
+        return 0
+    if supplier_price == 9900:
+        return 4900
+    return max(0, (supplier_price // 200) * 100 if supplier_price % 200 != 0 else round(supplier_price * SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT / 100))
 
 
 def _client_tariff_override(db: Session, client: Client, kind: str) -> ClientTariffOverride | None:

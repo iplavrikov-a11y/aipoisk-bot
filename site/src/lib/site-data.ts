@@ -158,6 +158,17 @@ const fallbackTariffs: PublicTariff[] = [
     description: "Корпоративный аудит закупочной документации на постоянной основе (75.8 ₽/отчет).",
     sort_order: 50,
   },
+  {
+    id: "extra-1",
+    kind: "supplier_search_extra",
+    label: "Добор поставщиков",
+    name: "1 добор поставщиков (по тому же ТЗ)",
+    units: 1,
+    price_kopeks: 4900,
+    price_rub: 49,
+    description: "Дополнительный поиск поставщиков по уже проверенному ТЗ без повтора ранее найденных контактов.",
+    sort_order: 10,
+  },
 ];
 
 const fallbackData: PublicSitePayload = {

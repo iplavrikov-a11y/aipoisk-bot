@@ -1533,7 +1533,7 @@ def _tariffs_text(db, settings) -> str:
     elif supplier:
         unit_price = _default_extra_supplier_price_kopeks(supplier[0])
         lines.extend(["", "🔎 Добор поставщиков:"])
-        lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (50% от цены поиска поставщиков)")
+        lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (по тому же ТЗ)")
     if not supplier and not reports and not extra:
         lines.extend(["", "Тарифы пока не настроены в админ-панели."])
     lines.extend(["", _bot_payment_instructions(settings)])
@@ -1549,7 +1549,10 @@ def _tariff_unit_price_kopeks(item: dict) -> int:
 
 
 def _default_extra_supplier_price_kopeks(item: dict) -> int:
-    return max(0, round(_tariff_unit_price_kopeks(item) * 0.5))
+    unit_price = _tariff_unit_price_kopeks(item)
+    if unit_price == 9900 or unit_price <= 0:
+        return 4900
+    return max(0, (unit_price // 200) * 100 if unit_price % 200 != 0 else round(unit_price * 0.5))
 
 
 def _bot_payment_instructions(settings) -> str:

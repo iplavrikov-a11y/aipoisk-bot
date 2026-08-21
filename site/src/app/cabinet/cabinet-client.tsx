@@ -336,11 +336,15 @@ function priceOrAccessValue(counter?: BalanceCounter) {
 }
 
 function extraSupplierPriceOrAccessValue(balance?: SessionPayload["balance"]) {
+  if (balance?.effective_prices?.supplier_search_extra?.price_kopeks) {
+    return formatRubles(balance.effective_prices.supplier_search_extra.price_kopeks);
+  }
   if (balance?.supplier_search_extra?.price_kopeks) {
     return formatRubles(balance.supplier_search_extra.price_kopeks);
   }
   if (balance?.supplier_search?.price_kopeks) {
-    return formatRubles(Math.round(balance.supplier_search.price_kopeks * 0.5));
+    const p = balance.supplier_search.price_kopeks;
+    return formatRubles(p === 9900 ? 4900 : Math.round(p * 0.5));
   }
   return accessValue(balance?.supplier_search_extra);
 }
@@ -1520,37 +1524,62 @@ export function CabinetClient() {
         </div>
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
-        {showTariffs ? (
-          <div className="grid md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 transition-all">
-            <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
-              <div className="space-y-1 mt-0.5">
-                {(session?.tariff_groups?.supplier_search || []).slice(0, 3).map((tariff) => (
-                  <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                    <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                    <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+        {showTariffs ? (() => {
+          const extraPriceKopeks =
+            session?.balance?.effective_prices?.supplier_search_extra?.price_kopeks ??
+            (session?.tariff_groups?.supplier_search_extra?.[0]?.price_kopeks ?? 4900);
+          const extraIsOverride = session?.balance?.effective_prices?.supplier_search_extra?.source === "client_override";
+          const supplierOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override" ? session.balance.effective_prices.supplier_search : null;
+          const reportOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override" ? session.balance.effective_prices.procurement_report : null;
+
+          return (
+            <div className="grid md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 transition-all">
+              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
+                <div className="space-y-1 mt-0.5">
+                  {supplierOverride ? (
+                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 поиск поставщиков (индивидуально)</span>
+                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(supplierOverride.price_kopeks)}</b>
+                    </div>
+                  ) : null}
+                  {(session?.tariff_groups?.supplier_search || []).slice(0, 3).map((tariff) => (
+                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+                    </div>
+                  ))}
+                  <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                    <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
+                      {extraIsOverride ? '1 добор поставщиков (индивидуально)' : '1 добор поставщиков (по тому же ТЗ)'}
+                    </span>
+                    <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap text-xs`}>
+                      {formatRubles(extraPriceKopeks)}
+                    </b>
                   </div>
-                ))}
-                <div className="px-2 py-1 bg-teal-50/50 border border-teal-200/70 rounded-md flex items-center justify-between text-xs font-medium text-teal-950 shadow-2xs">
-                  <span className="truncate mr-2 font-semibold text-teal-900 text-xs">1 добор поставщиков (по тому же ТЗ)</span>
-                  <b className="font-extrabold text-teal-900 shrink-0 whitespace-nowrap text-xs">50 ₽</b>
+                </div>
+              </div>
+
+              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Анализ закупки</span>
+                <div className="space-y-1 mt-0.5">
+                  {reportOverride ? (
+                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 анализ закупки (индивидуально)</span>
+                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(reportOverride.price_kopeks)}</b>
+                    </div>
+                  ) : null}
+                  {(session?.tariff_groups?.procurement_report || []).slice(0, 3).map((tariff) => (
+                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-
-            <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Анализ закупки</span>
-              <div className="space-y-1 mt-0.5">
-                {(session?.tariff_groups?.procurement_report || []).slice(0, 3).map((tariff) => (
-                  <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                    <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                    <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : null}
+          );
+        })() : null}
       </section>
 
       {/* Main Task Launch Form */}
