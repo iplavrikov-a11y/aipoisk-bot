@@ -120,6 +120,39 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareSchema) }}
         />
+        <script
+          type="speculationrules"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              prerender: [
+                {
+                  source: "list",
+                  urls: [
+                    "/poisk-postavshchikov-po-tz",
+                    "/baza-znaniy",
+                    "/otrasli",
+                    "/regiony",
+                    "/analiz-zakupochnoi-dokumentacii",
+                  ],
+                  eagerness: "moderate",
+                },
+              ],
+              prefetch: [
+                {
+                  source: "document",
+                  where: {
+                    and: [
+                      { href_matches: "/*" },
+                      { not: { href_matches: "/cabinet/*" } },
+                      { not: { href_matches: "/api/*" } },
+                    ],
+                  },
+                  eagerness: "conservative",
+                },
+              ],
+            }),
+          }}
+        />
       </head>
       <body>
         {children}

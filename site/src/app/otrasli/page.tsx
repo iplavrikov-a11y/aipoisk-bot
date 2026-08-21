@@ -7,7 +7,7 @@ import { ContactSection } from "@/components/contact-section";
 import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по отраслям номенклатуры и ТЗ — TenderLex",
+  title: "Поиск поставщиков по отраслям номенклатуры и ТЗ",
   description:
     "Отраслевой подбор производителей и дилеров по спецификациям: металлопрокат, кабельная продукция, запорная арматура, стройматериалы, СИЗ и спецодежда по всей России.",
   alternates: {

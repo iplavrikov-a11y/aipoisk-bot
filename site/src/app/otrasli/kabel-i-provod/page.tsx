@@ -9,7 +9,7 @@ import {
 import { IndustryPageLayout } from "@/components/industry-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков кабеля и электротехники по ТЗ — TenderLex",
+  title: "Поиск поставщиков кабеля и провода по ТЗ",
   description:
     "Автоматический подбор кабельных заводов и дистрибьюторов по кабельным журналам и спецификациям: ВВГнг, КГ, АВБбШв, трансформаторы и щиты.",
   alternates: {

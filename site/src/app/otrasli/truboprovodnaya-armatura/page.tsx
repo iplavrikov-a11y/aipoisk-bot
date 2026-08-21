@@ -9,7 +9,7 @@ import {
 import { IndustryPageLayout } from "@/components/industry-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков запорной и трубопроводной арматуры по ТЗ — TenderLex",
+  title: "Поиск поставщиков трубопроводной арматуры по ТЗ",
   description:
     "Подбор заводов арматуры по ведомостям ТХ и спецификациям: задвижки, шаровые краны, дисковые затворы, фланцы, Ду 15–1200, Ру 16–250.",
   alternates: {

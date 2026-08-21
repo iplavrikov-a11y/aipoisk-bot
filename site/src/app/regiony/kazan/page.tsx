@@ -3,7 +3,7 @@ import { buildBreadcrumbJsonLd, buildServiceJsonLd } from "@/lib/seo";
 import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ в Казани и Татарстане — TenderLex",
+  title: "Поиск поставщиков по ТЗ в Казани и Татарстане",
   description: "Подбор нефтехимических, полимерных и машиностроительных заводов в Республике Татарстан.",
   alternates: { canonical: "/regiony/kazan" },
 };

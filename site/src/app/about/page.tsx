@@ -7,7 +7,7 @@ import { ContactSection } from "@/components/contact-section";
 import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "О сервисе TenderLex — Юридические данные, Технология и Команда",
+  title: "О сервисе — юридические данные, технологии и контакты",
   description:
     "Официальная информация о B2B-платформе TenderLex: миссия, алгоритмы смыслового анализа ТЗ, соблюдение 152-ФЗ и реквизиты сервиса снабжения.",
   alternates: {

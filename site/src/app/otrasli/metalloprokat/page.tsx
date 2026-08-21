@@ -9,7 +9,7 @@ import {
 import { IndustryPageLayout } from "@/components/industry-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков металлопроката и труб по ТЗ — TenderLex",
+  title: "Поиск поставщиков металлопроката и труб по ТЗ",
   description:
     "Автоматический подбор заводов-производителей и дилеров металлопроката по спецификации ТЗ: сортовой, листовой прокат, трубы ГОСТ и метизы.",
   alternates: {

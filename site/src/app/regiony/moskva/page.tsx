@@ -3,7 +3,7 @@ import { buildBreadcrumbJsonLd, buildServiceJsonLd } from "@/lib/seo";
 import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ в Москве и Московской области — TenderLex",
+  title: "Поиск поставщиков по ТЗ в Москве и Московской области",
   description:
     "Подбор B2B-поставщиков, заводов и официальных дилеров по спецификациям в Москве и МО. Проверка контактов и отправка запроса КП.",
   keywords: [

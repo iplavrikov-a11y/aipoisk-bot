@@ -38,7 +38,7 @@ import { ScrollWorldViewer } from "@/components/scroll-world/scroll-world-viewer
 export const revalidate = 300;
 
 export const metadata: Metadata = {
-  title: "TenderLex — Интерактивный WOW-сценарий снабжения и поиска заводов",
+  title: "Интерактивный сценарий снабжения и поиска заводов",
   description:
     "Демонстрация работы платформы TenderLex: сквозной сценарий от загрузки сырого ТЗ и аудита рисков 44-ФЗ до поиска прямых заводов РФ и победы в закупке.",
   robots: {

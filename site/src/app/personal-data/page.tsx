@@ -4,8 +4,8 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
-  title: "Согласие на обработку персональных данных — TenderLex",
-  description: "Согласие пользователя на обработку персональных данных сервисом TenderLex.",
+  title: "Согласие на обработку персональных данных",
+  description: "Порядок и условия согласия пользователя на обработку и хранение персональных данных сервисом TenderLex в рамках 152-ФЗ.",
   alternates: { canonical: "/personal-data" },
 };
 

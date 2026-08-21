@@ -5,8 +5,8 @@ import { SiteFooter } from "@/components/site-footer";
 import { FileText, ShieldCheck, UserCheck, Phone, Mail, Send, MessageCircle } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Правовая информация и реквизиты — TenderLex",
-  description: "Официальные документы, оферта, политика конфиденциальности и реквизиты онлайн-сервиса TenderLex.",
+  title: "Правовая информация и реквизиты",
+  description: "Официальные документы, условия оферты, политика конфиденциальности и юридические реквизиты платформы TenderLex.",
   alternates: { canonical: "/legal" },
 };
 

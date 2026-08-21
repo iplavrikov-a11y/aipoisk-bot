@@ -38,13 +38,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
   if (!article) {
     return {
-      title: "Статья не найдена — TenderLex",
+      title: "Статья не найдена",
       description: "Запрошенная статья базы знаний не найдена.",
     };
   }
 
   return {
-    title: `${article.title} — База знаний TenderLex`,
+    title: article.title,
     description: article.description,
     keywords: article.keywords,
     alternates: {
@@ -56,6 +56,20 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       type: "article",
       url: `/baza-znaniy/${article.slug}`,
       siteName: "TenderLex",
+      images: [
+        {
+          url: "/tenderlex-product-preview.png",
+          width: 1200,
+          height: 630,
+          alt: `${article.title} — TenderLex`,
+        },
+      ],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: article.title,
+      description: article.description,
+      images: ["/tenderlex-product-preview.png"],
     },
   };
 }

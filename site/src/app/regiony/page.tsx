@@ -7,7 +7,7 @@ import { ContactSection } from "@/components/contact-section";
 import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по регионам России — база заводов TenderLex",
+  title: "Поиск поставщиков по регионам России — база заводов",
   description:
     "Региональный подбор поставщиков и производителей под технические задания: Москва, Санкт-Петербург, Урал, Сибирь, Поволжье, Юг и другие субъекты РФ.",
   alternates: {

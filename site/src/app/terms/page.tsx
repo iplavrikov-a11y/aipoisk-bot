@@ -4,8 +4,8 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
-  title: "Публичная оферта — TenderLex",
-  description: "Публичная оферта TenderLex для юридических лиц и индивидуальных предпринимателей.",
+  title: "Публичная оферта",
+  description: "Публичная оферта платформы TenderLex на заключение договора оказания информационных услуг для юридических лиц и ИП.",
   alternates: { canonical: "/terms" },
 };
 

@@ -38,7 +38,9 @@ import { ScrollWorldViewer } from "@/components/scroll-world/scroll-world-viewer
 export const revalidate = 300;
 
 export const metadata: Metadata = {
-  title: "TenderLex — Поиск поставщиков по ТЗ и анализ рисков закупок 44-ФЗ",
+  title: {
+    absolute: "TenderLex — Поиск поставщиков по ТЗ и анализ рисков закупок 44-ФЗ",
+  },
   description:
     "ИИ-платформа для закупщиков: извлечение номенклатуры из ТЗ, сбор прямых email/телефонов заводов и дилеров по всей России, автоматическая генерация запросов КП и экспресс-анализ 44-ФЗ / 223-ФЗ за 3 минуты.",
   keywords: [

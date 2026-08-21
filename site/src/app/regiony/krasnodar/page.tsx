@@ -3,7 +3,7 @@ import { buildBreadcrumbJsonLd, buildServiceJsonLd } from "@/lib/seo";
 import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ в Краснодаре и на Юге РФ — TenderLex",
+  title: "Поиск поставщиков по ТЗ в Краснодаре и на Юге РФ",
   description: "Подбор поставщиков стройматериалов, агропромышленного оборудования и металлоконструкций на Юге России.",
   alternates: { canonical: "/regiony/krasnodar" },
 };

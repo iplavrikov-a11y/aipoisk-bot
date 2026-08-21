@@ -4,8 +4,8 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
-  title: "Политика конфиденциальности — TenderLex",
-  description: "Политика обработки персональных данных сервиса TenderLex в соответствии с Федеральным законом № 152-ФЗ.",
+  title: "Политика конфиденциальности",
+  description: "Политика обработки и защиты персональных данных пользователей сервиса TenderLex в соответствии с Федеральным законом № 152-ФЗ.",
   alternates: { canonical: "/privacy" },
 };
 

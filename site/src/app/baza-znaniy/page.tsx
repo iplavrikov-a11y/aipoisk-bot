@@ -8,7 +8,7 @@ import { KnowledgeBaseHubClient } from "@/components/knowledge-base-hub-client";
 import { KNOWLEDGE_ARTICLES } from "@/data/knowledge-base";
 
 export const metadata: Metadata = {
-  title: "База знаний по закупкам, подбору поставщиков и 44-ФЗ — TenderLex",
+  title: "База знаний по закупкам, подбору поставщиков и 44-ФЗ",
   description:
     "Экспертные руководства, практические алгоритмы и чек-листы для отделов снабжения и участников тендеров: поиск заводов по ТЗ, аудит рисков 44-ФЗ/223-ФЗ, нацрежим Минпромторга, расчет НМЦК и проверка контрагентов.",
   alternates: {

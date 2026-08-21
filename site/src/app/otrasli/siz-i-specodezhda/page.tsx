@@ -9,7 +9,7 @@ import {
 import { IndustryPageLayout } from "@/components/industry-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков СИЗ и спецодежды по ТЗ — TenderLex",
+  title: "Поиск поставщиков СИЗ и спецодежды по ТЗ",
   description:
     "Подбор швейных фабрик и производителей СИЗ по нормам выдачи и ТР ТС 019/2011: зимняя и летняя спецодежда, спецобувь, респираторы, средства защиты.",
   alternates: {

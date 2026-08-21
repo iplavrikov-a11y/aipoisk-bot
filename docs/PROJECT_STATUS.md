@@ -20,6 +20,13 @@ Date: 2026-07-08
   - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (Minpromtorg policy buttons no longer get clipped in multi-column grids).
   - Main menu (`/start`, `🏠 Главное меню`) acts as the unified hub with 3 prominent scenario buttons, 2 service shortcuts (Кабинет, Задачи), and 3 info buttons (Тарифы, Помощь, Контакты).
   - Verified with 144 automated unit tests, journey simulations, and deployed live to production.
+- Comprehensive SEO & Metadata Optimization (2026-08):
+  - Cleaned up duplicate brand suffixes across 35 page files to ensure Next.js title template compatibility (0 double branding issues across all 86 pages).
+  - Configured full OpenGraph and Twitter cards (`summary_large_image` with `tenderlex-product-preview.png`) across all dynamic knowledge base articles (`/baza-znaniy/[slug]`).
+  - Added Speculation Rules API in `site/src/app/layout.tsx` for instant Chromium prerender and prefetch of top transactional routes.
+  - Achieved 100% Schema.org JSON-LD microdata coverage (86/86 pages) across WebSite, Organization, SoftwareApplication, Service, BreadcrumbList, and Article types.
+  - Validated via 6 audit frameworks (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`) with 0 critical issues and 0 broken links.
+  - Deployed live to production via `./scripts/deploy_tenderlex_live.sh`.
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.

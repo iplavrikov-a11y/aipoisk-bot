@@ -3,7 +3,7 @@ import { buildBreadcrumbJsonLd, buildServiceJsonLd } from "@/lib/seo";
 import { RegionalPageLayout } from "@/components/regional-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по ТЗ в Самаре и Поволжье — TenderLex",
+  title: "Поиск поставщиков по ТЗ в Самаре и Поволжье",
   description: "Подбор машиностроительных заводов, производителей емкостей, металлоконструкций и кабеля в Самарской области.",
   alternates: { canonical: "/regiony/samara" },
 };

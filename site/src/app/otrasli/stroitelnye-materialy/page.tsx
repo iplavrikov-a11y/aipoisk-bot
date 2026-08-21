@@ -9,7 +9,7 @@ import {
 import { IndustryPageLayout } from "@/components/industry-page-layout";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков строительных материалов по ТЗ — TenderLex",
+  title: "Поиск поставщиков стройматериалов по ТЗ",
   description:
     "Автоматический подбор заводов стройматериалов по спецификациям: ЖБИ, сухие смеси, теплоизоляция, кирпич, фасадные системы.",
   alternates: {
