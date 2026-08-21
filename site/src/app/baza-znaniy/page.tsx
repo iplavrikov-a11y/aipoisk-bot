@@ -8,9 +8,9 @@ import { KnowledgeBaseHubClient } from "@/components/knowledge-base-hub-client";
 import { KNOWLEDGE_ARTICLES } from "@/data/knowledge-base";
 
 export const metadata: Metadata = {
-  title: "База знаний по закупкам, подбору поставщиков и 44-ФЗ",
+  title: "База знаний по закупкам и подбору поставщиков",
   description:
-    "Экспертные руководства, практические алгоритмы и чек-листы для отделов снабжения и участников тендеров: поиск заводов по ТЗ, аудит рисков 44-ФЗ/223-ФЗ, нацрежим Минпромторга, расчет НМЦК и проверка контрагентов.",
+    "Экспертные руководства и чек-листы для закупщиков: поиск заводов по ТЗ, аудит рисков 44-ФЗ / 223-ФЗ, нацрежим Минпромторга, расчет НМЦК и проверка контрагентов.",
   alternates: {
     canonical: "/baza-znaniy",
   },
@@ -69,7 +69,7 @@ export default function KnowledgeBaseHubPage() {
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-[#172120] tracking-tight max-w-4xl mx-auto leading-tight">
-              База знаний по закупкам, подбору поставщиков и 44-ФЗ
+              База знаний по закупкам, 44-ФЗ, 223-ФЗ и коммерческим торгам
             </h1>
 
             <p className="text-[#2f3f3d] text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">

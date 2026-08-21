@@ -25,9 +25,9 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 const siteUrl = normalizedSiteUrl();
-const defaultTitle = "TenderLex - поиск поставщиков и анализ закупок";
+const defaultTitle = "TenderLex — поиск поставщиков и анализ любых закупок";
 const defaultDescription =
-  "TenderLex находит компании под закупочную задачу, проверяет контакты, помогает подготовить запрос цены и разобрать условия закупки по всей России.";
+  "TenderLex находит поставщиков по ТЗ, проверяет контакты отделов продаж, готовит запросы КП и анализирует условия закупок по 44-ФЗ, 223-ФЗ и коммерческим торгам.";
 const defaultOgImage = "/tenderlex-product-preview.png";
 const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();

@@ -46,6 +46,22 @@ export function absoluteUrl(path: string) {
   return `${normalizedSiteUrl()}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+export function formatSeoTitle(title: string, customSeoTitle?: string): string {
+  if (customSeoTitle) return customSeoTitle;
+  let clean = title;
+  if (clean.includes(":")) {
+    clean = clean.split(":")[0].trim();
+  } else if (clean.includes(" — ")) {
+    clean = clean.split(" — ")[0].trim();
+  }
+  if (clean.length > 50) {
+    clean = clean.slice(0, 50).replace(/\s+[^\s]*$/, "").trim();
+  }
+  clean = clean.replace(/[\s,–—-]+(и|в|на|по|для|с|при|от|под|об|о|к|из|за)\s*$/i, "").trim();
+  clean = clean.replace(/[,:;–—-]+$/, "").trim();
+  return clean;
+}
+
 export function buildFaqJsonLd(items: FaqItem[]) {
   return {
     "@context": "https://schema.org",

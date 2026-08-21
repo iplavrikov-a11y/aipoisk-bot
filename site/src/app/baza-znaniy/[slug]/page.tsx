@@ -11,6 +11,7 @@ import {
   buildHowToJsonLd,
   buildArticleJsonLd,
   buildFaqJsonLd,
+  formatSeoTitle,
 } from "@/lib/seo";
 import {
   CheckCircle2,
@@ -43,8 +44,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     };
   }
 
+  const seoTitle = formatSeoTitle(article.title, article.seoTitle);
+
   return {
-    title: article.title,
+    title: seoTitle,
     description: article.description,
     keywords: article.keywords,
     alternates: {

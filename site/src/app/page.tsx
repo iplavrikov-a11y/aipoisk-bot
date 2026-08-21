@@ -40,25 +40,26 @@ export const revalidate = 300;
 
 export const metadata: Metadata = {
   title: {
-    absolute: "TenderLex — Поиск поставщиков по ТЗ и анализ рисков закупок 44-ФЗ",
+    absolute: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
   },
   description:
-    "ИИ-платформа для закупщиков: извлечение номенклатуры из ТЗ, сбор прямых email/телефонов заводов и дилеров по всей России, автоматическая генерация запросов КП и экспресс-анализ 44-ФЗ / 223-ФЗ за 3 минуты.",
+    "ИИ-сервис для закупщиков: поиск прямых контактов заводов и дилеров по ТЗ, подготовка запросов КП и анализ рисков 44-ФЗ, 223-ФЗ и коммерческих закупок.",
   keywords: [
     "поиск поставщиков по ТЗ",
     "поиск производителей Россия",
     "коммерческое предложение закупка",
     "контакты отделов продаж заводов",
-    "анализ рисков ТЗ 44-ФЗ",
+    "анализ рисков 44-ФЗ и 223-ФЗ",
+    "коммерческие закупки",
     "TenderLex",
   ],
   alternates: {
     canonical: "/",
   },
   openGraph: {
-    title: "TenderLex — Поиск поставщиков по ТЗ и анализ рисков закупок 44-ФЗ",
+    title: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
     description:
-      "ИИ-помощник отдела снабжения. Находите прямые контакты производителей и дилеров по всей России за 3 минуты.",
+      "ИИ-помощник отдела снабжения. Прямые контакты производителей и аудит рисков по 44-ФЗ, 223-ФЗ и коммерческим торгам.",
     url: "https://tenderlex.ru",
     siteName: "TenderLex",
     locale: "ru_RU",
@@ -121,7 +122,7 @@ export default async function HomePage() {
             <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
                 <Sparkles size={14} className="text-teal-600 animate-pulse" />
-                <span>ИИ-поиск поставщиков по всей России & Экспресс-аудит 44-ФЗ</span>
+                <span>ИИ-поиск поставщиков & Экспресс-аудит 44-ФЗ, 223-ФЗ и коммерческих закупок</span>
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
@@ -261,7 +262,7 @@ export default async function HomePage() {
                   </div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Анализ документации</span>
                   <h3 className="text-2xl font-extrabold text-slate-900">
-                    Экспресс-аудит закупочной документации 44-ФЗ / 223-ФЗ
+                    Экспресс-аудит документации: 44-ФЗ, 223-ФЗ и коммерческие закупки
                   </h3>
                   <p className="text-sm text-slate-600 leading-relaxed">
                     Проверка проекта контракта до подачи заявки на участие: выявление скрытых штрафов, невыполнимых сроков и ограничений национального режима.
@@ -368,7 +369,7 @@ export default async function HomePage() {
               {/* Анализ документации */}
               <div className="p-8 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
                 <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Анализ 44-ФЗ / 223-ФЗ</span>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Анализ 44-ФЗ, 223-ФЗ и коммерческих закупок</span>
                   <h3 className="text-2xl font-extrabold text-slate-900 mt-1 mb-2">Анализ документации</h3>
                   <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и Минпромторга.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">

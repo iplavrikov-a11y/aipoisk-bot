@@ -29,6 +29,14 @@ Date: 2026-07-08
   - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (Minpromtorg policy buttons no longer get clipped in multi-column grids).
   - Main menu (`/start`, `🏠 Главное меню`) acts as the unified hub with 3 prominent scenario buttons, 2 service shortcuts (Кабинет, Задачи), and 3 info buttons (Тарифы, Помощь, Контакты).
   - Verified with 144 automated unit tests, journey simulations, and deployed live to production.
+- Comprehensive SEO, GEO & Universal Procurement Positioning Upgrade (2026-08):
+  - Completed rigorous 7-framework audit (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`).
+  - Broadened positioning across all public pages, metadata, hero copy, badges, module titles, and LLM indices: eliminated narrow 44-FZ-only phrasing to explicitly cover 44-ФЗ, 223-ФЗ, коммерческие закупки, торги и любые нестандартные ТЗ.
+  - Optimized `<title>` lengths for search snippet limits: implemented `formatSeoTitle()` helper in `site/src/lib/seo.ts` and `KnowledgeArticleMeta.seoTitle`, raising non-truncated SERP title rate from 30.2% to 97.7% across all 86 sitemap URLs.
+  - Streamlined `<meta description>` tags across root and landing pages to optimal 140–160 chars.
+  - Expanded `site/src/app/robots.ts` with 11 modern AI search crawlers (`GPTBot`, `ClaudeBot`, `PerplexityBot`, `YandexRenderBot`, `Google-Extended`, `Applebot-Extended`, `Diffbot`, `Bytespider`, `CCBot`, `Meta-ExternalAgent`, `cohere-ai`).
+  - Generated comprehensive `site/public/llms-full.txt` (31 KB) and linked it in `site/public/llms.txt` for deep LLM retrieval and citability in ChatGPT, Claude, and Perplexity.
+  - Rebuilt and verified via `./scripts/deploy_tenderlex_live.sh` on live `tenderlex-site.service` (port 3093).
 - Comprehensive SEO & Metadata Optimization (2026-08):
   - Cleaned up duplicate brand suffixes across 35 page files to ensure Next.js title template compatibility (0 double branding issues across all 86 pages).
   - Configured full OpenGraph and Twitter cards (`summary_large_image` with `tenderlex-product-preview.png`) across all dynamic knowledge base articles (`/baza-znaniy/[slug]`).

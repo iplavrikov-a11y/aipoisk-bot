@@ -13,6 +13,7 @@ export interface KnowledgeSection {
 export interface KnowledgeArticleMeta {
   slug: string;
   title: string;
+  seoTitle?: string;
   subtitle: string;
   description: string;
   category:

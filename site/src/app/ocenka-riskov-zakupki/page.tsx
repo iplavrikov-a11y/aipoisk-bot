@@ -13,13 +13,15 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Оценка рисков закупки 44-ФЗ / 223-ФЗ — экспресс-проверка до заявки",
+  title: "Оценка рисков закупки: 44-ФЗ, 223-ФЗ и коммерческие торги",
   description:
-    "Автоматическая оценка исполнимости контракта: аудит условий приемки, финансовых гарантий, штрафов и ограничений национального режима.",
+    "Автоматическая оценка исполнимости контрактов 44-ФЗ, 223-ФЗ и коммерческих закупок: аудит условий приемки, финансовых гарантий и скрытых штрафов.",
   keywords: [
     "оценка рисков закупки",
     "проверка рисков 44-ФЗ",
-    "риски исполнения госконтракта",
+    "риски 223-ФЗ",
+    "коммерческие торги",
+    "риски исполнения контракта",
     "TenderLex",
   ],
   alternates: {
@@ -33,7 +35,7 @@ const faqItems: FaqItem[] = [
   {
     question: "Как оценка рисков помогает поставщикам?",
     answer:
-      "Она позволяет вовремя отказаться от заведомо токсичных или неисполнимых контрактов, где заказчик установил невыполнимые сроки или скрытые условия расторжения с внесением в РНП.",
+      "Она позволяет вовремя отказаться от заведомо токсичных или неисполнимых контрактов в госзакупках и коммерческих торгах, где заказчик установил невыполнимые сроки или скрытые штрафы.",
   },
   {
     question: "Сколько времени занимает проверка?",
@@ -50,7 +52,7 @@ export default function OcenkaRisktovZakupkiPage() {
 
   const schemaService = buildServiceJsonLd({
     name: "Оценка рисков закупки",
-    description: "Сервис экспресс-оценки рисков исполнения контракта 44-ФЗ/223-ФЗ.",
+    description: "Сервис экспресс-оценки рисков исполнения контрактов 44-ФЗ, 223-ФЗ и коммерческих закупок.",
     path: pagePath,
   });
 
@@ -81,11 +83,11 @@ export default function OcenkaRisktovZakupkiPage() {
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
               <ShieldCheck size={14} className="text-teal-600" />
-              <span>Защита от риска попадания в РНП</span>
+              <span>Защита от риска срыва контракта и РНП</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Оценка рисков закупки и условий госконтракта
+              Оценка рисков закупки, госконтракта и коммерческого договора
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">

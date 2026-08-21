@@ -13,13 +13,14 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков для тендера 44-ФЗ и 223-ФЗ — подбор под госторги",
+  title: "Поиск поставщиков для тендеров и коммерческих закупок",
   description:
-    "Быстрый поиск надежных поставщиков под тендерную документацию, извлечение цен, контактов дилеров и экспресс-оценка себестоимости перед подачей заявки.",
+    "Быстрый поиск надежных поставщиков под тендеры 44-ФЗ, 223-ФЗ и коммерческие закупки, контакты дилеров и экспресс-оценка себестоимости до подачи заявки.",
   keywords: [
     "поиск поставщиков для тендера",
     "поставщики под 44-ФЗ",
     "поставщики под 223-ФЗ",
+    "коммерческие закупки",
     "подбор контрагентов для закупки",
     "TenderLex",
   ],
@@ -34,7 +35,7 @@ const faqItems: FaqItem[] = [
   {
     question: "Как TenderLex помогает тендерным специалистам при подготовке заявки?",
     answer:
-      "Сервис быстро собирает базу официальных дилеров и заводов под извещение закупки, извлекает контакты и готовит запрос коммерческих предложений для точного расчета маржинальности участия.",
+      "Сервис быстро собирает базу официальных дилеров и заводов под извещение закупки (44-ФЗ, 223-ФЗ, коммерческие торги), извлекает контакты и готовит запрос КП для точного расчета маржинальности участия.",
   },
   {
     question: "Учитываются ли требования национального режима?",
@@ -51,7 +52,7 @@ export default function PoiskPostavshchikovDlyaTenderaPage() {
 
   const schemaService = buildServiceJsonLd({
     name: "Поиск поставщиков для тендера",
-    description: "Сервис подбора поставщиков под тендерные требования 44-ФЗ и 223-ФЗ.",
+    description: "Сервис подбора поставщиков под закупки 44-ФЗ, 223-ФЗ и коммерческие торги.",
     path: pagePath,
   });
 
@@ -82,11 +83,11 @@ export default function PoiskPostavshchikovDlyaTenderaPage() {
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
               <ShieldCheck size={14} className="text-teal-600" />
-              <span>Подбор поставщиков под закупки 44-ФЗ и 223-ФЗ</span>
+              <span>Подбор поставщиков: 44-ФЗ, 223-ФЗ и коммерческие торги</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Поиск поставщиков для участия в тендерах и госзакупках
+              Поиск поставщиков для тендеров, госзакупок и коммерческих торгов
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
