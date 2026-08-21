@@ -114,18 +114,18 @@ class ClientJourneySimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(create_msg.answers), 1)
         self.assertIn("Выберите сценарий", create_msg.answers[0][0])
         reply_kb = create_msg.answers[0][1].get("reply_markup")
-        kb_buttons = [b.text for row in reply_kb.keyboard for b in row]
-        self.assertIn(BUTTON_SUPPLIERS, kb_buttons)
-        self.assertIn(BUTTON_REPORT, kb_buttons)
-        self.assertIn(BUTTON_ANALYSIS_AND_SUPPLIERS, kb_buttons)
+        kb_buttons = [b.text for row in reply_kb.inline_keyboard for b in row]
+        self.assertTrue(any("Поставщики по ТЗ" in b for b in kb_buttons))
+        self.assertTrue(any("Анализ закупки" in b for b in kb_buttons))
+        self.assertTrue(any("Анализ + поиск" in b for b in kb_buttons))
 
         # 3. User selects 🔎 Поставщики по ТЗ
         suppliers_msg = self.FakeMessage(text=BUTTON_SUPPLIERS, chat_id=chat_id)
         with patch.object(bot_module, "_record_telegram_event"):
             await bot_module.supplier_single_button(suppliers_msg)
         
-        # Must answer with policy prompt and batch menu
-        self.assertEqual(len(suppliers_msg.answers), 2)
+        # Must answer with policy prompt and inline keyboard
+        self.assertEqual(len(suppliers_msg.answers), 1)
         policy_prompt = suppliers_msg.answers[0][0]
         self.assertIn("Поставщики по ТЗ", policy_prompt)
         self.assertIn("Обычный поиск", policy_prompt)
@@ -161,7 +161,7 @@ class ClientJourneySimulationTests(unittest.IsolatedAsyncioTestCase):
         policy_btn_msg = self.FakeMessage(text=BUTTON_POLICY, chat_id=chat_id)
         await bot_module.policy_button(policy_btn_msg)
         self.assertEqual(len(policy_btn_msg.answers), 1)
-        self.assertIn("Выберите режим поиска", policy_btn_msg.answers[0][0])
+        self.assertIn("Режим реестра", policy_btn_msg.answers[0][0])
 
         # 7. User clicks 🗑 Очистить
         clear_msg = self.FakeMessage(text=BUTTON_CANCEL_BATCH, chat_id=chat_id)
@@ -187,7 +187,7 @@ class ClientJourneySimulationTests(unittest.IsolatedAsyncioTestCase):
         combo_msg = self.FakeMessage(text=BUTTON_ANALYSIS_AND_SUPPLIERS, chat_id=chat_id)
         with patch.object(bot_module, "_record_telegram_event"):
             await bot_module.analysis_and_suppliers_button(combo_msg)
-        self.assertEqual(len(combo_msg.answers), 2)
+        self.assertEqual(len(combo_msg.answers), 1)
         self.assertIn("Анализ + поиск", combo_msg.answers[0][0])
 
         # Switch policy to "Реестр в приоритете"

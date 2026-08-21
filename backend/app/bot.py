@@ -277,41 +277,186 @@ def _supplier_policy_label(policy: str) -> str:
     return "Обычный поиск"
 
 
-def supplier_policy_keyboard(selected_policy: str = SUPPLIER_POLICY_NORMAL) -> InlineKeyboardMarkup:
-    normal_mark = "✅ " if selected_policy == SUPPLIER_POLICY_NORMAL else ""
-    only_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_ONLY else ""
-    priority_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_PRIORITY else ""
+def main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
-            [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
-            [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
+            [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
+            [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
+            [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
+            [
+                InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
+                InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
+            ],
+            [
+                InlineKeyboardButton(text="💳 Тарифы", callback_data="open_tariffs"),
+                InlineKeyboardButton(text="❓ Помощь", callback_data="open_help"),
+                InlineKeyboardButton(text="📞 Контакты", callback_data="open_contacts"),
+            ],
         ]
     )
 
 
-def _supplier_policy_prompt_text(scenario: str, policy: str = SUPPLIER_POLICY_NORMAL) -> str:
-    prefix = "📄🔎 Анализ + поиск" if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS else "🔎 Поставщики по ТЗ"
-    label = _supplier_policy_label(policy)
-    if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
-        return (
-            f"<b>{prefix}</b>\n\n"
-            f"Текущий режим: <b>{label}</b>\n\n"
-            "Выберите режим поиска поставщиков по реестру Минпромторга:\n"
-            "• <b>Обычный поиск</b> — по всем производителям и дилерам РФ\n"
-            "• <b>Только реестр</b> — строгий фильтр ГИСП (для нацрежима ПП 616)\n"
-            "• <b>Реестр в приоритете</b> — производители из реестра в начале (ПП 617 / 878)\n\n"
-            "Отправьте номер извещения, ссылку, архив или документы закупки."
-        )
-    return (
-        f"<b>{prefix}</b>\n\n"
-        f"Текущий режим: <b>{label}</b>\n\n"
-        "Выберите режим поиска поставщиков по реестру Минпромторга:\n"
-        "• <b>Обычный поиск</b> — по всем производителям и дилерам РФ\n"
-        "• <b>Только реестр</b> — строгий фильтр ГИСП (для нацрежима ПП 616)\n"
-        "• <b>Реестр в приоритете</b> — производители из реестра в начале (ПП 617 / 878)\n\n"
-        "Отправьте ТЗ файлом (.docx, .pdf, .xlsx, .zip), текстом или архивом."
+def create_inline_keyboard() -> InlineKeyboardMarkup:
+    return main_inline_keyboard()
+
+
+def supplier_policy_keyboard(
+    selected_policy: str = SUPPLIER_POLICY_NORMAL,
+    *,
+    show_back_to_scenarios: bool = True,
+) -> InlineKeyboardMarkup:
+    normal_mark = "✅ " if selected_policy == SUPPLIER_POLICY_NORMAL else ""
+    only_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_ONLY else ""
+    priority_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_PRIORITY else ""
+    rows = [
+        [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
+        [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
+        [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
+        [
+            InlineKeyboardButton(text="📄 Анализ закупки", callback_data="scenario:report"),
+            InlineKeyboardButton(text="📄🔎 Анализ + поиск", callback_data="scenario:analysis_and_suppliers"),
+        ],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_scenario_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers"),
+            InlineKeyboardButton(text="📄🔎 Анализ + поиск", callback_data="scenario:analysis_and_suppliers"),
+        ],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def analysis_and_suppliers_keyboard(
+    selected_policy: str = SUPPLIER_POLICY_NORMAL,
+) -> InlineKeyboardMarkup:
+    normal_mark = "✅ " if selected_policy == SUPPLIER_POLICY_NORMAL else ""
+    only_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_ONLY else ""
+    priority_mark = "✅ " if selected_policy == SUPPLIER_POLICY_MINPROM_PRIORITY else ""
+    rows = [
+        [InlineKeyboardButton(text=f"{normal_mark}Обычный поиск", callback_data=f"supplier_policy:{SUPPLIER_POLICY_NORMAL}")],
+        [InlineKeyboardButton(text=f"{only_mark}Только реестр (ПП 616)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_ONLY}")],
+        [InlineKeyboardButton(text=f"{priority_mark}Реестр в приоритете (ПП 617 / 878)", callback_data=f"supplier_policy:{SUPPLIER_POLICY_MINPROM_PRIORITY}")],
+        [
+            InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers"),
+            InlineKeyboardButton(text="📄 Анализ закупки", callback_data="scenario:report"),
+        ],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if web_url:
+        label = "🌐 Открыть веб-кабинет" if has_web_user else "🌐 Создать веб-кабинет"
+        rows.append([InlineKeyboardButton(text=label, url=web_url)])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def status_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
     )
+
+
+def tariffs_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="open_contacts")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
+
+
+def help_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="open_contacts")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
+
+
+def contacts_inline_keyboard(telegram_url: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if telegram_url:
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram", url=telegram_url)])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
+    if pending.mode == MODE_SUPPLIER_SEARCH:
+        action_text = "▶️ Запустить поиск поставщиков"
+    elif pending.mode == MODE_PROCUREMENT_REPORT:
+        action_text = "▶️ Запустить анализ закупки"
+    else:
+        action_text = "▶️ Запустить анализ и поиск"
+    rows = [
+        [InlineKeyboardButton(text=action_text, callback_data="batch:run")],
+    ]
+    sub_row = []
+    if pending.mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        sub_row.append(InlineKeyboardButton(text="⚙️ Режим поиска", callback_data="batch:policy"))
+    sub_row.append(InlineKeyboardButton(text="🗑 Очистить", callback_data="batch:cancel"))
+    rows.append(sub_row)
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _suppliers_scenario_text(policy: str = SUPPLIER_POLICY_NORMAL) -> str:
+    label = _supplier_policy_label(policy)
+    return (
+        "🔎 Поставщики по ТЗ\n\n"
+        f"Режим реестра Минпромторга: {label}\n"
+        "• Обычный поиск — по всем производителям и дилерам РФ\n"
+        "• Только реестр — строгий фильтр ГИСП (нацрежим ПП 616)\n"
+        "• Реестр в приоритете — заводы из реестра в начале (ПП 617 / 878)\n\n"
+        "📋 Что нужно сделать:\n"
+        "1. Отправьте файл ТЗ / спецификации (.docx, .pdf, .xlsx, .zip)\n"
+        "2. Или напишите описание нужного товара прямо в чат\n\n"
+        "💡 После загрузки нажмите «▶️ Запустить поиск»."
+    )
+
+
+def _report_scenario_text() -> str:
+    return (
+        "📄 Анализ закупки\n\n"
+        "📋 Что нужно сделать:\n"
+        "1. Отправьте 19-значный номер извещения ЕИС (например, 0373200001424000123)\n"
+        "2. Отправьте прямую ссылку на закупку (ЕИС, Сбер А, Росэлторг и др.)\n"
+        "3. Либо прикрепите файлы / архив закупочной документации\n\n"
+        "💡 Бот проверит закупку на риски, нацрежим, сроки и скрытые требования."
+    )
+
+
+def _analysis_and_suppliers_scenario_text(policy: str = SUPPLIER_POLICY_NORMAL) -> str:
+    label = _supplier_policy_label(policy)
+    return (
+        "📄🔎 Анализ + поиск\n\n"
+        f"Режим реестра Минпромторга: {label}\n"
+        "• Обычный поиск — по всем производителям и дилерам РФ\n"
+        "• Только реестр — строгий фильтр ГИСП (нацрежим ПП 616)\n"
+        "• Реестр в приоритете — заводы из реестра в начале (ПП 617 / 878)\n\n"
+        "📋 Что нужно сделать:\n"
+        "Отправьте номер извещения ЕИС (19 цифр), ссылку на закупку или файлы документации.\n\n"
+        "💡 Бот проверит документацию на риски и подберет поставщиков по найденному ТЗ."
+    )
+
+
+def _supplier_policy_prompt_text(scenario: str, policy: str = SUPPLIER_POLICY_NORMAL) -> str:
+    if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
+        return _analysis_and_suppliers_scenario_text(policy)
+    return _suppliers_scenario_text(policy)
 
 
 def _source_link_rejection_text() -> str:
@@ -483,7 +628,7 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
             )
         else:
             lines.append("Если одно ТЗ состоит из нескольких файлов, загрузите эти файлы одним архивом.")
-        lines.append(f"Добавьте ещё отдельное ТЗ или нажмите «{BUTTON_RUN_BATCH}».")
+        lines.append("Добавьте ещё отдельное ТЗ или нажмите кнопку ниже:")
         return "\n".join(lines)
     lines = [
         "✅ Материалы добавлены",
@@ -493,16 +638,22 @@ def _pending_added_text(pending: PendingBatch, *, max_files: int, added_sources:
         lines.append(f"• Источников: {len(pending.sources)}")
     if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
         lines.append(f"• Режим поиска: {policy_label}")
-    lines.extend(["", f"Добавьте ещё документы или нажмите «{BUTTON_RUN_BATCH}»."])
+    lines.extend(["", "Добавьте ещё документы или нажмите кнопку ниже:"])
     return "\n".join(lines)
 
 
 def _source_added_text(pending: PendingBatch) -> str:
-    return (
-        "📎 Источник добавлен\n\n"
-        f"✅ Источников: {len(pending.sources)}\n"
-        f"Можно добавить документы или нажать «{BUTTON_RUN_BATCH}»."
-    )
+    policy_label = _supplier_policy_label(pending.supplier_search_policy)
+    lines = [
+        "📎 Источник добавлен",
+        f"• Источников: {len(pending.sources)}",
+    ]
+    if pending.files:
+        lines.append(f"• Файлов: {len(pending.files)}")
+    if pending.mode == MODE_ANALYSIS_AND_SUPPLIERS:
+        lines.append(f"• Режим поиска: {policy_label}")
+    lines.extend(["", "Можно добавить ещё материалы или запустить обработку:"])
+    return "\n".join(lines)
 
 
 def _batch_running_text() -> str:
@@ -586,56 +737,20 @@ def _discard_unlaunched_jobs(db, jobs: list[Job]) -> None:
         db.commit()
 
 
-def main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BUTTON_CREATE), KeyboardButton(text=BUTTON_STATUS)],
-            [KeyboardButton(text=BUTTON_ACCESS), KeyboardButton(text=BUTTON_TARIFFS)],
-            [KeyboardButton(text=BUTTON_HELP), KeyboardButton(text=BUTTON_CONTACTS)],
-        ],
-        resize_keyboard=True,
-        input_field_placeholder="Выберите действие",
-    )
+def main_menu() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
-def create_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BUTTON_SUPPLIERS), KeyboardButton(text=BUTTON_REPORT)],
-            [KeyboardButton(text=BUTTON_ANALYSIS_AND_SUPPLIERS)],
-            [KeyboardButton(text=BUTTON_BACK_MAIN)],
-        ],
-        resize_keyboard=True,
-        input_field_placeholder="Выберите сценарий",
-    )
+def create_menu() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
-def batch_menu(chat_id: int | None = None) -> ReplyKeyboardMarkup:
-    scenario = PENDING_MODES.get(chat_id or 0) if chat_id else None
-    show_policy = bool(scenario and _scenario_uses_supplier_policy(scenario))
-    rows = [
-        [KeyboardButton(text=BUTTON_RUN_BATCH), KeyboardButton(text=BUTTON_CANCEL_BATCH)],
-    ]
-    if show_policy:
-        rows.append([KeyboardButton(text=BUTTON_POLICY), KeyboardButton(text=BUTTON_BACK_MAIN)])
-    else:
-        rows.append([KeyboardButton(text=BUTTON_BACK_MAIN)])
-    return ReplyKeyboardMarkup(
-        keyboard=rows,
-        resize_keyboard=True,
-        input_field_placeholder="Добавьте материалы или запустите обработку",
-    )
+def batch_menu(chat_id: int | None = None) -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
-def processing_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BUTTON_PROCESSING_STATUS), KeyboardButton(text=BUTTON_STATUS)],
-            [KeyboardButton(text=BUTTON_CANCEL_PROCESSING)],
-        ],
-        resize_keyboard=True,
-        input_field_placeholder="Дождитесь завершения обработки",
-    )
+def processing_menu() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
 def _chat_has_processing_job(chat_id: int) -> bool:
@@ -705,10 +820,8 @@ def _cancel_processing_jobs_for_chat(chat_id: int) -> int:
         db.close()
 
 
-def _menu_for_chat(chat_id: int) -> ReplyKeyboardMarkup:
-    if _chat_has_processing_job(chat_id):
-        return processing_menu()
-    return main_menu()
+def _menu_for_chat(chat_id: int) -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
 async def _reject_if_chat_processing(message: Message) -> bool:
@@ -1299,14 +1412,9 @@ def _scenario_for_message(message: Message) -> str:
 
 def _start_text() -> str:
     return (
-        f"👋 Добро пожаловать в {BRAND_NAME}.\n\n"
-        "Помогу найти и проверить поставщиков или разобрать закупочную документацию.\n\n"
-        "Выберите, что нужно:\n"
-        f"{BUTTON_SUPPLIERS}\n"
-        f"{BUTTON_REPORT}\n"
-        f"{BUTTON_ANALYSIS_AND_SUPPLIERS}\n\n"
-        "Отправьте материалы — дальше подскажу следующий шаг.\n"
-        "💳 Списание только после готового результата."
+        f"👋 Добро пожаловать в {BRAND_NAME}!\n\n"
+        "Помогу быстро найти производителей и дилеров по ТЗ или разобрать закупочную документацию (44-ФЗ / 223-ФЗ).\n\n"
+        "💳 Списание единиц происходит только после успешной выдачи готового результата."
     )
 
 
@@ -1530,9 +1638,8 @@ def _find_more_suppliers_offer_text() -> str:
 def _find_more_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔎 Найти ещё", callback_data=f"find_more_prompt:{job_id}"),
-            ]
+            [InlineKeyboardButton(text="🔎 Найти ещё по этому ТЗ", callback_data=f"find_more_prompt:{job_id}")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
         ]
     )
 
@@ -1548,12 +1655,9 @@ def _find_more_suppliers_confirmation_text() -> str:
 def _find_more_suppliers_confirmation_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Да, запустить добор", callback_data=f"find_more_yes:{job_id}"),
-            ],
-            [
-                InlineKeyboardButton(text="❌ Отмена", callback_data=f"find_more_no:{job_id}"),
-            ],
+            [InlineKeyboardButton(text="✅ Да, запустить добор", callback_data=f"find_more_yes:{job_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"find_more_no:{job_id}")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
         ]
     )
 
@@ -1636,15 +1740,15 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
             client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
             access_note = f"\n\n⚠️ {account_error}"
-        elif client and not access_note:
-            access_note = "\n\n✅ Telegram-аккаунт подключён. Можно работать через кнопки меню."
         if client:
             first_use = not bool(db.query(Job.id).filter(Job.client_id == client.id).first())
             record_journey_event(db, client.id, channel="telegram", event_name="bot_started")
     finally:
         db.close()
-    menu = create_menu() if first_use and not _chat_has_processing_job(message.chat.id) else _menu_for_chat(message.chat.id)
-    await message.answer(_start_text() + access_note, reply_markup=menu)
+    await message.answer(
+        _start_text() + access_note,
+        reply_markup=main_inline_keyboard(),
+    )
 
 
 @router.message(Command("legal"))
@@ -1680,6 +1784,8 @@ async def show_id(message: Message) -> None:
 
 
 @router.message(Command("status"))
+@router.message(Command("tasks"))
+@router.message(F.text == BUTTON_STATUS)
 async def show_status(message: Message) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
@@ -1689,13 +1795,13 @@ async def show_status(message: Message) -> None:
     try:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=_menu_for_chat(message.chat.id))
+            await message.answer(account_error, reply_markup=main_inline_keyboard())
             return
         if not client:
             await message.answer(
                 "⚠️ Доступ не подключён\n\n"
                 "Нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
-                reply_markup=_menu_for_chat(message.chat.id),
+                reply_markup=contacts_inline_keyboard(),
             )
             return
         jobs = (
@@ -1708,8 +1814,8 @@ async def show_status(message: Message) -> None:
         if not jobs:
             await message.answer(
                 "🕘 Задач пока нет\n\n"
-                "Выберите режим и отправьте материалы закупки.",
-                reply_markup=_menu_for_chat(message.chat.id),
+                "Выберите сценарий для создания первой задачи:",
+                reply_markup=status_inline_keyboard(),
             )
             return
         lines = ["🕘 Последние задачи"]
@@ -1719,7 +1825,7 @@ async def show_status(message: Message) -> None:
                 f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
                 f"   {_friendly_stage_text(snapshot.message)}"
             )
-        await message.answer("\n".join(lines), reply_markup=_menu_for_chat(message.chat.id))
+        await message.answer("\n".join(lines), reply_markup=status_inline_keyboard())
         for job in jobs:
             snapshot = _job_snapshot(job, db)
             job_id = str(job.id)
@@ -1754,6 +1860,54 @@ async def show_status(message: Message) -> None:
         await _send_job_outputs(message, job_id, snapshot)
 
 
+@router.callback_query(F.data == "open_status")
+async def open_status_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    telegram_id = str(callback.from_user.id if callback.from_user else "")
+    username = callback.from_user.username if callback.from_user else None
+    name = callback.from_user.full_name if callback.from_user else ""
+    db = SessionLocal()
+    try:
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            return
+        if not client:
+            await callback.message.answer(
+                "⚠️ Доступ не подключён\n\n"
+                "Нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
+                reply_markup=contacts_inline_keyboard(),
+            )
+            return
+        jobs = (
+            db.query(Job)
+            .filter(Job.client_id == client.id)
+            .order_by(Job.created_at.desc())
+            .limit(5)
+            .all()
+        )
+        if not jobs:
+            text = "🕘 Задач пока нет\n\nВыберите сценарий для создания первой задачи:"
+        else:
+            lines = ["🕘 Последние задачи"]
+            for index, job in enumerate(jobs, start=1):
+                snapshot = _job_snapshot(job, db)
+                lines.append(
+                    f"{index}. {_progress_heading(snapshot)} — {_status_label(snapshot.status)}, {snapshot.progress}%\n"
+                    f"   {_friendly_stage_text(snapshot.message)}"
+                )
+            text = "\n".join(lines)
+        try:
+            await callback.message.edit_text(text, reply_markup=status_inline_keyboard())
+        except Exception:
+            await callback.message.answer(text, reply_markup=status_inline_keyboard())
+    finally:
+        db.close()
+
+
 @router.message(Command("suppliers"))
 async def supplier_mode(message: Message) -> None:
     if await _reject_if_chat_processing(message):
@@ -1763,12 +1917,7 @@ async def supplier_mode(message: Message) -> None:
     policy = _supplier_policy_for_chat(message.chat.id)
     await message.answer(
         _supplier_policy_prompt_text(SCENARIO_SUPPLIERS, policy=policy) + _scenario_switch_note(cleared),
-        reply_markup=supplier_policy_keyboard(selected_policy=policy),
-    )
-    await message.answer(
-        "💡 Если ТЗ несколько, отправьте их по очереди. По каждому будет отдельный поиск поставщиков.\n"
-        f"Когда материалы загружены, нажмите «{BUTTON_RUN_BATCH}».",
-        reply_markup=batch_menu(message.chat.id),
+        reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
     )
 
 
@@ -1779,10 +1928,8 @@ async def report_mode(message: Message) -> None:
     cleared = _select_scenario(message.chat.id, SCENARIO_REPORT)
     _record_telegram_event(message, "mode_selected", mode=MODE_PROCUREMENT_REPORT)
     await message.answer(
-        "📄 Анализ закупки\n\n"
-        "Отправьте номер извещения, ссылку, архив или документы закупки.\n"
-        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}»." + _scenario_switch_note(cleared),
-        reply_markup=batch_menu(message.chat.id),
+        _report_scenario_text() + _scenario_switch_note(cleared),
+        reply_markup=report_scenario_keyboard(),
     )
 
 
@@ -1791,19 +1938,96 @@ async def supplier_single_button(message: Message) -> None:
     await supplier_mode(message)
 
 
+@router.message(Command("create"))
 @router.message(F.text == BUTTON_CREATE)
 async def create_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
     _record_telegram_event(message, "create_opened")
     await message.answer(
-        "🚀 Создать\n\n"
+        "🚀 Создать задачу\n\n"
         "Выберите сценарий:\n"
-        "🔎 Поставщики по ТЗ — файл, текст или архив с одним ТЗ.\n"
-        "📄 Анализ закупки — номер, ссылка или документы закупки.\n"
-        "📄🔎 Анализ + поиск — анализ закупки и поставщики по найденному ТЗ.",
-        reply_markup=create_menu(),
+        "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+        "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
+        "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
+        reply_markup=create_inline_keyboard(),
     )
+
+
+@router.callback_query(F.data == "open_create_menu")
+async def open_create_menu_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    try:
+        await callback.message.edit_text(
+            "🚀 Создать задачу\n\n"
+            "Выберите сценарий:\n"
+            "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+            "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
+            "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
+            reply_markup=create_inline_keyboard(),
+        )
+    except Exception:
+        await callback.message.answer(
+            "🚀 Создать задачу\n\n"
+            "Выберите сценарий:\n"
+            "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+            "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
+            "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
+            reply_markup=create_inline_keyboard(),
+        )
+
+
+@router.callback_query(F.data.startswith("scenario:"))
+async def scenario_select_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    target = str(callback.data or "").split(":", 1)[1]
+    chat_id = int(callback.message.chat.id)
+    if target == "suppliers":
+        cleared = _select_scenario(chat_id, SCENARIO_SUPPLIERS)
+        _record_telegram_event(callback.message, "mode_selected", mode=MODE_SUPPLIER_SEARCH)
+        policy = _supplier_policy_for_chat(chat_id)
+        await callback.answer("Выбран сценарий: Поставщики по ТЗ")
+        prompt = _suppliers_scenario_text(policy=policy) + _scenario_switch_note(cleared)
+        try:
+            await callback.message.edit_text(
+                prompt,
+                reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
+            )
+        except Exception:
+            await callback.message.answer(
+                prompt,
+                reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
+            )
+    elif target == "report":
+        cleared = _select_scenario(chat_id, SCENARIO_REPORT)
+        _record_telegram_event(callback.message, "mode_selected", mode=MODE_PROCUREMENT_REPORT)
+        await callback.answer("Выбран сценарий: Анализ закупки")
+        prompt = _report_scenario_text() + _scenario_switch_note(cleared)
+        try:
+            await callback.message.edit_text(prompt, reply_markup=report_scenario_keyboard())
+        except Exception:
+            await callback.message.answer(prompt, reply_markup=report_scenario_keyboard())
+    elif target == "analysis_and_suppliers":
+        cleared = _select_scenario(chat_id, SCENARIO_ANALYSIS_AND_SUPPLIERS)
+        _record_telegram_event(callback.message, "mode_selected", mode=MODE_ANALYSIS_AND_SUPPLIERS)
+        policy = _supplier_policy_for_chat(chat_id)
+        await callback.answer("Выбран сценарий: Анализ + поиск")
+        prompt = _analysis_and_suppliers_scenario_text(policy=policy) + _scenario_switch_note(cleared)
+        try:
+            await callback.message.edit_text(
+                prompt,
+                reply_markup=analysis_and_suppliers_keyboard(selected_policy=policy),
+            )
+        except Exception:
+            await callback.message.answer(
+                prompt,
+                reply_markup=analysis_and_suppliers_keyboard(selected_policy=policy),
+            )
 
 
 @router.message(F.text == BUTTON_BACK_MAIN)
@@ -1827,13 +2051,8 @@ async def analysis_and_suppliers_button(message: Message) -> None:
     _record_telegram_event(message, "mode_selected", mode=MODE_ANALYSIS_AND_SUPPLIERS)
     policy = _supplier_policy_for_chat(message.chat.id)
     await message.answer(
-        _supplier_policy_prompt_text(SCENARIO_ANALYSIS_AND_SUPPLIERS, policy=policy) + _scenario_switch_note(cleared),
-        reply_markup=supplier_policy_keyboard(selected_policy=policy),
-    )
-    await message.answer(
-        "Результат: подробный аудит документации закупки и отдельный список поставщиков по найденному ТЗ.\n"
-        f"Когда материалы добавлены, нажмите «{BUTTON_RUN_BATCH}»." + _scenario_switch_note(cleared),
-        reply_markup=batch_menu(message.chat.id),
+        _analysis_and_suppliers_scenario_text(policy=policy) + _scenario_switch_note(cleared),
+        reply_markup=analysis_and_suppliers_keyboard(selected_policy=policy),
     )
 
 
@@ -1857,10 +2076,11 @@ async def supplier_policy_callback(callback: CallbackQuery) -> None:
         pending.supplier_search_policy = policy
     label = _supplier_policy_label(policy)
     await callback.answer(f"✅ Режим: {label}")
+    kb = analysis_and_suppliers_keyboard(selected_policy=policy) if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS else supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True)
     try:
         await callback.message.edit_text(
             _supplier_policy_prompt_text(scenario, policy=policy),
-            reply_markup=supplier_policy_keyboard(selected_policy=policy),
+            reply_markup=kb,
         )
     except Exception:
         pass
@@ -1874,12 +2094,12 @@ async def policy_button(message: Message) -> None:
         return
     scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
     if not _scenario_uses_supplier_policy(scenario):
-        await message.answer("Для текущего сценария выбор режима Минпромторга не требуется.", reply_markup=batch_menu(message.chat.id))
+        await message.answer("Для текущего сценария выбор режима Минпромторга не требуется.", reply_markup=main_menu())
         return
     policy = _supplier_policy_for_chat(message.chat.id)
     await message.answer(
         _supplier_policy_prompt_text(scenario, policy=policy),
-        reply_markup=supplier_policy_keyboard(selected_policy=policy),
+        reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
     )
 
 
@@ -1959,14 +2179,13 @@ async def cancel_batch_button(message: Message) -> None:
     await message.answer("🗑 Материалы очищены", reply_markup=main_menu())
 
 
-@router.message(F.text == BUTTON_RUN_BATCH)
-async def run_batch_button(message: Message) -> None:
-    if message.chat.id in BATCH_RUNNING_CHATS:
+async def _execute_batch_launch(message: Message, chat_id: int) -> None:
+    if chat_id in BATCH_RUNNING_CHATS:
         await message.answer(_batch_running_text(), reply_markup=processing_menu())
         return
-    pending = PENDING_UPLOADS.get(message.chat.id)
+    pending = PENDING_UPLOADS.get(chat_id)
     if not pending or _pending_input_count(pending) == 0:
-        scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
+        scenario = PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS)
         if _scenario_accepts_source_links(scenario):
             text = (
                 "📎 Материалы не добавлены\n\n"
@@ -1977,10 +2196,10 @@ async def run_batch_button(message: Message) -> None:
                 "📎 ТЗ не добавлено\n\n"
                 "Отправьте файл ТЗ/ООЗ, архив с несколькими файлами или текстовое описание объекта закупки."
             )
-        await message.answer(text, reply_markup=batch_menu())
+        await message.answer(text, reply_markup=create_inline_keyboard())
         return
     _record_telegram_event(message, "launch_attempted", mode=pending.mode)
-    BATCH_RUNNING_CHATS.add(message.chat.id)
+    BATCH_RUNNING_CHATS.add(chat_id)
     job: Job | None = None
     job_id: str | None = None
     batch_jobs: list[tuple[str, str]] = []
@@ -2002,8 +2221,8 @@ async def run_batch_button(message: Message) -> None:
         if error:
             if client:
                 record_journey_event(db, client.id, channel="telegram", event_name="launch_blocked", mode=pending.mode, reason_code="access")
-            BATCH_RUNNING_CHATS.discard(message.chat.id)
-            await message.answer(error, reply_markup=batch_menu())
+            BATCH_RUNNING_CHATS.discard(chat_id)
+            await message.answer(error, reply_markup=main_menu())
             return
         assert client is not None
         settings = get_or_create_settings(db)
@@ -2025,7 +2244,7 @@ async def run_batch_button(message: Message) -> None:
                 created_batch_entities.append(created)
                 reserve_error = _reserve_created_job(db, client, created)
                 if reserve_error:
-                    BATCH_RUNNING_CHATS.discard(message.chat.id)
+                    BATCH_RUNNING_CHATS.discard(chat_id)
                     await message.answer(reserve_error, reply_markup=main_menu())
                     return
                 batch_jobs.append((str(created.id), files[0][0]))
@@ -2051,7 +2270,7 @@ async def run_batch_button(message: Message) -> None:
             reserve_error = _reserve_created_job(db, client, job)
             if reserve_error:
                 _discard_unlaunched_jobs(db, [job])
-                BATCH_RUNNING_CHATS.discard(message.chat.id)
+                BATCH_RUNNING_CHATS.discard(chat_id)
                 await message.answer(reserve_error, reply_markup=main_menu())
                 return
             _record_telegram_terms_acceptance(db, pending.telegram_id)
@@ -2067,7 +2286,7 @@ async def run_batch_button(message: Message) -> None:
             mode=pending.mode,
             outcome="batch" if batch_jobs else "created",
         )
-        _clear_pending_state(message.chat.id)
+        _clear_pending_state(chat_id)
         launch_started = True
         if batch_jobs:
             launch_message = await message.answer(
@@ -2086,7 +2305,7 @@ async def run_batch_button(message: Message) -> None:
             _discard_unlaunched_jobs(db, created_batch_entities)
         db.close()
         if not launch_started:
-            BATCH_RUNNING_CHATS.discard(message.chat.id)
+            BATCH_RUNNING_CHATS.discard(chat_id)
 
     try:
         if batch_jobs:
@@ -2097,7 +2316,62 @@ async def run_batch_button(message: Message) -> None:
             if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
                 await _send_job_outputs(message, job_id, snapshot)
     finally:
-        BATCH_RUNNING_CHATS.discard(message.chat.id)
+        BATCH_RUNNING_CHATS.discard(chat_id)
+
+
+@router.message(F.text == BUTTON_RUN_BATCH)
+async def run_batch_button(message: Message) -> None:
+    await _execute_batch_launch(message, message.chat.id)
+
+
+@router.callback_query(F.data == "batch:run")
+async def batch_run_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer("Запуск обработки...")
+    await _execute_batch_launch(callback.message, callback.message.chat.id)
+
+
+@router.callback_query(F.data == "batch:cancel")
+async def batch_cancel_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    chat_id = int(callback.message.chat.id)
+    _clear_pending_state(chat_id)
+    await callback.answer("Материалы очищены.")
+    try:
+        await callback.message.edit_text(
+            "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
+            reply_markup=create_inline_keyboard(),
+        )
+    except Exception:
+        await callback.message.answer(
+            "🗑 Материалы очищены.\n\nВыберите новый сценарий для создания задачи:",
+            reply_markup=create_inline_keyboard(),
+        )
+
+
+@router.callback_query(F.data == "batch:policy")
+async def batch_policy_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    chat_id = int(callback.message.chat.id)
+    scenario = PENDING_MODES.get(chat_id, SCENARIO_SUPPLIERS)
+    policy = _supplier_policy_for_chat(chat_id)
+    await callback.answer()
+    try:
+        await callback.message.edit_text(
+            _supplier_policy_prompt_text(scenario, policy=policy),
+            reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
+        )
+    except Exception:
+        await callback.message.answer(
+            _supplier_policy_prompt_text(scenario, policy=policy),
+            reply_markup=supplier_policy_keyboard(selected_policy=policy, show_back_to_scenarios=True),
+        )
 
 
 async def _watch_supplier_multi_outputs(
@@ -2324,6 +2598,11 @@ async def _send_job_outputs_locked(
                 )
             if job_can_find_more_suppliers(done_job):
                 await _send_find_more_suppliers_offer(message, done_job.id)
+            else:
+                await message.answer(
+                    "🚀 Что хотите сделать дальше?",
+                    reply_markup=main_inline_keyboard(),
+                )
             return True
         if snapshot and snapshot.status not in BOT_TERMINAL_JOB_STATUSES:
             await message.answer(
@@ -2408,6 +2687,11 @@ def _output_caption(mode: str, output: Path) -> str:
     return "Поставщики по ТЗ во вложении."
 
 
+
+
+
+@router.message(Command("cabinet"))
+@router.message(Command("account"))
 @router.message(F.text == BUTTON_ACCESS)
 async def access_button(message: Message) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
@@ -2416,7 +2700,7 @@ async def access_button(message: Message) -> None:
         settings = get_or_create_settings(db)
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         if account_error:
-            await message.answer(account_error, reply_markup=_menu_for_chat(message.chat.id))
+            await message.answer(account_error, reply_markup=main_inline_keyboard())
             return
         if not client:
             await message.answer(
@@ -2424,12 +2708,14 @@ async def access_button(message: Message) -> None:
                 f"Ваш Telegram ID: {telegram_id}\n"
                 "Отправьте этот ID владельцу сервиса, чтобы он включил доступ.\n\n"
                 + _contacts_text(settings),
-                reply_markup=_menu_for_chat(message.chat.id),
+                reply_markup=contacts_inline_keyboard(),
                 **_contact_message_options(),
             )
             return
         cabinet_text = _cabinet_text(db, client, settings)
-        if client.web_users:
+        web_url = ""
+        has_web_user = bool(client.web_users)
+        if has_web_user:
             web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
             cabinet_text += f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Открыть веб-кабинет</a>'
         else:
@@ -2445,55 +2731,178 @@ async def access_button(message: Message) -> None:
                 f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Создать связанный веб-кабинет</a>\n'
                 "Ссылка одноразовая и действует 15 минут. Новый отдельный баланс не создаётся."
             )
-        await message.answer(cabinet_text, reply_markup=_menu_for_chat(message.chat.id), **_contact_message_options())
-    finally:
-        db.close()
 
-
-@router.message(F.text == BUTTON_TARIFFS)
-async def tariffs_button(message: Message) -> None:
-    db = SessionLocal()
-    try:
-        settings = get_or_create_settings(db)
         await message.answer(
-            _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}",
-            reply_markup=_menu_for_chat(message.chat.id),
+            cabinet_text,
+            reply_markup=cabinet_inline_keyboard(web_url, has_web_user=has_web_user),
             **_contact_message_options(),
         )
     finally:
         db.close()
 
 
+@router.callback_query(F.data == "open_cabinet")
+async def open_cabinet_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    telegram_id = str(callback.from_user.id if callback.from_user else "")
+    username = callback.from_user.username if callback.from_user else None
+    name = callback.from_user.full_name if callback.from_user else ""
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await callback.message.answer(account_error, reply_markup=main_inline_keyboard())
+            return
+        if not client:
+            await callback.message.answer(
+                "⚠️ Доступ не подключён\n\n"
+                f"Ваш Telegram ID: {telegram_id}\n"
+                "Отправьте этот ID владельцу сервиса, чтобы он включил доступ.\n\n"
+                + _contacts_text(settings),
+                reply_markup=contacts_inline_keyboard(),
+                **_contact_message_options(),
+            )
+            return
+        cabinet_text = _cabinet_text(db, client, settings)
+        web_url = ""
+        has_web_user = bool(client.web_users)
+        if has_web_user:
+            web_url = f"{str(settings.public_base_url or 'https://tenderlex.ru').rstrip('/')}/cabinet"
+            cabinet_text += f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Открыть веб-кабинет</a>'
+        else:
+            raw_token, _record = create_account_link_token(
+                db,
+                client=client,
+                direction=TELEGRAM_TO_WEB,
+                telegram_id=telegram_id,
+            )
+            web_url = cabinet_link(settings.public_base_url, raw_token)
+            record_journey_event(db, client.id, channel="telegram", event_name="link_requested")
+            cabinet_text += (
+                f'\n\n🌐 <a href="{html_escape(web_url, quote=True)}">Создать связанный веб-кабинет</a>\n'
+                "Ссылка одноразовая и действует 15 минут. Новый отдельный баланс не создаётся."
+            )
+
+        kb = cabinet_inline_keyboard(web_url, has_web_user=has_web_user)
+        try:
+            await callback.message.edit_text(cabinet_text, reply_markup=kb, **_contact_message_options())
+        except Exception:
+            await callback.message.answer(cabinet_text, reply_markup=kb, **_contact_message_options())
+    finally:
+        db.close()
+
+
+@router.message(Command("tariffs"))
+@router.message(F.text == BUTTON_TARIFFS)
+async def tariffs_button(message: Message) -> None:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+        await message.answer(text, reply_markup=tariffs_inline_keyboard(), **_contact_message_options())
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "open_tariffs")
+async def open_tariffs_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        text = _tariffs_text(db, settings) + f"\n\nОплата и запуск услуги регулируются офертой: {TERMS_URL}"
+        kb = tariffs_inline_keyboard()
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, **_contact_message_options())
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, **_contact_message_options())
+    finally:
+        db.close()
+
+
+@router.message(Command("contacts"))
 @router.message(F.text == BUTTON_CONTACTS)
 async def contacts_button(message: Message) -> None:
     telegram_id = str(message.from_user.id if message.from_user else "")
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
-        await message.answer(_contacts_text(settings, telegram_id=telegram_id), reply_markup=_menu_for_chat(message.chat.id), **_contact_message_options())
+        text = _contacts_text(settings, telegram_id=telegram_id)
+        telegram_url = _telegram_contact_url(getattr(settings, "contact_telegram", ""))
+        await message.answer(text, reply_markup=contacts_inline_keyboard(telegram_url), **_contact_message_options())
     finally:
         db.close()
 
 
+@router.callback_query(F.data == "open_contacts")
+async def open_contacts_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    telegram_id = str(callback.from_user.id if callback.from_user else "")
+    db = SessionLocal()
+    try:
+        settings = get_or_create_settings(db)
+        text = _contacts_text(settings, telegram_id=telegram_id)
+        telegram_url = _telegram_contact_url(getattr(settings, "contact_telegram", ""))
+        kb = contacts_inline_keyboard(telegram_url)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, **_contact_message_options())
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, **_contact_message_options())
+    finally:
+        db.close()
+
+
+@router.message(Command("help"))
 @router.message(F.text == BUTTON_HELP)
 async def help_button(message: Message) -> None:
-    await message.answer(
-        "❓ Помощь\n\n"
-        f"1. Нажмите «{BUTTON_CREATE}».\n"
-        "2. Выберите нужный режим.\n"
-        "3. Отправьте ТЗ, документы, номер извещения или ссылку — в зависимости от режима.\n\n"
-        "Режимы:\n"
-        f"{BUTTON_SUPPLIERS} — ТЗ файлом, текстом или архивом.\n"
-        f"{BUTTON_REPORT} — номер извещения, документы, архив или ссылка.\n"
-        f"{BUTTON_ANALYSIS_AND_SUPPLIERS} — анализ закупки и поставщики по найденному ТЗ.\n\n"
-        "💳 Генерация списывается только после выдачи результата.\n"
-        f"📊 Остатки смотрите в «{BUTTON_ACCESS}».\n\n"
-        f"{INDIVIDUAL_TERMS_NOTE}\n\n"
-        f"{AI_HELP_NOTE}\n\n"
-        f"⚖️ Правовая информация: {LEGAL_INDEX_URL}\n\n"
-        "Если доступа нет, нажмите «Контакты»: там будет ваш Telegram ID для подключения доступа.",
-        reply_markup=_menu_for_chat(message.chat.id),
+    text = (
+        "❓ Помощь по работе с TenderLex\n\n"
+        "Как начать работу:\n"
+        "1. Нажмите нужный сценарий в меню:\n"
+        "   • 🔎 Поставщики по ТЗ — поиск заводов и дилеров по файлу или тексту\n"
+        "   • 📄 Анализ закупки — экспресс-аудит рисков по номеру извещения ЕИС или файлам\n"
+        "   • 📄🔎 Анализ + поиск — совмещённый аудит закупки и подбор поставщиков\n\n"
+        "2. Отправьте материалы прямо в чат и нажмите «▶️ Запустить».\n\n"
+        "💳 Списание единиц происходит только после выдачи готового результата.\n"
+        "📊 Баланс и история доступны в разделе «Кабинет».\n\n"
+        f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
     )
+    await message.answer(text, reply_markup=help_inline_keyboard())
+
+
+@router.callback_query(F.data == "open_help")
+async def open_help_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    text = (
+        "❓ Помощь по работе с TenderLex\n\n"
+        "Как начать работу:\n"
+        "1. Нажмите нужный сценарий в меню:\n"
+        "   • 🔎 Поставщики по ТЗ — поиск заводов и дилеров по файлу или тексту\n"
+        "   • 📄 Анализ закупки — экспресс-аудит рисков по номеру извещения ЕИС или файлам\n"
+        "   • 📄🔎 Анализ + поиск — совмещённый аудит закупки и подбор поставщиков\n\n"
+        "2. Отправьте материалы прямо в чат и нажмите «▶️ Запустить».\n\n"
+        "💳 Списание единиц происходит только после выдачи готового результата.\n"
+        "📊 Баланс и история доступны в разделе «Кабинет».\n\n"
+        f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
+    )
+    kb = help_inline_keyboard()
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("find_more_prompt:"))
@@ -2790,7 +3199,7 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
         pending.files.append((filename, content))
         added_sources = _add_pending_sources(pending, caption_sources)
         record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="document")
-        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_menu())
+        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch, added_sources=added_sources), reply_markup=batch_inline_keyboard(pending))
     finally:
         db.close()
 
@@ -2836,12 +3245,12 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
             )
             PENDING_UPLOADS[message.chat.id] = pending
         if len(pending.files) >= settings.max_files_per_batch:
-            await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_menu())
+            await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_inline_keyboard(pending))
             return True
         filename, content, _title = _supplier_text_tz_payload(text, index=len(pending.files) + 1)
         pending.files.append((filename, content))
         record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="text")
-        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_menu())
+        await message.answer(_pending_added_text(pending, max_files=settings.max_files_per_batch), reply_markup=batch_inline_keyboard(pending))
         return True
     finally:
         db.close()
@@ -2882,7 +3291,7 @@ async def _handle_source_text(message: Message) -> bool:
             PENDING_UPLOADS[message.chat.id] = pending
         _add_pending_sources(pending, sources)
         record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="source")
-        await message.answer(_source_added_text(pending), reply_markup=batch_menu())
+        await message.answer(_source_added_text(pending), reply_markup=batch_inline_keyboard(pending))
     finally:
         db.close()
     return True
@@ -2955,9 +3364,9 @@ async def handle_site_chat_close_btn(callback: CallbackQuery) -> None:
     except Exception:
         pass
     await callback.message.answer(
-        f"🔒 *Диалог по сессии* `{session_id}` *закрыт.*\n\nКлавиатура бота снова активна:",
+        f"🔒 *Диалог по сессии* `{session_id}` *закрыт.*",
         parse_mode="Markdown",
-        reply_markup=main_menu(),
+        reply_markup=main_inline_keyboard(),
     )
 
 async def _handle_operator_chat_message(message: Message) -> bool:

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import ReplyKeyboardRemove
 
 import app.bot as bot_module
 from app.bot import (
@@ -75,9 +76,12 @@ from app.bot import (
     _supplier_multi_job_specs,
     _supplier_text_tz_payload,
     _tariffs_text,
+    batch_inline_keyboard,
     batch_menu,
     configure_bot_profile,
+    create_inline_keyboard,
     create_menu,
+    main_inline_keyboard,
     main_menu,
     processing_menu,
     watch_job_progress,
@@ -93,11 +97,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(_progress_bar(100), "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩")
 
     def test_processing_menu_exposes_cancel_button(self) -> None:
-        rows = [[button.text for button in row] for row in processing_menu().keyboard]
-        labels = [text for row in rows for text in row]
-
-        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
-        self.assertIn(BUTTON_CANCEL_PROCESSING, labels)
+        self.assertIsInstance(processing_menu(), ReplyKeyboardRemove)
 
     def test_progress_message_exposes_inline_cancel_button_for_active_job(self) -> None:
         snapshot = JobProgressSnapshot(
@@ -548,21 +548,17 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("проверить настройки модели", text)
 
     def test_main_menu_is_button_driven_and_mobile_readable(self) -> None:
-        keyboard = main_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-        labels = [text for row in rows for text in row]
-
-        self.assertEqual(
-            rows,
-            [
-                [BUTTON_CREATE, BUTTON_STATUS],
-                [BUTTON_ACCESS, BUTTON_TARIFFS],
-                [BUTTON_HELP, BUTTON_CONTACTS],
-            ],
-        )
-        self.assertNotIn(BUTTON_LEGAL, labels)
-        self.assertNotIn("🆔 Мой Telegram ID", labels)
-        self.assertNotIn("/start", " ".join(labels))
+        self.assertIsInstance(main_menu(), ReplyKeyboardRemove)
+        inline_kb = main_inline_keyboard()
+        labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in labels))
+        self.assertTrue(any("Анализ закупки" in label for label in labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in labels))
+        self.assertTrue(any("Кабинет" in label for label in labels))
+        self.assertTrue(any("Задачи" in label for label in labels))
+        self.assertTrue(any("Тарифы" in label for label in labels))
+        self.assertTrue(any("Помощь" in label for label in labels))
+        self.assertTrue(any("Контакты" in label for label in labels))
 
     def test_legal_prompt_is_optional_reference_without_acceptance_actions(self) -> None:
         keyboard = _legal_keyboard()
@@ -581,11 +577,8 @@ class BotProgressFormattingTests(unittest.TestCase):
         text = _start_text()
 
         self.assertLessEqual(len(text), 650)
-        self.assertIn("Выберите, что нужно", text)
-        self.assertIn("Поставщики по ТЗ", text)
-        self.assertIn("Анализ закупки", text)
+        self.assertIn("ТЗ", text)
         self.assertIn("Списание", text)
-        self.assertNotIn("Как начать", text)
         self.assertNotIn("оферт", text.lower())
         self.assertNotIn("политик", text.lower())
         self.assertNotIn("согласи", text.lower())
@@ -610,17 +603,11 @@ class BotProgressFormattingTests(unittest.TestCase):
             self.assertFalse((Path(temp_dir) / "telegram" / "123" / "test.docx").exists())
 
     def test_create_menu_is_compact_two_column_layout(self) -> None:
-        keyboard = create_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-
-        self.assertEqual(
-            rows[:2],
-            [
-                [BUTTON_SUPPLIERS, BUTTON_REPORT],
-                [BUTTON_ANALYSIS_AND_SUPPLIERS],
-            ],
-        )
-        self.assertLessEqual(max(len(label) for row in rows for label in row), 20)
+        keyboard = create_inline_keyboard().inline_keyboard
+        labels = [button.text for row in keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in labels))
+        self.assertTrue(any("Анализ закупки" in label for label in labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in labels))
 
     def test_customer_buttons_use_procurement_language(self) -> None:
         labels = [
@@ -641,26 +628,18 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertNotIn("пач", joined.lower())
 
     def test_batch_menu_keeps_only_current_batch_actions(self) -> None:
-        keyboard = batch_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-
-        self.assertIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
-        self.assertNotIn([BUTTON_SUPPLIERS], rows)
-        self.assertNotIn([BUTTON_REPORT], rows)
-        self.assertNotIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
-        self.assertLessEqual(max(len(label) for row in rows for label in row), 13)
+        pending = PendingBatch(
+            telegram_id="123",
+            mode=MODE_SUPPLIER_SEARCH,
+            files=[("test.docx", b"content")],
+        )
+        keyboard = batch_inline_keyboard(pending).inline_keyboard
+        labels = [button.text for row in keyboard for button in row]
+        self.assertTrue(any("Запустить" in label for label in labels))
+        self.assertTrue(any("Очистить" in label for label in labels))
 
     def test_processing_menu_hides_new_start_actions(self) -> None:
-        keyboard = processing_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-        labels = [text for row in rows for text in row]
-
-        self.assertIn([BUTTON_PROCESSING_STATUS, BUTTON_STATUS], rows)
-        self.assertNotIn(BUTTON_CREATE, labels)
-        self.assertNotIn(BUTTON_RUN_BATCH, labels)
-        self.assertNotIn(BUTTON_SUPPLIERS, labels)
-        self.assertNotIn(BUTTON_REPORT, labels)
-        self.assertNotIn(BUTTON_ANALYSIS_AND_SUPPLIERS, labels)
+        self.assertIsInstance(processing_menu(), ReplyKeyboardRemove)
 
     def test_menu_for_chat_uses_processing_state_from_database(self) -> None:
         class FakeQuery:
@@ -688,15 +667,13 @@ class BotProgressFormattingTests(unittest.TestCase):
             bot_module.SessionLocal = lambda: fake_db
 
             self.assertTrue(_chat_has_processing_job(777))
-            labels = [button.text for row in _menu_for_chat(777).keyboard for button in row]
+            self.assertIsInstance(_menu_for_chat(777), ReplyKeyboardRemove)
         finally:
             bot_module.SessionLocal = original_session
             bot_module.BATCH_RUNNING_CHATS.clear()
             bot_module.BATCH_RUNNING_CHATS.update(running_chats)
 
         self.assertTrue(fake_db.closed)
-        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
-        self.assertNotIn(BUTTON_CREATE, labels)
 
     def test_early_job_eta_does_not_show_zero_seconds(self) -> None:
         now = datetime(2026, 6, 2, 12, 10, tzinfo=timezone.utc)
@@ -771,7 +748,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("В комплекте: 2/20", text)
         self.assertIn("разные ТЗ", text)
         self.assertIn("одним архивом", text)
-        self.assertIn(f"нажмите «{BUTTON_RUN_BATCH}»", text)
+        self.assertIn("нажмите кнопку ниже", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
         text = _batch_running_text()
@@ -921,7 +898,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("📎 Источник добавлен", text)
         self.assertIn("Источников: 1", text)
-        self.assertIn(BUTTON_RUN_BATCH, text)
+        self.assertIn("запустить обработку", text)
         self.assertNotIn("Tenderplan", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
@@ -1442,7 +1419,8 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(delivered)
         self.assertEqual(charges, ["job-1"])
-        self.assertEqual(message.answers, [])
+        self.assertEqual(len(message.answers), 1)
+        self.assertIn("Что хотите сделать дальше", message.answers[0][0])
         self.assertEqual(len(message.documents), 1)
         self.assertIn("Анализ документации во вложении.", message.documents[0].caption)
         self.assertIn("✅ Результат отправлен. Баланс обновлён.", message.documents[0].caption)
@@ -1852,10 +1830,10 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pending.files[0][0].endswith(".txt"))
         self.assertIn("Поставка насосов", pending.files[0][1].decode("utf-8"))
         self.assertIn("✅ ТЗ добавлено", message.answers[0][0])
-        rows = [[button.text for button in row] for row in message.answers[0][1].keyboard]
-        labels = [text for row in rows for text in row]
-        self.assertIn(BUTTON_RUN_BATCH, labels)
-        self.assertNotIn(BUTTON_CREATE, labels)
+        inline_kb = message.answers[0][1]
+        labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Запустить" in label for label in labels))
+        self.assertTrue(any("Очистить" in label for label in labels))
 
 
 class TelegramButtonHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -1941,14 +1919,18 @@ class TelegramButtonHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
                 delattr(bot_module, "accepted_legal_documents")
 
         self.assertEqual(len(message.answers), 1)
-        text, keyboard = message.answers[0]
-        self.assertIn("Выберите, что нужно", text)
-        self.assertNotIn("подтвердите документы", text.lower())
-        labels = [button.text for row in keyboard.keyboard for button in row]
-        self.assertIn(BUTTON_SUPPLIERS, labels)
-        self.assertIn(BUTTON_REPORT, labels)
-        self.assertIn(BUTTON_ANALYSIS_AND_SUPPLIERS, labels)
-        self.assertNotIn(BUTTON_LEGAL, labels)
+        start_text, inline_kb = message.answers[0]
+        self.assertIn("TenderLex", start_text)
+        self.assertNotIn("подтвердите документы", start_text.lower())
+        inline_labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in inline_labels))
+        self.assertTrue(any("Анализ закупки" in label for label in inline_labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in inline_labels))
+        self.assertTrue(any("Кабинет" in label for label in inline_labels))
+        self.assertTrue(any("Задачи" in label for label in inline_labels))
+        self.assertTrue(any("Тарифы" in label for label in inline_labels))
+        self.assertTrue(any("Помощь" in label for label in inline_labels))
+        self.assertTrue(any("Контакты" in label for label in inline_labels))
 
     def test_telegram_launch_acceptance_records_only_current_terms(self) -> None:
         recorded: list[dict] = []
@@ -2163,9 +2145,9 @@ class TelegramButtonHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             cases = [
                 (bot_module.create_button, 1, "Выберите сценарий"),
-                (bot_module.supplier_mode, 2, "Выберите режим поиска"),
+                (bot_module.supplier_mode, 1, "Поставщики по ТЗ"),
                 (bot_module.report_mode, 1, "Анализ закупки"),
-                (bot_module.analysis_and_suppliers_button, 2, "Анализ + поиск"),
+                (bot_module.analysis_and_suppliers_button, 1, "Анализ + поиск"),
             ]
             for index, (handler, answer_count, expected_text) in enumerate(cases):
                 message = self.FakeMessage(chat_id=991 + index)

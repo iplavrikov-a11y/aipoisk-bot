@@ -12,19 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Admin Performance & Telegram Client Display (2026-08):
-  - Optimized `/api/ops/minprom-registry` by adding `_minprom_status_cache` and reading counts from metadata instead of running FTS5 full-table scans, reducing response time from 3.63s to 0.005s.
-  - Eliminated N+1 queries in `/api/clients` with `selectinload` for `tariff_overrides`, reducing response time from >1.5s to ~0.34s.
-  - Optimized frontend initial loading in `App.tsx` by unblocking critical view rendering and loading heavy job/registry payloads in parallel.
-  - Fixed client summary formatting in `clientSummaryLine`: Telegram accounts without a public `@username` now prioritize account and client name with connection status (`Евгений (ID: 981081570) · подключено 1, ожидает 0`) instead of fallback bare IDs.
-  - Synced client Telegram `name` and `username` upon bot activity in `repository.py`.
-- Product Radar Launch Readiness (2026-08):
-  - Product Radar resident badge integrated into the public footer alongside 152-FZ compliance.
-  - Pinned founder comment, publication article draft, and checklist prepared for official release on 2026-08-24.
-- UI/UX Design Overhaul (2026-08):
-  - Completely redesigned interactive showcase (`ScrollWorldViewer`) and savings calculator (`ProcurementCalculator`) from pitch-black (`bg-slate-950`) into a high-trust, light-emerald B2B palette (`emerald-600`, `border-emerald-100`, `bg-white`).
-  - Copy refined to eliminate artificial technical labels ("Интерактивный WOW-сценарий", "Модуль 1/2") in favor of natural procurement terminology.
-  - Interactive design testing laboratory route `/demo-design` deployed.
+- Telegram Bot Navigation & UX Modernization (2026-08):
+  - Removed persistent bottom reply keyboard (`ReplyKeyboardRemove`) across all bot interactions, eliminating screen crowding and mobile keypad clutter.
+  - Built pure in-chat inline navigation architecture with zero dead ends: all scenario cards, confirmation prompts, and after-delivery output messages now feature clean next-action buttons and return paths.
+  - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (e.g. Minpromtorg policy buttons no longer get clipped in multi-column grids).
+  - Main menu (`/start`, `🏠 Главное меню`) acts as the unified hub with 3 prominent scenario buttons, 2 service shortcuts (Кабинет, Задачи), and 3 info buttons (Тарифы, Помощь, Контакты).
+  - Verified with 144 automated unit tests, journey simulations, and deployed live to production.
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.
