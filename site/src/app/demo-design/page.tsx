@@ -123,7 +123,7 @@ export default function DemoDesignPage() {
     },
     {
       id: "ai_risk_lab",
-      label: "2. Аудит рисков 44-ФЗ",
+      label: "2. Анализ документации и рисков",
       stepNum: "02",
       eyebrow: "ЛАБОРАТОРИЯ АНАЛИЗА",
       title: "Аудит ловушек, штрафов и Минпромторга",
@@ -452,7 +452,7 @@ export default function DemoDesignPage() {
           <div className="max-w-3xl mx-auto text-center space-y-4 mb-10">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-emerald-200 text-emerald-900 text-xs font-bold shadow-2xs">
               <Sparkles size={14} className="text-emerald-600 animate-pulse" />
-              <span>ИИ-поиск поставщиков по всей России & Экспресс-аудит 44-ФЗ</span>
+              <span>ИИ-поиск поставщиков по всей России & Анализ документации</span>
             </div>
 
             <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
@@ -460,7 +460,7 @@ export default function DemoDesignPage() {
             </h1>
 
             <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed">
-              Интерактивный сквозной процесс: от загрузки сложного ТЗ и проверки правовых рисков 44-ФЗ до поиска прямых заводов РФ и победы в закупке.
+              Интерактивный сквозной процесс: от загрузки спецификации и анализа условий контракта до поиска прямых заводов РФ и подготовки запросов цен.
             </p>
           </div>
 

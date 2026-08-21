@@ -133,7 +133,7 @@ const fallbackTariffs: PublicTariff[] = [
     units: 10,
     price_kopeks: 89000,
     price_rub: 890,
-    description: "Оптимальный аудит рисков 44-ФЗ и 223-ФЗ для специалистов (89 ₽/отчет).",
+    description: "Оптимальный аудит рисков документации для специалистов (89 ₽/отчет).",
     sort_order: 30,
   },
   {

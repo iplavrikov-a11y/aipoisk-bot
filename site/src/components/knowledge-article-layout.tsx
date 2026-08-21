@@ -271,7 +271,7 @@ export function KnowledgeArticleLayout({
                       <ShieldCheck size={16} className="text-[#075b63]" /> Инструмент закупщика
                     </div>
                     <h4 className="text-lg font-black text-[#172120] leading-snug">
-                      Экспресс-поиск поставщиков и аудит 44-ФЗ
+                      Поиск поставщиков и анализ документации
                     </h4>
                     <p className="text-xs text-[#2f3f3d] leading-relaxed">
                       Автоматический анализ извещений, ТЗ и спецификаций. Бесплатный пробный доступ.

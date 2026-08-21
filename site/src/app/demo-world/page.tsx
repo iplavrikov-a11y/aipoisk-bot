@@ -312,7 +312,7 @@ export default async function DemoWorldPage() {
             {/* Анализ документации */}
             <div className="p-8 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
               <div>
-                <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Анализ 44-ФЗ / 223-ФЗ</span>
+                <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Анализ документации</span>
                 <h3 className="text-2xl font-extrabold text-slate-900 mt-1 mb-2">Анализ документации</h3>
                 <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и Минпромторга.</p>
                 <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">

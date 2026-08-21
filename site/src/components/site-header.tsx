@@ -92,7 +92,7 @@ export function SiteHeader() {
             href="/analiz-zakupochnoi-dokumentacii"
             className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
           >
-            Анализ 44-ФЗ
+            Анализ документации
           </Link>
           <Link
             href="/#pricing"

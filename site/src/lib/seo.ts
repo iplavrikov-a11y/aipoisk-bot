@@ -143,7 +143,7 @@ export function buildOrganizationJsonLd() {
     sameAs: ["https://t.me/tenderlex_bot", "https://productradar.ru/product/tenderlex"],
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
-      "Анализ 44-ФЗ и 223-ФЗ",
+      "Анализ закупочной документации",
       "Реестр Минпромторга",
       "Подготовка запросов КП",
       "Оценка рисков закупок",
@@ -227,7 +227,7 @@ export function buildSoftwareApplicationJsonLd() {
       worstRating: "1",
     },
     description:
-      "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков 44-ФЗ/223-ФЗ и поиска прямых контактов поставщиков.",
+      "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков контрактов и поиска прямых контактов поставщиков.",
     url: siteUrl,
   };
 }
