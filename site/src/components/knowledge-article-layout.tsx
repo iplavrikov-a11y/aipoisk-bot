@@ -233,6 +233,55 @@ export function KnowledgeArticleLayout({
                   </div>
                 )}
 
+                {/* RELATED ARTICLES BOTTOM GRID */}
+                {relatedArticles && relatedArticles.length > 0 && (
+                  <div className="my-10 pt-8 border-t border-[#d8e3e1] space-y-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h2 className="text-xl sm:text-2xl font-black tracking-tight text-[#172120]">
+                          Связанные статьи по теме
+                        </h2>
+                        <p className="text-xs sm:text-sm text-[#697a77] mt-1">
+                          Материалы по закупкам, регламентам 44-ФЗ / 223-ФЗ и сопоставлению ТЗ
+                        </p>
+                      </div>
+                      <Link
+                        href="/baza-znaniy"
+                        className="inline-flex items-center gap-1 text-xs font-bold text-[#075b63] hover:text-[#06464c] transition-colors"
+                      >
+                        <span>Все статьи базы знаний</span>
+                        <ArrowRight size={14} />
+                      </Link>
+                    </div>
+
+                    <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {relatedArticles.map((ra, idx) => (
+                        <Link
+                          key={idx}
+                          href={`/baza-znaniy/${ra.slug}`}
+                          className="p-5 rounded-2xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all flex flex-col justify-between group shadow-2xs"
+                        >
+                          <div className="space-y-2">
+                            <span className="text-[10px] font-black text-[#075b63] uppercase tracking-wider block">
+                              {ra.tag}
+                            </span>
+                            <h3 className="text-sm font-bold text-[#172120] group-hover:text-[#075b63] transition-colors leading-snug line-clamp-2">
+                              {ra.title}
+                            </h3>
+                            <p className="text-xs text-[#697a77] line-clamp-2 leading-relaxed font-normal">
+                              {ra.description}
+                            </p>
+                          </div>
+                          <div className="pt-4 mt-auto flex items-center text-xs font-bold text-[#075b63]">
+                            <span>Читать статью</span>
+                            <ArrowRight size={13} className="ml-1 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* ARTICLE IN-TEXT CTA (LIGHT EMERALD) */}
                 <div className="my-10 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#e5f4f3] via-[#edf7df]/60 to-[#eef3f2] border-2 border-[#b8c8c5] text-[#172120] shadow-md space-y-5">
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border border-[#b8c8c5] text-[#075b63] text-xs font-black uppercase tracking-wider shadow-2xs">

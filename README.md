@@ -18,6 +18,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`) and calculator (`ProcurementCalculator`).
 - Admin panel & Telegram client display: Optimized loading for clients and Minprom registry cache (FTS count and N+1 query elimination); improved Telegram account formatting to display client name and ID when `@username` is absent.
 - Public site SEO and verification wiring live in the site app and the `tenderlex-site.service.d/seo.conf` drop-in; Google Search Console uses DNS TXT, Yandex Webmaster uses the public HTML verification file, and Yandex Metrika is enabled by env.
+- SEO & Semantic Architecture: Complete Schema.org graph (Organization with Moscow HQ `PostalAddress` and `GeoCoordinates`, regional `Service` schemas with `serviceArea` GeoCircles, `FAQPage`, `HowTo`, `TechArticle`, `BreadcrumbList`), 8 regional industrial sourcing hubs (`/regiony/*`) with cluster and logistics data, and internal cross-linking across 55 knowledge base articles (`/baza-znaniy/*`).
 - Nginx redirects HTTP to HTTPS, serves `aipoisk.lexelence.ru` from `/root/projects/aipoisk-bot/frontend/dist`, and proxies `/api/` to `127.0.0.1:8088`.
 - Minpromtorg/GISP registry runtime cache lives under
   `data/minprom_registry/` as XLSX, JSONL, and SQLite FTS files. It is used for

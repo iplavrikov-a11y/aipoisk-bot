@@ -128,10 +128,56 @@ export function buildOrganizationJsonLd() {
     },
     description:
       "TenderLex — онлайн ИИ-сервис поиска поставщиков и анализа закупок под спецификации и технические задания по всей России.",
-    areaServed: {
-      "@type": "Country",
-      name: "Россия",
+    address: {
+      "@type": "PostalAddress",
+      streetAddress: "Пресненская набережная, д. 12",
+      addressLocality: "Москва",
+      postalCode: "123317",
+      addressCountry: "RU",
     },
+    geo: {
+      "@type": "GeoCoordinates",
+      latitude: 55.749511,
+      longitude: 37.537083,
+    },
+    areaServed: [
+      {
+        "@type": "Country",
+        name: "Россия",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Москва и Московская область",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Санкт-Петербург и Ленинградская область",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Свердловская область и Уральский федеральный округ",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Новосибирская область и Сибирский федеральный округ",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Республика Татарстан и Приволжский федеральный округ",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Нижегородская область",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Краснодарский край и Южный федеральный округ",
+      },
+      {
+        "@type": "AdministrativeArea",
+        name: "Самарская область",
+      },
+    ],
     contactPoint: {
       "@type": "ContactPoint",
       telephone: "+7-921-146-00-80",
@@ -186,6 +232,14 @@ export function buildServiceJsonLd({
       "@id": `${siteUrl}/#organization`,
       name: "TenderLex",
       url: siteUrl,
+      telephone: "+7-921-146-00-80",
+      address: {
+        "@type": "PostalAddress",
+        streetAddress: "Пресненская набережная, д. 12",
+        addressLocality: "Москва",
+        postalCode: "123317",
+        addressCountry: "RU",
+      },
     },
     areaServed: {
       "@type": "Country",
@@ -200,6 +254,90 @@ export function buildServiceJsonLd({
       price: "0",
       priceCurrency: "RUB",
       description: "Бесплатный пробный доступ при регистрации для тестирования поиска или анализа документации.",
+      availability: "https://schema.org/InStock",
+    },
+  };
+}
+
+export type RegionalServiceJsonLdOptions = {
+  name: string;
+  description: string;
+  path: string;
+  regionName: string;
+  regionLocality: string;
+  postalCode?: string;
+  geo?: {
+    latitude: number;
+    longitude: number;
+  };
+};
+
+export function buildRegionalServiceJsonLd({
+  name,
+  description,
+  path,
+  regionName,
+  regionLocality,
+  postalCode,
+  geo,
+}: RegionalServiceJsonLdOptions) {
+  const siteUrl = normalizedSiteUrl();
+  return {
+    "@context": "https://schema.org",
+    "@type": "Service",
+    "@id": `${siteUrl}${path}#service`,
+    name,
+    serviceType: "B2B Procurement and Sourcing Service",
+    description,
+    provider: {
+      "@type": "Organization",
+      "@id": `${siteUrl}/#organization`,
+      name: "TenderLex",
+      url: siteUrl,
+      telephone: "+7-921-146-00-80",
+      address: {
+        "@type": "PostalAddress",
+        addressLocality: regionLocality,
+        addressCountry: "RU",
+        ...(postalCode ? { postalCode } : {}),
+      },
+      ...(geo
+        ? {
+            geo: {
+              "@type": "GeoCoordinates",
+              latitude: geo.latitude,
+              longitude: geo.longitude,
+            },
+          }
+        : {}),
+    },
+    areaServed: {
+      "@type": "AdministrativeArea",
+      name: regionName,
+      addressCountry: "RU",
+    },
+    ...(geo
+      ? {
+          serviceArea: {
+            "@type": "GeoCircle",
+            geoMidpoint: {
+              "@type": "GeoCoordinates",
+              latitude: geo.latitude,
+              longitude: geo.longitude,
+            },
+            geoRadius: "300000",
+          },
+        }
+      : {}),
+    audience: {
+      "@type": "Audience",
+      audienceType: "Специалисты по закупкам, отделы снабжения, тендерные отделы",
+    },
+    offers: {
+      "@type": "Offer",
+      price: "0",
+      priceCurrency: "RUB",
+      description: "Бесплатный пробный доступ при регистрации для поиска поставщиков в регионе.",
       availability: "https://schema.org/InStock",
     },
   };
