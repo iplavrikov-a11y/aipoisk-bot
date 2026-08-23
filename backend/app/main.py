@@ -838,6 +838,18 @@ def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) 
     return build_bot_analytics(db, period_days=safe_days)
 
 
+@app.get("/api/seo-analytics", dependencies=[Depends(require_admin)])
+def seo_analytics_api(refresh: bool = False) -> dict:
+    from app.yandex_seo import get_cached_or_fresh_analytics
+    return get_cached_or_fresh_analytics(force_refresh=refresh)
+
+
+@app.post("/api/seo-analytics/send-digest", dependencies=[Depends(require_admin)])
+async def send_seo_digest_api() -> dict:
+    from app.yandex_seo import send_seo_telegram_digest
+    return await send_seo_telegram_digest()
+
+
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
 def get_settings_api(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)

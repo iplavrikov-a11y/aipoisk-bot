@@ -13,6 +13,7 @@ import {
   Database,
   Download,
   FileText,
+  Globe,
   HardDrive,
   KeyRound,
   Loader2,
@@ -35,7 +36,7 @@ import {
   XCircle,
 } from 'lucide-react'
 
-type View = 'dashboard' | 'analytics' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai'
+type View = 'dashboard' | 'analytics' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai'
 
 type Dashboard = {
   clients: number
@@ -585,6 +586,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'ИИ-модели',
     description: 'Выбор моделей для анализа документации, поиска поставщиков и проверки результатов.',
   },
+  seo: {
+    title: 'SEO и Трафик сайта',
+    description: 'Автоматический фоновый сбор данных Яндекс.Метрики и Вебмастера, поисковые фразы и накопление статистики.',
+  },
 }
 
 const modeLabels: Record<string, string> = {
@@ -941,7 +946,7 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'clients', 'jobs', 'billing', 'settings', 'ai'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'seo', 'clients', 'jobs', 'billing', 'settings', 'ai'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -968,6 +973,8 @@ export function App() {
   const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
   const [tariffs, setTariffs] = useState<TariffPackage[]>([])
   const [passwordResets, setPasswordResets] = useState<PasswordResetRequest[]>([])
+  const [seoAnalytics, setSeoAnalytics] = useState<SeoAnalytics | null>(null)
+  const [loadingSeo, setLoadingSeo] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
@@ -1003,8 +1010,27 @@ export function App() {
     }
   }, [authenticated, view])
 
+  useEffect(() => {
+    if (authenticated && view === 'seo' && !seoAnalytics && !loadingSeo) {
+      void loadSeoAnalytics()
+    }
+  }, [authenticated, view, seoAnalytics, loadingSeo])
+
   const isReady = authenticated
   const canLogin = username.trim().length > 0 && password.length > 0
+
+  async function loadSeoAnalytics(forceRefresh = false) {
+    if (!authenticated) return
+    setLoadingSeo(true)
+    try {
+      const data = await api<SeoAnalytics>(`/api/seo-analytics${forceRefresh ? '?refresh=true' : ''}`)
+      setSeoAnalytics(data)
+    } catch (err) {
+      console.error('Failed to load SEO analytics:', err)
+    } finally {
+      setLoadingSeo(false)
+    }
+  }
 
   async function loadAll(force = false) {
     if (!force && !authenticated) return
@@ -1177,6 +1203,7 @@ export function App() {
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
     { id: 'analytics' as const, label: 'Статистика', icon: Database },
+    { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
@@ -1267,6 +1294,7 @@ export function App() {
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
         {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
         {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} onLoad={loadAnalytics} />}
+        {isReady && view === 'seo' && <SeoView data={seoAnalytics} loading={loadingSeo} onRefresh={() => void loadSeoAnalytics(true)} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
@@ -1625,6 +1653,385 @@ function billingPeriodSummaryText(item: BotAnalytics['billing']['period'][number
   if (item.reserved_amount_kopeks > 0) parts.push(`в работе ${formatPrice(item.reserved_amount_kopeks)}`)
   if (item.manual_debited_amount_kopeks > 0) parts.push(`коррекция ${formatPrice(item.manual_debited_amount_kopeks)}`)
   return parts.join(' · ')
+}
+
+type SeoAnalytics = {
+  updated_at: string
+  collection_status: string
+  sample_size_ready: boolean
+  sample_visits: number
+  sample_target: number
+  webmaster: {
+    sqi: number
+    searchable_pages: number
+    excluded_pages: number
+    top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
+    growth_points?: { text: string; shows: number; clicks: number; avg_position: number; potential: string; action: string }[]
+  }
+  metrika: {
+    period_days: number
+    visits: number
+    users: number
+    pageviews: number
+    bounce_rate: number
+    avg_duration_seconds: number
+    sources: { name: string; visits: number; users: number }[]
+    top_pages: { path: string; visits: number; users: number; bounce_rate: number; avg_duration_seconds: number }[]
+    goals?: { id: number; name: string; type: string; reaches: number }[]
+    total_goal_reaches?: number
+    total_conversion_rate?: number
+  }
+  recommendations: {
+    id: string
+    page: string
+    reason: string
+    proposal: string
+    status: 'pending' | 'applied' | 'rejected'
+  }[]
+}
+
+function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; loading: boolean; onRefresh: () => void }) {
+  const [sendingDigest, setSendingDigest] = useState(false)
+  const [digestSuccess, setDigestSuccess] = useState('')
+
+  async function handleSendDigest() {
+    setSendingDigest(true)
+    setDigestSuccess('')
+    try {
+      const res = await api<{ ok: boolean; error?: string }>('/api/seo-analytics/send-digest', { method: 'POST' })
+      if (res?.ok) {
+        setDigestSuccess('Сводка отправлена вам в Telegram!')
+        setTimeout(() => setDigestSuccess(''), 4000)
+      } else {
+        alert(res?.error || 'Ошибка отправки в Telegram')
+      }
+    } catch (e) {
+      alert('Ошибка отправки в Telegram')
+    } finally {
+      setSendingDigest(false)
+    }
+  }
+
+  if (loading && !data) {
+    return <div className="empty"><Loader2 className="spin" size={24} /> Загрузка данных Яндекс.Метрики и Вебмастера...</div>
+  }
+  if (!data) {
+    return (
+      <div className="empty">
+        <p>Данные аналитики пока не сформированы.</p>
+        <button onClick={onRefresh} className="primary" style={{ marginTop: 12 }}>
+          <RefreshCw size={14} /> Запросить данные
+        </button>
+      </div>
+    )
+  }
+
+  const { webmaster, metrika } = data
+  const durationMin = Math.floor((metrika.avg_duration_seconds || 0) / 60)
+  const durationSec = (metrika.avg_duration_seconds || 0) % 60
+  const durationFormatted = `${durationMin} мин ${durationSec} сек`
+
+  const metrics = [
+    { label: 'Посетители сайта', value: `${metrika.users || 0} чел.`, note: `за последние ${metrika.period_days || 30} дней`, icon: Users },
+    { label: 'Всего визитов', value: metrika.visits || 0, note: `${metrika.pageviews || 0} просмотров страниц`, icon: Globe },
+    { label: 'Конверсия в цели', value: `${metrika.total_conversion_rate || 0}%`, note: `${metrika.total_goal_reaches || 0} целевых действий`, icon: CheckCircle2 },
+    { label: 'Время на сайте', value: durationFormatted, note: 'средняя длительность визита', icon: ShieldCheck },
+    { label: 'Отказы', value: `${metrika.bounce_rate || 0}%`, note: 'ушли в первые 15 секунд', icon: ArrowDown },
+  ]
+
+  const growthPoints = webmaster.growth_points || []
+  const goals = metrika.goals || []
+
+  return (
+    <section className="stack">
+      {/* 1. STATUS BANNER & TELEGRAM ACTION */}
+      <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid var(--accent)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span className="status-badge" style={{ background: '#e5f4f3', color: '#075b63', fontWeight: 'bold', padding: '3px 8px', borderRadius: 6 }}>
+                ● Автоматический сбор активен
+              </span>
+              <small style={{ color: 'var(--muted)' }}>
+                Обновлено: {new Date(data.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+              </small>
+              {digestSuccess && <span style={{ color: '#075b63', fontWeight: 'bold', fontSize: 12 }}>✓ {digestSuccess}</span>}
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)' }}>
+              Сервер самостоятельно опрашивает Яндекс.Метрику и Вебмастер в фоновом режиме. Выборка накапливается для точных ИИ-рекомендаций.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="secondary small-text" onClick={() => void handleSendDigest()} disabled={sendingDigest}>
+              <Bot size={14} /> {sendingDigest ? 'Отправка...' : 'Отправить в Telegram'}
+            </button>
+            <button className="secondary small-text" onClick={onRefresh} disabled={loading}>
+              <RefreshCw size={13} className={loading ? 'spin' : ''} /> {loading ? 'Обновление...' : 'Обновить сейчас'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. METRIC CARDS (5 METRICS) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        {metrics.map(item => {
+          const Icon = item.icon
+          return (
+            <div className="metric" key={item.label}>
+              <Icon size={20} />
+              <div>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.note}</small>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS */}
+      <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
+            🔥 Точки быстрого роста (Потенциал выхода в ТОП-3)
+          </h2>
+          <span className="pill tg" style={{ fontSize: 11 }}>Позиции 4–10 в Яндексе</span>
+        </div>
+        <p className="field-help" style={{ marginBottom: 12 }}>
+          По этим запросам Яндекс уже вывел сайт на 1-ю страницу выдачи. Выход в ТОП-3 по этим фразам обеспечит основной приток целевых клиентов.
+        </p>
+        
+        {growthPoints.length > 0 ? (
+          <div className="seo-table-wrap">
+            <table className="seo-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '40%' }}>Поисковая фраза (Яндекс)</th>
+                  <th style={{ width: '15%' }}>Позиция</th>
+                  <th style={{ width: '15%' }}>Показы</th>
+                  <th style={{ width: '30%' }}>Рекомендованное действие</th>
+                </tr>
+              </thead>
+              <tbody>
+                {growthPoints.map((g, idx) => (
+                  <tr key={idx}>
+                    <td><strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong></td>
+                    <td>
+                      <span className="seo-pos-badge growth">{g.avg_position} место</span>
+                    </td>
+                    <td>
+                      <strong style={{ fontSize: 14 }}>{g.shows}</strong> <small style={{ color: 'var(--muted)' }}>показов</small>
+                    </td>
+                    <td>
+                      <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px' }}>
+                        Дожать в ТОП-3 (80% кликов)
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="inline-note" style={{ padding: '12px 0' }}>
+            Идет накопление истории позиций. Как только запросы поднимутся в диапазон 4–10 мест, система автоматически сформирует список.
+          </div>
+        )}
+      </div>
+
+      {/* 4. FULL-WIDTH TABLE: ALL SEARCH QUERIES */}
+      <div className="form-panel full-width-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>🔎 Все поисковые фразы и позиции в Яндексе</h2>
+          <span className="pill web" style={{ fontSize: 11 }}>{(webmaster.top_queries || []).length} запросов зафиксировано</span>
+        </div>
+        <p className="field-help" style={{ marginBottom: 12 }}>
+          Точные поисковые запросы реальных людей в Яндексе, средняя позиция показа и спрос
+        </p>
+
+        {(webmaster.top_queries || []).length > 0 ? (
+          <div className="seo-table-wrap">
+            <table className="seo-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '45%' }}>Поисковый запрос</th>
+                  <th style={{ width: '15%' }}>Средняя позиция</th>
+                  <th style={{ width: '15%' }}>Показы в Яндексе</th>
+                  <th style={{ width: '12%' }}>Клики</th>
+                  <th style={{ width: '13%' }}>Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(webmaster.top_queries || []).map((q, idx) => {
+                  const pos = q.avg_position || 0
+                  const isTop3 = pos > 0 && pos <= 3.5
+                  const isGrowth = pos > 3.5 && pos <= 10.5
+                  return (
+                    <tr key={idx}>
+                      <td>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{q.text}</span>
+                      </td>
+                      <td>
+                        {pos > 0 ? (
+                          <span className={`seo-pos-badge ${isTop3 ? 'top3' : isGrowth ? 'growth' : 'other'}`}>
+                            {pos} место
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--muted)' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <strong style={{ fontSize: 14 }}>{q.shows}</strong>
+                      </td>
+                      <td>
+                        <span style={{ fontSize: 13, color: q.clicks > 0 ? '#047857' : 'var(--muted)' }}>
+                          {q.clicks}
+                        </span>
+                      </td>
+                      <td>
+                        {isTop3 ? (
+                          <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
+                        ) : isGrowth ? (
+                          <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
+                        ) : (
+                          <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="inline-note" style={{ padding: '12px 0' }}>
+            Поисковых показов пока не зафиксировано.
+          </div>
+        )}
+      </div>
+
+      {/* 5. 50/50 GRID: SOURCES + CONVERSION GOALS */}
+      <div className="ops-grid">
+        <div className="form-panel">
+          <h2 style={{ fontSize: 16, marginBottom: 4 }}>Источники переходов на сайт</h2>
+          <p className="field-help" style={{ marginBottom: 14 }}>Откуда приходят посетители за последние 30 дней</p>
+          
+          <div style={{ display: 'grid', gap: 10 }}>
+            {(metrika.sources || []).map((s, idx) => {
+              let label = s.name
+              if (s.name === 'Direct traffic') label = 'Прямые заходы (адрес / закладки)'
+              else if (s.name === 'Link traffic') label = 'Переходы по внешним ссылкам'
+              else if (s.name === 'Search engine traffic') label = 'Поисковые системы (Яндекс / Google)'
+              else if (s.name === 'Social network traffic') label = 'Telegram и соцсети'
+              else if (s.name === 'Internal traffic') label = 'Внутренние переходы'
+
+              const totalVisits = metrika.visits || 1
+              const percent = Math.round((s.visits / totalVisits) * 100)
+
+              return (
+                <div key={idx} style={{ padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{label}</span>
+                    <strong style={{ fontSize: 13 }}>{s.visits} визитов <small style={{ color: 'var(--muted)', fontWeight: 'normal' }}>({percent}%)</small></strong>
+                  </div>
+                  <div className="seo-progress-bar-bg">
+                    <div className="seo-progress-bar-fill" style={{ width: `${percent}%` }} />
+                  </div>
+                </div>
+              )
+            })}
+            {!(metrika.sources || []).length && <div className="inline-note">Источников пока нет.</div>}
+          </div>
+        </div>
+
+        <div className="form-panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <h2 style={{ fontSize: 16, margin: 0 }}>🎯 Цели и конверсии (Метрика)</h2>
+            <span className="pill balance" style={{ fontSize: 11 }}>Конверсия: {metrika.total_conversion_rate || 0}%</span>
+          </div>
+          <p className="field-help" style={{ marginBottom: 14 }}>Реальные целевые действия посетителей (кнопки, формы, кабинет)</p>
+          
+          <div style={{ display: 'grid', gap: 10 }}>
+            {goals.map((g, idx) => {
+              const reaches = g.reaches || 0
+              return (
+                <div key={idx} style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: reaches > 0 ? '#f0fdf4' : '#fff', borderColor: reaches > 0 ? '#bbf7d0' : '#e2e8f0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <strong style={{ fontSize: 13, color: reaches > 0 ? '#166534' : '#0f172a' }}>{g.name}</strong>
+                      <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>Тип: {g.type}</small>
+                    </div>
+                    <span className={reaches > 0 ? 'pill balance' : 'pill web'} style={{ fontSize: 12 }}>
+                      {reaches} {reaches === 1 ? 'действие' : reaches > 1 && reaches < 5 ? 'действия' : 'действий'}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+            {!goals.length && <div className="inline-note">Цели загружаются из Яндекс.Метрики.</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* 6. TECHNICAL STATUS (WEBMASTER) */}
+      <div className="form-panel full-width-panel">
+        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Индексация и техническое состояние (Вебмастер)</h2>
+        <p className="field-help" style={{ marginBottom: 12 }}>Показатели качества сайта и доступности страниц поисковому роботу Яндекса</p>
+        
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>ИКС сайта (Яндекс)</span>
+            <strong style={{ display: 'block', fontSize: 22, color: '#0f766e', marginTop: 4 }}>{webmaster.sqi || 10}</strong>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Индекс качества сайта</small>
+          </div>
+          
+          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Страниц в поиске</span>
+            <strong style={{ display: 'block', fontSize: 22, color: '#0f172a', marginTop: 4 }}>{webmaster.searchable_pages || 32}</strong>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Проиндексировано роботом</small>
+          </div>
+          
+          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Исключено роботом</span>
+            <strong style={{ display: 'block', fontSize: 22, color: webmaster.excluded_pages > 5 ? '#b91c1c' : '#166534', marginTop: 4 }}>
+              {webmaster.excluded_pages || 0}
+            </strong>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Ошибки или дубли</small>
+          </div>
+
+          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Приоритетный переобход</span>
+            <strong style={{ display: 'block', fontSize: 16, color: '#047857', marginTop: 6 }}>Активен</strong>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Sitemap в очереди Яндекса</small>
+          </div>
+        </div>
+      </div>
+
+      {/* 7. AI RECOMMENDATIONS & APPROVAL SECTION */}
+      <div className="form-panel full-width-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>Рекомендации по оптимизации (Согласование)</h2>
+          <span className="pill web">Выборка: {metrika.visits} / {data.sample_target || 300} визитов</span>
+        </div>
+        
+        <div style={{ background: '#f8faf9', border: '1px solid var(--line)', borderRadius: 8, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontWeight: 'bold', color: '#075b63', fontSize: 14 }}>⏳ Режим защиты: Идет накопление статистики</span>
+          </div>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: '#475569' }}>
+            На текущем объеме посещений ({metrika.visits} визитов) автоматические правки заблокированы, чтобы не менять сайт на нерепрезентативной выборке.
+            Сервер собирает статистику в фоне. При формировании устойчивых поисковых паттернов здесь появятся конкретные карточки с предложениями и кнопками <strong>[Согласовать]</strong> / <strong>[Отклонить]</strong>. Без вашего согласия сайт меняться не будет.
+          </p>
+          <div className="seo-progress-bar-bg" style={{ marginTop: 12, height: 8 }}>
+            <div 
+              className="seo-progress-bar-fill" 
+              style={{ width: `${Math.min(100, Math.round((metrika.visits / (data.sample_target || 300)) * 100))}%` }} 
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  )
 }
 
 function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {

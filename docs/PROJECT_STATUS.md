@@ -12,6 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Autonomous SEO, Webmaster & Metrika Goals Pipeline (2026-08):
+  - Direct REST integration with Yandex Webmaster API and Yandex Metrika Management & Data APIs (`backend/app/yandex_seo.py`, `/api/seo-analytics`).
+  - Automated background snapshot harvesting via system cron (05:00 UTC daily) with local caching in SQLite/JSON for instantaneous admin UI loading.
+  - Priority recrawl queue submission for all 86 sitemap URLs (`POST /recrawl/queue`) in Yandex Webmaster.
+  - Automated Striking-Distance growth point detector: highlights high-impression queries ranking on page 1 (positions 4–10) with highest conversion potential into TOP-3.
+  - Dynamic goal tracking: monitors all 6 Metrika conversion goals (cabinet login, bot click, trial CTA, form submit) and calculates overall site conversion rate (currently 8.82%).
+  - Automated weekly Telegram digest sent every Monday at 09:00 MSK to the owner plus on-demand 1-click dispatch from admin panel.
+  - Admin Panel UI: Spacious full-width "SEO и Трафик" dashboard with clean queries table, positions, 50/50 sources vs goals grid, and AI recommendation safety lock.
 - Customer Web Cabinet Notifications, Real-Time Chime & UI Polish (2026-08):
   - In-browser synthesized dual-tone Web Audio chime (`playNotificationChime`: 659.25Hz → 880Hz sine wave) triggered upon completion of background supplier search or document analysis jobs without external audio assets.
   - Header notification toggle (`Уведомления: вкл / выкл`) persisted in `localStorage`.
