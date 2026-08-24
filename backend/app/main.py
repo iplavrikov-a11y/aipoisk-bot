@@ -17,7 +17,7 @@ import jwt
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
@@ -418,6 +418,39 @@ def customer_email_verification_request_api(
 @app.get("/api/customer/auth/verify-email/confirm")
 def customer_email_verification_confirm_link(token: str):
     return RedirectResponse(f"/cabinet?email_verify_token={quote(token, safe='')}", status_code=303)
+
+
+@app.get("/api/customer/auth/unsubscribe")
+def customer_unsubscribe_api(token: str = "", db: Session = Depends(db_session)):
+    from .nurturing import unsubscribe_by_token
+
+    success, message = unsubscribe_by_token(db, token)
+    status_title = "Вы успешно отписались" if success else "Ошибка отписки"
+    status_desc = (
+        "Вы успешно отписались от уведомлений и обучающих рассылок TenderLex. Мы больше не будем присылать вам автоматические письма."
+        if success
+        else message
+    )
+    badge_color = "#0f766e" if success else "#e11d48"
+    icon = "✅" if success else "⚠️"
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>{status_title} — TenderLex</title>
+</head>
+<body style="margin:0;padding:40px 16px;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#1e293b;display:flex;justify-content:center;align-items:center;min-height:80vh;">
+  <div style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px 28px;text-align:center;box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);box-sizing:border-box;">
+    <div style="font-size:36px;margin-bottom:12px;">{icon}</div>
+    <h1 style="font-size:20px;font-weight:bold;color:#0f172a;margin:0 0 10px 0;">{status_title}</h1>
+    <p style="font-size:14px;line-height:1.6;color:#475569;margin:0 0 24px 0;">{status_desc}</p>
+    <a href="https://tenderlex.ru" style="display:inline-block;background:{badge_color};color:#ffffff;text-decoration:none;font-weight:bold;font-size:14px;padding:11px 24px;border-radius:8px;">На главную TenderLex</a>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200 if success else 400)
 
 
 @app.post("/api/customer/auth/verify-email/confirm")

@@ -175,6 +175,7 @@ class Client(Base):
     money_balance_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     money_reserved_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     supplier_target_min: Mapped[int] = mapped_column(Integer, default=0)
+    marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -221,6 +222,7 @@ class WebUser(Base):
     name: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -356,11 +358,12 @@ class UserJourneyEvent(Base):
 
 class OnboardingReminder(Base):
     __tablename__ = "onboarding_reminders"
-    __table_args__ = (UniqueConstraint("client_id", "channel", name="uq_onboarding_reminder_client_channel"),)
+    __table_args__ = (UniqueConstraint("client_id", "channel", "step", name="uq_onboarding_reminder_client_channel_step"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
     channel: Mapped[str] = mapped_column(String(20), default="telegram")
+    step: Mapped[str] = mapped_column(String(40), default="step1")
     status: Mapped[str] = mapped_column(String(20), default="claimed", index=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -38,7 +38,17 @@ Date: 2026-07-08
   - Dynamic pulsing highlights and `✨ Новая` badges on unviewed completed jobs created after feature activation (`NOTIFICATION_FEATURE_START_TS`).
   - Interaction-based view tracking: clicking any result action ("Поставщики", "Анализ", "Запрос КП", "Найти ещё") or the card immediately marks the job viewed in `localStorage` and turns off the pulsing highlight.
   - Color palette refinement: removed heavy dark elements in favor of clean light B2B styling (white toast pill with teal accents, brighter teal balance badge `from-teal-700 to-teal-800`, light amber trial badge `bg-amber-100 text-amber-800`).
-  - Floating chat widget UX: added close `✕` button to the floating `Чат TenderLex` action button at bottom-right with persistent dismissal in `localStorage` (`tenderlex_chat_pill_dismissed`), keeping chat accessible on demand via the header `Чат сайта` button.
+- Automated 3-Step Nurturing Sequence & 1-Click Unsubscribe (Telegram + Email, 2026-08):
+  - Multi-step behavioral onboarding engine (`backend/app/nurturing.py`) with strict work-hours filtering (09:00-20:00 MSK) and safe rollout windows:
+    1. *Step 1 (24h after registration, 0 tasks):* Reminds user about the 396 ₽ starter balance (4 free tasks) and links to knowledge base guide on finding direct suppliers.
+    2. *Step 2 (48h after first task completed, <4 tasks):* Highlights 3 core features (DOCX Request for Quotation generation, Minpromtorg Registry verification, 44-FZ/223-FZ contract risk analysis).
+    3. *Step 3 (Trial completed, 4 tasks):* Summarizes test run and provides direct contact link for custom procurement limits or corporate invoices.
+  - Universal 1-Click Unsubscribe:
+    - Telegram inline button: `🔕 Отписаться от подсказок` (`nurturing_unsubscribe`), sets `marketing_unsubscribed = True` in DB and permanently halts all background bot messages.
+    - Email 1-click link: `GET /api/customer/auth/unsubscribe?token=<hmac_token>` with secure HMAC-SHA256 signature, sets `marketing_unsubscribed = True` in DB without login and renders a branded confirmation page.
+    - All background dispatch loops and queries strictly enforce `if client.marketing_unsubscribed: continue`.
+  - Minified, zero-extra-newline email templates preventing whitespace rendering glitches across webmail clients (Yandex Mail, Gmail, Mail.ru).
+  - Backed by unit test suite `backend/tests/test_nurturing.py` and deployed live to production.
 - Extra Supplier Search Tariff (49 ₽) & Client Tariff Management (2026-08):
   - Added default global tariff package for `supplier_search_extra` (1 добор поставщиков: 49 ₽) in database seeding and runtime fallback.
   - Enabled full web admin editing in the "Тарифы" tab for "Добор поставщиков" (change price, units, title, visibility).

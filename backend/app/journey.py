@@ -25,6 +25,7 @@ ALLOWED_EVENTS = {
     "link_succeeded",
     "link_conflict",
     "onboarding_reminder_sent",
+    "marketing_unsubscribed",
     "registry_fallback_offered",
     "registry_fallback_accepted",
     "registry_fallback_declined",

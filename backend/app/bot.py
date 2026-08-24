@@ -2900,6 +2900,29 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         await callback.message.answer(text, reply_markup=kb)
 
 
+@router.callback_query(F.data == "nurturing_unsubscribe")
+async def handle_nurturing_unsubscribe(callback: CallbackQuery) -> None:
+    db = SessionLocal()
+    try:
+        from .nurturing import unsubscribe_by_telegram_id
+
+        user_id = callback.from_user.id
+        unsubscribe_by_telegram_id(db, user_id)
+    finally:
+        db.close()
+    await callback.answer("Вы успешно отписались от подсказок", show_alert=False)
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                "🔕 <b>Вы успешно отписались от подсказок и напоминаний TenderLex.</b>\n\n"
+                "Мы больше не будем присылать автоматические уведомления. Вы можете продолжать пользоваться ботом в обычном режиме.",
+                parse_mode="HTML",
+                reply_markup=main_menu(),
+            )
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data.startswith("find_more_prompt:"))
 async def find_more_suppliers_prompt(callback: CallbackQuery) -> None:
     job_id = str(callback.data or "").split(":", 1)[1]
@@ -3496,31 +3519,18 @@ async def _send_due_onboarding_reminders(bot: Bot) -> int:
     db = SessionLocal()
     sent = 0
     try:
+        from .nurturing import dispatch_nurturing_candidate, get_due_nurturing_candidates
+
         settings = get_or_create_settings(db)
         expire_result_offers(db)
         expire_stale_confirmations(db)
-        candidates = reminder_candidates(db, settings)
-        for client, telegram_id in candidates:
-            reminder = claim_reminder(db, client.id)
-            if not reminder:
-                continue
-            try:
-                await bot.send_message(
-                    chat_id=int(telegram_id),
-                    text=ONBOARDING_REMINDER_TEXT,
-                    reply_markup=main_menu(),
-                )
-            except Exception as exc:
-                reminder.status = "failed"
-                reminder.failed_at = now_utc()
-                reminder.failure_code = type(exc).__name__[:80]
-                db.commit()
-                continue
-            reminder.status = "sent"
-            reminder.sent_at = now_utc()
-            db.commit()
-            record_journey_event(db, client.id, channel="telegram", event_name="onboarding_reminder_sent", outcome="sent")
-            sent += 1
+        candidates = get_due_nurturing_candidates(db, settings, enforce_work_hours=True)
+        for candidate in candidates:
+            ok = await dispatch_nurturing_candidate(db, candidate, bot=bot)
+            if ok:
+                sent += 1
+    except Exception as exc:
+        logger.exception("Error in onboarding/nurturing reminder loop: %s", exc)
     finally:
         db.close()
     return sent
