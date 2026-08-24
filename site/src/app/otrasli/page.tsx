@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Building2, Cable, Layers, ShieldCheck, Wrench, ArrowRight, Sparkles } from "lucide-react";
+import { Building2, Cable, Layers, ShieldCheck, Wrench, Sparkles } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -131,7 +131,6 @@ export default function IndustriesHubPage() {
                         className="text-xs font-black text-teal-700 hover:text-teal-900 inline-flex items-center gap-1.5 transition-colors"
                       >
                         <span>Смотреть отрасль</span>
-                        <ArrowRight size={14} />
                       </Link>
                     </div>
                   </article>

@@ -850,6 +850,19 @@ async def send_seo_digest_api() -> dict:
     return await send_seo_telegram_digest()
 
 
+@app.post("/api/seo-analytics/recrawl", dependencies=[Depends(require_admin)])
+def seo_recrawl_api() -> dict:
+    from app.yandex_seo import submit_sitemap_recrawl
+    return submit_sitemap_recrawl()
+
+
+@app.post("/api/seo-analytics/recommendations/{rec_id}/action", dependencies=[Depends(require_admin)])
+def seo_rec_action_api(rec_id: str, payload: dict) -> dict:
+    from app.yandex_seo import handle_recommendation_action
+    action = payload.get("action", "pending")
+    return handle_recommendation_action(rec_id, action)
+
+
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
 def get_settings_api(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)

@@ -8,7 +8,6 @@ import {
   Building2,
   ShieldCheck,
   Send,
-  ArrowRight,
   Sparkles,
   Layers,
   ChevronDown,
@@ -508,7 +507,6 @@ export function ScrollWorldViewer() {
                 className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 disabled:opacity-40 disabled:pointer-events-none transition-all flex items-center gap-1.5"
               >
                 <span>Далее</span>
-                <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
 

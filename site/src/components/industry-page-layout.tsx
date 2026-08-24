@@ -2,7 +2,7 @@ import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
-import { CheckCircle2, ArrowRight, Layers, FileSpreadsheet, Building, Sparkles } from "lucide-react";
+import { CheckCircle2, Layers, FileSpreadsheet, Building, Sparkles } from "lucide-react";
 import type { FaqItem } from "@/lib/seo";
 
 interface IndustryPageLayoutProps {
@@ -65,7 +65,6 @@ export function IndustryPageLayout({
                   className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
                 >
                   <span>Найти поставщиков</span>
-                  <ArrowRight size={16} />
                 </a>
                 <a
                   href="https://t.me/tenderlex_bot"

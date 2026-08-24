@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { FileText, CheckCircle2, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { FileText, CheckCircle2, Send, Building2, Sparkles } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -99,7 +99,6 @@ export default function ZaprosKpPoTzPage() {
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Сформировать запрос КП</span>
-                <ArrowRight size={16} />
               </a>
               <a
                 href="https://t.me/tenderlex_bot"

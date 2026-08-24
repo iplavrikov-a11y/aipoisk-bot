@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Building2, CheckCircle2, FileText, Send, ArrowRight, Sparkles, Factory } from "lucide-react";
+import { Building2, CheckCircle2, FileText, Send, Sparkles, Factory } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -104,7 +104,6 @@ export default function PoiskProizvoditeleyPage() {
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Найти заводы</span>
-                <ArrowRight size={16} />
               </a>
               <a
                 href="https://t.me/tenderlex_bot"

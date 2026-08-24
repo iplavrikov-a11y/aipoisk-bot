@@ -3,13 +3,10 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
-  ArrowRight,
   Bell,
   BellOff,
   BellRing,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   Copy,
   Download,
@@ -1351,7 +1348,6 @@ export function CabinetClient() {
           </a>
           <a className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 hover:text-teal-700 transition-colors bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-xl border border-slate-200 shadow-2xs" href="/">
             На главную
-            <ArrowRight size={16} aria-hidden="true" />
           </a>
         </header>
 
@@ -1508,7 +1504,7 @@ export function CabinetClient() {
               type="submit"
               disabled={busy}
             >
-              {busy ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}
+              {busy ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : null}
               <span>{authMode === "reset" ? "Отправить заявку" : authMode === "login" ? "Войти" : "Создать кабинет"}</span>
             </button>
 
@@ -1602,6 +1598,29 @@ export function CabinetClient() {
         <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
           {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
           <span>{error || message}</span>
+        </div>
+      ) : null}
+
+      {session?.user?.is_trial ? (
+        <div className="p-3 sm:p-4 bg-gradient-to-r from-teal-50 via-white to-sky-50 border border-teal-200/90 rounded-xl shadow-2xs">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
+              <Sparkles size={16} aria-hidden="true" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-900 text-xs sm:text-sm">
+                  Тестовый доступ активен
+                </h2>
+                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded border border-teal-300 shrink-0">
+                  пробный период
+                </span>
+              </div>
+              <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
+                Вам начислен стартовый баланс для проверки подбора поставщиков и анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -1936,7 +1955,6 @@ export function CabinetClient() {
                   onClick={() => setJobsPage((page) => Math.max(1, page - 1))}
                   disabled={jobsPage <= 1 || jobsLoading}
                 >
-                  <ChevronLeft size={16} aria-hidden="true" />
                   Назад
                 </button>
                 <span className="px-2 text-xs font-medium text-slate-600">
@@ -1949,7 +1967,6 @@ export function CabinetClient() {
                   disabled={jobsPage >= jobsPageCount || jobsLoading}
                 >
                   Вперёд
-                  <ChevronRight size={16} aria-hidden="true" />
                 </button>
               </div>
             ) : null}

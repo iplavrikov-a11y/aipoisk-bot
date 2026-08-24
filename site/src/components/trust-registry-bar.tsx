@@ -1,4 +1,4 @@
-import { Globe, Cpu, Building2, Database, Sparkles, CheckCircle2, ShieldCheck, Search, ArrowRight } from "lucide-react";
+import { Globe, Cpu, Building2, Database, Sparkles, CheckCircle2, ShieldCheck, Search } from "lucide-react";
 
 export function TrustRegistryBar() {
   const pillars = [

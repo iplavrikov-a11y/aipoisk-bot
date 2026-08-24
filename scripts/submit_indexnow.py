@@ -50,15 +50,23 @@ def main():
         "urlList": urls
     }
 
-    print("\nSubmitting to IndexNow (Yandex/Bing)...")
-    endpoint = "https://api.indexnow.org/indexnow"
+    endpoints = [
+        ("IndexNow Central", "https://api.indexnow.org/indexnow"),
+        ("Yandex IndexNow", "https://yandex.com/indexnow")
+    ]
     headers = {"Content-Type": "application/json; charset=utf-8"}
-    res = requests.post(endpoint, json=payload, headers=headers, timeout=15)
-    print(f"IndexNow response HTTP status: {res.status_code}")
-    if res.status_code in (200, 202):
-        print("SUCCESS: URLs submitted to IndexNow for Yandex/Bing indexing!")
-    else:
-        print(f"Notice: IndexNow returned status {res.status_code}: {res.text}")
+
+    for name, ep in endpoints:
+        print(f"\nSubmitting to {name} ({ep})...")
+        try:
+            res = requests.post(ep, json=payload, headers=headers, timeout=15)
+            print(f"{name} response HTTP status: {res.status_code}")
+            if res.status_code in (200, 202):
+                print(f"SUCCESS: URLs submitted to {name}!")
+            else:
+                print(f"Notice: {name} returned status {res.status_code}: {res.text}")
+        except Exception as e:
+            print(f"Error submitting to {name}: {e}")
 
 if __name__ == "__main__":
     main()

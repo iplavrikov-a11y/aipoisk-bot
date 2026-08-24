@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { TrendingUp, CheckCircle2, FileText, Send, Building2, ArrowRight, Sparkles } from "lucide-react";
+import { TrendingUp, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -37,9 +37,19 @@ const faqItems: FaqItem[] = [
       "Сервис быстро собирает базу действующих изготовителей и дилеров по номенклатуре закупки, выгружает прямые контакты отделов сбыта и готовит единый запрос цен для сбора первой волны коммерческих предложений.",
   },
   {
-    question: "Помогает ли это при подготовке запроса разъяснений?",
+    question: "Как рассчитать НМЦК методом анализа рынка по 44-ФЗ?",
     answer:
-      "Да. Если анализ показывает, что под требования ТЗ на рынке существует только один производитель (закупка «под одного поставщика»), вы сможете аргументированно обратиться в ФАС или направить запрос заказчику.",
+      "Метод сопоставимых рыночных цен (анализ рынка) требует минимум 3 коммерческих предложения от независимых поставщиков. TenderLex автоматизирует сбор контактов отделов сбыта и формирует структурированный запрос КП для оперативного получения ценовых оферт.",
+  },
+  {
+    question: "Как выявить закупку «под одного поставщика» по характеристикам ТЗ?",
+    answer:
+      "ИИ сопоставляет параметры ТЗ (габариты, допуски, уникальные опции) с базами производителей РФ. Если требованиям удовлетворяет только один завод, система подсвечивает риск ограничения конкуренции, что дает основание для запроса разъяснений или жалобы в ФАС.",
+  },
+  {
+    question: "Помогает ли сервис при подборе российских аналогов по ПП 719?",
+    answer:
+      "Да. Сервис проверяет наличие эквивалентов в реестре промышленной продукции Минпромторга и помогает поставщикам подтвердить необходимое количество баллов локализации.",
   },
 ];
 
@@ -99,7 +109,6 @@ export default function AnalizRynkaPage() {
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Проанализировать рынок</span>
-                <ArrowRight size={16} />
               </a>
               <a
                 href="https://t.me/tenderlex_bot"

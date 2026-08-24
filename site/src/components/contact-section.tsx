@@ -1,4 +1,4 @@
-import { Phone, Mail, Send, MessageCircle, Sparkles, ArrowRight, ShieldCheck } from "lucide-react";
+import { Phone, Mail, Send, MessageCircle, Sparkles, ShieldCheck } from "lucide-react";
 
 interface ContactSectionProps {
   title?: string;
@@ -43,7 +43,6 @@ export function ContactSection({
               className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold shadow-lg shadow-teal-600/20 text-sm transition-all hover:scale-[1.01]"
             >
               <span>Попробовать бесплатно</span>
-              <ArrowRight size={16} />
             </a>
             <a
               href={botUrl}

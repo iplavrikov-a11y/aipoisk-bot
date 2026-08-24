@@ -18,7 +18,6 @@ import {
   AlertTriangle,
   Info,
   Sparkles,
-  ArrowRight,
   ShieldCheck,
   FileCheck,
 } from "lucide-react";

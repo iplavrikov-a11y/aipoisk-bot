@@ -260,6 +260,47 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    def test_duplicate_registration_with_same_email_is_blocked(self) -> None:
+        db = self.Session()
+        try:
+            # First registration succeeds
+            customer_register_api(
+                WebRegisterRequest(
+                    email="duplicate@example.com",
+                    password="StrongPass123",
+                    terms_accepted=True,
+                    personal_data_consent=True,
+                    legal_version=LEGAL_VERSION,
+                ),
+                fake_request(),
+                Response(),
+                db,
+            )
+            self.assertEqual(db.query(WebUser).filter(WebUser.email == "duplicate@example.com").count(), 1)
+
+            # Second registration with identical email must raise 409 HTTPException
+            from fastapi import HTTPException
+
+            with self.assertRaises(HTTPException) as ctx:
+                customer_register_api(
+                    WebRegisterRequest(
+                        email="duplicate@example.com",
+                        password="AnotherPass456",
+                        terms_accepted=True,
+                        personal_data_consent=True,
+                        legal_version=LEGAL_VERSION,
+                    ),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertIn("уже зарегистрирован", ctx.exception.detail)
+            # Ensure only 1 user exists
+            self.assertEqual(db.query(WebUser).filter(WebUser.email == "duplicate@example.com").count(), 1)
+        finally:
+            db.close()
+
     def test_admin_can_manually_verify_web_user_email(self) -> None:
         db = self.Session()
         try:

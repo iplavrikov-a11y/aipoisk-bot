@@ -4,7 +4,6 @@ import { useState, useMemo } from "react";
 import Link from "next/link";
 import {
   BookOpen,
-  ArrowRight,
   Clock,
   Calendar,
   Sparkles,
@@ -14,7 +13,6 @@ import {
   Calculator,
   UserCheck,
   Layers,
-  ChevronRight,
   TrendingDown,
 } from "lucide-react";
 import {
@@ -109,10 +107,6 @@ export function KnowledgeBaseHubClient() {
 
                 <div className="pt-6 flex items-center justify-between text-xs font-bold text-[#075b63] border-t border-[#d8e3e1] mt-6">
                   <span>Читать руководство</span>
-                  <ArrowRight
-                    size={16}
-                    className="group-hover:translate-x-1 transition-transform"
-                  />
                 </div>
               </Link>
             ))}
@@ -123,30 +117,23 @@ export function KnowledgeBaseHubClient() {
       {/* ALL ARTICLES GRID (CLEAN LIGHT/WHITE DESIGN) */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg sm:text-xl font-black text-[#172120] tracking-tight">
-            {selectedCategory === "all"
-              ? `Все статьи (${filteredArticles.length})`
-              : `${KNOWLEDGE_CATEGORIES.find((c) => c.id === selectedCategory)?.label} (${filteredArticles.length})`}
-          </h2>
+          <h2 className="text-xl font-black text-[#172120]">Все статьи</h2>
+          <span className="text-xs text-[#2f3f3d] font-bold">
+            {filteredArticles.length} материалов
+          </span>
         </div>
 
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
           {filteredArticles.map((article) => (
             <Link
               key={article.slug}
               href={`/baza-znaniy/${article.slug}`}
-              className="group flex flex-col justify-between p-5 sm:p-6 rounded-2xl bg-white hover:bg-[#f6f8f7] border border-[#d8e3e1] hover:border-[#075b63] shadow-2xs hover:shadow-md transition-all"
+              className="p-5 rounded-2xl bg-white hover:bg-[#f6f8f7] border border-[#d8e3e1] hover:border-[#075b63] transition-all flex flex-col justify-between group shadow-2xs"
             >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-black uppercase tracking-wider text-[#075b63] bg-[#e5f4f3] px-2.5 py-0.5 rounded-md">
-                    {article.tag}
-                  </span>
-                  <span className="text-[11px] text-[#697a77] font-medium flex items-center gap-1">
-                    <Clock size={11} className="text-[#075b63]" />
-                    {article.readTime}
-                  </span>
-                </div>
+              <div className="space-y-2">
+                <span className="text-[10px] font-black text-[#075b63] uppercase tracking-wider block">
+                  {article.tag}
+                </span>
 
                 <h3 className="font-black text-[#172120] text-base group-hover:text-[#075b63] transition-colors leading-snug line-clamp-2">
                   {article.title}
@@ -159,10 +146,6 @@ export function KnowledgeBaseHubClient() {
 
               <div className="pt-4 mt-4 border-t border-[#d8e3e1] flex items-center justify-between text-xs font-bold text-[#075b63]">
                 <span>Открыть статью</span>
-                <ChevronRight
-                  size={14}
-                  className="group-hover:translate-x-1 transition-transform"
-                />
               </div>
             </Link>
           ))}

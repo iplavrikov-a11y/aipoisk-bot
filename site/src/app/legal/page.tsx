@@ -46,7 +46,7 @@ export default function LegalPage() {
                   Условия использования сервиса, порядок оплаты, оказания услуг и возвратов.
                 </p>
               </div>
-              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ →</span>
+              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ</span>
             </Link>
 
             <Link
@@ -64,7 +64,7 @@ export default function LegalPage() {
                   Правила сбора, хранения и защиты персональных данных согласно 152-ФЗ.
                 </p>
               </div>
-              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ →</span>
+              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ</span>
             </Link>
 
             <Link
@@ -82,7 +82,7 @@ export default function LegalPage() {
                   Текст согласия субъекта персональных данных при регистрации на сайте и в боте.
                 </p>
               </div>
-              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ →</span>
+              <span className="text-xs font-black text-teal-700 mt-4 block">Читать документ</span>
             </Link>
           </div>
 

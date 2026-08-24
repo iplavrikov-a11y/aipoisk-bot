@@ -12,6 +12,17 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Trial Period & Limits Expansion (2026-08):
+  - Increased trial balance limit for newly registered accounts from 198 ₽ (2 tasks) to 396 ₽ (4 tasks @ 99 ₽).
+  - Updated defaults in `models.py`, `db.py`, and database `system_settings` (`trial_supplier_search_limit = 2`, `trial_procurement_report_limit = 2`).
+  - Added clean, minimalist trial notification banner in the customer web cabinet (`cabinet-client.tsx`) informing trial users of their active test balance and directing them to contact channels below if additional limits are needed.
+  - Reverted landing page copy to neutral "Бесплатный пробный доступ при регистрации" without hardcoded task counts.
+- Email Verification Template & Security Hardening (2026-08):
+  - Completely redesigned HTML email confirmation template in `backend/app/web_auth.py` with cross-client bulletproof centered button, fallback link box, 24-hour expiration notice, and branded TenderLex layout for Yandex.Mail, Mail.ru, Gmail, and Outlook.
+  - Verified and tested single-account-per-email policy: enforced via `UNIQUE` DB constraint on `web_users.email` and `HTTP 409 Conflict` in `create_web_user` API.
+  - Added automated test `test_duplicate_registration_with_same_email_is_blocked` in `backend/tests/test_customer_api.py`.
+- Button Design & Interface De-Cluttering (2026-08):
+  - Removed excessive arrow icons (`ArrowRight`, `→`, `ChevronRight`) across all action buttons in the web application (Hero CTAs, module cards, interactive demo, procurement calculator, regional/industry pages, SEO landing pages, knowledge base, legal pages, and cabinet pagination).
 - Autonomous SEO, Webmaster & Metrika Goals Pipeline (2026-08):
   - Direct REST integration with Yandex Webmaster API and Yandex Metrika Management & Data APIs (`backend/app/yandex_seo.py`, `/api/seo-analytics`).
   - Automated background snapshot harvesting via system cron (05:00 UTC daily) with local caching in SQLite/JSON for instantaneous admin UI loading.

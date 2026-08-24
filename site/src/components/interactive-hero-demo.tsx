@@ -13,7 +13,6 @@ import {
   Search,
   FileCheck,
   Zap,
-  ArrowRight,
   Send,
 } from "lucide-react";
 
@@ -365,7 +364,6 @@ export function InteractiveHeroDemo() {
           className="w-full py-3.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
         >
           <span>Запустить поиск по своему ТЗ бесплатно</span>
-          <ArrowRight size={14} />
         </a>
       </div>
     </div>

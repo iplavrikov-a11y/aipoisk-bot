@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
-  ArrowRight,
   Building2,
   CheckCircle2,
   FileText,
@@ -138,7 +137,6 @@ export default async function HomePage() {
                 <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
                   <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
                     <span>Попробовать бесплатно</span>
-                    <ArrowRight className="w-4 h-4" />
                   </Link>
                 </Button>
                 <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">
@@ -153,7 +151,7 @@ export default async function HomePage() {
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-slate-500 font-medium pt-1">
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  1 бесплатный поиск и аудит при регистрации
+                  Бесплатный пробный доступ при регистрации
                 </span>
                 <span className="hidden sm:inline text-slate-300">•</span>
                 <span className="flex items-center gap-1.5">
@@ -248,7 +246,6 @@ export default async function HomePage() {
                   <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
                     <Link href="/poisk-postavshchikov-po-tz">
                       <span>Подробнее о поиске поставщиков</span>
-                      <ArrowRight className="w-4 h-4 ml-2" />
                     </Link>
                   </Button>
                 </div>
@@ -288,7 +285,6 @@ export default async function HomePage() {
                   <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
                     <Link href="/analiz-zakupochnoi-dokumentacii">
                       <span>Подробнее об анализе документации</span>
-                      <ArrowRight className="w-4 h-4 ml-2" />
                     </Link>
                   </Button>
                 </div>

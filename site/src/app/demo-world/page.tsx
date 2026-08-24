@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
-  ArrowRight,
   Building2,
   CheckCircle2,
   FileText,
@@ -191,7 +190,6 @@ export default async function DemoWorldPage() {
                 <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
                   <Link href="/poisk-postavshchikov-po-tz">
                     <span>Подробнее о поиске поставщиков</span>
-                    <ArrowRight className="w-4 h-4 ml-2" />
                   </Link>
                 </Button>
               </div>
@@ -231,7 +229,6 @@ export default async function DemoWorldPage() {
                 <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
                   <Link href="/analiz-zakupochnoi-dokumentacii">
                     <span>Подробнее об анализе документации</span>
-                    <ArrowRight className="w-4 h-4 ml-2" />
                   </Link>
                 </Button>
               </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Calculator, TrendingUp, Clock, DollarSign, Sparkles, CheckCircle2, ArrowRight } from "lucide-react";
+import { Calculator, TrendingUp, Clock, DollarSign, Sparkles, CheckCircle2 } from "lucide-react";
 
 export function ProcurementCalculator() {
   const [specsPerMonth, setSpecsPerMonth] = useState<number>(15);
@@ -163,7 +163,6 @@ export function ProcurementCalculator() {
             className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
           >
             <span>Попробовать бесплатно</span>
-            <ArrowRight size={14} />
           </a>
         </div>
       </div>

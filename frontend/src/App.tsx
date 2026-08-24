@@ -1655,6 +1655,19 @@ function billingPeriodSummaryText(item: BotAnalytics['billing']['period'][number
   return parts.join(' · ')
 }
 
+type RecommendationItem = {
+  id: string
+  category?: string
+  target?: string
+  title: string
+  current_text: string
+  proposed_text: string
+  rationale: string
+  impact?: string
+  status: 'pending' | 'applied' | 'rejected'
+  created_at?: string
+}
+
 type SeoAnalytics = {
   updated_at: string
   collection_status: string
@@ -1666,7 +1679,18 @@ type SeoAnalytics = {
     searchable_pages: number
     excluded_pages: number
     top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
-    growth_points?: { text: string; shows: number; clicks: number; avg_position: number; potential: string; action: string }[]
+    growth_points?: {
+      text: string
+      shows: number
+      clicks: number
+      avg_position: number
+      wordstat_demand?: number
+      top3_potential_clicks?: number
+      priority?: 'high' | 'medium' | 'normal'
+      demand_source?: string
+      potential: string
+      action: string
+    }[]
   }
   metrika: {
     period_days: number
@@ -1681,18 +1705,16 @@ type SeoAnalytics = {
     total_goal_reaches?: number
     total_conversion_rate?: number
   }
-  recommendations: {
-    id: string
-    page: string
-    reason: string
-    proposal: string
-    status: 'pending' | 'applied' | 'rejected'
-  }[]
+  recommendations: RecommendationItem[]
 }
 
 function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; loading: boolean; onRefresh: () => void }) {
   const [sendingDigest, setSendingDigest] = useState(false)
   const [digestSuccess, setDigestSuccess] = useState('')
+  const [triggeringRecrawl, setTriggeringRecrawl] = useState(false)
+  const [recrawlMsg, setRecrawlMsg] = useState('')
+  const [querySearch, setQuerySearch] = useState('')
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   async function handleSendDigest() {
     setSendingDigest(true)
@@ -1709,6 +1731,43 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
       alert('Ошибка отправки в Telegram')
     } finally {
       setSendingDigest(false)
+    }
+  }
+
+  async function handleTriggerRecrawl() {
+    setTriggeringRecrawl(true)
+    setRecrawlMsg('')
+    try {
+      const res = await api<{ ok: boolean; submitted_count?: number; total_urls?: number; quota_remainder?: number; error?: string }>('/api/seo-analytics/recrawl', { method: 'POST' })
+      if (res?.ok) {
+        setRecrawlMsg(`Отправлено ${res.submitted_count}/${res.total_urls} страниц. Остаток квоты: ${res.quota_remainder}`)
+        setTimeout(() => setRecrawlMsg(''), 5000)
+      } else {
+        alert(res?.error || 'Ошибка отправки в очередь переобхода')
+      }
+    } catch (e) {
+      alert('Ошибка отправки в очередь переобхода')
+    } finally {
+      setTriggeringRecrawl(false)
+    }
+  }
+
+  async function handleRecAction(recId: string, action: 'applied' | 'rejected' | 'pending') {
+    setActionLoading(recId)
+    try {
+      const res = await api<{ ok: boolean; error?: string }>(`/api/seo-analytics/recommendations/${recId}/action`, {
+        method: 'POST',
+        body: JSON.stringify({ action })
+      })
+      if (res?.ok) {
+        onRefresh()
+      } else {
+        alert(res?.error || 'Ошибка обновления статуса')
+      }
+    } catch (e) {
+      alert('Ошибка обновления статуса')
+    } finally {
+      setActionLoading(null)
     }
   }
 
@@ -1741,14 +1800,20 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
 
   const growthPoints = webmaster.growth_points || []
   const goals = metrika.goals || []
+  const allQueries = webmaster.top_queries || []
+  const filteredQueries = querySearch.trim()
+    ? allQueries.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
+    : allQueries
+
+  const recs = data.recommendations || []
 
   return (
     <section className="stack">
-      {/* 1. STATUS BANNER & TELEGRAM ACTION */}
+      {/* 1. STATUS BANNER & ACTION BAR */}
       <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid var(--accent)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
               <span className="status-badge" style={{ background: '#e5f4f3', color: '#075b63', fontWeight: 'bold', padding: '3px 8px', borderRadius: 6 }}>
                 ● Автоматический сбор активен
               </span>
@@ -1756,12 +1821,16 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                 Обновлено: {new Date(data.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
               </small>
               {digestSuccess && <span style={{ color: '#075b63', fontWeight: 'bold', fontSize: 12 }}>✓ {digestSuccess}</span>}
+              {recrawlMsg && <span style={{ color: '#047857', fontWeight: 'bold', fontSize: 12 }}>⚡ {recrawlMsg}</span>}
             </div>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)' }}>
-              Сервер самостоятельно опрашивает Яндекс.Метрику и Вебмастер в фоновом режиме. Выборка накапливается для точных ИИ-рекомендаций.
+              Сервер самостоятельно опрашивает Яндекс.Метрику, Вебмастер и Wordstat API в фоновом режиме.
             </p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="secondary small-text" onClick={() => void handleTriggerRecrawl()} disabled={triggeringRecrawl} title="Отправить все страницы sitemap в очередь переобхода Яндекса">
+              <RefreshCw size={13} className={triggeringRecrawl ? 'spin' : ''} /> {triggeringRecrawl ? 'Отправка...' : '⚡ Переобход (Recrawl)'}
+            </button>
             <button className="secondary small-text" onClick={() => void handleSendDigest()} disabled={sendingDigest}>
               <Bot size={14} /> {sendingDigest ? 'Отправка...' : 'Отправить в Telegram'}
             </button>
@@ -1789,7 +1858,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         })}
       </div>
 
-      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS */}
+      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS WITH WORDSTAT DEMAND */}
       <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
@@ -1806,29 +1875,53 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
             <table className="seo-table">
               <thead>
                 <tr>
-                  <th style={{ width: '40%' }}>Поисковая фраза (Яндекс)</th>
-                  <th style={{ width: '15%' }}>Позиция</th>
-                  <th style={{ width: '15%' }}>Показы</th>
-                  <th style={{ width: '30%' }}>Рекомендованное действие</th>
+                  <th style={{ width: '32%' }}>Поисковая фраза (Яндекс)</th>
+                  <th style={{ width: '11%' }}>Позиция</th>
+                  <th style={{ width: '11%' }}>Показы</th>
+                  <th style={{ width: '18%' }}>Спрос Вордстат (Рынок / мес)</th>
+                  <th style={{ width: '14%' }}>Потенциал ТОП-3</th>
+                  <th style={{ width: '14%' }}>SEO-Приоритет</th>
                 </tr>
               </thead>
               <tbody>
-                {growthPoints.map((g, idx) => (
-                  <tr key={idx}>
-                    <td><strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong></td>
-                    <td>
-                      <span className="seo-pos-badge growth">{g.avg_position} место</span>
-                    </td>
-                    <td>
-                      <strong style={{ fontSize: 14 }}>{g.shows}</strong> <small style={{ color: 'var(--muted)' }}>показов</small>
-                    </td>
-                    <td>
-                      <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px' }}>
-                        Дожать в ТОП-3 (80% кликов)
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {growthPoints.map((g, idx) => {
+                  const isHighPriority = g.priority === 'high' || (idx === 0 && (g.wordstat_demand || 0) > 0)
+                  const demand = g.wordstat_demand || 0
+                  const potentialClicks = g.top3_potential_clicks || Math.round(demand * 0.35)
+                  return (
+                    <tr key={idx} className={isHighPriority ? 'priority-row-high' : ''}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong>
+                          {isHighPriority && <span className="wordstat-badge-top">🔥 Приоритет №1</span>}
+                        </div>
+                      </td>
+                      <td>
+                        <span className="seo-pos-badge growth">{g.avg_position} место</span>
+                      </td>
+                      <td>
+                        <strong style={{ fontSize: 14 }}>{g.shows}</strong> <small style={{ color: 'var(--muted)' }}>показов</small>
+                      </td>
+                      <td>
+                        <span className="wordstat-demand-val">{demand.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>запр./мес</small>
+                      </td>
+                      <td>
+                        <span className="wordstat-potential-val">+{potentialClicks.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>кл./мес (35%)</small>
+                      </td>
+                      <td>
+                        {isHighPriority ? (
+                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px', background: '#fef3c7', color: '#92400e', borderColor: '#fde68a' }}>
+                            SEO-дожим в ТОП-3
+                          </span>
+                        ) : (
+                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px' }}>
+                            Дожать в ТОП-3
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -1839,17 +1932,26 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         )}
       </div>
 
-      {/* 4. FULL-WIDTH TABLE: ALL SEARCH QUERIES */}
+      {/* 4. FULL-WIDTH TABLE: ALL SEARCH QUERIES WITH SEARCH FILTER */}
       <div className="form-panel full-width-panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>🔎 Все поисковые фразы и позиции в Яндексе</h2>
-          <span className="pill web" style={{ fontSize: 11 }}>{(webmaster.top_queries || []).length} запросов зафиксировано</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="text"
+              placeholder="🔍 Поиск по фразам..."
+              value={querySearch}
+              onChange={e => setQuerySearch(e.target.value)}
+              style={{ maxWidth: 220, minHeight: 32, padding: '4px 10px', fontSize: 12, borderRadius: 6 }}
+            />
+            <span className="pill web" style={{ fontSize: 11 }}>{filteredQueries.length} из {allQueries.length} запросов</span>
+          </div>
         </div>
         <p className="field-help" style={{ marginBottom: 12 }}>
           Точные поисковые запросы реальных людей в Яндексе, средняя позиция показа и спрос
         </p>
 
-        {(webmaster.top_queries || []).length > 0 ? (
+        {filteredQueries.length > 0 ? (
           <div className="seo-table-wrap">
             <table className="seo-table">
               <thead>
@@ -1862,7 +1964,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                 </tr>
               </thead>
               <tbody>
-                {(webmaster.top_queries || []).map((q, idx) => {
+                {filteredQueries.map((q, idx) => {
                   const pos = q.avg_position || 0
                   const isTop3 = pos > 0 && pos <= 3.5
                   const isGrowth = pos > 3.5 && pos <= 10.5
@@ -1905,7 +2007,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           </div>
         ) : (
           <div className="inline-note" style={{ padding: '12px 0' }}>
-            Поисковых показов пока не зафиксировано.
+            {querySearch ? 'По вашему фильтру запросов не найдено.' : 'Поисковых показов пока не зафиксировано.'}
           </div>
         )}
       </div>
@@ -2007,27 +2109,109 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </div>
       </div>
 
-      {/* 7. AI RECOMMENDATIONS & APPROVAL SECTION */}
+      {/* 7. AI RECOMMENDATIONS & INTERACTIVE APPROVAL SECTION */}
       <div className="form-panel full-width-panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>Рекомендации по оптимизации (Согласование)</h2>
+          <h2 style={{ margin: 0, fontSize: 17 }}>🧠 AI-Рекомендации по оптимизации (Согласование владельцем)</h2>
           <span className="pill web">Выборка: {metrika.visits} / {data.sample_target || 300} визитов</span>
         </div>
         
-        <div style={{ background: '#f8faf9', border: '1px solid var(--line)', borderRadius: 8, padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontWeight: 'bold', color: '#075b63', fontSize: 14 }}>⏳ Режим защиты: Идет накопление статистики</span>
-          </div>
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: '#475569' }}>
-            На текущем объеме посещений ({metrika.visits} визитов) автоматические правки заблокированы, чтобы не менять сайт на нерепрезентативной выборке.
-            Сервер собирает статистику в фоне. При формировании устойчивых поисковых паттернов здесь появятся конкретные карточки с предложениями и кнопками <strong>[Согласовать]</strong> / <strong>[Отклонить]</strong>. Без вашего согласия сайт меняться не будет.
-          </p>
-          <div className="seo-progress-bar-bg" style={{ marginTop: 12, height: 8 }}>
-            <div 
-              className="seo-progress-bar-fill" 
-              style={{ width: `${Math.min(100, Math.round((metrika.visits / (data.sample_target || 300)) * 100))}%` }} 
-            />
-          </div>
+        <p className="field-help" style={{ marginBottom: 14 }}>
+          Интеллектуальные рекомендации сформированы на основе реальных поисковых фраз Вебмастера и поведенческих конверсий Метрики. Вы можете согласовать или отклонить любое предложение.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+          {recs.map(r => {
+            const isApplied = r.status === 'applied'
+            const isRejected = r.status === 'rejected'
+            const isPending = !isApplied && !isRejected
+            const isLoading = actionLoading === r.id
+
+            return (
+              <div 
+                key={r.id} 
+                style={{ 
+                  background: '#fff', 
+                  border: `1px solid ${isApplied ? '#86efac' : isRejected ? '#e2e8f0' : '#cbd5e1'}`, 
+                  borderRadius: 10, 
+                  padding: 16, 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  justifyContent: 'space-between',
+                  boxShadow: isApplied ? '0 0 0 2px #dcfce7' : 'none'
+                }}
+              >
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#0f766e', textTransform: 'uppercase' }}>
+                      {r.category || 'Оптимизация'}
+                    </span>
+                    {isApplied ? (
+                      <span className="pill balance" style={{ fontSize: 11, background: '#dcfce7', color: '#166534' }}>✅ Согласовано</span>
+                    ) : isRejected ? (
+                      <span className="pill" style={{ fontSize: 11, background: '#f1f5f9', color: '#64748b' }}>Отклонено</span>
+                    ) : (
+                      <span className="pill web" style={{ fontSize: 11, background: '#fef3c7', color: '#92400e' }}>Ожидает решения</span>
+                    )}
+                  </div>
+
+                  <strong style={{ display: 'block', fontSize: 14, color: '#0f172a', marginBottom: 10 }}>{r.title}</strong>
+                  
+                  <div style={{ background: '#fef2f2', borderLeft: '3px solid #ef4444', padding: '6px 10px', borderRadius: 4, marginBottom: 8, fontSize: 12 }}>
+                    <span style={{ display: 'block', fontSize: 10, fontWeight: 700, color: '#b91c1c' }}>ТЕКУЩИЙ ВАРИАНТ (ДО):</span>
+                    <span style={{ color: '#475569' }}>«{r.current_text}»</span>
+                  </div>
+
+                  <div style={{ background: '#f0fdf4', borderLeft: '3px solid #16a34a', padding: '6px 10px', borderRadius: 4, marginBottom: 10, fontSize: 12 }}>
+                    <span style={{ display: 'block', fontSize: 10, fontWeight: 700, color: '#15803d' }}>ПРЕДЛОЖЕНИЕ ИИ (ПОСЛЕ):</span>
+                    <span style={{ color: '#0f172a', fontWeight: 600 }}>«{r.proposed_text}»</span>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.4, marginBottom: 8 }}>
+                    <strong>💡 Обоснование:</strong> {r.rationale}
+                  </div>
+
+                  {r.impact && (
+                    <div style={{ fontSize: 11, color: '#0f766e', fontWeight: 600, marginBottom: 12 }}>
+                      🚀 Ожидаемый эффект: {r.impact}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 6, borderTop: '1px solid #f1f5f9', paddingTop: 10, marginTop: 4 }}>
+                  {!isApplied ? (
+                    <button 
+                      className="primary small-text" 
+                      style={{ flex: 1, minHeight: 30 }}
+                      disabled={isLoading}
+                      onClick={() => void handleRecAction(r.id, 'applied')}
+                    >
+                      {isLoading ? '...' : '✅ Согласовать'}
+                    </button>
+                  ) : (
+                    <button 
+                      className="ghost small-text" 
+                      style={{ flex: 1, minHeight: 30 }}
+                      disabled={isLoading}
+                      onClick={() => void handleRecAction(r.id, 'pending')}
+                    >
+                      {isLoading ? '...' : '↩️ Отменить'}
+                    </button>
+                  )}
+                  {isPending && (
+                    <button 
+                      className="ghost small-text" 
+                      style={{ minHeight: 30 }}
+                      disabled={isLoading}
+                      onClick={() => void handleRecAction(r.id, 'rejected')}
+                    >
+                      Отклонить
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </section>

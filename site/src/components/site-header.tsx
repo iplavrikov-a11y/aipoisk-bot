@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { TenderLexLogo } from "@/components/logo";
-import { Phone, Send, Sparkles, MessageCircle, ArrowRight } from "lucide-react";
+import { Phone, Send, Sparkles, MessageCircle } from "lucide-react";
 
 export function SiteHeader() {
   const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";

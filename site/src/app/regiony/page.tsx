@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { MapPin, ArrowRight, Sparkles, Building2 } from "lucide-react";
+import { MapPin, Sparkles, Building2 } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -126,7 +126,6 @@ export default function RegionyHubPage() {
                       className="text-xs font-black text-teal-700 hover:text-teal-900 inline-flex items-center gap-1 transition-colors"
                     >
                       <span>Поставщики региона</span>
-                      <ArrowRight size={13} />
                     </Link>
                   </div>
                 </article>

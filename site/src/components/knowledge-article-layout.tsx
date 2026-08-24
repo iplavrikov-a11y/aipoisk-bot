@@ -3,8 +3,6 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
 import {
-  ArrowLeft,
-  ArrowRight,
   Clock,
   Calendar,
   UserCheck,
@@ -250,7 +248,6 @@ export function KnowledgeArticleLayout({
                         className="inline-flex items-center gap-1 text-xs font-bold text-[#075b63] hover:text-[#06464c] transition-colors"
                       >
                         <span>Все статьи базы знаний</span>
-                        <ArrowRight size={14} />
                       </Link>
                     </div>
 
@@ -274,13 +271,95 @@ export function KnowledgeArticleLayout({
                           </div>
                           <div className="pt-4 mt-auto flex items-center text-xs font-bold text-[#075b63]">
                             <span>Читать статью</span>
-                            <ArrowRight size={13} className="ml-1 group-hover:translate-x-1 transition-transform" />
                           </div>
                         </Link>
                       ))}
                     </div>
                   </div>
                 )}
+
+                {/* INTERNAL LINKING CLUSTER: PROCUREMENT TOOLS */}
+                <div className="mt-12 p-6 sm:p-7 rounded-3xl bg-white border border-[#d8e3e1] shadow-2xs space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h4 className="text-sm font-black text-[#172120] uppercase tracking-wider flex items-center gap-2">
+                      <Search size={16} className="text-[#075b63]" /> Инструменты анализа и подбора по ТЗ
+                    </h4>
+                    <span className="text-xs text-[#697a77] font-semibold">TenderLex Suite</span>
+                  </div>
+                  <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3 pt-1">
+                    <Link
+                      href="/poisk-postavshchikov-po-tz"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Поиск товаров и аналогов по ТЗ
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Подбор эквивалентов и прямых поставщиков под ГОСТ и ТУ.
+                      </span>
+                    </Link>
+
+                    <Link
+                      href="/poisk-proizvoditeley-po-tz"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Поиск заводов-производителей
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Прямой выход на отделы сбыта производственных предприятий.
+                      </span>
+                    </Link>
+
+                    <Link
+                      href="/analiz-rynka-44-fz"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Анализ рынка 44-ФЗ и НМЦК
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Оценка конкурентной среды и цен до подачи заявки.
+                      </span>
+                    </Link>
+
+                    <Link
+                      href="/reestr-minpromtorga-v-zakupkah"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Реестр Минпромторга (ПП 719)
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Проверка российского происхождения и баллов локализации.
+                      </span>
+                    </Link>
+
+                    <Link
+                      href="/zapros-kp-po-tz"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Запрос коммерческих предложений
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Автогенерация делового письма и веерная рассылка по отделам сбыта.
+                      </span>
+                    </Link>
+
+                    <Link
+                      href="/regiony"
+                      className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
+                    >
+                      <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
+                        Поиск поставщиков в регионах
+                      </strong>
+                      <span className="text-[11px] text-[#697a77] block leading-tight">
+                        Москва, СПб, Екатеринбург, Казань, Новосибирск и другие хабы.
+                      </span>
+                    </Link>
+                  </div>
+                </div>
 
                 {/* ARTICLE IN-TEXT CTA (LIGHT EMERALD) */}
                 <div className="my-10 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#e5f4f3] via-[#edf7df]/60 to-[#eef3f2] border-2 border-[#b8c8c5] text-[#172120] shadow-md space-y-5">
@@ -369,7 +448,7 @@ export function KnowledgeArticleLayout({
                     href="/baza-znaniy"
                     className="inline-flex items-center text-xs font-bold text-[#697a77] hover:text-[#075b63] transition-colors"
                   >
-                    <ArrowLeft size={14} className="mr-1.5" /> Ко всем статьям базы знаний
+                    Ко всем статьям базы знаний
                   </Link>
                 </div>
               </aside>
