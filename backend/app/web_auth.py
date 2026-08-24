@@ -226,7 +226,7 @@ def _verification_email_text(link: str) -> str:
         [
             "Здравствуйте!",
             "",
-            "Вы зарегистрировали личный кабинет в сервисе TenderLex.",
+            "Вы создали личный кабинет в сервисе TenderLex.",
             "Подтвердите email для активации тестового доступа на 4 задачи (396 ₽):",
             link,
             "",
@@ -240,71 +240,61 @@ def _verification_email_text(link: str) -> str:
 
 def _verification_email_html(link: str) -> str:
     safe_link = html_lib.escape(link, quote=True)
-    return f"""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" lang="ru">
+    return f"""<!DOCTYPE html>
+<html lang="ru">
 <head>
-  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Подтверждение email TenderLex</title>
 </head>
-<body style="margin:0;padding:0;background-color:#f8fafc;font-family:Arial,Helvetica,sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.5;color:#334155;">
-  <div style="background-color:#f8fafc;padding:16px 8px;width:100%;box-sizing:border-box;">
-    <div style="max-width:500px;margin:0 auto;background-color:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
-      
-      <!-- Top Accent Bar -->
-      <div style="height:4px;background-color:#0f766e;line-height:4px;font-size:4px;">&nbsp;</div>
-      
-      <!-- Body Container -->
-      <div style="padding:22px 24px 20px 24px;">
-        
-        <!-- Header -->
-        <div style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #f1f5f9;">
-          <div style="font-size:20px;font-weight:bold;color:#0f766e;line-height:1.2;">TenderLex</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px;">Сервис подбора поставщиков и анализа ТЗ</div>
-        </div>
-
-        <!-- Title -->
-        <h2 style="font-size:16px;font-weight:bold;color:#0f172a;margin:0 0 10px 0;line-height:1.3;">
-          Подтверждение адреса электронной почты
-        </h2>
-        
-        <p style="margin:0 0 10px 0;font-size:14px;line-height:1.5;color:#334155;">
-          Здравствуйте!
-        </p>
-        
-        <p style="margin:0 0 18px 0;font-size:14px;line-height:1.5;color:#334155;">
-          Вы зарегистрировали личный кабинет в сервисе <strong>TenderLex</strong>. Подтвердите email для активации тестового доступа на 4 задачи (396 ₽):
-        </p>
-
-        <!-- Button with fixed line-height & exact vertical/horizontal centering -->
-        <div style="text-align:center;margin:20px 0 22px 0;">
-          <a href="{safe_link}" target="_blank" style="background-color:#0f766e;border-radius:8px;color:#ffffff;display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:42px;height:42px;text-align:center;text-decoration:none;padding:0 32px;-webkit-text-size-adjust:none;">Подтвердить email</a>
-        </div>
-
-        <!-- Link Fallback Box -->
-        <div style="margin:16px 0 14px 0;padding:10px 12px;background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;">
-          <div style="font-size:11px;color:#64748b;margin-bottom:4px;">Прямая ссылка для перехода:</div>
-          <a href="{safe_link}" target="_blank" style="color:#0f766e;font-size:11px;line-height:1.4;word-break:break-all;text-decoration:underline;font-family:monospace;">{safe_link}</a>
-        </div>
-
-        <!-- Footnotes -->
-        <p style="margin:0 0 4px 0;font-size:11px;color:#64748b;line-height:1.4;">
-          • Ссылка действительна в течение 24 часов.
-        </p>
-        <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.4;">
-          • Если вы не регистрировались на сайте tenderlex.ru, просто проигнорируйте это письмо.
-        </p>
-
-      </div>
-
-      <!-- Footer -->
-      <div style="background-color:#f8fafc;border-top:1px solid #f1f5f9;padding:12px 24px;text-align:center;">
-        <div style="font-size:11px;color:#94a3b8;line-height:1.4;">
-          TenderLex • Поиск поставщиков и аудит 44-ФЗ / 223-ФЗ • <a href="https://tenderlex.ru" target="_blank" style="color:#0f766e;text-decoration:none;">tenderlex.ru</a>
-        </div>
-      </div>
-
+<body style="margin:0;padding:0;background-color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1e293b;-webkit-font-smoothing:antialiased;">
+  <div style="max-width:600px;margin:0 auto;padding:24px 20px;box-sizing:border-box;">
+    
+    <!-- Brand Header -->
+    <div style="padding-bottom:14px;border-bottom:2px solid #0f766e;margin-bottom:20px;">
+      <div style="font-size:22px;font-weight:800;color:#0f766e;letter-spacing:-0.5px;line-height:1.2;">TenderLex</div>
+      <div style="font-size:12px;color:#64748b;font-weight:500;margin-top:2px;">Интеллектуальный поиск поставщиков и экспресс-аудит ТЗ</div>
     </div>
+
+    <!-- Title & Greeting -->
+    <div style="font-size:18px;font-weight:700;color:#0f172a;line-height:1.3;margin-bottom:12px;">
+      Подтверждение адреса электронной почты
+    </div>
+
+    <div style="font-size:14px;line-height:1.6;color:#334155;margin-bottom:10px;">
+      Здравствуйте!
+    </div>
+
+    <div style="font-size:14px;line-height:1.6;color:#334155;margin-bottom:20px;">
+      Вы создали личный кабинет в сервисе <strong>TenderLex</strong>. Подтвердите email для активации тестового доступа на 4 задачи (396 ₽) и запуска подбора поставщиков:
+    </div>
+
+    <!-- Centered Button -->
+    <div style="text-align:center;margin:24px 0;">
+      <a href="{safe_link}" target="_blank" style="display:inline-block;background-color:#0f766e;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:13px 36px;border-radius:8px;line-height:1.2;text-align:center;box-shadow:0 2px 4px rgba(15,118,110,0.2);-webkit-text-size-adjust:none;">
+        Подтвердить email
+      </a>
+    </div>
+
+    <!-- Fallback Direct Link -->
+    <div style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:18px;">
+      <div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:600;">Прямая ссылка для перехода:</div>
+      <a href="{safe_link}" target="_blank" style="color:#0f766e;font-size:11px;line-height:1.4;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;text-decoration:underline;">{safe_link}</a>
+    </div>
+
+    <!-- Security & Notice -->
+    <div style="font-size:11px;line-height:1.5;color:#64748b;margin-bottom:4px;">
+      • Ссылка действительна в течение 24 часов.
+    </div>
+    <div style="font-size:11px;line-height:1.5;color:#94a3b8;margin-bottom:20px;">
+      • Если вы не регистрировались на сайте <a href="https://tenderlex.ru" target="_blank" style="color:#64748b;text-decoration:none;">tenderlex.ru</a>, просто проигнорируйте это письмо — аккаунт не будет активирован.
+    </div>
+
+    <!-- Footer -->
+    <div style="border-top:1px solid #e2e8f0;padding-top:14px;font-size:11px;color:#94a3b8;line-height:1.5;">
+      © TenderLex • Сервис снабжения и аудита 44-ФЗ / 223-ФЗ • <a href="https://tenderlex.ru" target="_blank" style="color:#0f766e;text-decoration:none;font-weight:600;">tenderlex.ru</a>
+    </div>
+
   </div>
 </body>
 </html>"""
