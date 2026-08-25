@@ -13,12 +13,16 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Оценка рисков закупки: 44-ФЗ, 223-ФЗ и коммерческие торги",
+  title: "Оценка рисков закупок: 44-ФЗ, 223-ФЗ и коммерческие торги",
   description:
-    "Автоматическая оценка исполнимости контрактов 44-ФЗ, 223-ФЗ и коммерческих закупок: аудит условий приемки, финансовых гарантий и скрытых штрафов.",
+    "Автоматическая оценка рисков закупок и проектов контрактов 44-ФЗ, 223-ФЗ: выявление скрытых штрафов, невыполнимых сроков поставки и условий приемки за 2 минуты.",
   keywords: [
+    "оценка рисков закупок",
     "оценка рисков закупки",
     "проверка рисков 44-ФЗ",
+    "риски 44 фз",
+    "риск закупки 44 фз",
+    "анализ рисков закупок",
     "риски 223-ФЗ",
     "коммерческие торги",
     "риски исполнения контракта",
@@ -33,7 +37,7 @@ const pagePath = "/ocenka-riskov-zakupki";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Как оценка рисков помогает поставщикам?",
+    question: "Как оценка рисков закупок помогает поставщикам?",
     answer:
       "Она позволяет вовремя отказаться от заведомо токсичных или неисполнимых контрактов в госзакупках и коммерческих торгах, где заказчик установил невыполнимые сроки или скрытые штрафы.",
   },
@@ -47,11 +51,11 @@ const faqItems: FaqItem[] = [
 export default function OcenkaRisktovZakupkiPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
     { name: "Главная", item: "https://tenderlex.ru" },
-    { name: "Оценка рисков закупки", item: "https://tenderlex.ru" + pagePath },
+    { name: "Оценка рисков закупок", item: "https://tenderlex.ru" + pagePath },
   ]);
 
   const schemaService = buildServiceJsonLd({
-    name: "Оценка рисков закупки",
+    name: "Оценка рисков закупок",
     description: "Сервис экспресс-оценки рисков исполнения контрактов 44-ФЗ, 223-ФЗ и коммерческих закупок.",
     path: pagePath,
   });
@@ -87,7 +91,7 @@ export default function OcenkaRisktovZakupkiPage() {
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Оценка рисков закупки, госконтракта и коммерческого договора
+              Оценка рисков закупок, госконтрактов 44-ФЗ и коммерческих договоров
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">

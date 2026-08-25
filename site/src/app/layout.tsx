@@ -27,7 +27,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 const siteUrl = normalizedSiteUrl();
 const defaultTitle = "TenderLex — поиск поставщиков и анализ любых закупок";
 const defaultDescription =
-  "TenderLex находит поставщиков по ТЗ, проверяет контакты отделов продаж, готовит запросы КП и анализирует условия закупок по 44-ФЗ, 223-ФЗ и коммерческим торгам.";
+  "TenderLex — онлайн-сервис поиска поставщиков и производителей по ТЗ, ГОСТ и спецификациям. Готовый реестр прямых контактов с проверкой ИНН, оценка рисков закупок и проектов контрактов 44-ФЗ и 223-ФЗ за 2 минуты.";
 const defaultOgImage = "/tenderlex-product-preview.png";
 const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
@@ -68,6 +68,12 @@ export const metadata: Metadata = {
     "поиск поставщиков по ТЗ",
     "поиск поставщиков по техническому заданию",
     "поиск поставщиков под спецификацию",
+    "поиск товаров по ТЗ",
+    "подбор аналогов по ТЗ",
+    "оценка рисков закупок",
+    "минпромторг закупки",
+    "анализ рисков закупок",
+    "риски 44 фз",
     "запрос цены поставщику",
     "анализ закупок",
     "анализ закупочной документации",

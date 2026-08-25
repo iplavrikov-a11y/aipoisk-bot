@@ -13,14 +13,17 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Реестр Минпромторга в закупках — проверка ПП 616 и 617",
+  title: "Минпромторг закупки — проверка Реестра ГИСП, ПП 616 и 617",
   description:
-    "Проверка товаров и производителей на включение в Реестр российской промышленной продукции Минпромторга (ГИСП), применение нацрежима по 44-ФЗ и 223-ФЗ.",
+    "Экспресс-проверка товаров и производителей на включение в Реестр Минпромторга (ГИСП) в закупках по 44-ФЗ и 223-ФЗ. Поиск заводов с действующими реестровыми номерами.",
   keywords: [
+    "минпромторг закупки",
     "реестр Минпромторга в закупках",
+    "реестр минпромторга 44 фз",
     "постановление 616 закупки",
     "постановление 617 закупки",
     "проверка реестра ГИСП",
+    "выписка гисп закупки",
     "TenderLex",
   ],
   alternates: {
@@ -32,7 +35,7 @@ const pagePath = "/reestr-minpromtorga-v-zakupkah";
 
 const faqItems: FaqItem[] = [
   {
-    question: "Как TenderLex проверяет требования Минпромторга?",
+    question: "Как TenderLex проверяет требования Минпромторга в закупках?",
     answer:
       "Сервис сопоставляет код ОКПД2 и характеристики товара из ТЗ с перечнями Постановлений Правительства № 616 (запрет) и № 617 (ограничения), выявляя необходимость предоставления реестровых номеров ГИСП.",
   },
@@ -46,11 +49,11 @@ const faqItems: FaqItem[] = [
 export default function ReestrMinpromtorgaPage() {
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
     { name: "Главная", item: "https://tenderlex.ru" },
-    { name: "Реестр Минпромторга в закупках", item: "https://tenderlex.ru" + pagePath },
+    { name: "Минпромторг закупки — Реестр ГИСП", item: "https://tenderlex.ru" + pagePath },
   ]);
 
   const schemaService = buildServiceJsonLd({
-    name: "Проверка Реестра Минпромторга в закупках",
+    name: "Минпромторг закупки — Проверка Реестра ГИСП",
     description: "Сервис экспресс-аудита требований национального режима (ПП 616/617) по ТЗ.",
     path: pagePath,
   });
@@ -86,7 +89,7 @@ export default function ReestrMinpromtorgaPage() {
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Проверка Реестра Минпромторга и нацрежима в закупках
+              Минпромторг закупки: проверка Реестра ГИСП и нацрежима по ТЗ
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">

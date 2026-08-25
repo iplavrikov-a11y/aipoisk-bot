@@ -23,6 +23,12 @@ Date: 2026-07-08
 - Yandex ID OAuth & Google Search Console Automation (2026-08):
   - Added 1-click Yandex ID login/registration for the customer cabinet (`backend/app/web_auth.py`, `site/src/app/cabinet/cabinet-client.tsx`).
   - Integrated Google Search Console API for automated performance tracking and indexing analytics (`backend/app/google_seo.py`).
+  - Fixed GSC client dependency runtime (`google-api-python-client`, `google-auth` added to `requirements.txt`).
+  - Activated live Google Search Console metrics (19 impressions, 12 search queries, sitemap sync).
+  - Fixed cron harvester environment path in crontab (`PYTHONPATH` propagation).
+  - Enhanced on-page SEO meta tags, titles, and headers for high-intent queries (*«оценка рисков закупок»*, *«минпромторг закупки»*, *«поиск товаров по тз»*) across Next.js landing pages.
+  - Added unit test coverage in `backend/tests/test_google_seo.py` (100% pass).
+  - Sent full 86-URL sitemap recrawl batch to Yandex Webmaster API.
 - Trial Period & Limits Expansion (2026-08):
   - Increased trial balance limit for newly registered accounts from 198 ₽ (2 tasks) to 396 ₽ (4 tasks @ 99 ₽).
   - Updated defaults in `models.py`, `db.py`, and database `system_settings` (`trial_supplier_search_limit = 2`, `trial_procurement_report_limit = 2`).
