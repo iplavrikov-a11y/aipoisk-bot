@@ -114,14 +114,20 @@ export default function LegalPage() {
                 <div>
                   <span className="text-slate-400 block uppercase font-bold text-[10px]">Каналы связи</span>
                   <div className="space-y-1 mt-1">
-                    <a href="tel:+79211460080" className="block text-teal-700 font-bold hover:underline">
-                      +7 (921) 146-00-80 (Телефон)
+                    <a href="tel:+79951460080" className="block text-teal-700 font-bold hover:underline">
+                      +7 (995) 146-00-80 (Телефон)
                     </a>
-                    <a href="mailto:info@tenderlex.ru" className="block text-teal-700 font-bold hover:underline">
-                      info@tenderlex.ru
+                    <a href="https://wa.me/79210629909" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
+                      WhatsApp: написать сообщение
                     </a>
                     <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
                       Telegram: @lexelence
+                    </a>
+                    <a href="https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
+                      Max: написать сообщение
+                    </a>
+                    <a href="mailto:info@tenderlex.ru" className="block text-teal-700 font-bold hover:underline">
+                      info@tenderlex.ru
                     </a>
                   </div>
                 </div>

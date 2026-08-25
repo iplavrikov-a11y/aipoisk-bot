@@ -6,6 +6,10 @@
 - Customer cabinet: `https://tenderlex.ru/cabinet`
 - Online payment is not enabled yet.
 - Web users and Telegram users are separate. Internal `web:<id>` markers may exist in runtime data, but the owner-facing admin UI must not show them as Telegram accounts or Telegram IDs.
+- Customers can sign in using email/password or **Яндекс ID (OAuth 2.0)** with Instant Login.
+- When logging in via Яндекс ID:
+  - If a web user with that verified email already exists, their account is linked with `yandex_id` without duplicating records or losing balance/jobs.
+  - If it is a new user, a new `Client` and `WebUser` are provisioned automatically with pre-verified email and active trial balance.
 - Web access is managed manually from the admin panel by crediting or debiting a
   money amount. Search, analysis, and additional supplier search then debit the
   customer's balance according to effective prices.
@@ -97,7 +101,7 @@ Operational notes:
 
 - upload accepts XLSX only;
 - the backend builds JSONL and SQLite indexes before replacing the active cache;
-- `Только реестр` and `Реестр в приоритете` are blocked before job creation if
+- `Только реестр (Минпромторг)` and `Реестр в приоритете (Минпромторг)` are blocked before job creation if
   the local cache is missing, stale, or empty;
 - registry lookup is local SQLite search and does not use Playwright.
 
@@ -148,8 +152,8 @@ Use this checklist after deploy:
 16. Confirm tasks appear in `Задачи`, pagination shows 15 tasks per page, progress updates, and finished results can be downloaded.
 17. For supplier search and `Анализ + поиск`, confirm the customer can choose
     the registry mode before launch:
-    `Обычный поиск`, `Только реестр`, or `Реестр в приоритете`.
-18. For `Только реестр`, use a procurement where registry candidates are known
+    `Обычный поиск`, `Только реестр (Минпромторг)`, or `Реестр в приоритете (Минпромторг)`.
+18. For `Только реестр (Минпромторг)`, use a procurement where registry candidates are known
     or mockable. Confirm `evidence.json` records the selected supplier search
     policy and `minprom_registry` context. If the local registry cache is not
     ready, job creation must fail before reservation/charge instead of returning

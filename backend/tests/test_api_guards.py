@@ -1343,6 +1343,8 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual(payload["bot"]["telegram"], "@tenderlex_bot")
         self.assertEqual(payload["bot"]["telegram_url"], "https://t.me/tenderlex_bot")
         self.assertEqual(payload["contacts"]["email"], "snab@example.ru")
+        self.assertEqual(payload["contacts"]["phone"], "+7 (995) 146-00-80")
+        self.assertEqual(payload["contacts"]["phone_url"], "tel:+79951460080")
         self.assertEqual(payload["contacts"]["telegram_url"], "https://t.me/lexelence")
         self.assertEqual(payload["contacts"]["max"], "+79210629909")
         self.assertEqual(payload["contacts"]["max_url"], "https://max.ru/invite/max-owner")

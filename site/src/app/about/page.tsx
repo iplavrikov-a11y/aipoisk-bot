@@ -93,11 +93,11 @@ export default function AboutPage() {
                   <p><strong className="text-slate-900 font-bold">Адрес:</strong> 160541, Вологодская обл., Вологодский р-н, дер. Тарасово, д. 3</p>
                 </div>
                 <div className="space-y-2">
-                  <p><strong className="text-slate-900 font-bold">Телефон:</strong> <a href="tel:+79211460080" className="text-teal-700 font-bold hover:underline">+7 (921) 146-00-80</a></p>
-                  <p><strong className="text-slate-900 font-bold">WhatsApp:</strong> <a href="https://wa.me/79211460080" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">+7 (921) 146-00-80</a></p>
+                  <p><strong className="text-slate-900 font-bold">Телефон:</strong> <a href="tel:+79951460080" className="text-teal-700 font-bold hover:underline">+7 (995) 146-00-80</a></p>
+                  <p><strong className="text-slate-900 font-bold">WhatsApp:</strong> <a href="https://wa.me/79210629909" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">Написать в WhatsApp</a></p>
                   <p><strong className="text-slate-900 font-bold">Telegram-бот:</strong> <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@tenderlex_bot</a></p>
                   <p><strong className="text-slate-900 font-bold">Telegram поддержка:</strong> <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@lexelence</a></p>
-                  <p><strong className="text-slate-900 font-bold">Max:</strong> <a href="https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">+7 (921) 062-99-09</a></p>
+                  <p><strong className="text-slate-900 font-bold">Max:</strong> <a href="https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">Написать в Max</a></p>
                   <p><strong className="text-slate-900 font-bold">Email:</strong> <a href="mailto:support@tenderlex.ru" className="text-teal-700 font-bold hover:underline">support@tenderlex.ru</a> / <a href="mailto:info@tenderlex.ru" className="text-teal-700 font-bold hover:underline">info@tenderlex.ru</a></p>
                 </div>
               </div>

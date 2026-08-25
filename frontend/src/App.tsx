@@ -875,8 +875,8 @@ function supplierSearchPolicyLabel(job: Pick<Job, 'mode' | 'supplier_search_poli
   if (!['supplier_search', 'analysis_and_suppliers'].includes(job.mode)) return ''
   const labels: Record<string, string> = {
     normal: 'Обычный поиск',
-    minprom_registry_only: 'Запрет: реестр обязателен',
-    minprom_registry_priority: 'Преимущество: реестр в приоритете',
+    minprom_registry_only: 'Только реестр (Минпромторг)',
+    minprom_registry_priority: 'Реестр в приоритете (Минпромторг)',
   }
   return labels[job.supplier_search_policy || 'normal'] || 'Обычный поиск'
 }
@@ -1692,6 +1692,42 @@ type SeoAnalytics = {
       action: string
     }[]
   }
+  google?: {
+    status: string
+    site_url: string
+    period_days: number
+    total_impressions: number
+    total_clicks: number
+    avg_position: number
+    avg_ctr_percent: number
+    top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
+    growth_points?: {
+      text: string
+      shows: number
+      clicks: number
+      avg_position: number
+      wordstat_demand?: number
+      top3_potential_clicks?: number
+      priority?: 'high' | 'medium' | 'normal'
+      potential: string
+      action: string
+    }[]
+    sitemaps?: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number }[]
+    error?: string
+  }
+  combined_queries?: {
+    text: string
+    yandex_pos?: number | null
+    yandex_shows: number
+    yandex_clicks: number
+    google_pos?: number | null
+    google_shows: number
+    google_clicks: number
+    total_shows: number
+    total_clicks: number
+    in_yandex: boolean
+    in_google: boolean
+  }[]
   metrika: {
     period_days: number
     visits: number
@@ -1715,6 +1751,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   const [recrawlMsg, setRecrawlMsg] = useState('')
   const [querySearch, setQuerySearch] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [searchEngine, setSearchEngine] = useState<'all' | 'yandex' | 'google'>('all')
 
   async function handleSendDigest() {
     setSendingDigest(true)
@@ -1772,7 +1809,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   }
 
   if (loading && !data) {
-    return <div className="empty"><Loader2 className="spin" size={24} /> Загрузка данных Яндекс.Метрики и Вебмастера...</div>
+    return <div className="empty"><Loader2 className="spin" size={24} /> Загрузка данных Яндекс.Метрики, Вебмастера и Google Search Console...</div>
   }
   if (!data) {
     return (
@@ -1785,7 +1822,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
     )
   }
 
-  const { webmaster, metrika } = data
+  const { webmaster, metrika, google, combined_queries } = data
   const durationMin = Math.floor((metrika.avg_duration_seconds || 0) / 60)
   const durationSec = (metrika.avg_duration_seconds || 0) % 60
   const durationFormatted = `${durationMin} мин ${durationSec} сек`
@@ -1798,12 +1835,50 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
     { label: 'Отказы', value: `${metrika.bounce_rate || 0}%`, note: 'ушли в первые 15 секунд', icon: ArrowDown },
   ]
 
-  const growthPoints = webmaster.growth_points || []
+  const yandexGrowthPoints = (webmaster.growth_points || []).map(g => ({ ...g, engine: 'yandex' as const }))
+  const googleGrowthPoints = (google?.growth_points || []).map(g => ({ ...g, engine: 'google' as const }))
+  
+  const displayGrowthPoints = searchEngine === 'yandex'
+    ? yandexGrowthPoints
+    : searchEngine === 'google'
+    ? googleGrowthPoints
+    : [...yandexGrowthPoints, ...googleGrowthPoints]
+
   const goals = metrika.goals || []
-  const allQueries = webmaster.top_queries || []
+  const yandexQueries = webmaster.top_queries || []
+  const googleQueries = google?.top_queries || []
+  const combinedQueries = combined_queries || []
+
+  // Filtered queries based on engine and search input
+  const rawQueriesToFilter = searchEngine === 'yandex'
+    ? yandexQueries.map(q => ({
+        text: q.text,
+        shows: q.shows,
+        clicks: q.clicks,
+        yandex_pos: q.avg_position,
+        google_pos: null,
+        total_shows: q.shows,
+        total_clicks: q.clicks,
+        in_yandex: true,
+        in_google: false
+      }))
+    : searchEngine === 'google'
+    ? googleQueries.map(q => ({
+        text: q.text,
+        shows: q.shows,
+        clicks: q.clicks,
+        yandex_pos: null,
+        google_pos: q.avg_position,
+        total_shows: q.shows,
+        total_clicks: q.clicks,
+        in_yandex: false,
+        in_google: true
+      }))
+    : combinedQueries
+
   const filteredQueries = querySearch.trim()
-    ? allQueries.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
-    : allQueries
+    ? rawQueriesToFilter.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
+    : rawQueriesToFilter
 
   const recs = data.recommendations || []
 
@@ -1824,7 +1899,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
               {recrawlMsg && <span style={{ color: '#047857', fontWeight: 'bold', fontSize: 12 }}>⚡ {recrawlMsg}</span>}
             </div>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)' }}>
-              Сервер самостоятельно опрашивает Яндекс.Метрику, Вебмастер и Wordstat API в фоновом режиме.
+              Сервер самостоятельно опрашивает Яндекс.Метрику, Вебмастер, Wordstat и Google Search Console API в фоновом режиме.
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1858,36 +1933,116 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         })}
       </div>
 
+      {/* 2.1 SEARCH ENGINES OVERVIEW CARDS */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+        <div style={{ background: '#fff', border: '1px solid #fed7aa', borderLeft: '4px solid #ea580c', borderRadius: 8, padding: '12px 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#9a3412' }}>🔴 Яндекс Поиск</span>
+            <span className="pill tg" style={{ fontSize: 11 }}>ИКС: {webmaster.sqi || 10}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в ТОПе:</span>
+              <strong style={{ fontSize: 16, color: '#0f172a' }}>{yandexQueries.length}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Точек роста ТОП-3:</span>
+              <strong style={{ fontSize: 16, color: '#c2410c' }}>{yandexGrowthPoints.length}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Страниц в индексе:</span>
+              <strong style={{ fontSize: 16, color: '#0f766e' }}>{webmaster.searchable_pages || 32}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ background: '#fff', border: '1px solid #bfdbfe', borderLeft: '4px solid #2563eb', borderRadius: 8, padding: '12px 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8' }}>🔵 Google Search Console</span>
+            <span className="pill web" style={{ fontSize: 11 }}>API v1: {google?.status === 'active' ? 'Активен' : 'Подключение'}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Показы в Google:</span>
+              <strong style={{ fontSize: 16, color: '#0f172a' }}>{google?.total_impressions || 0}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Клики из Google:</span>
+              <strong style={{ fontSize: 16, color: '#047857' }}>{google?.total_clicks || 0}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в выдаче:</span>
+              <strong style={{ fontSize: 16, color: '#1d4ed8' }}>{googleQueries.length}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2.2 SEARCH ENGINE FILTER TAB BAR */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Поисковая система:</span>
+          <button
+            className={searchEngine === 'all' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setSearchEngine('all')}
+            style={{ borderRadius: 20, padding: '4px 12px' }}
+          >
+            🌐 Все поисковики ({combinedQueries.length || (yandexQueries.length + googleQueries.length)})
+          </button>
+          <button
+            className={searchEngine === 'yandex' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setSearchEngine('yandex')}
+            style={{ borderRadius: 20, padding: '4px 12px', background: searchEngine === 'yandex' ? '#ea580c' : undefined, borderColor: searchEngine === 'yandex' ? '#ea580c' : undefined, color: searchEngine === 'yandex' ? '#fff' : undefined }}
+          >
+            🔴 Яндекс ({yandexQueries.length})
+          </button>
+          <button
+            className={searchEngine === 'google' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setSearchEngine('google')}
+            style={{ borderRadius: 20, padding: '4px 12px', background: searchEngine === 'google' ? '#2563eb' : undefined, borderColor: searchEngine === 'google' ? '#2563eb' : undefined, color: searchEngine === 'google' ? '#fff' : undefined }}
+          >
+            🔵 Google ({googleQueries.length})
+          </button>
+        </div>
+        <small style={{ color: 'var(--muted)' }}>
+          {searchEngine === 'all' ? 'Объединенный анализ видимости' : searchEngine === 'yandex' ? 'Поисковые данные Яндекса' : 'Поисковые данные Google'}
+        </small>
+      </div>
+
       {/* 3. FULL-WIDTH TABLE: GROWTH POINTS WITH WORDSTAT DEMAND */}
       <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
             🔥 Точки быстрого роста (Потенциал выхода в ТОП-3)
           </h2>
-          <span className="pill tg" style={{ fontSize: 11 }}>Позиции 4–10 в Яндексе</span>
+          <span className="pill tg" style={{ fontSize: 11 }}>
+            {searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс (поз. 4–10)' : 'Google (поз. 4–20)'}
+          </span>
         </div>
         <p className="field-help" style={{ marginBottom: 12 }}>
-          По этим запросам Яндекс уже вывел сайт на 1-ю страницу выдачи. Выход в ТОП-3 по этим фразам обеспечит основной приток целевых клиентов.
+          По этим запросам поисковики уже выводят сайт близко к ТОП-3. Дожим в ТОП-3 по этим фразам обеспечит основной приток целевых B2B-клиентов.
         </p>
         
-        {growthPoints.length > 0 ? (
+        {displayGrowthPoints.length > 0 ? (
           <div className="seo-table-wrap">
             <table className="seo-table">
               <thead>
                 <tr>
-                  <th style={{ width: '32%' }}>Поисковая фраза (Яндекс)</th>
+                  <th style={{ width: '30%' }}>Поисковая фраза</th>
+                  <th style={{ width: '12%' }}>Поисковик</th>
                   <th style={{ width: '11%' }}>Позиция</th>
-                  <th style={{ width: '11%' }}>Показы</th>
-                  <th style={{ width: '18%' }}>Спрос Вордстат (Рынок / мес)</th>
+                  <th style={{ width: '10%' }}>Показы</th>
+                  <th style={{ width: '18%' }}>Спрос Вордстат / Рынок</th>
                   <th style={{ width: '14%' }}>Потенциал ТОП-3</th>
-                  <th style={{ width: '14%' }}>SEO-Приоритет</th>
+                  <th style={{ width: '15%' }}>SEO-Приоритет</th>
                 </tr>
               </thead>
               <tbody>
-                {growthPoints.map((g, idx) => {
+                {displayGrowthPoints.map((g, idx) => {
                   const isHighPriority = g.priority === 'high' || (idx === 0 && (g.wordstat_demand || 0) > 0)
                   const demand = g.wordstat_demand || 0
                   const potentialClicks = g.top3_potential_clicks || Math.round(demand * 0.35)
+                  const isGoogle = (g as any).engine === 'google'
                   return (
                     <tr key={idx} className={isHighPriority ? 'priority-row-high' : ''}>
                       <td>
@@ -1895,6 +2050,13 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                           <strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong>
                           {isHighPriority && <span className="wordstat-badge-top">🔥 Приоритет №1</span>}
                         </div>
+                      </td>
+                      <td>
+                        {isGoogle ? (
+                          <span className="pill web" style={{ fontSize: 11, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>🔵 Google</span>
+                        ) : (
+                          <span className="pill tg" style={{ fontSize: 11, background: '#fff7ed', color: '#c2410c', borderColor: '#ffedd5' }}>🔴 Яндекс</span>
+                        )}
                       </td>
                       <td>
                         <span className="seo-pos-badge growth">{g.avg_position} место</span>
@@ -1927,7 +2089,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           </div>
         ) : (
           <div className="inline-note" style={{ padding: '12px 0' }}>
-            Идет накопление истории позиций. Как только запросы поднимутся в диапазон 4–10 мест, система автоматически сформирует список.
+            Идет накопление истории позиций. Как только запросы поднимутся в диапазон точек роста, система автоматически сформирует список.
           </div>
         )}
       </div>
@@ -1935,7 +2097,9 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
       {/* 4. FULL-WIDTH TABLE: ALL SEARCH QUERIES WITH SEARCH FILTER */}
       <div className="form-panel full-width-panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>🔎 Все поисковые фразы и позиции в Яндексе</h2>
+          <h2 style={{ margin: 0, fontSize: 17 }}>
+            🔎 Все поисковые фразы и позиции ({searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс' : 'Google'})
+          </h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <input
               type="text"
@@ -1944,11 +2108,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
               onChange={e => setQuerySearch(e.target.value)}
               style={{ maxWidth: 220, minHeight: 32, padding: '4px 10px', fontSize: 12, borderRadius: 6 }}
             />
-            <span className="pill web" style={{ fontSize: 11 }}>{filteredQueries.length} из {allQueries.length} запросов</span>
+            <span className="pill web" style={{ fontSize: 11 }}>{filteredQueries.length} из {rawQueriesToFilter.length} запросов</span>
           </div>
         </div>
         <p className="field-help" style={{ marginBottom: 12 }}>
-          Точные поисковые запросы реальных людей в Яндексе, средняя позиция показа и спрос
+          Точные поисковые запросы реальных людей, средняя позиция показа и клики в поисковых системах
         </p>
 
         {filteredQueries.length > 0 ? (
@@ -1956,49 +2120,153 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
             <table className="seo-table">
               <thead>
                 <tr>
-                  <th style={{ width: '45%' }}>Поисковый запрос</th>
-                  <th style={{ width: '15%' }}>Средняя позиция</th>
-                  <th style={{ width: '15%' }}>Показы в Яндексе</th>
-                  <th style={{ width: '12%' }}>Клики</th>
-                  <th style={{ width: '13%' }}>Статус</th>
+                  <th style={{ width: searchEngine === 'all' ? '38%' : '45%' }}>Поисковый запрос</th>
+                  {searchEngine === 'all' ? (
+                    <>
+                      <th style={{ width: '13%' }}>🔴 Позиция Яндекс</th>
+                      <th style={{ width: '13%' }}>🔵 Позиция Google</th>
+                      <th style={{ width: '13%' }}>Показы всего</th>
+                      <th style={{ width: '10%' }}>Клики</th>
+                      <th style={{ width: '13%' }}>Статус</th>
+                    </>
+                  ) : searchEngine === 'yandex' ? (
+                    <>
+                      <th style={{ width: '18%' }}>Позиция в Яндексе</th>
+                      <th style={{ width: '15%' }}>Показы в Яндексе</th>
+                      <th style={{ width: '12%' }}>Клики</th>
+                      <th style={{ width: '15%' }}>Статус</th>
+                    </>
+                  ) : (
+                    <>
+                      <th style={{ width: '18%' }}>Позиция в Google</th>
+                      <th style={{ width: '15%' }}>Показы в Google</th>
+                      <th style={{ width: '12%' }}>Клики</th>
+                      <th style={{ width: '15%' }}>Статус</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {filteredQueries.map((q, idx) => {
-                  const pos = q.avg_position || 0
-                  const isTop3 = pos > 0 && pos <= 3.5
-                  const isGrowth = pos > 3.5 && pos <= 10.5
+                  const yPos = (q as any).yandex_pos
+                  const gPos = (q as any).google_pos
+                  const bestPos = yPos && gPos ? Math.min(yPos, gPos) : (yPos || gPos || 0)
+                  const isTop3 = bestPos > 0 && bestPos <= 3.5
+                  const isGrowth = bestPos > 3.5 && bestPos <= 12.0
+                  const totalShows = (q as any).total_shows ?? (q as any).shows ?? 0
+                  const totalClicks = (q as any).total_clicks ?? (q as any).clicks ?? 0
+
                   return (
                     <tr key={idx}>
                       <td>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{q.text}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{q.text}</span>
+                          {searchEngine === 'all' && (
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              {(q as any).in_yandex && <span style={{ fontSize: 10, color: '#ea580c', fontWeight: 'bold' }}>Яндекс</span>}
+                              {(q as any).in_google && <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 'bold' }}>Google</span>}
+                            </div>
+                          )}
+                        </div>
                       </td>
-                      <td>
-                        {pos > 0 ? (
-                          <span className={`seo-pos-badge ${isTop3 ? 'top3' : isGrowth ? 'growth' : 'other'}`}>
-                            {pos} место
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--muted)' }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        <strong style={{ fontSize: 14 }}>{q.shows}</strong>
-                      </td>
-                      <td>
-                        <span style={{ fontSize: 13, color: q.clicks > 0 ? '#047857' : 'var(--muted)' }}>
-                          {q.clicks}
-                        </span>
-                      </td>
-                      <td>
-                        {isTop3 ? (
-                          <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
-                        ) : isGrowth ? (
-                          <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
-                        ) : (
-                          <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
-                        )}
-                      </td>
+
+                      {searchEngine === 'all' ? (
+                        <>
+                          <td>
+                            {yPos ? (
+                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
+                                {yPos} место
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--muted)' }}>—</span>
+                            )}
+                          </td>
+                          <td>
+                            {gPos ? (
+                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
+                                {gPos} место
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--muted)' }}>—</span>
+                            )}
+                          </td>
+                          <td>
+                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              {totalClicks}
+                            </span>
+                          </td>
+                          <td>
+                            {isTop3 ? (
+                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
+                            ) : isGrowth ? (
+                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
+                            ) : (
+                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
+                            )}
+                          </td>
+                        </>
+                      ) : searchEngine === 'yandex' ? (
+                        <>
+                          <td>
+                            {yPos ? (
+                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
+                                {yPos} место
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--muted)' }}>—</span>
+                            )}
+                          </td>
+                          <td>
+                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              {totalClicks}
+                            </span>
+                          </td>
+                          <td>
+                            {yPos && yPos <= 3.5 ? (
+                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
+                            ) : yPos && yPos <= 10.5 ? (
+                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
+                            ) : (
+                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
+                            )}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td>
+                            {gPos ? (
+                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
+                                {gPos} место
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--muted)' }}>—</span>
+                            )}
+                          </td>
+                          <td>
+                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              {totalClicks}
+                            </span>
+                          </td>
+                          <td>
+                            {gPos && gPos <= 3.5 ? (
+                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
+                            ) : gPos && gPos <= 15.0 ? (
+                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 Точка роста</span>
+                            ) : (
+                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
+                            )}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   )
                 })}
@@ -2075,10 +2343,10 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </div>
       </div>
 
-      {/* 6. TECHNICAL STATUS (WEBMASTER) */}
+      {/* 6. TECHNICAL STATUS (YANDEX & GOOGLE) */}
       <div className="form-panel full-width-panel">
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Индексация и техническое состояние (Вебмастер)</h2>
-        <p className="field-help" style={{ marginBottom: 12 }}>Показатели качества сайта и доступности страниц поисковому роботу Яндекса</p>
+        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Индексация и техническое состояние (Яндекс и Google)</h2>
+        <p className="field-help" style={{ marginBottom: 12 }}>Показатели доступности страниц для поисковых роботов Яндекса и Google</p>
         
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
@@ -2088,23 +2356,25 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           </div>
           
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Страниц в поиске</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Яндекс: страниц в поиске</span>
             <strong style={{ display: 'block', fontSize: 22, color: '#0f172a', marginTop: 4 }}>{webmaster.searchable_pages || 32}</strong>
             <small style={{ color: 'var(--muted)', fontSize: 11 }}>Проиндексировано роботом</small>
           </div>
           
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Исключено роботом</span>
-            <strong style={{ display: 'block', fontSize: 22, color: webmaster.excluded_pages > 5 ? '#b91c1c' : '#166534', marginTop: 4 }}>
-              {webmaster.excluded_pages || 0}
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Google: показы в выдаче</span>
+            <strong style={{ display: 'block', fontSize: 22, color: '#2563eb', marginTop: 4 }}>
+              {google?.total_impressions || 0}
             </strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Ошибки или дубли</small>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>За последние 30 дней</small>
           </div>
 
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Приоритетный переобход</span>
-            <strong style={{ display: 'block', fontSize: 16, color: '#047857', marginTop: 6 }}>Активен</strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Sitemap в очереди Яндекса</small>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Статус Google API</span>
+            <strong style={{ display: 'block', fontSize: 16, color: google?.status === 'active' ? '#047857' : '#9a3412', marginTop: 6 }}>
+              {google?.status === 'active' ? '● Активен' : 'Подключение'}
+            </strong>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>{google?.site_url || 'sc-domain:tenderlex.ru'}</small>
           </div>
         </div>
       </div>
@@ -2117,7 +2387,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </div>
         
         <p className="field-help" style={{ marginBottom: 14 }}>
-          Интеллектуальные рекомендации сформированы на основе реальных поисковых фраз Вебмастера и поведенческих конверсий Метрики. Вы можете согласовать или отклонить любое предложение.
+          Интеллектуальные рекомендации сформированы на основе реальных поисковых фраз Вебмастера, Google Search Console и поведенческих конверсий Метрики. Вы можете согласовать или отклонить любое предложение.
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
@@ -3022,12 +3292,14 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   const [showInternalJobs, setShowInternalJobs] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
   const [modeFilter, setModeFilter] = useState('')
+  const [policyFilter, setPolicyFilter] = useState('')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
   const filteredJobs = useMemo(() => jobs
     .filter(job => showInternalJobs || !job.is_internal)
     .filter(job => !statusFilter || job.status === statusFilter)
     .filter(job => !modeFilter || job.mode === modeFilter)
+    .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
     .filter(job => {
       if (!normalizedQuery) return true
       return [
@@ -3039,28 +3311,50 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
-        job.ai_model,
-        job.ai_provider,
-        job.ai_provider_name,
-        job.ai_label,
         supplierSearchPolicyLabel(job),
         supplierRunTypeLabel(job),
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
-    }), [jobs, showInternalJobs, statusFilter, modeFilter, normalizedQuery])
+    }), [jobs, showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / ADMIN_JOBS_PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * ADMIN_JOBS_PAGE_SIZE
   const visibleJobs = filteredJobs.slice(pageStart, pageStart + ADMIN_JOBS_PAGE_SIZE)
   const hiddenInternalCount = useMemo(() => showInternalJobs ? 0 : jobs.filter(job => job.is_internal).length, [jobs, showInternalJobs])
-  const statusOptions = useMemo(() => Array.from(new Set(jobs.map(job => job.status).filter(Boolean))), [jobs])
-  const modeOptions = useMemo(() => Array.from(new Set(jobs.map(job => job.mode).filter(Boolean))), [jobs])
+  const statusOptions = useMemo(() => [
+    { id: 'pending', label: 'В очереди' },
+    { id: 'running', label: 'В работе' },
+    { id: 'completed', label: 'Готово' },
+    { id: 'partial', label: 'Частично готово' },
+    { id: 'awaiting_customer_confirmation', label: 'Ожидает клиента' },
+    { id: 'failed', label: 'Ошибка' },
+    { id: 'cancelled', label: 'Отменено' },
+  ], [])
+  const modeOptions = useMemo(() => [
+    { id: 'supplier_search', label: 'Поиск поставщиков' },
+    { id: 'procurement_report', label: 'Анализ документации' },
+    { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
+  ], [])
+  const policyOptions = useMemo(() => [
+    { id: 'normal', label: 'Обычный поиск' },
+    { id: 'minprom_registry_only', label: 'Только реестр (Минпромторг)' },
+    { id: 'minprom_registry_priority', label: 'Реестр в приоритете (Минпромторг)' },
+  ], [])
   const shownFrom = filteredJobs.length ? pageStart + 1 : 0
   const shownTo = Math.min(filteredJobs.length, pageStart + visibleJobs.length)
   const registryFallbackJobsCount = useMemo(() => filteredJobs.filter(job => Boolean(registryFallbackOffer(job))).length, [filteredJobs])
+  const hasActiveFilters = Boolean(statusFilter || modeFilter || policyFilter || query.trim())
+
+  function resetFilters() {
+    setStatusFilter('')
+    setModeFilter('')
+    setPolicyFilter('')
+    setQuery('')
+    setPage(1)
+  }
 
   useEffect(() => {
     setPage(1)
-  }, [showInternalJobs, statusFilter, modeFilter, normalizedQuery])
+  }, [showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function retry(job: Job) {
     await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
@@ -3120,36 +3414,51 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   return (
     <section className="stack">
       <div className="list-toolbar">
-        <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
-        {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
-        {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
-        {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
-          <div className="list-pagination toolbar-pagination">
-            <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
-            <span>Страница {currentPage} из {pageCount}</span>
-            <button className="ghost small-text" onClick={() => setPage(value => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>Вперёд</button>
+        <div className="list-toolbar-row">
+          <div className="list-toolbar-meta">
+            <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
+            {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
+            {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
           </div>
-        )}
-        <input
-          className="toolbar-search"
-          placeholder="Найти задачу, клиента или Telegram ID"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-        />
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-          <option value="">Все статусы</option>
-          {statusOptions.map(status => <option key={status} value={status}>{humanStatus(status)}</option>)}
-        </select>
-        <select value={modeFilter} onChange={e => setModeFilter(e.target.value)}>
-          <option value="">Все режимы</option>
-          {modeOptions.map(mode => <option key={mode} value={mode}>{humanMode(mode)}</option>)}
-        </select>
-        {hiddenInternalCount > 0 && (
-          <label>
-            <input type="checkbox" checked={showInternalJobs} onChange={e => setShowInternalJobs(e.target.checked)} />
-            Показать служебные проверки ({hiddenInternalCount})
-          </label>
-        )}
+          {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
+            <div className="list-pagination toolbar-pagination">
+              <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
+              <span>Страница {currentPage} из {pageCount}</span>
+              <button className="ghost small-text" onClick={() => setPage(value => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>Вперёд</button>
+            </div>
+          )}
+        </div>
+        <div className="list-toolbar-filters">
+          <input
+            className="toolbar-search"
+            placeholder="Найти задачу, клиента или Telegram ID"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <select value={modeFilter} onChange={e => setModeFilter(e.target.value)}>
+            <option value="">Все типы</option>
+            {modeOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+          <select value={policyFilter} onChange={e => setPolicyFilter(e.target.value)}>
+            <option value="">Все режимы</option>
+            {policyOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="">Все статусы</option>
+            {statusOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+          {hasActiveFilters && (
+            <button className="ghost small-text" onClick={resetFilters} title="Сбросить фильтры" style={{ height: '34px', padding: '0 10px' }}>
+              Сброс
+            </button>
+          )}
+          {hiddenInternalCount > 0 && (
+            <label className="toolbar-checkbox">
+              <input type="checkbox" checked={showInternalJobs} onChange={e => setShowInternalJobs(e.target.checked)} />
+              Показать служебные ({hiddenInternalCount})
+            </label>
+          )}
+        </div>
       </div>
       <div className="job-list">
         {visibleJobs.map(job => {

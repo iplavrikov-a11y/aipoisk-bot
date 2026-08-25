@@ -90,6 +90,10 @@ export function YandexMetrika({ counterId }: { counterId?: string }) {
                 goal = "cabinet_click";
               } else if (href.toLowerCase().indexOf("t.me/tenderlex_bot") !== -1 || href.toLowerCase().indexOf("t.me/lexelence") !== -1) {
                 goal = "telegram_click";
+              } else if (href.toLowerCase().indexOf("wa.me") !== -1) {
+                goal = "whatsapp_click";
+              } else if (href.toLowerCase().indexOf("max.ru") !== -1) {
+                goal = "max_click";
               } else if (href.indexOf("tel:") === 0) {
                 goal = "phone_click";
               } else if (href.indexOf("mailto:") === 0) {

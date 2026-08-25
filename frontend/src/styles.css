@@ -739,9 +739,51 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .provider-config.auxiliary { background: #f8fafc; }
 .provider-config h3 { margin: 0; font-size: 13px; color: #334155; }
 .inline-note { color: #64748b; font-size: 13px; }
-.list-toolbar { padding: 12px 14px; align-items: center; flex-wrap: wrap; }
-.list-toolbar select { width: auto; min-width: 170px; }
-.toolbar-search { width: min(360px, 100%); }
+.list-toolbar {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.list-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.list-toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.list-toolbar-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+.list-toolbar-filters .toolbar-search {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+.list-toolbar-filters select {
+  width: auto;
+  min-width: 150px;
+  flex: 0 0 auto;
+}
+.list-toolbar-filters .toolbar-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #475569;
+  white-space: nowrap;
+  margin-left: auto;
+  cursor: pointer;
+}
 .list-toolbar span { color: #64748b; font-size: 13px; }
 .job-card {
   display: grid;

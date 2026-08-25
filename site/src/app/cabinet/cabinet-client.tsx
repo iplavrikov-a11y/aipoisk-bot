@@ -236,12 +236,12 @@ const supplierPolicyOptions: Array<{ id: SupplierSearchPolicy; label: string; de
   },
   {
     id: "minprom_registry_only",
-    label: "Только реестр",
+    label: "Только реестр (Минпромторг)",
     description: "для закупок с запретом",
   },
   {
     id: "minprom_registry_priority",
-    label: "Реестр в приоритете",
+    label: "Реестр в приоритете (Минпромторг)",
     description: "для закупок с ограничением",
   },
 ];
@@ -372,12 +372,12 @@ function modeDisplayName(job: CustomerJob) {
   const policy = (job as unknown as { supplier_search_policy?: string }).supplier_search_policy;
   const policyLabel =
     policy === "registry_only" || policy === "minprom_registry_only"
-      ? "Только реестр"
+      ? "Только реестр (Минпромторг)"
       : policy === "registry_priority" || policy === "minprom_registry_priority"
-      ? "Реестр в приоритете"
-      : "Обычный";
+      ? "Реестр в приоритете (Минпромторг)"
+      : "Обычный поиск";
 
-  if (job.mode === "procurement_report") return "Анализ закупки";
+  if (job.mode === "procurement_report") return "Анализ документации";
   if (job.mode === "analysis_and_suppliers") return `Анализ + поиск (${policyLabel})`;
   return `Поиск поставщиков (${policyLabel})`;
 }
@@ -713,6 +713,10 @@ export function CabinetClient() {
   const [jobs, setJobs] = useState<CustomerJob[]>([]);
   const [jobsPage, setJobsPage] = useState(1);
   const [jobsTotal, setJobsTotal] = useState(0);
+  const [jobSearchQuery, setJobSearchQuery] = useState("");
+  const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
+  const [jobModeFilter, setJobModeFilter] = useState("");
+  const [jobPolicyFilter, setJobPolicyFilter] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register" | "reset">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -743,6 +747,27 @@ export function CabinetClient() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const quoteEditorRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedJobSearch(jobSearchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [jobSearchQuery]);
+
+  useEffect(() => {
+    setJobsPage(1);
+  }, [debouncedJobSearch, jobModeFilter, jobPolicyFilter]);
+
+  const hasActiveJobFilters = Boolean(jobSearchQuery.trim() || jobModeFilter || jobPolicyFilter);
+
+  function resetJobFilters() {
+    setJobSearchQuery("");
+    setDebouncedJobSearch("");
+    setJobModeFilter("");
+    setJobPolicyFilter("");
+    setJobsPage(1);
+  }
+
   const csrf = session?.csrf_token || "";
   const authenticated = Boolean(session?.authenticated && session.user);
   const selectedCopy = modeCopy[scenario];
@@ -771,13 +796,27 @@ export function CabinetClient() {
     setSession(payload.authenticated ? payload : null);
   }
 
-  async function loadJobs(page = jobsPage) {
+  async function loadJobs(
+    page = jobsPage,
+    query = debouncedJobSearch,
+    mode = jobModeFilter,
+    policy = jobPolicyFilter,
+  ) {
     if (!authenticated) return;
     setJobsLoading(true);
     try {
       const offset = (page - 1) * CUSTOMER_JOBS_PAGE_SIZE;
+      const params = new URLSearchParams({
+        limit: String(CUSTOMER_JOBS_PAGE_SIZE),
+        offset: String(offset),
+        include_pagination: "true",
+      });
+      if (query.trim()) params.set("q", query.trim());
+      if (mode) params.set("mode", mode);
+      if (policy) params.set("policy", policy);
+
       const response = await fetch(
-        `/api/customer/jobs?limit=${CUSTOMER_JOBS_PAGE_SIZE}&offset=${offset}&include_pagination=true`,
+        `/api/customer/jobs?${params.toString()}`,
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
@@ -875,8 +914,19 @@ export function CabinetClient() {
     const params = new URLSearchParams(window.location.search);
     const verified = params.get("email_verified");
     const verifyToken = params.get("email_verify_token");
+    const authError = params.get("auth_error");
     if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
     if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
+    if (authError === "yandex_declined") {
+      setError("Вход через Яндекс ID был отменён.");
+      params.delete("auth_error");
+    } else if (authError === "invalid_state") {
+      setError("Сессия авторизации устарела. Попробуйте войти снова.");
+      params.delete("auth_error");
+    } else if (authError === "fetch_failed" || authError === "user_creation_failed" || authError === "no_code") {
+      setError("Не удалось войти через Яндекс ID. Попробуйте ещё раз или используйте email.");
+      params.delete("auth_error");
+    }
     if (verifyToken) {
       confirmEmailToken(verifyToken).catch((err) => setError(err instanceof Error ? err.message : String(err)));
       params.delete("email_verify_token");
@@ -884,7 +934,7 @@ export function CabinetClient() {
     if (verified) {
       params.delete("email_verified");
     }
-    if (verified || verifyToken) {
+    if (verified || verifyToken || authError) {
       const nextQuery = params.toString();
       window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
     }
@@ -896,13 +946,13 @@ export function CabinetClient() {
 
   useEffect(() => {
     if (!authenticated) return;
-    loadJobs();
+    loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter);
     const timer = window.setInterval(() => {
-      loadJobs();
+      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter);
       if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
-  }, [authenticated, jobsPage, activeJobs]);
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, activeJobs]);
 
   useEffect(() => {
     if (!findMoreConfirmJob) return;
@@ -1417,6 +1467,27 @@ export function CabinetClient() {
                 </button>
               </div>
             )}
+
+            {authMode !== "reset" ? (
+              <div className="space-y-3 pt-1">
+                <a
+                  href="/api/customer/auth/yandex/login"
+                  className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
+                    <circle cx="12" cy="12" r="12" fill="#FC3F1D" />
+                    <path fill="#FFFFFF" d="M13.32 7.02h-1.63c-1.39 0-2.19.74-2.19 1.86 0 1.15.58 1.8 1.48 2.5l-1.84 5.6h1.75l1.67-5.07h.76v5.07h1.66V7.02zm-1.55 3.53h-.45c-.56 0-.89-.34-.89-.88 0-.52.33-.87.89-.87h.45v1.75z" />
+                  </svg>
+                  <span>{authMode === "login" ? "Войти с Яндекс ID" : "Создать кабинет через Яндекс ID"}</span>
+                </a>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-200" />
+                  <span className="shrink mx-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">или по email</span>
+                  <div className="flex-grow border-t border-slate-200" />
+                </div>
+              </div>
+            ) : null}
 
             {authMode === "register" ? (
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
@@ -1937,7 +2008,7 @@ export function CabinetClient() {
       </section>
 
       {/* Jobs History Table */}
-      <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-2.5">
+      <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-extrabold text-slate-900">Задачи</h2>
@@ -1970,8 +2041,70 @@ export function CabinetClient() {
                 </button>
               </div>
             ) : null}
+          </div>
+        </div>
 
+        {/* Search and Filters Bar */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center pt-1">
+          {/* Search Input */}
+          <div className="relative col-span-12 md:col-span-6">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+            <input
+              type="text"
+              value={jobSearchQuery}
+              onChange={(e) => setJobSearchQuery(e.target.value)}
+              placeholder="Поиск по названию задачи..."
+              className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all font-medium shadow-2xs"
+            />
+            {jobSearchQuery ? (
+              <button
+                type="button"
+                onClick={() => setJobSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                title="Очистить поиск"
+              >
+                <X size={14} />
+              </button>
+            ) : null}
+          </div>
 
+          {/* Mode Filter (Тип поиска) */}
+          <div className="col-span-6 md:col-span-3">
+            <select
+              value={jobModeFilter}
+              onChange={(e) => setJobModeFilter(e.target.value)}
+              className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+            >
+              <option value="">Все типы</option>
+              <option value="supplier_search">Поиск поставщиков</option>
+              <option value="procurement_report">Анализ документации</option>
+              <option value="analysis_and_suppliers">Анализ + поиск</option>
+            </select>
+          </div>
+
+          {/* Policy Filter (Режим поиска по реестру) */}
+          <div className="col-span-6 md:col-span-3 flex items-center gap-1.5">
+            <select
+              value={jobPolicyFilter}
+              onChange={(e) => setJobPolicyFilter(e.target.value)}
+              className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+            >
+              <option value="">Все режимы</option>
+              <option value="normal">Обычный поиск</option>
+              <option value="minprom_registry_only">Только реестр (Минпромторг)</option>
+              <option value="minprom_registry_priority">Реестр в приоритете (Минпромторг)</option>
+            </select>
+
+            {hasActiveJobFilters ? (
+              <button
+                type="button"
+                onClick={resetJobFilters}
+                className="px-2.5 py-2 text-xs font-bold text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-xl transition-colors cursor-pointer shrink-0 shadow-2xs"
+                title="Сбросить все фильтры"
+              >
+                Сброс
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -2196,8 +2329,17 @@ export function CabinetClient() {
               );
             })
           ) : (
-            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs">
-              У вас пока нет запущенных задач.
+            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs space-y-2">
+              <p>{hasActiveJobFilters ? "По заданным фильтрам ничего не найдено." : "У вас пока нет запущенных задач."}</p>
+              {hasActiveJobFilters ? (
+                <button
+                  type="button"
+                  onClick={resetJobFilters}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-teal-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Сбросить фильтры
+                </button>
+              ) : null}
             </div>
           )}
         </div>

@@ -12,6 +12,17 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Contact Routing & UI Polish (2026-08):
+  - Strictly separated voice phone calls from messaging channels:
+    - Voice calls: `+7 (995) 146-00-80` (`tel:+79951460080`).
+    - Messengers: WhatsApp (`https://wa.me/79210629909` for number `89210629909`), Max (`https://max.ru/...` for number `89210629909`), direct Telegram (`https://t.me/lexelence`), bot (`https://t.me/tenderlex_bot`).
+    - General contact email: `info@tenderlex.ru`.
+  - Simplified contact section buttons (`contact-section.tsx`) to clean single-label buttons (`+7 (995) 146-00-80`, `WhatsApp`, `Telegram`, `Max`, `Email`) with auto-wrapping flex layout and generous inner padding to prevent text overflow on all viewports.
+  - Top header microbar (`site-header.tsx`) updated to include direct links for phone, WhatsApp, Telegram, email, Max, and a dedicated "Чат" button.
+  - Floating online chat widget (`chat-widget.tsx`) refined into a compact dismissible pill with a close button and custom event `open_tenderlex_chat` wired to the header button.
+- Yandex ID OAuth & Google Search Console Automation (2026-08):
+  - Added 1-click Yandex ID login/registration for the customer cabinet (`backend/app/web_auth.py`, `site/src/app/cabinet/cabinet-client.tsx`).
+  - Integrated Google Search Console API for automated performance tracking and indexing analytics (`backend/app/google_seo.py`).
 - Trial Period & Limits Expansion (2026-08):
   - Increased trial balance limit for newly registered accounts from 198 ₽ (2 tasks) to 396 ₽ (4 tasks @ 99 ₽).
   - Updated defaults in `models.py`, `db.py`, and database `system_settings` (`trial_supplier_search_limit = 2`, `trial_procurement_report_limit = 2`).

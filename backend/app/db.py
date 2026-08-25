@@ -146,6 +146,7 @@ def _ensure_schema() -> None:
     web_user_additions = {
         "is_email_verified": "BOOLEAN DEFAULT 1",
         "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
+        "yandex_id": "VARCHAR(64) NULL",
     }
     onboarding_reminders_existing = _existing_columns(inspector, "onboarding_reminders")
     onboarding_reminder_additions = {
@@ -239,6 +240,13 @@ def _ensure_schema() -> None:
         for column, definition in web_user_additions.items():
             if web_users_existing and column not in web_users_existing:
                 connection.execute(text(f"ALTER TABLE web_users ADD COLUMN {column} {definition}"))
+        if web_users_existing:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_web_users_yandex_id "
+                    "ON web_users(yandex_id) WHERE yandex_id IS NOT NULL"
+                )
+            )
         for column, definition in onboarding_reminder_additions.items():
             if onboarding_reminders_existing and column not in onboarding_reminders_existing:
                 connection.execute(text(f"ALTER TABLE onboarding_reminders ADD COLUMN {column} {definition}"))

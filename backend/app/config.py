@@ -66,6 +66,9 @@ class AppConfig(BaseSettings):
     email_from_name: str = "TenderLex"
     email_from_email: str = ""
     customer_email_verification_hours: int = 24
+    yandex_oauth_client_id: str = ""
+    yandex_oauth_client_secret: str = ""
+    yandex_oauth_redirect_url: str = ""
     worker_concurrency: int = 1
     supplier_verification_concurrency: int = 8
     supplier_verification_timeout_seconds: float = 150.0

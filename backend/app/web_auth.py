@@ -86,10 +86,11 @@ def create_web_user(
     db: Session,
     *,
     email: str,
-    password: str,
+    password: str = "",
     name: str = "",
     client: Client | None = None,
     email_verified: bool = False,
+    yandex_id: str | None = None,
     commit: bool = True,
 ) -> WebUser:
     normalized_email = validate_email(email)
@@ -115,9 +116,13 @@ def create_web_user(
             monthly_procurement_report_limit=report_limit,
             monthly_file_limit=file_limit,
             notes=(
-                f"Website trial account: {normalized_email}. Email verification required."
-                if trial_enabled
-                else f"Website account: {normalized_email}. Manual grants required."
+                f"Website trial account: {normalized_email}. Verified via Yandex ID."
+                if trial_enabled and yandex_id
+                else (
+                    f"Website trial account: {normalized_email}. Email verification required."
+                    if trial_enabled
+                    else f"Website account: {normalized_email}. Manual grants required."
+                )
             ),
         )
         db.add(client)
@@ -129,10 +134,12 @@ def create_web_user(
                 supplier_search_units=supplier_limit,
                 procurement_report_units=report_limit,
             )
+    password_val = password or generate_temporary_password(16)
     user = WebUser(
         client_id=client.id,
         email=normalized_email,
-        password_hash=hash_password(password),
+        yandex_id=str(yandex_id).strip() if yandex_id else None,
+        password_hash=hash_password(password_val),
         name=display_name,
         is_active=True,
         is_email_verified=bool(email_verified),
@@ -468,3 +475,161 @@ def revoke_web_session(db: Session, session: WebSession | None) -> None:
         return
     session.revoked_at = now_utc()
     db.commit()
+
+
+YANDEX_OAUTH_COOKIE = "tenderlex_yandex_oauth_state"
+
+
+def yandex_oauth_redirect_uri(public_base_url: str = "") -> str:
+    if config.yandex_oauth_redirect_url:
+        return config.yandex_oauth_redirect_url
+    base = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return f"{base}/api/customer/auth/yandex/callback"
+
+
+def build_yandex_oauth_url(*, redirect_uri: str, state: str) -> str:
+    from urllib.parse import urlencode
+
+    client_id = str(config.yandex_oauth_client_id or "").strip()
+    if not client_id:
+        raise ValueError("Yandex OAuth Client ID не настроен.")
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "force_confirm": "no",
+    }
+    return f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
+
+
+def set_yandex_oauth_state_cookie(response: Response, state: str) -> None:
+    secure = str(config.public_base_url or "").lower().startswith("https://")
+    response.set_cookie(
+        YANDEX_OAUTH_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/api/customer/auth/yandex",
+    )
+
+
+def clear_yandex_oauth_state_cookie(response: Response) -> None:
+    response.delete_cookie(YANDEX_OAUTH_COOKIE, path="/api/customer/auth/yandex")
+
+
+def fetch_yandex_oauth_profile(code: str, redirect_uri: str) -> dict:
+    client_id = str(config.yandex_oauth_client_id or "").strip()
+    client_secret = str(config.yandex_oauth_client_secret or "").strip()
+    if not client_id or not client_secret:
+        raise ValueError("Yandex OAuth ключи не настроены.")
+
+    token_url = "https://oauth.yandex.ru/token"
+    token_payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    if redirect_uri:
+        token_payload["redirect_uri"] = redirect_uri
+
+    with httpx.Client(timeout=15.0) as client:
+        token_res = client.post(token_url, data=token_payload)
+        if token_res.status_code != 200:
+            logger.warning("yandex_oauth_token_exchange_failed", extra={"status_code": token_res.status_code, "body": token_res.text})
+            raise ValueError(f"Ошибка получения токена Яндекса: {token_res.status_code}")
+        token_data = token_res.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError("Не получен access_token от Яндекса.")
+
+        info_res = client.get(
+            "https://login.yandex.ru/info?format=json",
+            headers={"Authorization": f"OAuth {access_token}"},
+        )
+        if info_res.status_code != 200:
+            logger.warning("yandex_oauth_profile_fetch_failed", extra={"status_code": info_res.status_code, "body": info_res.text})
+            raise ValueError(f"Ошибка получения профиля Яндекса: {info_res.status_code}")
+        profile = info_res.json()
+
+    yandex_id = str(profile.get("id") or "").strip()
+    if not yandex_id:
+        raise ValueError("В ответе Яндекса отсутствует id пользователя.")
+
+    email = str(profile.get("default_email") or "").strip()
+    if not email:
+        emails = profile.get("emails") or []
+        if emails and isinstance(emails, list):
+            email = str(emails[0] or "").strip()
+
+    if not email:
+        raise ValueError("Яндекс не предоставил доступ к email пользователя.")
+
+    real_name = str(profile.get("real_name") or "").strip()
+    first_name = str(profile.get("first_name") or "").strip()
+    last_name = str(profile.get("last_name") or "").strip()
+    display_name = str(profile.get("display_name") or "").strip()
+    combined_name = f"{first_name} {last_name}".strip()
+    name = real_name or combined_name or display_name or email.split("@")[0]
+
+    return {
+        "yandex_id": yandex_id,
+        "email": email,
+        "name": name,
+        "avatar_id": str(profile.get("default_avatar_id") or ""),
+    }
+
+
+def get_or_create_yandex_web_user(
+    db: Session,
+    *,
+    yandex_user_id: str,
+    email: str,
+    name: str = "",
+) -> tuple[WebUser, bool]:
+    clean_yandex_id = str(yandex_user_id or "").strip()
+    if not clean_yandex_id:
+        raise ValueError("Не передан идентификатор пользователя Яндекс ID.")
+    normalized_email = validate_email(email)
+    display_name = str(name or "").strip()[:255]
+
+    # 1. Match by yandex_id
+    user = db.query(WebUser).filter(WebUser.yandex_id == clean_yandex_id).first()
+    if user:
+        modified = False
+        if not user.is_email_verified:
+            user.is_email_verified = True
+            modified = True
+        if display_name and not user.name:
+            user.name = display_name
+            modified = True
+        if modified:
+            db.commit()
+            db.refresh(user)
+        return user, False
+
+    # 2. Match by email
+    user = db.query(WebUser).filter(WebUser.email == normalized_email).first()
+    if user:
+        user.yandex_id = clean_yandex_id
+        user.is_email_verified = True
+        if display_name and not user.name:
+            user.name = display_name
+        db.commit()
+        db.refresh(user)
+        return user, False
+
+    # 3. Create new user
+    user = create_web_user(
+        db,
+        email=normalized_email,
+        name=display_name,
+        email_verified=True,
+        yandex_id=clean_yandex_id,
+        commit=True,
+    )
+    return user, True
+

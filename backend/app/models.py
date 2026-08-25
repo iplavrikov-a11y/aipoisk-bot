@@ -218,6 +218,7 @@ class WebUser(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    yandex_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, default="")
     name: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

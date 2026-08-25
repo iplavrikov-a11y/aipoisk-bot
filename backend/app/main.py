@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -18,6 +21,7 @@ import jwt
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
@@ -141,13 +145,18 @@ from .security import (
 )
 from .web_auth import (
     CSRF_HEADER,
+    YANDEX_OAUTH_COOKIE,
     WebAuthContext,
     authenticate_web_user,
+    build_yandex_oauth_url,
     clear_customer_session_cookie,
+    clear_yandex_oauth_state_cookie,
     create_email_verification_token,
     create_web_session,
     create_web_user,
+    fetch_yandex_oauth_profile,
     generate_temporary_password,
+    get_or_create_yandex_web_user,
     hash_password,
     send_email_verification,
     optional_web_context,
@@ -155,8 +164,10 @@ from .web_auth import (
     require_web_context,
     revoke_web_session,
     set_customer_session_cookie,
+    set_yandex_oauth_state_cookie,
     validate_email,
     verify_email_token,
+    yandex_oauth_redirect_uri,
 )
 from .supplier_search import (
     _google_credentials,
@@ -171,6 +182,7 @@ ANALYTICS_EXCLUDED_WEB_EMAILS = {"79210629909@ya.ru"}
 ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES = {"lexelence", "lexs"}
 ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
@@ -352,6 +364,97 @@ def customer_login_api(
     set_customer_session_cookie(response, token)
     CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
     return customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.get("/api/customer/auth/yandex/login")
+def customer_yandex_login_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+    state = secrets.token_urlsafe(32)
+    try:
+        auth_url = build_yandex_oauth_url(redirect_uri=redirect_uri, state=state)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    redirect_resp = RedirectResponse(url=auth_url, status_code=303)
+    set_yandex_oauth_state_cookie(redirect_resp, state)
+    return redirect_resp
+
+
+@app.get("/api/customer/auth/yandex/url")
+def customer_yandex_auth_url_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+    state = secrets.token_urlsafe(32)
+    try:
+        auth_url = build_yandex_oauth_url(redirect_uri=redirect_uri, state=state)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    set_yandex_oauth_state_cookie(response, state)
+    return {"url": auth_url, "state": state}
+
+
+@app.get("/api/customer/auth/yandex/callback")
+def customer_yandex_callback_api(
+    request: Request,
+    response: Response,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    target_error_url = "/cabinet?auth_error="
+    if error:
+        logger.warning("yandex_oauth_user_declined", extra={"error": error, "description": error_description})
+        return RedirectResponse(url=f"{target_error_url}yandex_declined", status_code=303)
+
+    if not code:
+        return RedirectResponse(url=f"{target_error_url}no_code", status_code=303)
+
+    expected_state = request.cookies.get(YANDEX_OAUTH_COOKIE, "")
+    if not state or not expected_state or not hmac.compare_digest(state, expected_state):
+        logger.warning("yandex_oauth_state_mismatch", extra={"received": state, "has_expected": bool(expected_state)})
+        resp = RedirectResponse(url=f"{target_error_url}invalid_state", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+
+    try:
+        profile = fetch_yandex_oauth_profile(code, redirect_uri)
+    except Exception as exc:
+        logger.error("yandex_oauth_profile_error", extra={"error": str(exc)})
+        resp = RedirectResponse(url=f"{target_error_url}fetch_failed", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    try:
+        user, is_new = get_or_create_yandex_web_user(
+            db,
+            yandex_user_id=profile["yandex_id"],
+            email=profile["email"],
+            name=profile.get("name", ""),
+        )
+    except Exception as exc:
+        logger.error("yandex_oauth_user_creation_error", extra={"error": str(exc)})
+        resp = RedirectResponse(url=f"{target_error_url}user_creation_failed", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    resp = RedirectResponse(url="/cabinet", status_code=303)
+    set_customer_session_cookie(resp, token)
+    clear_yandex_oauth_state_cookie(resp)
+    return resp
 
 
 @app.post("/api/customer/auth/password-reset/request")
@@ -540,6 +643,9 @@ def customer_jobs_api(
     limit: int = 50,
     offset: int = 0,
     include_pagination: bool = False,
+    q: str = "",
+    mode: str = "",
+    policy: str = "",
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> list[dict] | dict:
@@ -547,6 +653,21 @@ def customer_jobs_api(
     safe_limit = max(1, min(200, int(limit or 50)))
     safe_offset = max(0, int(offset or 0))
     query = commercial_jobs_query(db, context.user.client)
+    clean_q = str(q or "").strip()
+    if clean_q:
+        pattern = f"%{clean_q}%"
+        query = query.filter(
+            or_(
+                func.coalesce(Job.title, "").ilike(pattern),
+                func.coalesce(Job.message, "").ilike(pattern),
+            )
+        )
+    clean_mode = str(mode or "").strip()
+    if clean_mode in {"supplier_search", "procurement_report", "analysis_and_suppliers"}:
+        query = query.filter(Job.mode == clean_mode)
+    clean_policy = str(policy or "").strip()
+    if clean_policy in {"normal", "minprom_registry_only", "minprom_registry_priority"}:
+        query = query.filter(Job.supplier_search_policy == clean_policy)
     total = query.count()
     jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
     items = [customer_job_to_dict(job) for job in jobs]
@@ -2414,6 +2535,8 @@ def public_site_payload(db: Session) -> dict:
         },
         "contacts": {
             "email": settings.contact_email,
+            "phone": "+7 (995) 146-00-80",
+            "phone_url": "tel:+79951460080",
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
             "max": settings.contact_max,
@@ -2511,6 +2634,8 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         },
         "contacts": {
             "email": settings.contact_email,
+            "phone": "+7 (995) 146-00-80",
+            "phone_url": "tel:+79951460080",
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
             "max": settings.contact_max,

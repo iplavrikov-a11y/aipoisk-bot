@@ -13,7 +13,7 @@ export function ContactSection({
 }: ContactSectionProps) {
   const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
   const cabinetUrl = "/cabinet";
-  const whatsappUrl = "https://wa.me/79211460080";
+  const whatsappUrl = "https://wa.me/79210629909";
   const telegramSupportUrl = "https://t.me/lexelence";
   const maxMessengerUrl = "https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs";
 
@@ -61,18 +61,15 @@ export function ContactSection({
               Прямая связь со службой поддержки TenderLex
             </span>
 
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 max-w-4xl mx-auto text-left">
+            <div className="flex flex-wrap items-center justify-center gap-3 max-w-5xl mx-auto">
               {/* Phone */}
               <a
-                href="tel:+79211460080"
-                className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group"
+                href="tel:+79951460080"
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[195px]"
               >
-                <div className="flex items-center gap-2 mb-1.5 text-teal-700">
-                  <Phone size={16} />
-                  <span className="text-[10px] font-bold uppercase text-slate-400">Телефон</span>
-                </div>
-                <strong className="text-xs font-bold text-slate-900 group-hover:text-teal-700 block">
-                  +7 (921) 146-00-80
+                <Phone size={16} className="text-teal-700 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700 whitespace-nowrap">
+                  +7 (995) 146-00-80
                 </strong>
               </a>
 
@@ -81,30 +78,24 @@ export function ContactSection({
                 href={whatsappUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-emerald-500 hover:shadow-md transition-all group"
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-emerald-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px]"
               >
-                <div className="flex items-center gap-2 mb-1.5 text-emerald-600">
-                  <MessageCircle size={16} />
-                  <span className="text-[10px] font-bold uppercase text-slate-400">WhatsApp</span>
-                </div>
-                <strong className="text-xs font-bold text-slate-900 group-hover:text-emerald-700 block">
-                  Написать в чат
+                <MessageCircle size={16} className="text-emerald-600 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-emerald-700">
+                  WhatsApp
                 </strong>
               </a>
 
-              {/* Telegram Support */}
+              {/* Telegram */}
               <a
                 href={telegramSupportUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-cyan-500 hover:shadow-md transition-all group"
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-cyan-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px]"
               >
-                <div className="flex items-center gap-2 mb-1.5 text-cyan-600">
-                  <Send size={16} />
-                  <span className="text-[10px] font-bold uppercase text-slate-400">Telegram</span>
-                </div>
-                <strong className="text-xs font-bold text-slate-900 group-hover:text-cyan-700 block">
-                  @lexelence
+                <Send size={16} className="text-cyan-600 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-cyan-700">
+                  Telegram
                 </strong>
               </a>
 
@@ -113,28 +104,22 @@ export function ContactSection({
                 href={maxMessengerUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-amber-500 hover:shadow-md transition-all group"
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-amber-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[120px]"
               >
-                <div className="flex items-center gap-2 mb-1.5 text-amber-600">
-                  <MessageCircle size={16} />
-                  <span className="text-[10px] font-bold uppercase text-slate-400">Max</span>
-                </div>
-                <strong className="text-xs font-bold text-slate-900 group-hover:text-amber-700 block">
-                  +7 (921) 062-99-09
+                <MessageCircle size={16} className="text-amber-600 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-amber-700">
+                  Max
                 </strong>
               </a>
 
               {/* Email */}
               <a
-                href="mailto:support@tenderlex.ru"
-                className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group col-span-2 sm:col-span-1"
+                href="mailto:info@tenderlex.ru"
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[120px]"
               >
-                <div className="flex items-center gap-2 mb-1.5 text-teal-700">
-                  <Mail size={16} />
-                  <span className="text-[10px] font-bold uppercase text-slate-400">Email</span>
-                </div>
-                <strong className="text-xs font-bold text-slate-900 group-hover:text-teal-700 block truncate">
-                  support@tenderlex.ru
+                <Mail size={16} className="text-teal-700 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
+                  Email
                 </strong>
               </a>
             </div>

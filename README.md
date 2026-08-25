@@ -15,7 +15,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
-- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (real-time Web Audio task completion chime, header notification switch, bottom floating toast pill, pulsing badges for new jobs, dismissible live chat, and clean decluttered button styling).
+- Contact Routing & Channels: Voice calls: `+7 (995) 146-00-80` (`tel:+79951460080`), direct messengers: WhatsApp (`https://wa.me/79210629909`), Max (`https://max.ru/...`), Telegram direct (`https://t.me/lexelence`), Telegram bot (`https://t.me/tenderlex_bot`), email `info@tenderlex.ru`.
+- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (real-time Web Audio task completion chime, header notification switch, bottom floating toast pill, pulsing badges for new jobs, dismissible live chat with header trigger, and clean decluttered button styling).
 - Trial Balance & Email Verification: New registrations receive 396 ₽ trial balance (4 tasks @ 99 ₽); web cabinet displays compact test banner guiding users to direct contact channels for quota top-ups; transactional email confirmation uses a bulletproof responsive HTML template with single-account-per-email uniqueness enforcement.
 - Automated Nurturing Sequence & 1-Click Unsubscribe: Behavioral 3-step sequence (24h post-registration reminder, 48h post-first-task feature showcase, and trial completion summary) across Telegram and Email within work hours (09:00–20:00 MSK). Provides universal 1-click unsubscribe via Telegram button (`🔕 Отписаться от подсказок`) and HMAC-signed email link (`/api/customer/auth/unsubscribe`) that permanently disables marketing messages.
 - Admin panel & Telegram client display: Optimized loading for clients and Minprom registry cache (FTS count and N+1 query elimination); improved Telegram account formatting to display client name and ID when `@username` is absent.
@@ -114,8 +115,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
 - Supplier search supports three registry modes selected by the customer before
   launch in the site cabinet and Telegram bot:
-  `Обычный поиск`, `Только реестр`, and `Реестр в приоритете`.
-  `Только реестр` is for strict prohibition cases where suppliers must have a
+  `Обычный поиск`, `Только реестр (Минпромторг)`, and `Реестр в приоритете (Минпромторг)`.
+  `Только реестр (Минпромторг)` is for strict prohibition cases where suppliers must have a
   Minpromtorg/GISP registry record. `Реестр в приоритете` searches registry
   candidates first, then continues with the ordinary supplier search. In
   ordinary mode the AI can still detect a mandatory registry requirement from
@@ -131,7 +132,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   `Комментарий` column: matched rows include the registry record number and
   manufacturer there, while priority-mode fallbacks say that no relevant
   registry record was found and the supplier came from ordinary search.
-- If strict `Только реестр` produces zero registry-linked suppliers but the same
+- If strict `Только реестр (Минпромторг)` produces zero registry-linked suppliers but the same
   run already verified ordinary suppliers, the job becomes a paid alternative
   offer instead of a generic failure. Telegram and the website show the number
   of verified alternatives and the exact reserved charge; the customer can
