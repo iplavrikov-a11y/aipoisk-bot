@@ -12,6 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Lead Generation & Outreach CRM Module (2026-08):
+  - Added comprehensive B2B lead search, CRM contact management, bulk email campaigns, direct composer, and IMAP inbound reply inbox in admin panel (`frontend/src/OutreachView.tsx`, `backend/app/outreach_api.py`, `backend/app/outreach_mail.py`).
+  - Database & Backend: Automatic SQLite schema migrations for `outreach_inbox` (`category`, `is_spam`) and `outreach_campaigns` (`selected_lead_ids`) in `backend/app/db.py`. Enriched `/api/outreach/inbox` with company name, phone, and task matching. Fixed AI generation endpoint with system settings and tier integration.
+  - Cross-Page Contact Selection: Implemented full-task bulk selection across all pages (e.g. all 846 contacts) with bulk actions (launch campaign, compose email, delete).
+  - Direct CRM Picker: Added fast modal contact picker in "Написать письмо" for selecting recipients from current task database with search and 1-click insertion.
+  - AI Email Toolbar: Integrated AI theme generation (`✨ AI Тема`), email generation (`✨ Написать с AI`), improvement (`Улучшить`), shortening (`Сократить`), spellchecking (`Орфография`), tone selector, and cold email templates.
+  - Minimalist & Compact UI: Stripped unnecessary variable tags, eliminated helper banners, streamlined task header into a clean single-row layout with quick task refresh.
+  - Added test suite `backend/tests/test_outreach.py` with 100% pass rate.
 - Contact Routing & UI Polish (2026-08):
   - Strictly separated voice phone calls from messaging channels:
     - Voice calls: `+7 (995) 146-00-80` (`tel:+79951460080`).

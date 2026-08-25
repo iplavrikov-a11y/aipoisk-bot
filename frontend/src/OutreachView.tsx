@@ -114,6 +114,10 @@ interface IncomingMessage {
   message_id: string
   sender_email: string
   sender_name: string
+  lead_company?: string
+  lead_phone?: string
+  task_id?: string
+  task_name?: string
   subject: string
   body_text: string
   body_html: string
@@ -144,20 +148,20 @@ const COLD_EMAIL_TEMPLATES = [
   {
     id: 'tender_subcontract',
     name: 'Поиск субподрядчиков и поставщиков (44-ФЗ / 223-ФЗ)',
-    subject: 'Сотрудничество по поставкам и субподрядам для {company}',
-    body: 'Здравствуйте, коллеги из {company}!\n\nОбращаемся к вам как к надежному участнику и исполнителю контрактов.\nСервис TenderLex помогает оперативно находить проверенных производителей и поставщиков оборудования, материалов и комплексного снабжения по спецификациям 44-ФЗ и 223-ФЗ.\n\nПодскажите, актуально ли для вас ускорить подбор поставщиков и снизить себестоимость закрытия спецификаций?\n\nБудем рады предоставить тестовый доступ.\n\nС уважением,\nКоманда TenderLex\ninfo@tenderlex.ru | https://tenderlex.ru',
+    subject: 'Сотрудничество по поставкам и субподрядам (44-ФЗ / 223-ФЗ)',
+    body: 'Здравствуйте!\n\nСервис TenderLex помогает оперативно находить проверенных производителей и поставщиков оборудования, материалов и комплексного снабжения по спецификациям 44-ФЗ и 223-ФЗ.\n\nПодскажите, актуально ли для вас ускорить подбор поставщиков и снизить себестоимость закрытия спецификаций?\n\nБудем рады предоставить тестовый доступ.\n\nС уважением,\nКоманда TenderLex\ninfo@tenderlex.ru | https://tenderlex.ru',
   },
   {
     id: 'b2b_supply',
     name: 'Коммерческое предложение по закупкам',
-    subject: 'Предложение по оптимизации закупок для {company}',
-    body: 'Добрый день!\n\nИзучили профиль деятельности компании {company}.\nПредлагаем автоматизированное решение для поиска прямых заводов-производителей и дилеров по вашим техническим заданиям.\n\nПреимущества:\n- Поиск по реестрам Минпромторга и прямым контактам ЛПР\n- Проверка контрагентов и актуальности цен\n- Экономия до 40% времени отдела снабжения\n\nГотовы направить короткую презентацию или провести демонстрацию.\n\nС уважением,\nОтдел развития TenderLex\ninfo@tenderlex.ru',
+    subject: 'Предложение по оптимизации снабжения и закупок',
+    body: 'Добрый день!\n\nПредлагаем автоматизированное решение для поиска прямых заводов-производителей и дилеров по вашим техническим заданиям.\n\nПреимущества:\n- Поиск по реестрам Минпромторга и прямым контактам ЛПР\n- Проверка контрагентов и актуальности цен\n- Экономия до 40% времени отдела снабжения\n\nГотовы направить короткую презентацию или провести демонстрацию.\n\nС уважением,\nОтдел развития TenderLex\ninfo@tenderlex.ru',
   },
   {
     id: 'follow_up',
     name: 'Краткое напоминание (Follow-up)',
-    subject: 'Re: Сотрудничество с {company}',
-    body: 'Здравствуйте!\n\nНедавно отправляли вам предложение по автоматизации подбора поставщиков для компании {company}.\n\nУдалось ли ознакомиться? Готовы ответить на любые вопросы и подобрать поставщиков под один из ваших текущих запросов бесплатно в качестве теста.\n\nХорошего дня!\nКоманда TenderLex\ninfo@tenderlex.ru',
+    subject: 'Re: Сотрудничество по закупкам',
+    body: 'Здравствуйте!\n\nНедавно отправляли вам предложение по автоматизации подбора поставщиков.\n\nУдалось ли ознакомиться? Готовы ответить на любые вопросы и подобрать поставщиков под один из ваших текущих запросов бесплатно в качестве теста.\n\nХорошего дня!\nКоманда TenderLex\ninfo@tenderlex.ru',
   },
 ]
 
@@ -176,10 +180,15 @@ async function outreachFetch<T>(path: string, options: RequestInit = {}): Promis
   if (!res.ok) {
     let errText = ''
     try {
-      const j = await res.json()
-      errText = j.detail || j.message || JSON.stringify(j)
+      const rawText = await res.text()
+      try {
+        const j = JSON.parse(rawText)
+        errText = j.detail || j.message || JSON.stringify(j)
+      } catch {
+        errText = rawText
+      }
     } catch {
-      errText = await res.text()
+      errText = `HTTP ${res.status}`
     }
     throw new Error(errText || `HTTP ${res.status}`)
   }
@@ -214,18 +223,29 @@ export function OutreachView() {
   const [searchFilter, setSearchFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([])
+  const [selectAllAcrossPages, setSelectAllAcrossPages] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   // History modal
   const [historyLead, setHistoryLead] = useState<LeadHistory | null>(null)
+
+  // CRM Picker Modal for Compose tab
+  const [showCrmPickerModal, setShowCrmPickerModal] = useState(false)
+  const [crmPickerSearch, setCrmPickerSearch] = useState('')
+  const [crmPickerLeads, setCrmPickerLeads] = useState<Lead[]>([])
+  const [crmPickerSelected, setCrmPickerSelected] = useState<string[]>([])
+  const [crmPickerLoading, setCrmPickerLoading] = useState(false)
 
   // Campaign state (inside selected task)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [campSubject, setCampSubject] = useState('Сотрудничество с TenderLex')
   const [campBody, setCampBody] = useState(
-    'Здравствуйте!\n\nОбращаемся к компании {company}.\nПредлагаем автоматизированный поиск поставщиков и производителей по техническому заданию для ваших закупок и контрактов.\n\nБудем рады ответить на ваши вопросы,\nКоманда TenderLex\ninfo@tenderlex.ru\nhttps://tenderlex.ru'
+    'Здравствуйте!\n\nПредлагаем автоматизированный поиск поставщиков и производителей по техническому заданию для ваших закупок и контрактов.\n\nБудем рады ответить на ваши вопросы,\nКоманда TenderLex\ninfo@tenderlex.ru\nhttps://tenderlex.ru'
   )
   const [campAudienceType, setCampAudienceType] = useState<'all' | 'selected'>('all')
   const [campDelay, setCampDelay] = useState<number>(2.0)
+  const [campTone, setCampTone] = useState('professional')
+  const [campAiGenerating, setCampAiGenerating] = useState(false)
   const [testEmail, setTestEmail] = useState('')
   const [sendingTest, setSendingTest] = useState(false)
 
@@ -493,54 +513,103 @@ export function OutreachView() {
     }
   }
 
-  // Select all leads on page
+  // Select all leads on page or across all pages
   const handleSelectAllLeads = () => {
-    if (selectedLeadIds.length === leads.length) {
+    if (selectedLeadIds.length === leads.length && leads.length > 0) {
       setSelectedLeadIds([])
+      setSelectAllAcrossPages(false)
     } else {
       setSelectedLeadIds(leads.map((l) => l.id))
+      setSelectAllAcrossPages(false)
     }
   }
 
   // Toggle single lead selection
   const handleToggleLead = (id: string) => {
+    setSelectAllAcrossPages(false)
     setSelectedLeadIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
 
   // Send selected leads to campaign inside task
   const handleSendSelectedToCampaign = () => {
-    if (!selectedLeadIds.length) {
+    if (!selectedLeadIds.length && !selectAllAcrossPages) {
       showError('Выберите хотя бы один контакт')
       return
     }
-    setCampAudienceType('selected')
+    if (selectAllAcrossPages) {
+      setCampAudienceType('all')
+      showSuccess(`Выбраны ВСЕ ${leadTotal} контактов задачи для рассылки`)
+    } else {
+      setCampAudienceType('selected')
+      showSuccess(`Выбрано ${selectedLeadIds.length} контактов для рассылки`)
+    }
     setTaskSubTab('campaign')
-    showSuccess(`Выбрано ${selectedLeadIds.length} контактов для рассылки`)
   }
 
   // Send selected leads to compose tab inside task
-  const handleSendSelectedToCompose = () => {
-    if (!selectedLeadIds.length) {
+  const handleSendSelectedToCompose = async () => {
+    if (!selectedLeadIds.length && !selectAllAcrossPages) {
       showError('Выберите хотя бы один контакт')
       return
     }
-    const selectedEmails = leads.filter((l) => selectedLeadIds.includes(l.id)).map((l) => l.email)
-    setComposeRecipients(selectedEmails)
-    setTaskSubTab('compose')
-    showSuccess(`Добавлено ${selectedEmails.length} получателей во вкладку "Написать"`)
+    if (selectAllAcrossPages && selectedTask) {
+      try {
+        const data = await outreachFetch<{ items: Lead[] }>(
+          `/api/outreach/leads?task_id=${selectedTask.id}&page=1&page_size=5000`
+        )
+        const allEmails = (data.items || []).map((l) => l.email).filter(Boolean)
+        setComposeRecipients(allEmails)
+        setTaskSubTab('compose')
+        showSuccess(`Добавлено ${allEmails.length} получателей во вкладку "Написать письмо"`)
+      } catch (e: any) {
+        showError(e.message)
+      }
+    } else {
+      const selectedEmails = leads.filter((l) => selectedLeadIds.includes(l.id)).map((l) => l.email)
+      setComposeRecipients(selectedEmails)
+      setTaskSubTab('compose')
+      showSuccess(`Добавлено ${selectedEmails.length} получателей во вкладку "Написать письмо"`)
+    }
+  }
+
+  // Open CRM Picker Modal directly in Compose Tab
+  const handleOpenCrmPicker = async () => {
+    if (!selectedTask) return
+    setShowCrmPickerModal(true)
+    setCrmPickerLoading(true)
+    try {
+      const data = await outreachFetch<{ items: Lead[] }>(
+        `/api/outreach/leads?task_id=${selectedTask.id}&page=1&page_size=5000`
+      )
+      setCrmPickerLeads(data.items || [])
+      setCrmPickerSelected([])
+    } catch (e: any) {
+      showError(e.message)
+    } finally {
+      setCrmPickerLoading(false)
+    }
   }
 
   // Delete selected leads
   const handleDeleteSelectedLeads = async () => {
-    if (!selectedLeadIds.length || !selectedTask) return
-    if (!confirm(`Удалить выбранные контакты (${selectedLeadIds.length} шт.)?`)) return
+    if ((!selectedLeadIds.length && !selectAllAcrossPages) || !selectedTask) return
+    const count = selectAllAcrossPages ? leadTotal : selectedLeadIds.length
+    if (!confirm(`Удалить выбранные контакты (${count} шт.)?`)) return
     try {
-      await outreachFetch('/api/outreach/leads/delete', {
-        method: 'POST',
-        body: JSON.stringify({ lead_ids: selectedLeadIds }),
-      })
+      if (selectAllAcrossPages) {
+        await outreachFetch('/api/outreach/leads', {
+          method: 'DELETE',
+          body: JSON.stringify({ all_leads: true, task_id: selectedTask.id, status_filter: statusFilter }),
+        })
+      } else {
+        await outreachFetch('/api/outreach/leads', {
+          method: 'DELETE',
+          body: JSON.stringify({ lead_ids: selectedLeadIds }),
+        })
+      }
       setSelectedLeadIds([])
-      showSuccess('Контакты удалены')
+      setSelectAllAcrossPages(false)
+      showSuccess('Контакты успешно удалены')
       fetchLeads(selectedTask.id, page, searchFilter, statusFilter)
       fetchTaskStats(selectedTask.id)
     } catch (e: any) {
@@ -555,6 +624,25 @@ export function OutreachView() {
       setHistoryLead(data)
     } catch (e: any) {
       showError(`Ошибка загрузки истории: ${e.message}`)
+    }
+  }
+
+  // Refresh current task stats, leads, campaigns, inbox
+  const handleRefreshTaskData = async () => {
+    if (!selectedTask) return
+    setRefreshing(true)
+    try {
+      await Promise.all([
+        fetchTaskStats(selectedTask.id),
+        fetchLeads(selectedTask.id, page, searchFilter, statusFilter),
+        fetchCampaigns(selectedTask.id),
+        fetchInbox(selectedTask.id),
+      ])
+      showSuccess('Данные задачи обновлены')
+    } catch (e: any) {
+      showError(`Ошибка обновления: ${e.message}`)
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -575,7 +663,7 @@ export function OutreachView() {
         task_id_filter: selectedTask.id,
         delay_seconds: campDelay,
       }
-      if (campAudienceType === 'selected') {
+      if (campAudienceType === 'selected' && !selectAllAcrossPages) {
         payload.lead_ids = selectedLeadIds
       }
 
@@ -647,37 +735,63 @@ export function OutreachView() {
     }
   }
 
-  // AI Assistant for Email
-  const handleAiAction = async (action: string, customPrompt = '') => {
-    setAiGenerating(true)
+  // AI Assistant for Email & Campaign
+  const handleAiAction = async (action: string, target: 'compose' | 'campaign' = 'compose', customPrompt = '') => {
+    if (target === 'campaign') {
+      setCampAiGenerating(true)
+    } else {
+      setAiGenerating(true)
+    }
     try {
+      const currentBody = target === 'campaign' ? campBody : composeBody
+      const currentTone = target === 'campaign' ? campTone : composeTone
+      const targetCompany = target === 'compose' ? (composeRecipients[0] || selectedTask?.name || '') : (selectedTask?.name || '')
+
       const data = await outreachFetch<any>('/api/outreach/ai/generate', {
         method: 'POST',
         body: JSON.stringify({
           action,
-          prompt: customPrompt || aiPrompt,
-          context: composeBody || campBody,
-          tone: composeTone,
-          company_name: composeRecipients[0] || selectedTask?.name || '',
+          prompt: customPrompt || aiPrompt || selectedTask?.prompt || '',
+          context: currentBody,
+          tone: currentTone,
+          company_name: targetCompany,
         }),
       })
+
       if (action === 'cold_email') {
-        if (data.subject) setComposeSubject(data.subject)
-        if (data.body_text) setComposeBody(data.body_text)
-        showSuccess('AI сгенерировал текст письма!')
+        if (target === 'campaign') {
+          if (data.subject) setCampSubject(data.subject)
+          if (data.body_text) setCampBody(data.body_text)
+        } else {
+          if (data.subject) setComposeSubject(data.subject)
+          if (data.body_text) setComposeBody(data.body_text)
+        }
+        showSuccess('AI успешно сгенерировал тему и текст письма!')
       } else if (action === 'improve' || action === 'shorten' || action === 'grammar') {
-        if (data.body_text) setComposeBody(data.body_text)
+        if (target === 'campaign') {
+          if (data.body_text) setCampBody(data.body_text)
+        } else {
+          if (data.body_text) setComposeBody(data.body_text)
+        }
         showSuccess('Текст обновлен с помощью AI!')
       } else if (action === 'subject') {
         if (data.subjects?.length) {
-          setComposeSubject(data.subjects[0])
+          if (target === 'campaign') {
+            setCampSubject(data.subjects[0])
+          } else {
+            setComposeSubject(data.subjects[0])
+          }
           showSuccess(`AI предложил тему: "${data.subjects[0]}"`)
         }
       }
     } catch (e: any) {
       showError(`Ошибка AI: ${e.message}`)
     } finally {
-      setAiGenerating(false)
+      if (target === 'campaign') {
+        setCampAiGenerating(false)
+      } else {
+        setAiGenerating(false)
+      }
     }
   }
 
@@ -1137,8 +1251,8 @@ export function OutreachView() {
       {selectedTask && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Top Breadcrumb & Task Header */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 18px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <button
                 type="button"
                 onClick={() => {
@@ -1146,42 +1260,28 @@ export function OutreachView() {
                   fetchTasks()
                 }}
                 className="outreach-btn outreach-btn-secondary"
-                style={{ padding: '6px 12px', fontSize: 12 }}
+                style={{ padding: '5px 10px', fontSize: 12, flexShrink: 0 }}
               >
                 <ArrowLeft size={14} />
                 <span>Все задачи</span>
               </button>
 
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#0f766e', background: '#f0fdfa', padding: '2px 6px', borderRadius: 4 }}>
-                    Проект поиска
-                  </span>
-                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#0f172a' }}>
-                    {selectedTask.name}
-                  </h2>
-                </div>
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                  {selectedTask.prompt} • Себестоимость: <strong style={{ color: '#047857' }}>{selectedTask.cost_label || selectedTask.total_cost_rub + ' ₽'}</strong>
-                </div>
-              </div>
+              <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {selectedTask.name}
+              </h2>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button
-                type="button"
-                onClick={() => {
-                  fetchTaskStats(selectedTask.id)
-                  fetchLeads(selectedTask.id, 1, searchFilter, statusFilter)
-                  fetchCampaigns(selectedTask.id)
-                  fetchInbox(selectedTask.id)
-                }}
-                className="outreach-btn outreach-btn-secondary"
-              >
-                <RefreshCw size={13} />
-                <span>Обновить задачу</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={refreshing}
+              onClick={handleRefreshTaskData}
+              className="outreach-btn outreach-btn-secondary"
+              style={{ padding: '5px 10px', fontSize: 12, flexShrink: 0 }}
+              title="Обновить данные задачи"
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+              <span>{refreshing ? 'Обновление...' : 'Обновить'}</span>
+            </button>
           </div>
 
           {/* Task-Specific 4 Metrics Cards */}
@@ -1346,36 +1446,69 @@ export function OutreachView() {
 
               {/* Selection Action Bar (when 1+ items selected) */}
               {selectedLeadIds.length > 0 && (
-                <div className="outreach-action-bar">
-                  <strong style={{ color: '#1e40af', fontSize: 13 }}>
-                    Выбрано контактов: {selectedLeadIds.length} из {leads.length}
-                  </strong>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button
-                      type="button"
-                      onClick={handleSendSelectedToCampaign}
-                      className="outreach-btn outreach-btn-emerald"
-                    >
-                      <Send size={14} />
-                      <span>Отправить выбранные ({selectedLeadIds.length}) в рассылку</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSendSelectedToCompose}
-                      className="outreach-btn outreach-btn-indigo"
-                    >
-                      <PenTool size={14} />
-                      <span>Написать письмо</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDeleteSelectedLeads}
-                      className="outreach-btn outreach-btn-danger"
-                    >
-                      <Trash2 size={14} />
-                      <span>Удалить ({selectedLeadIds.length})</span>
-                    </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="outreach-action-bar">
+                    <strong style={{ color: '#1e40af', fontSize: 13 }}>
+                      {selectAllAcrossPages
+                        ? `✓ Выбраны ВСЕ ${leadTotal} контактов задачи`
+                        : `Выбрано контактов: ${selectedLeadIds.length} на текущей странице (из ${leadTotal} всего)`}
+                    </strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={handleSendSelectedToCampaign}
+                        className="outreach-btn outreach-btn-emerald"
+                      >
+                        <Send size={14} />
+                        <span>Отправить в рассылку ({selectAllAcrossPages ? leadTotal : selectedLeadIds.length})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSendSelectedToCompose}
+                        className="outreach-btn outreach-btn-indigo"
+                      >
+                        <PenTool size={14} />
+                        <span>Написать письмо</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDeleteSelectedLeads}
+                        className="outreach-btn outreach-btn-danger"
+                      >
+                        <Trash2 size={14} />
+                        <span>Удалить ({selectAllAcrossPages ? leadTotal : selectedLeadIds.length})</span>
+                      </button>
+                    </div>
                   </div>
+
+                  {leadTotal > leads.length && selectedLeadIds.length === leads.length && (
+                    <div style={{ padding: '8px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#1e40af' }}>
+                      <span>
+                        {selectAllAcrossPages
+                          ? `✓ Выбраны все ${leadTotal} контактов по этой задаче.`
+                          : `Выбраны все ${leads.length} контактов на текущей странице.`}
+                      </span>
+                      {!selectAllAcrossPages ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectAllAcrossPages(true)}
+                          className="outreach-btn outreach-btn-secondary"
+                          style={{ padding: '3px 10px', fontSize: 12, fontWeight: 700 }}
+                        >
+                          👉 Выбрать все {leadTotal} контактов в этой задаче
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setSelectAllAcrossPages(false)}
+                          className="outreach-btn outreach-btn-ghost"
+                          style={{ padding: '3px 10px', fontSize: 11 }}
+                        >
+                          Оставить только текущую страницу
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1548,7 +1681,7 @@ export function OutreachView() {
                 <div>
                   <h2 className="outreach-panel-title">Email-рассылка по задаче «{selectedTask.name}»</h2>
                   <p className="outreach-panel-desc">
-                    Персональная отправка писем по базе контактов текущей задачи с автоподстановкой названия компании.
+                    Персональная отправка писем по базе контактов текущей задачи с автоподстановкой данных компаний и AI-помощником.
                   </p>
                 </div>
 
@@ -1562,8 +1695,10 @@ export function OutreachView() {
                       onChange={(e) => setCampAudienceType(e.target.value as any)}
                       style={{ fontWeight: 600 }}
                     >
-                      <option value="all">Всем проверенным контактам этой задачи ({selectedTask.collected_count} шт.)</option>
-                      {selectedLeadIds.length > 0 && (
+                      <option value="all">
+                        Всем контактам этой задачи ({selectedTask.collected_count} шт.)
+                      </option>
+                      {selectedLeadIds.length > 0 && !selectAllAcrossPages && (
                         <option value="selected">
                           Выбранным вручную в CRM контактам ({selectedLeadIds.length} шт.)
                         </option>
@@ -1572,81 +1707,187 @@ export function OutreachView() {
                   </div>
 
                   <div>
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                      Тема письма:
-                    </label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                        Тема письма:
+                      </label>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          type="button"
+                          onClick={() => handleAiAction('subject', 'campaign')}
+                          disabled={campAiGenerating}
+                          className="outreach-btn outreach-btn-indigo"
+                          style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                          title="Сгенерировать привлекательную тему рассылки с AI"
+                        >
+                          <Sparkles size={12} />
+                          <span>AI Тема</span>
+                        </button>
+
+                        <select
+                          onChange={(e) => {
+                            const tpl = COLD_EMAIL_TEMPLATES.find((t) => t.id === e.target.value)
+                            if (tpl) {
+                              setCampSubject(tpl.subject)
+                              setCampBody(tpl.body)
+                            }
+                          }}
+                          defaultValue=""
+                          style={{ width: 'auto', minWidth: 160, height: 24, fontSize: 11, padding: '0 6px' }}
+                        >
+                          <option value="" disabled>📋 Выбрать шаблон...</option>
+                          {COLD_EMAIL_TEMPLATES.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                     <input
                       type="text"
                       required
+                      placeholder="Тема рассылки..."
                       value={campSubject}
                       onChange={(e) => setCampSubject(e.target.value)}
+                      style={{ fontWeight: 600 }}
                     />
                   </div>
 
+                  {/* Formatting, Variables & AI Toolbar for Campaign */}
                   <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
-                        Текст письма (доступна переменная {'{company}'}):
-                      </label>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        {['{company}', '{phone}', '{site}'].map((v) => (
-                          <button
-                            key={v}
-                            type="button"
-                            onClick={() => setCampBody((prev) => `${prev} ${v}`)}
-                            className="outreach-btn outreach-btn-secondary"
-                            style={{ padding: '2px 6px', fontSize: 11, minHeight: 22 }}
-                          >
-                            +{v}
-                          </button>
-                        ))}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, background: '#f8fafc', border: '1px solid #cbd5e1', borderBottom: 'none', borderRadius: '8px 8px 0 0', padding: '6px 10px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => setCampBody((prev) => `**${prev}**`)}
+                          className="outreach-btn outreach-btn-ghost"
+                          style={{ padding: '2px 6px', minHeight: 24 }}
+                          title="Жирный"
+                        >
+                          <Bold size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCampBody((prev) => `*${prev}*`)}
+                          className="outreach-btn outreach-btn-ghost"
+                          style={{ padding: '2px 6px', minHeight: 24 }}
+                          title="Курсив"
+                        >
+                          <Italic size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCampBody((prev) => `_${prev}_`)}
+                          className="outreach-btn outreach-btn-ghost"
+                          style={{ padding: '2px 6px', minHeight: 24 }}
+                          title="Подчеркнутый"
+                        >
+                          <Underline size={13} />
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleAiAction('cold_email', 'campaign')}
+                          disabled={campAiGenerating}
+                          className="outreach-btn outreach-btn-indigo"
+                          style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                        >
+                          <Sparkles size={12} />
+                          <span>{campAiGenerating ? 'AI пишет...' : '✨ Написать с AI'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleAiAction('improve', 'campaign')}
+                          disabled={campAiGenerating || !campBody.trim()}
+                          className="outreach-btn outreach-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                          title="Улучшить текст рассылки"
+                        >
+                          <Wand2 size={12} style={{ color: '#6366f1' }} />
+                          <span>Улучшить</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleAiAction('shorten', 'campaign')}
+                          disabled={campAiGenerating || !campBody.trim()}
+                          className="outreach-btn outreach-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                          title="Сделать текст лаконичнее"
+                        >
+                          <Scissors size={12} style={{ color: '#f59e0b' }} />
+                          <span>Сократить</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleAiAction('grammar', 'campaign')}
+                          disabled={campAiGenerating || !campBody.trim()}
+                          className="outreach-btn outreach-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                          title="Проверить орфографию и стиль"
+                        >
+                          <SpellCheck size={12} style={{ color: '#10b981' }} />
+                          <span>Орфография</span>
+                        </button>
+
+                        <select
+                          value={campTone}
+                          onChange={(e) => setCampTone(e.target.value)}
+                          style={{ width: 'auto', minWidth: 110, height: 26, fontSize: 11, padding: '0 4px' }}
+                        >
+                          <option value="professional">Деловой тон</option>
+                          <option value="friendly">Дружелюбный</option>
+                          <option value="selling">Продающий</option>
+                          <option value="concise">Краткий</option>
+                        </select>
                       </div>
                     </div>
+
                     <textarea
-                      rows={8}
+                      rows={9}
                       required
-                      style={{ minHeight: 160 }}
+                      style={{ borderRadius: '0 0 8px 8px', borderTop: 'none', minHeight: 180, fontSize: 13, lineHeight: 1.6 }}
                       value={campBody}
                       onChange={(e) => setCampBody(e.target.value)}
+                      placeholder="Текст рассылки..."
                     />
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        Задержка между письмами:
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                        Задержка между отправками:
                       </label>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <input
-                          type="number"
-                          step={0.5}
-                          min={0.5}
-                          max={60}
-                          style={{ width: 80 }}
-                          value={campDelay}
-                          onChange={(e) => setCampDelay(parseFloat(e.target.value) || 2.0)}
-                        />
-                        <span style={{ fontSize: 12, color: '#64748b' }}>сек</span>
-                      </div>
+                      <input
+                        type="number"
+                        step={0.5}
+                        min={0.5}
+                        max={60}
+                        style={{ width: 75 }}
+                        value={campDelay}
+                        onChange={(e) => setCampDelay(parseFloat(e.target.value) || 2.0)}
+                      />
+                      <span style={{ fontSize: 12, color: '#64748b' }}>сек</span>
                     </div>
 
-                    <div style={{ paddingTop: 20 }}>
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        className="outreach-btn outreach-btn-emerald"
-                        style={{ padding: '8px 18px', fontSize: 13 }}
-                      >
-                        <Send size={15} />
-                        <span>Запустить рассылку</span>
-                      </button>
-                    </div>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="outreach-btn outreach-btn-emerald"
+                      style={{ padding: '8px 20px', fontSize: 13 }}
+                    >
+                      <Send size={15} />
+                      <span>Запустить рассылку</span>
+                    </button>
                   </div>
 
                   {/* Test Send */}
                   <div style={{ paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
                     <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                      Отправить тест на свою почту:
+                      Отправить тест на свою почту (с предпросмотром подстановки):
                     </label>
                     <div style={{ display: 'flex', gap: 8 }}>
                       <input
@@ -1794,7 +2035,7 @@ export function OutreachView() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setTaskSubTab('leads')}
+                    onClick={handleOpenCrmPicker}
                     className="outreach-btn outreach-btn-secondary"
                   >
                     <Users size={14} />
@@ -1814,7 +2055,7 @@ export function OutreachView() {
                     />
                     <button
                       type="button"
-                      onClick={() => handleAiAction('subject')}
+                      onClick={() => handleAiAction('subject', 'compose')}
                       disabled={aiGenerating}
                       className="outreach-btn outreach-btn-indigo"
                       title="Сгенерировать привлекательную тему с помощью AI"
@@ -1874,24 +2115,12 @@ export function OutreachView() {
                   >
                     <Underline size={15} />
                   </button>
-                  <span style={{ width: 1, height: 16, background: '#cbd5e1', margin: '0 4px' }} />
-                  {['{company}', '{name}', '{phone}', '{site}'].map((chip) => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => setComposeBody((prev) => `${prev} ${chip}`)}
-                      className="outreach-btn outreach-btn-secondary"
-                      style={{ padding: '2px 6px', fontSize: 11, minHeight: 24, fontFamily: 'monospace' }}
-                    >
-                      +{chip}
-                    </button>
-                  ))}
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <button
                     type="button"
-                    onClick={() => handleAiAction('cold_email')}
+                    onClick={() => handleAiAction('cold_email', 'compose')}
                     disabled={aiGenerating}
                     className="outreach-btn outreach-btn-indigo"
                   >
@@ -1901,7 +2130,7 @@ export function OutreachView() {
 
                   <button
                     type="button"
-                    onClick={() => handleAiAction('improve')}
+                    onClick={() => handleAiAction('improve', 'compose')}
                     disabled={aiGenerating || !composeBody.trim()}
                     className="outreach-btn outreach-btn-secondary"
                   >
@@ -1911,7 +2140,7 @@ export function OutreachView() {
 
                   <button
                     type="button"
-                    onClick={() => handleAiAction('shorten')}
+                    onClick={() => handleAiAction('shorten', 'compose')}
                     disabled={aiGenerating || !composeBody.trim()}
                     className="outreach-btn outreach-btn-secondary"
                   >
@@ -1921,7 +2150,7 @@ export function OutreachView() {
 
                   <button
                     type="button"
-                    onClick={() => handleAiAction('grammar')}
+                    onClick={() => handleAiAction('grammar', 'compose')}
                     disabled={aiGenerating || !composeBody.trim()}
                     className="outreach-btn outreach-btn-secondary"
                   >
@@ -1932,7 +2161,7 @@ export function OutreachView() {
                   <select
                     value={composeTone}
                     onChange={(e) => setComposeTone(e.target.value)}
-                    style={{ width: 'auto', minWidth: 120, height: 32, fontSize: 11 }}
+                    style={{ width: 'auto', minWidth: 120 }}
                   >
                     <option value="professional">Деловой тон</option>
                     <option value="friendly">Дружелюбный</option>
@@ -1942,7 +2171,7 @@ export function OutreachView() {
                 </div>
               </div>
 
-              {/* Editor Body */}
+              {/* Text Area */}
               <div style={{ padding: 18 }}>
                 <textarea
                   rows={14}
@@ -2093,11 +2322,23 @@ export function OutreachView() {
                             <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
                               {msg.body_text}
                             </div>
-                            {msg.is_spam && (
-                              <span className="outreach-badge spam" style={{ marginTop: 4 }}>
-                                Спам
-                              </span>
-                            )}
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                              {msg.lead_company && (
+                                <span style={{ background: '#f1f5f9', color: '#334155', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                  🏢 {msg.lead_company}
+                                </span>
+                              )}
+                              {msg.task_name && (
+                                <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                  🎯 {msg.task_name}
+                                </span>
+                              )}
+                              {msg.is_spam && (
+                                <span className="outreach-badge spam">
+                                  Спам
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )
@@ -2125,6 +2366,13 @@ export function OutreachView() {
                               <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
                                 {selectedMsg.sender_email}
                               </div>
+                              {(selectedMsg.lead_company || selectedMsg.task_name) && (
+                                <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                  {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
+                                  {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
+                                  {selectedMsg.task_name && <span>• 🎯 Задача: {selectedMsg.task_name}</span>}
+                                </div>
+                              )}
                             </div>
                           </div>
 
@@ -2462,6 +2710,148 @@ export function OutreachView() {
                 <PenTool size={14} />
                 <span>Написать письмо</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== CRM PICKER MODAL ==================== */}
+      {showCrmPickerModal && selectedTask && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(15, 23, 42, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 10, width: '100%', maxWidth: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
+            <div style={{ padding: '14px 18px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong style={{ fontSize: 14, color: '#0f172a' }}>Выбрать получателей из базы CRM</strong>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Задача: «{selectedTask.name}» (всего {crmPickerLeads.length} контактов)</div>
+              </div>
+              <button type="button" onClick={() => setShowCrmPickerModal(false)} className="outreach-btn outreach-btn-ghost" style={{ padding: 4 }}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '12px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ position: 'relative', flex: 1 }}>
+                <input
+                  type="text"
+                  placeholder="Поиск по названию, email, телефону..."
+                  value={crmPickerSearch}
+                  onChange={(e) => setCrmPickerSearch(e.target.value)}
+                  style={{ paddingLeft: 28, height: 32, fontSize: 12 }}
+                />
+                <Search size={13} style={{ position: 'absolute', left: 8, top: 9, color: '#94a3b8' }} />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const filtered = crmPickerLeads.filter(
+                    (l) =>
+                      !crmPickerSearch ||
+                      l.company_name.toLowerCase().includes(crmPickerSearch.toLowerCase()) ||
+                      l.email.toLowerCase().includes(crmPickerSearch.toLowerCase()) ||
+                      (l.phone && l.phone.includes(crmPickerSearch))
+                  )
+                  setCrmPickerSelected(filtered.map((l) => l.email))
+                }}
+                className="outreach-btn outreach-btn-secondary"
+                style={{ height: 32, fontSize: 11, padding: '0 10px' }}
+              >
+                Выбрать всех ({crmPickerLeads.length})
+              </button>
+              {crmPickerSelected.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCrmPickerSelected([])}
+                  className="outreach-btn outreach-btn-ghost"
+                  style={{ height: 32, fontSize: 11, padding: '0 8px' }}
+                >
+                  Сбросить
+                </button>
+              )}
+            </div>
+
+            <div style={{ padding: '8px 18px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {crmPickerLoading ? (
+                <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
+                  <RefreshCw size={18} className="animate-spin" style={{ margin: '0 auto 6px', color: '#0f766e' }} />
+                  Загрузка контактов...
+                </div>
+              ) : crmPickerLeads.length === 0 ? (
+                <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
+                  Контакты не найдены.
+                </div>
+              ) : (
+                crmPickerLeads
+                  .filter(
+                    (l) =>
+                      !crmPickerSearch ||
+                      l.company_name.toLowerCase().includes(crmPickerSearch.toLowerCase()) ||
+                      l.email.toLowerCase().includes(crmPickerSearch.toLowerCase()) ||
+                      (l.phone && l.phone.includes(crmPickerSearch))
+                  )
+                  .map((l) => {
+                    const isChecked = crmPickerSelected.includes(l.email)
+                    return (
+                      <div
+                        key={l.id}
+                        onClick={() => {
+                          setCrmPickerSelected((prev) =>
+                            prev.includes(l.email) ? prev.filter((e) => e !== l.email) : [...prev, l.email]
+                          )
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 10px',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          background: isChecked ? '#eff6ff' : '#fff',
+                          border: `1px solid ${isChecked ? '#bfdbfe' : '#f1f5f9'}`,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          {isChecked ? (
+                            <CheckSquare size={15} style={{ color: '#2563eb', flexShrink: 0 }} />
+                          ) : (
+                            <Square size={15} style={{ color: '#cbd5e1', flexShrink: 0 }} />
+                          )}
+                          <div style={{ minWidth: 0 }}>
+                            <strong style={{ fontSize: 12, color: '#0f172a', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {l.company_name}
+                            </strong>
+                            <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                              {l.email} {l.phone ? `• ${l.phone}` : ''}
+                            </span>
+                          </div>
+                        </div>
+                        {l.mx_valid && <span style={{ fontSize: 10, color: '#059669', fontWeight: 600 }}>✓ MX</span>}
+                      </div>
+                    )
+                  })
+              )}
+            </div>
+
+            <div style={{ padding: '10px 18px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: '#64748b' }}>
+                Выбрано: <strong style={{ color: '#0f172a' }}>{crmPickerSelected.length}</strong>
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" onClick={() => setShowCrmPickerModal(false)} className="outreach-btn outreach-btn-secondary">
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  disabled={crmPickerSelected.length === 0}
+                  onClick={() => {
+                    setComposeRecipients((prev) => [...new Set([...prev, ...crmPickerSelected])])
+                    setShowCrmPickerModal(false)
+                    showSuccess(`Добавлено ${crmPickerSelected.length} получателей`)
+                  }}
+                  className="outreach-btn outreach-btn-primary"
+                >
+                  Вставить в письмо ({crmPickerSelected.length})
+                </button>
+              </div>
             </div>
           </div>
         </div>

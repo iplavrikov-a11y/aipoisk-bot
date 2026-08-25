@@ -49,17 +49,33 @@ def _decode_mime_header(header_value: str | None) -> str:
     return " ".join(decoded)
 
 
-def render_template_text(template_str: str, lead: OutreachLead) -> str:
+def render_template_text(template_str: str, lead: OutreachLead | None) -> str:
     """Replaces variables in email template."""
+    if not template_str:
+        return ""
+    if not lead:
+        # Fallback when lead is None: remove or simplify placeholders
+        res = template_str
+        for tag in ["{company}", "{company_name}", "{компания}", "{организация}", "{name}", "{имя}", "{лпр}", "{телефон}", "{phone}", "{сайт}", "{website}", "{site}", "{город}", "{city}", "{email}", "{почта}", "{инн}", "{inn}"]:
+            res = res.replace(tag, "")
+        return res
+
     company = lead.company_name or "Компания"
     city = lead.city or ""
     site = lead.website or ""
     phone = lead.phone or ""
     email_val = lead.email or ""
+    inn_val = getattr(lead, "inn", "") or ""
+    name = lead.company_name or "Коллеги"
 
     replacements = {
         "{company}": company,
         "{company_name}": company,
+        "{компания}": company,
+        "{организация}": company,
+        "{name}": name,
+        "{имя}": name,
+        "{лпр}": name,
         "{город}": city,
         "{city}": city,
         "{сайт}": site,
@@ -69,6 +85,8 @@ def render_template_text(template_str: str, lead: OutreachLead) -> str:
         "{phone}": phone,
         "{email}": email_val,
         "{почта}": email_val,
+        "{инн}": inn_val,
+        "{inn}": inn_val,
     }
 
     res = template_str

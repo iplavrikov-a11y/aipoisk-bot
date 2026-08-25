@@ -15,6 +15,7 @@ from .db import SessionLocal
 from .models import SystemSettings
 from .outreach_mail import (
     ACTIVE_CAMPAIGN_TASKS,
+    render_template_text,
     run_campaign_worker,
     send_single_email,
     sync_imap_inbox,
@@ -395,11 +396,17 @@ def add_lead_manual(data: ManualLeadRequest, db: Session = Depends(get_db)) -> d
 
 
 @router.delete("/leads")
+@router.post("/leads/delete")
 def delete_leads(data: DeleteLeadsRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     if data.all_leads:
         q = db.query(OutreachLead)
+        if data.task_id:
+            q = q.filter(OutreachLead.task_id == data.task_id)
         if data.status_filter:
-            q = q.filter(OutreachLead.status == data.status_filter)
+            if data.status_filter == "replied":
+                q = q.filter(OutreachLead.reply_received == True)
+            else:
+                q = q.filter(OutreachLead.status == data.status_filter)
         deleted = q.delete(synchronize_session=False)
         db.commit()
         return {"ok": True, "deleted": deleted}
@@ -495,30 +502,40 @@ async def send_direct_email(data: DirectSendRequest, db: Session = Depends(get_d
         clean_to = em.strip()
         if not clean_to or "@" not in clean_to:
             continue
+
+        lead = None
+        if data.lead_id:
+            lead = db.query(OutreachLead).filter(OutreachLead.id == data.lead_id).first()
+        if not lead:
+            lead = db.query(OutreachLead).filter(OutreachLead.email == clean_to).first()
+
+        subj = render_template_text(data.subject.strip(), lead)
+        text_body = render_template_text(data.body_text.strip(), lead)
+        html_body = render_template_text(data.body_html.strip(), lead) if data.body_html else ""
+
         ok, err = await send_single_email(
             to_email=clean_to,
-            subject=data.subject.strip(),
-            body_text=data.body_text.strip(),
-            body_html=data.body_html.strip(),
+            subject=subj,
+            body_text=text_body,
+            body_html=html_body,
             settings=settings,
         )
         if ok:
             sent_count += 1
             log = OutreachSendLog(
                 campaign_id="",
-                lead_id=data.lead_id,
+                lead_id=lead.id if lead else data.lead_id,
                 recipient_email=clean_to,
+                recipient_company=lead.company_name if lead else "",
                 from_email=settings.from_email,
-                subject=data.subject.strip(),
+                subject=subj,
                 status="sent",
             )
             db.add(log)
-            if data.lead_id:
-                lead = db.query(OutreachLead).filter(OutreachLead.id == data.lead_id).first()
-                if lead:
-                    lead.status = "sent"
-                    lead.sent_count += 1
-                    lead.last_sent_at = now_utc()
+            if lead:
+                lead.status = "sent"
+                lead.sent_count += 1
+                lead.last_sent_at = now_utc()
         else:
             errors.append(f"{clean_to}: {err}")
 
@@ -535,11 +552,23 @@ async def send_test_email(data: TestSendRequest, db: Session = Depends(get_db)) 
     if not to_em or "@" not in to_em:
         raise HTTPException(status_code=400, detail="Укажите корректный email получателя")
 
+    sample_lead = OutreachLead(
+        company_name="ООО «РосСнабКомплект»",
+        phone="+7 (495) 123-45-67",
+        website="https://rossnab.ru",
+        city="Москва",
+        email=to_em,
+        inn="7701234567",
+    )
+    subj = render_template_text(data.subject.strip(), sample_lead)
+    text_body = render_template_text(data.body_text.strip(), sample_lead)
+    html_body = render_template_text(data.body_html.strip(), sample_lead) if data.body_html else ""
+
     ok, err = await send_single_email(
         to_email=to_em,
-        subject=data.subject.strip(),
-        body_text=data.body_text.strip(),
-        body_html=data.body_html.strip(),
+        subject=subj,
+        body_text=text_body,
+        body_html=html_body,
         settings=settings,
     )
     if not ok:
@@ -565,21 +594,29 @@ def list_inbox_messages(
     task_id: str = Query(""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    task_id_str = str(task_id).strip() if isinstance(task_id, str) else ""
+    search_str = str(search).strip() if isinstance(search, str) else ""
+    unread_bool = bool(unread_only) if isinstance(unread_only, bool) else False
+    is_spam_bool = bool(is_spam) if isinstance(is_spam, bool) else False
+    limit_int = int(limit) if isinstance(limit, (int, float)) else 50
+
     q = db.query(OutreachIncomingEmail)
-    if is_spam:
+    if is_spam_bool:
         q = q.filter(OutreachIncomingEmail.is_spam == True)
     else:
         q = q.filter(OutreachIncomingEmail.is_spam == False)
 
-    if task_id.strip():
-        lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id.strip()).all()]
+    if task_id_str:
+        lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
         if lead_ids:
             q = q.filter(OutreachIncomingEmail.lead_id.in_(lead_ids))
+        else:
+            return {"items": []}
 
-    if unread_only:
+    if unread_bool:
         q = q.filter(OutreachIncomingEmail.is_read == False)
-    if search.strip():
-        term = f"%{search.strip()}%"
+    if search_str:
+        term = f"%{search_str}%"
         q = q.filter(
             or_(
                 OutreachIncomingEmail.sender_email.ilike(term),
@@ -588,8 +625,30 @@ def list_inbox_messages(
                 OutreachIncomingEmail.body_text.ilike(term),
             )
         )
-    messages = q.order_by(desc(OutreachIncomingEmail.date_received)).limit(limit).all()
-    return {"items": [m.to_dict() for m in messages]}
+    messages = q.order_by(desc(OutreachIncomingEmail.date_received)).limit(limit_int).all()
+
+    lead_ids = [m.lead_id for m in messages if m.lead_id]
+    leads_map = {l.id: l for l in db.query(OutreachLead).filter(OutreachLead.id.in_(lead_ids)).all()} if lead_ids else {}
+    task_ids = [l.task_id for l in leads_map.values() if l.task_id]
+    tasks_map = {t.id: t.name for t in db.query(OutreachSearchTask).filter(OutreachSearchTask.id.in_(task_ids)).all()} if task_ids else {}
+
+    items = []
+    for m in messages:
+        d = m.to_dict()
+        if m.lead_id and m.lead_id in leads_map:
+            lead = leads_map[m.lead_id]
+            d["lead_company"] = lead.company_name
+            d["lead_phone"] = lead.phone
+            d["task_id"] = lead.task_id
+            d["task_name"] = tasks_map.get(lead.task_id, "")
+        else:
+            d["lead_company"] = ""
+            d["lead_phone"] = ""
+            d["task_id"] = ""
+            d["task_name"] = ""
+        items.append(d)
+
+    return {"items": items}
 
 
 @router.post("/inbox/sync")
@@ -706,6 +765,10 @@ def get_lead_history(lead_id: str, db: Session = Depends(get_db)) -> dict[str, A
 
 @router.post("/ai/generate")
 async def generate_ai_email(data: AiGenerateRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    sys_settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    if not sys_settings:
+        sys_settings = SystemSettings(id=1)
+
     tone_desc = {
         "professional": "деловой, профессиональный, уважительный, четкий",
         "friendly": "дружелюбный, открытый, располагающий к диалогу",
@@ -726,10 +789,10 @@ async def generate_ai_email(data: AiGenerateRequest, db: Session = Depends(get_d
         )
         user_prompt = f"Контекст/пожелания: {data.prompt or 'Предложение сервиса автоматизации закупок и поиска производителей'}"
         res = await call_llm(
+            settings=sys_settings,
+            prompt=user_prompt,
             system_prompt=sys_prompt,
-            user_prompt=user_prompt,
-            temperature=0.7,
-            max_tokens=1000,
+            tier="light",
         )
         subject = "Сотрудничество с TenderLex"
         body = res.strip()
@@ -741,23 +804,43 @@ async def generate_ai_email(data: AiGenerateRequest, db: Session = Depends(get_d
 
     elif data.action == "improve":
         sys_prompt = f"Ты — редактор деловой B2B переписки. Улучши текст письма, сделай его более убедительным и профессиональным (тон: {tone_desc}). Сохрани структуру и переменные. Верни ТОЛЬКО улучшенный текст."
-        body = await call_llm(system_prompt=sys_prompt, user_prompt=data.context, temperature=0.5, max_tokens=1000)
+        body = await call_llm(
+            settings=sys_settings,
+            prompt=data.context or data.prompt,
+            system_prompt=sys_prompt,
+            tier="light",
+        )
         return {"ok": True, "body_text": body.strip()}
 
     elif data.action == "shorten":
         sys_prompt = "Ты — эксперт по лаконичным B2B письмам. Сократи текст письма, убрав всю воду, оставь только самую суть и понятный призыв к действию. Верни ТОЛЬКО сокращенный текст."
-        body = await call_llm(system_prompt=sys_prompt, user_prompt=data.context, temperature=0.4, max_tokens=600)
+        body = await call_llm(
+            settings=sys_settings,
+            prompt=data.context or data.prompt,
+            system_prompt=sys_prompt,
+            tier="light",
+        )
         return {"ok": True, "body_text": body.strip()}
 
     elif data.action == "grammar":
         sys_prompt = "Исправь все орфографические, пунктуационные и стилистические ошибки в тексте. Верни ТОЛЬКО исправленный текст без пояснений."
-        body = await call_llm(system_prompt=sys_prompt, user_prompt=data.context, temperature=0.1, max_tokens=1000)
+        body = await call_llm(
+            settings=sys_settings,
+            prompt=data.context or data.prompt,
+            system_prompt=sys_prompt,
+            tier="light",
+        )
         return {"ok": True, "body_text": body.strip()}
 
     elif data.action == "subject":
-        sys_prompt = "Придумай 3 цепляющих, профессиональных варианта темы письма для B2B рассылки на русском языке. Верни список через перенос строки."
-        res = await call_llm(system_prompt=sys_prompt, user_prompt=data.context or data.prompt, temperature=0.7, max_tokens=200)
-        lines = [l.strip().lstrip("123456789.- ") for l in res.split("\n") if l.strip()]
+        sys_prompt = "Придумай 3 цепляющих, профессиональных варианта темы письма для B2B рассылки на русском языке. Верни список через перенос строки, без лишних фраз."
+        res = await call_llm(
+            settings=sys_settings,
+            prompt=data.context or data.prompt or "Предложение сотрудничества по госзакупкам и поставкам",
+            system_prompt=sys_prompt,
+            tier="light",
+        )
+        lines = [l.strip().lstrip("0123456789.- ") for l in res.split("\n") if l.strip()]
         return {"ok": True, "subjects": lines[:5]}
 
     elif data.action == "reply":
@@ -768,7 +851,12 @@ async def generate_ai_email(data: AiGenerateRequest, db: Session = Depends(get_d
             f"Верни ТОЛЬКО текст ответа."
         )
         user_prompt = f"Входящее письмо:\n{data.incoming_message}"
-        body = await call_llm(system_prompt=sys_prompt, user_prompt=user_prompt, temperature=0.6, max_tokens=800)
+        body = await call_llm(
+            settings=sys_settings,
+            prompt=user_prompt,
+            system_prompt=sys_prompt,
+            tier="light",
+        )
         return {"ok": True, "reply_body": body.strip()}
 
     return {"ok": False, "error": "Неизвестное действие"}

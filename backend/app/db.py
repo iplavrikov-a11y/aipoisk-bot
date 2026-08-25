@@ -179,6 +179,12 @@ def _ensure_schema() -> None:
     outreach_campaigns_existing = _existing_columns(inspector, "outreach_campaigns")
     outreach_campaigns_additions = {
         "task_id_filter": "VARCHAR(32) DEFAULT ''",
+        "selected_lead_ids": "TEXT DEFAULT ''",
+    }
+    outreach_inbox_existing = _existing_columns(inspector, "outreach_inbox")
+    outreach_inbox_additions = {
+        "category": "VARCHAR(100) DEFAULT ''",
+        "is_spam": "BOOLEAN DEFAULT 0",
     }
     with engine.begin() as connection:
         for column, definition in system_settings_additions.items():
@@ -270,6 +276,9 @@ def _ensure_schema() -> None:
         for column, definition in outreach_campaigns_additions.items():
             if outreach_campaigns_existing and column not in outreach_campaigns_existing:
                 connection.execute(text(f"ALTER TABLE outreach_campaigns ADD COLUMN {column} {definition}"))
+        for column, definition in outreach_inbox_additions.items():
+            if outreach_inbox_existing and column not in outreach_inbox_existing:
+                connection.execute(text(f"ALTER TABLE outreach_inbox ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:
