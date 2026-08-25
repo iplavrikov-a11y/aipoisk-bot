@@ -34,9 +34,11 @@ import {
   Upload,
   Users,
   XCircle,
+  Mail,
 } from 'lucide-react'
+import { OutreachView } from './OutreachView'
 
-type View = 'dashboard' | 'analytics' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai'
+type View = 'dashboard' | 'analytics' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach'
 
 type Dashboard = {
   clients: number
@@ -589,6 +591,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   seo: {
     title: 'SEO и Трафик сайта',
     description: 'Автоматический фоновый сбор данных Яндекс.Метрики и Вебмастера, поисковые фразы и накопление статистики.',
+  },
+  outreach: {
+    title: 'Лидогенерация и Рассылка',
+    description: 'Массовый поиск B2B контактов по нише, отправка email-рассылок через info@tenderlex.ru и входящие ответы.',
   },
 }
 
@@ -1206,6 +1212,7 @@ export function App() {
     { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
+    { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
@@ -1297,6 +1304,7 @@ export function App() {
         {isReady && view === 'seo' && <SeoView data={seoAnalytics} loading={loadingSeo} onRefresh={() => void loadSeoAnalytics(true)} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
+        {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} />}

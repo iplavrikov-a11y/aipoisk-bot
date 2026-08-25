@@ -57,6 +57,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     from . import models  # noqa: F401
+    from . import outreach_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_schema()
@@ -169,6 +170,16 @@ def _ensure_schema() -> None:
         "ai_rank_confidence": "INTEGER DEFAULT 0",
         "ai_rank_reason": "TEXT DEFAULT ''",
     }
+    outreach_leads_existing = _existing_columns(inspector, "outreach_leads")
+    outreach_leads_additions = {
+        "task_id": "VARCHAR(32) DEFAULT ''",
+        "activity_profile": "VARCHAR(255) DEFAULT ''",
+        "relevance_score": "INTEGER DEFAULT 100",
+    }
+    outreach_campaigns_existing = _existing_columns(inspector, "outreach_campaigns")
+    outreach_campaigns_additions = {
+        "task_id_filter": "VARCHAR(32) DEFAULT ''",
+    }
     with engine.begin() as connection:
         for column, definition in system_settings_additions.items():
             if column not in system_settings_existing:
@@ -253,6 +264,12 @@ def _ensure_schema() -> None:
         for column, definition in supplier_results_additions.items():
             if column not in supplier_results_existing:
                 connection.execute(text(f"ALTER TABLE supplier_results ADD COLUMN {column} {definition}"))
+        for column, definition in outreach_leads_additions.items():
+            if outreach_leads_existing and column not in outreach_leads_existing:
+                connection.execute(text(f"ALTER TABLE outreach_leads ADD COLUMN {column} {definition}"))
+        for column, definition in outreach_campaigns_additions.items():
+            if outreach_campaigns_existing and column not in outreach_campaigns_existing:
+                connection.execute(text(f"ALTER TABLE outreach_campaigns ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:
