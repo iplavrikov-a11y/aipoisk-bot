@@ -35,12 +35,33 @@ class OutreachSearchTask(Base):
     yandex_cost_rub: Mapped[float] = mapped_column(Float, default=0.0)
     llm_cost_rub: Mapped[float] = mapped_column(Float, default=0.0)
     total_cost_rub: Mapped[float] = mapped_column(Float, default=0.0)
+    waves_json: Mapped[str] = mapped_column(Text, default="[]")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     def to_dict(self) -> dict[str, Any]:
+        waves = []
+        if self.waves_json:
+            try:
+                waves = json.loads(self.waves_json)
+            except Exception:
+                waves = []
+        if not waves and (self.collected_count > 0 or self.target_count > 0):
+            waves = [
+                {
+                    "wave": 1,
+                    "name": "Основной поиск",
+                    "prompt": self.prompt,
+                    "target": self.target_count,
+                    "collected": self.collected_count,
+                    "yandex_requests": self.yandex_requests,
+                    "yandex_cost_rub": round(self.yandex_cost_rub, 2),
+                    "cost_rub": round(self.total_cost_rub, 2),
+                    "created_at": self.created_at.isoformat() if self.created_at else None,
+                }
+            ]
         return {
             "id": self.id,
             "name": self.name,
@@ -56,6 +77,8 @@ class OutreachSearchTask(Base):
             "llm_cost_rub": round(self.llm_cost_rub, 2),
             "total_cost_rub": round(self.total_cost_rub, 2),
             "cost_label": f"{round(self.total_cost_rub, 2):.2f} ₽",
+            "waves": waves,
+            "waves_count": len(waves),
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -68,6 +91,7 @@ class OutreachLead(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     task_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    wave_index: Mapped[int] = mapped_column(Integer, default=1, index=True)
     email: Mapped[str] = mapped_column(String(255), index=True)
     company_name: Mapped[str] = mapped_column(String(255), default="")
     phone: Mapped[str] = mapped_column(String(100), default="")
@@ -91,6 +115,7 @@ class OutreachLead(Base):
         return {
             "id": self.id,
             "task_id": self.task_id,
+            "wave_index": self.wave_index or 1,
             "email": self.email,
             "company_name": self.company_name,
             "phone": self.phone,

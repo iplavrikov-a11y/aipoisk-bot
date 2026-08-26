@@ -219,3 +219,197 @@ def test_is_spam_message_detection():
     assert is_sp is True
     assert "customspammer.xyz" in reason
 
+
+def test_task_cost_normalization():
+    import uuid
+    from app.outreach_api import _normalize_task_cost
+
+    db = SessionLocal()
+    try:
+        task_id = f"test-cost-{uuid.uuid4().hex[:8]}"
+        task = OutreachSearchTask(
+            id=task_id,
+            name="Тест себестоимости",
+            prompt="тестовый промпт",
+            target_count=500,
+            collected_count=500,
+            scanned_sites=600,
+            queries_count=50,
+            status="completed",
+            total_cost_rub=0.0,
+            yandex_cost_rub=0.0,
+        )
+        db.add(task)
+        db.commit()
+
+        _normalize_task_cost(task, db)
+        assert task.yandex_requests > 0
+        assert task.yandex_cost_rub > 0.0
+        assert task.total_cost_rub > 0.0
+
+        db.delete(task)
+        db.commit()
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_extend_search_task_endpoint(monkeypatch):
+    import uuid
+    from app.outreach_api import extend_search_task, ExtendSearchRequest
+
+    # Mock background search coroutine so tests do not spawn background tasks in DB
+    async def mock_run(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr("app.outreach_api.run_outreach_search_task", mock_run)
+
+    db = SessionLocal()
+    try:
+        t_id = f"test-extend-{uuid.uuid4().hex[:8]}"
+        l_id = f"lead-extend-{uuid.uuid4().hex[:8]}"
+        task = OutreachSearchTask(
+            id=t_id,
+            name="Тест добора",
+            prompt="поставка насосного оборудования",
+            target_count=100,
+            collected_count=100,
+            status="completed",
+        )
+        lead = OutreachLead(
+            id=l_id,
+            task_id=task.id,
+            email=f"{l_id}@nasos-test.ru",
+            company_name="ООО НасосТест",
+            website="https://nasos-test.ru",
+            status="new",
+        )
+        db.add_all([task, lead])
+        db.commit()
+
+        req = ExtendSearchRequest(extra_count=500, additional_prompt="промышленные насосы")
+        res = await extend_search_task(task.id, req, db)
+
+        assert res["ok"] is True
+        assert res["target_count"] == 1 + 500
+        assert res["task"]["status"] == "running"
+        assert res["wave_index"] == 2
+        assert len(res["task"]["waves"]) == 2
+    finally:
+        try:
+            db.query(OutreachLead).filter(OutreachLead.task_id == t_id).delete()
+            db.query(OutreachSearchTask).filter(OutreachSearchTask.id == t_id).delete()
+            db.commit()
+        except Exception:
+            pass
+        db.close()
+
+
+def test_list_leads_wave_filter():
+    import uuid
+    from app.outreach_api import list_leads
+
+    db = SessionLocal()
+    try:
+        t_id = f"test-task-{uuid.uuid4().hex[:8]}"
+        task = OutreachSearchTask(
+            id=t_id,
+            name="Тест волн",
+            prompt="тест",
+            target_count=20,
+            collected_count=2,
+            status="completed",
+        )
+        l1 = OutreachLead(
+            id=f"lead-w1-{uuid.uuid4().hex[:8]}",
+            task_id=t_id,
+            wave_index=1,
+            email="lead1@w1.ru",
+            company_name="ООО Волна 1",
+            status="new",
+        )
+        l2 = OutreachLead(
+            id=f"lead-w2-{uuid.uuid4().hex[:8]}",
+            task_id=t_id,
+            wave_index=2,
+            email="lead2@w2.ru",
+            company_name="ООО Волна 2",
+            status="new",
+        )
+        db.add_all([task, l1, l2])
+        db.commit()
+
+        # All leads
+        res_all = list_leads(task_id=t_id, db=db)
+        assert res_all["total"] == 2
+
+        # Filter wave 1
+        res_w1 = list_leads(task_id=t_id, wave=1, db=db)
+        assert res_w1["total"] == 1
+        assert res_w1["items"][0]["email"] == "lead1@w1.ru"
+
+        # Filter wave 2
+        res_w2 = list_leads(task_id=t_id, wave=2, db=db)
+        assert res_w2["total"] == 1
+        assert res_w2["items"][0]["email"] == "lead2@w2.ru"
+
+        # Cleanup
+        db.delete(l1)
+        db.delete(l2)
+        db.delete(task)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_mark_all_inbox_read():
+    import uuid
+    from app.outreach_api import mark_all_inbox_read
+    from app.outreach_models import OutreachIncomingEmail
+
+    db = SessionLocal()
+    try:
+        m1 = OutreachIncomingEmail(
+            id=f"msg-b-{uuid.uuid4().hex[:8]}",
+            sender_email="mailer-daemon@yandex.ru",
+            subject="Delivery status notification (failure)",
+            body_text="Mail delivery failed",
+            category="bounce",
+            is_read=False,
+        )
+        m2 = OutreachIncomingEmail(
+            id=f"msg-s-{uuid.uuid4().hex[:8]}",
+            sender_email="spam@spam.com",
+            subject="Casino bonus",
+            body_text="Click here",
+            category="spam",
+            is_spam=True,
+            is_read=False,
+        )
+        db.add_all([m1, m2])
+        db.commit()
+
+        # Mark bounces read
+        res_b = mark_all_inbox_read(category="bounces", db=db)
+        assert res_b["ok"] is True
+        db.refresh(m1)
+        db.refresh(m2)
+        assert m1.is_read is True
+        assert m2.is_read is False
+
+        # Mark spam read
+        res_s = mark_all_inbox_read(category="spam", db=db)
+        assert res_s["ok"] is True
+        db.refresh(m2)
+        assert m2.is_read is True
+
+        # Cleanup
+        db.delete(m1)
+        db.delete(m2)
+        db.commit()
+    finally:
+        db.close()
+
+
+
+

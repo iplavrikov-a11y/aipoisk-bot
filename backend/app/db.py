@@ -173,8 +173,13 @@ def _ensure_schema() -> None:
     outreach_leads_existing = _existing_columns(inspector, "outreach_leads")
     outreach_leads_additions = {
         "task_id": "VARCHAR(32) DEFAULT ''",
+        "wave_index": "INTEGER DEFAULT 1",
         "activity_profile": "VARCHAR(255) DEFAULT ''",
         "relevance_score": "INTEGER DEFAULT 100",
+    }
+    outreach_search_tasks_existing = _existing_columns(inspector, "outreach_search_tasks")
+    outreach_search_tasks_additions = {
+        "waves_json": "TEXT DEFAULT '[]'",
     }
     outreach_campaigns_existing = _existing_columns(inspector, "outreach_campaigns")
     outreach_campaigns_additions = {
@@ -273,6 +278,9 @@ def _ensure_schema() -> None:
         for column, definition in outreach_leads_additions.items():
             if outreach_leads_existing and column not in outreach_leads_existing:
                 connection.execute(text(f"ALTER TABLE outreach_leads ADD COLUMN {column} {definition}"))
+        for column, definition in outreach_search_tasks_additions.items():
+            if outreach_search_tasks_existing and column not in outreach_search_tasks_existing:
+                connection.execute(text(f"ALTER TABLE outreach_search_tasks ADD COLUMN {column} {definition}"))
         for column, definition in outreach_campaigns_additions.items():
             if outreach_campaigns_existing and column not in outreach_campaigns_existing:
                 connection.execute(text(f"ALTER TABLE outreach_campaigns ADD COLUMN {column} {definition}"))

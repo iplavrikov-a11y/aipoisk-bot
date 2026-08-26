@@ -102,13 +102,44 @@ class OutreachCandidate:
     ai_rank_reason: str = ""
 
 
+FORBIDDEN_FILE_EXTENSIONS = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".ico",
+    ".map", ".min", ".woff", ".woff2", ".ttf", ".eot", ".json", ".xml", ".mp4",
+    ".webm", ".gz", ".zip", ".tar", ".pdf", ".txt", ".0", ".1", ".2", ".3", ".4",
+    ".5", ".6", ".7", ".8", ".9", ".ts", ".jsx", ".tsx", ".scss", ".less", ".apk"
+)
+
+
 def _clean_email(email_str: str) -> str:
-    email_str = email_str.strip().lower().rstrip(".,;:/)")
-    if not (4 <= len(email_str) <= 100):
+    if not email_str:
         return ""
-    if "@" not in email_str or "." not in email_str.split("@")[-1]:
+    email_str = email_str.strip().lower().strip(".,;:/()[]{}<>\"'\\_+-#")
+    if not (5 <= len(email_str) <= 100):
         return ""
-    return email_str
+    if "@" not in email_str or email_str.count("@") != 1:
+        return ""
+    user, domain = email_str.split("@", 1)
+    user = user.strip(".,;:/()[]{}<>\"'\\_+-#")
+    domain = domain.strip(".,;:/()[]{}<>\"'\\_+-#")
+    if not user or not domain or "." not in domain:
+        return ""
+    if any(domain.endswith(ext) for ext in FORBIDDEN_FILE_EXTENSIONS):
+        return ""
+    if any(domain.startswith(pref) for pref in ("0.", "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")):
+        return ""
+    tld = domain.split(".")[-1]
+    if tld.isdigit() or len(tld) < 2 or len(tld) > 24:
+        return ""
+    if any(user.startswith(bad) for bad in ("--", "..", "__", "intro.", "jquery", "bootstrap", "react", "vue", "angular", "browser")):
+        return ""
+    if domain in ("example.com", "domain.com", "yoursite.com", "mail.com", "email.com", "site.ru", "site.com"):
+        return ""
+    try:
+        if any(ord(c) > 127 for c in domain):
+            domain = domain.encode("idna").decode("ascii")
+    except Exception:
+        pass
+    return f"{user}@{domain}"
 
 
 # Active search background jobs {task_id: {"status": str, "target": int, "progress": int, "message": str, "cancel": bool}}
@@ -137,7 +168,14 @@ def get_fresh_system_settings(session_factory: Any = None) -> SystemSettings | N
 
 async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_settings: SystemSettings | None = None) -> tuple[list[str], float]:
     """Generates an extensive matrix of targeted commercial B2B supplier search queries."""
-    target_q_count = min(75, max(30, count // 12))
+    if count <= 120:
+        target_q_count = min(40, max(25, count // 3))
+    elif count <= 500:
+        target_q_count = min(65, max(40, count // 8))
+    elif count <= 1500:
+        target_q_count = min(100, max(65, count // 15))
+    else:
+        target_q_count = min(150, max(100, count // 20))
     system_prompt = (
         "Ты ведущий эксперт по поиску реальных B2B поставщиков, заводов и коммерческих организаций. "
         "Твоя задача — составить глубокую и точную матрицу поисковых запросов для Яндекса и Google, "
@@ -145,15 +183,16 @@ async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_setti
         "СТРОГИЕ ПРАВИЛА СОСТАВЛЕНИЯ ЗАПРОСОВ: "
         "1) Фокусируйся на товарных и отраслевых коммерческих запросах: заводы, производители, оптовые поставщики, дистрибьюторы, склады, каталоги продукции, коммерческие отделы продаж. "
         "2) Добавляй коммерческие модификаторы: 'производитель', 'завод', 'оптом со склада', 'официальный дилер', 'дистрибьютор', 'прайс-лист', 'отдел продаж', 'каталог'. "
-        "3) Используй отрицательные операторы Яндекса для исключения мусора: -'банковская гарантия' -'обучение' -'семинар' -'эцп' -'агрегатор'. "
-        "4) Включай географический охват: крупнейшие регионы РФ (Москва, Санкт-Петербург, Урал, Поволжье, Сибирь, Юг РФ, общероссийские формулировки). "
-        "5) НЕ составляй запросы 'как выиграть тендер' или 'обучение госзакупкам'. Нужны только сайты поставщиков товаров и услуг. "
+        "3) СПЕЦИАЛИЗАЦИЯ ПО ТЕНДЕРАМ / 44-ФЗ / 223-ФЗ: Если в запросе пользователя указаны участники тендеров, поставщики по 44-ФЗ/223-ФЗ или госконтрактам — ОБЯЗАТЕЛЬНО составляй специализированные запросы, находящие компании с подтвержденным опытом закупок: 'поставки по 44-ФЗ', 'поставки по 223-ФЗ', 'исполненные госконтракты', 'реестр контрактов', 'поставки для бюджетных учреждений', 'поставки для госучреждений', 'опыт работы по 44-ФЗ', 'тендерный отдел поставщика', 'государственные закупки поставщик'. "
+        "4) Используй отрицательные операторы Яндекса для исключения мусора: -'банковская гарантия' -'обучение' -'семинар' -'эцп' -'агрегатор' -'курсы'. "
+        "5) Включай географический охват: крупнейшие регионы РФ (Москва, Санкт-Петербург, Урал, Поволжье, Сибирь, Юг РФ, общероссийские формулировки). "
+        "6) НЕ составляй запросы 'как выиграть тендер' или 'обучение госзакупкам'. Нужны только сайты реальных поставщиков товаров и услуг. "
         f"Сгенерируй от {target_q_count} разнообразных целевых поисковых запросов. "
         "Верни ТОЛЬКО валидный JSON массив строк, например: [\"запрос 1\", \"запрос 2\"]."
     )
     user_prompt = f"Целевая отрасль / профиль поставщиков:\n{prompt}\n\nКоличество контактов: {count}. Сгенерируй {target_q_count} поисковых запросов в виде JSON массива:"
 
-    estimated_llm_cost = 0.50
+    estimated_llm_cost = 0.02  # Gemini Flash-Lite query matrix generation
 
     try:
         settings = sys_settings or get_fresh_system_settings()
@@ -204,10 +243,10 @@ async def fetch_yandex_search_candidates(
     query: str,
     folder_id: str,
     api_key: str,
-    max_pages: int = 8,
+    max_pages: int = 3,
     groups_on_page: int = 20,
 ) -> tuple[list[OutreachCandidate], int]:
-    """Deep Yandex Search v2 returning structured candidate objects with titles and snippets."""
+    """Targeted Yandex Search v2 matching core TenderLex search economics."""
     if not folder_id or not api_key:
         return [], 0
 
@@ -334,20 +373,19 @@ async def ai_rerank_outreach_candidates(
     total_cost = 0.0
 
     system_prompt = (
-        "Ты профессиональный AI-аудитор B2B поставщиков и компаний. "
-        "Твоя задача — отобрать из поисковой выдачи только официальные сайты реальных коммерческих компаний "
-        "(заводы, фабрики, оптовые поставщики, дистрибьюторы, официальные дилеры, склады, подрядчики), "
-        "соответствующих указанной теме поиска. "
+        "Ты профессиональный AI-аудитор B2B компаний, поставщиков и участников закупок. "
+        "Твоя задача — отобрать из поисковой выдачи сайты организаций, строго соответствующих запросу пользователя "
+        "(включая компании-посредники, операторов комплексного снабжения, торговые дома, дистрибьюторов, подрядчиков по закупкам, заводы и дилеров). "
         "СТРОГО ОТКЛОНЯЙ (is_supplier: false): "
         "- Банки, финансовые услуги, кредитование, лизинг, банковские гарантии. "
         "- Обучающие центры, курсы, семинары, учебные заведения, электронные библиотеки. "
-        "- Сервисы электронной подписи (ЭЦП), онлайн-касс, ОФД, налоговой отчетности. "
-        "- Агрегаторы тендеров, тендерные площадки, поиск закупок, юридические агентства по сопровождению торгов. "
-        "- Новостные порталы, блоги, городские сайты, форумы, статьи, вакансии, доски объявлений. "
-        "ПРИНИМАЙ (is_supplier: true, confidence >= 50): "
-        "- Реальные компании-поставщики, производители или дистрибьюторы по профилю. "
+        "- Сервисы электронной подписи (ЭЦП), онлайн-касс, ОФД, бухгалтерский софт. "
+        "- Тендерные агрегаторы, юридические фирмы по спорам в ФАС, доски объявлений. "
+        "- Новостные порталы, блоги, форумы, статьи, вакансии. "
+        "ПРИНИМАЙ (is_supplier: true, confidence >= 40): "
+        "- Компании, соответствующие профилю запроса пользователя (включая снабженцев, торговых посредников, участников торгов). "
         "Верни ТОЛЬКО JSON массив объектов:\n"
-        "[{\"index\": 0, \"is_supplier\": true, \"confidence\": 85, \"reason\": \"Производитель кабельной продукции\"}]"
+        "[{\"index\": 0, \"is_supplier\": true, \"confidence\": 85, \"reason\": \"Компания по профилю запроса\"}]"
     )
 
     for i in range(0, len(candidates), batch_size):
@@ -494,7 +532,7 @@ async def crawl_site_for_outreach_lead(
         # Discover internal links to contacts, about, requisites, catalog
         internal_links = extract_internal_links(main_html, base_origin)
         if internal_links:
-            subpage_htmls = await asyncio.gather(*[_fetch_http(l) for l in internal_links[:4]], return_exceptions=True)
+            subpage_htmls = await asyncio.gather(*[_fetch_http(l) for l in internal_links[:8]], return_exceptions=True)
             for sub_html in subpage_htmls:
                 if isinstance(sub_html, str) and sub_html:
                     sub_soup = BeautifulSoup(sub_html, "html.parser")
@@ -615,7 +653,9 @@ async def ai_review_outreach_lead(
         "   - Заводы, производственные предприятия, фабрики. "
         "   - Оптовые поставщики, дистрибьюторы, официальные дилеры, торговые дома, склады. "
         "   - Профильные коммерческие и строительные подрядчики. "
-        "2. ОТКЛОНЯЙ (is_relevant: false, score < 40): "
+        "2. СПЕЦИАЛИЗАЦИЯ ПО ТЕНДЕРАМ / 44-ФЗ / 223-ФЗ: "
+        "   - Если в запросе пользователя явно указаны участники тендеров, поставщики по 44-ФЗ/223-ФЗ или госконтрактам — отдавай приоритет и принимай компании, на сайтах которых есть подтверждения работы с закупками: разделы 'Госзакупки', 'Тендеры', 'Поставки по 44-ФЗ/223-ФЗ', поставки для госучреждений, школ, больниц, министерств, номера контрактов ЕИС. "
+        "3. ОТКЛОНЯЙ (is_relevant: false, score < 40): "
         "   - Банки, финансовые сервисы, банковские гарантии, займы, лизинг. "
         "   - Обучающие центры, курсы 44-ФЗ/223-ФЗ, учебные заведения, электронные библиотеки. "
         "   - Продажа ЭЦП, онлайн-касс, ОФД, бухгалтерский и налоговый софт. "
@@ -641,7 +681,7 @@ async def ai_review_outreach_lead(
         "Оцени соответствие компании критериям и верни JSON:"
     )
 
-    estimated_cost = 0.25
+    estimated_cost = 0.007  # Real Gemini Flash-Lite cost (~2K tokens)
 
     try:
         raw = await call_llm(
@@ -717,28 +757,21 @@ async def run_outreach_search_task(
     target_count: int,
     session_factory: Any,
     settings: Any = None,
+    is_extend: bool = False,
+    extra_count: int = 0,
+    additional_prompt: str = "",
+    wave_index: int = 1,
 ) -> None:
-    """Executes enterprise-grade B2B supplier search with AI Rerank, Playwright crawling, AI Review, DaData & full cost tracking."""
-    total_yandex_requests = 0
-    total_llm_cost = 0.0
-
-    ACTIVE_SEARCH_TASKS[task_id] = {
-        "status": "running",
-        "name": name,
-        "prompt": prompt,
-        "target": target_count,
-        "collected": 0,
-        "scanned_sites": 0,
-        "yandex_requests": 0,
-        "yandex_cost_rub": 0.0,
-        "total_cost_rub": 0.0,
-        "message": "Анализирую задачу и составляю отраслевую матрицу запросов...",
-    }
-
+    """Executes enterprise-grade B2B supplier search with Adaptive Multi-Pass loop, Playwright crawling & strict Yandex pricing."""
     sys_settings = get_fresh_system_settings(session_factory)
     yandex_unit_price = float(getattr(sys_settings, "yandex_search_price_per_request", 0.04) or 0.04)
     folder_id = getattr(sys_settings, "yandex_search_folder_id", "") or ""
     api_key = getattr(sys_settings, "yandex_search_api_key", "") or ""
+
+    total_yandex_requests = 0
+    total_llm_cost = 0.0
+    initial_collected = 0
+    initial_scanned = 0
 
     with session_factory() as db:
         task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
@@ -754,104 +787,131 @@ async def run_outreach_search_task(
             )
             db.add(task_rec)
             db.commit()
+        else:
+            task_rec.status = "running"
+            task_rec.started_at = now_utc()
+            task_rec.completed_at = None
+            if is_extend:
+                total_yandex_requests = task_rec.yandex_requests or 0
+                total_llm_cost = 0.0
+                initial_collected = task_rec.collected_count or 0
+                initial_scanned = task_rec.scanned_sites or 0
+                if target_count < initial_collected:
+                    target_count = initial_collected + max(extra_count, 100)
+                task_rec.target_count = target_count
+                task_rec.message = f"Запуск добора (+{extra_count or (target_count - initial_collected)} контактов)..."
+            else:
+                task_rec.target_count = target_count
+                task_rec.message = "Анализирую задачу и составляю отраслевую матрицу запросов..."
+            db.commit()
+
+    initial_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+
+    ACTIVE_SEARCH_TASKS[task_id] = {
+        "status": "running",
+        "name": name,
+        "prompt": prompt,
+        "target": target_count,
+        "collected": initial_collected,
+        "scanned_sites": initial_scanned,
+        "yandex_requests": total_yandex_requests,
+        "yandex_cost_rub": initial_yandex_cost,
+        "llm_cost_rub": 0.0,
+        "total_cost_rub": initial_yandex_cost,
+        "message": f"Добор контактов: цель {target_count} (в базе: {initial_collected})..." if is_extend else "Анализирую задачу и составляю отраслевую матрицу запросов...",
+    }
 
     async with _browser_pool_session():
         try:
-            # 1. Generate Query Matrix
-            queries, llm_cost = await generate_search_queries_matrix(prompt, count=target_count, sys_settings=sys_settings)
-            total_llm_cost += llm_cost
+            active_prompt = f"{prompt}. {additional_prompt}".strip() if additional_prompt else prompt
+            queries_target_count = extra_count if (is_extend and extra_count > 0) else target_count
 
-            ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Сгенерировано {len(queries)} целевых B2B запросов. Поиск в Яндексе..."
-
-            with session_factory() as db:
-                task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
-                if task_rec:
-                    task_rec.queries_count = len(queries)
-                    task_rec.llm_cost_rub = total_llm_cost
-                    task_rec.total_cost_rub = total_llm_cost
-                    task_rec.message = f"Сгенерировано {len(queries)} запросов..."
-                    db.commit()
-
+            # Preload ALL existing domains and emails to prevent duplicate crawls and searches
             seen_domains: set[str] = set()
-            raw_candidates: list[OutreachCandidate] = []
+            with session_factory() as db:
+                existing_lead_rows = db.query(OutreachLead.email, OutreachLead.website).all()
+                existing_emails = set()
+                for em, web in existing_lead_rows:
+                    if em:
+                        em_clean = em.strip().lower()
+                        existing_emails.add(em_clean)
+                        if "@" in em_clean:
+                            d_em = base_domain(em_clean.split("@")[-1])
+                            if d_em:
+                                seen_domains.add(d_em)
+                    if web:
+                        d_web = base_domain(web)
+                        if d_web:
+                            seen_domains.add(d_web)
 
-            # 2. Search Phase (Yandex Cloud Search v2 / DuckDuckGo fallback)
+            collected_count = initial_collected
+            scanned_so_far = initial_scanned
+            max_passes = 3
+            current_pass = 1
+
             sem = asyncio.Semaphore(4)
 
-            async def _fetch_q_candidates(q_text: str) -> tuple[list[OutreachCandidate], int]:
-                async with sem:
-                    c_res = []
-                    req_c = 0
-                    if folder_id and api_key:
-                        c_res, req_c = await fetch_yandex_search_candidates(q_text, folder_id, api_key, max_pages=8, groups_on_page=20)
-                    if not c_res:
-                        c_res = await fetch_ddgs_search_candidates(q_text, max_results=35)
-                    return c_res, req_c
+            while collected_count < target_count and current_pass <= max_passes:
+                remaining_needed = target_count - collected_count
 
-            q_chunk_size = 6
-            for q_i in range(0, len(queries), q_chunk_size):
-                if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
-                    ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
-                    with session_factory() as db:
-                        task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
-                        if task_rec:
-                            task_rec.status = "cancelled"
-                            task_rec.completed_at = now_utc()
-                            task_rec.message = "Задача остановлена пользователем"
-                            db.commit()
-                    return
+                # 1. Generate / Expand Query Matrix
+                if current_pass == 1:
+                    queries, _ = await generate_search_queries_matrix(active_prompt, count=queries_target_count, sys_settings=sys_settings)
+                else:
+                    regions_str = "Москва, Санкт-Петербург, Урал, Екатеринбург, Поволжье, Казань, Самара, Нижний Новгород, Сибирь, Новосибирск, Краснодар, Ростов-на-Дону, Владивосток, Хабаровск, Пермь, Воронеж, Уфа, Челябинск, Красноярск"
+                    pass_prompt = f"{active_prompt}. Региональный охват: {regions_str} (проход {current_pass})"
+                    queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 30), sys_settings=sys_settings)
 
-                if len(raw_candidates) >= target_count * 3.5:
-                    break
-
-                chunk = queries[q_i : q_i + q_chunk_size]
-                results_chunk = await asyncio.gather(*[_fetch_q_candidates(q) for q in chunk], return_exceptions=True)
-                for item in results_chunk:
-                    if isinstance(item, tuple):
-                        res_cands, req_c = item
-                        total_yandex_requests += req_c
-                        for c in res_cands:
-                            if c.domain and c.domain not in seen_domains and c.domain not in EXTENDED_BLOCKED_DOMAINS:
-                                seen_domains.add(c.domain)
-                                raw_candidates.append(c)
-
-                current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
-                current_total_cost = round(current_yandex_cost + total_llm_cost, 2)
-
-                ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
-                ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
-                ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_total_cost
-                ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Найдено {len(raw_candidates)} сайтов. Выполнено {total_yandex_requests} запросов ({current_total_cost:.2f} ₽)..."
+                ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}/{max_passes}: сгенерировано {len(queries)} B2B запросов (цель: +{remaining_needed} лидов)..."
 
                 with session_factory() as db:
                     task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
                     if task_rec:
-                        task_rec.yandex_requests = total_yandex_requests
-                        task_rec.yandex_cost_rub = current_yandex_cost
-                        task_rec.total_cost_rub = current_total_cost
+                        task_rec.queries_count = (task_rec.queries_count or 0) + len(queries)
+                        task_rec.llm_cost_rub = 0.0
+                        task_rec.yandex_cost_rub = round(total_yandex_requests * yandex_unit_price, 2)
+                        task_rec.total_cost_rub = task_rec.yandex_cost_rub
                         task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
                         db.commit()
 
-            # 3. AI Reranking Phase: Filter candidate snippets with LLM
-            ACTIVE_SEARCH_TASKS[task_id]["message"] = f"AI-предфильтрация: отсекаю нерелевантные сайты и агрегаторы из {len(raw_candidates)} найденных..."
-            approved_candidates, rerank_cost = await ai_rerank_outreach_candidates(raw_candidates, prompt, sys_settings)
-            total_llm_cost += rerank_cost
+                # Dynamic parameters for this pass
+                if remaining_needed <= 120:
+                    dynamic_max_pages = 4
+                    dynamic_groups_on_page = 20
+                    candidates_multiplier = 3.5
+                elif remaining_needed <= 500:
+                    dynamic_max_pages = 5
+                    dynamic_groups_on_page = 20
+                    candidates_multiplier = 3.5
+                elif remaining_needed <= 1500:
+                    dynamic_max_pages = 8
+                    dynamic_groups_on_page = 20
+                    candidates_multiplier = 3.5
+                else:
+                    dynamic_max_pages = 10
+                    dynamic_groups_on_page = 20
+                    candidates_multiplier = 3.5
 
-            # 4. Deep Crawling & AI Review Phase
-            ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Глубокий краулинг {len(approved_candidates)} отобранных сайтов (Playwright + DaData)..."
+                async def _fetch_q_candidates(q_text: str) -> tuple[list[OutreachCandidate], int]:
+                    async with sem:
+                        c_res = []
+                        req_c = 0
+                        if folder_id and api_key:
+                            c_res, req_c = await fetch_yandex_search_candidates(
+                                q_text,
+                                folder_id,
+                                api_key,
+                                max_pages=dynamic_max_pages,
+                                groups_on_page=dynamic_groups_on_page,
+                            )
+                        if not c_res:
+                            c_res = await fetch_ddgs_search_candidates(q_text, max_results=dynamic_groups_on_page * 2)
+                        return c_res, req_c
 
-            collected_count = 0
-            batch_size = 10
+                raw_candidates: list[OutreachCandidate] = []
+                q_chunk_size = 4
 
-            with session_factory() as db:
-                existing_emails = {r[0].lower() for r in db.query(OutreachLead.email).all()}
-
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=3.0, read=4.0, write=3.0, pool=3.0),
-                verify=False,
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=30),
-            ) as http_client:
-                for i in range(0, len(approved_candidates), batch_size):
+                for q_i in range(0, len(queries), q_chunk_size):
                     if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
                         ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
                         with session_factory() as db:
@@ -859,88 +919,136 @@ async def run_outreach_search_task(
                             if task_rec:
                                 task_rec.status = "cancelled"
                                 task_rec.completed_at = now_utc()
-                                task_rec.collected_count = collected_count
-                                task_rec.scanned_sites = i
                                 task_rec.message = "Задача остановлена пользователем"
                                 db.commit()
                         return
 
-                    batch = approved_candidates[i : i + batch_size]
-                    crawl_tasks = [crawl_site_for_outreach_lead(cand, http_client) for cand in batch]
-                    crawled_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
-
-                    # Step 5: Parallel Full-text AI Review + DaData EGRUL validation
-                    async def _evaluate_and_enrich(crawled_item):
-                        if not isinstance(crawled_item, dict) or not crawled_item.get("email"):
-                            return None, 0.0
-                        em_val = crawled_item["email"].lower()
-                        if em_val in existing_emails:
-                            return None, 0.0
-                        reviewed_lead, rev_cost = await ai_review_outreach_lead(crawled_item, prompt, sys_settings)
-                        if not reviewed_lead:
-                            return None, rev_cost
-                        verified_lead = await enrich_lead_with_dadata(reviewed_lead)
-                        if not verified_lead:
-                            return None, rev_cost
-                        return verified_lead, rev_cost
-
-                    eval_tasks = [_evaluate_and_enrich(c) for c in crawled_results if isinstance(c, dict) and c.get("email")]
-                    eval_results = await asyncio.gather(*eval_tasks, return_exceptions=True)
-
-                    for res in eval_results:
-                        if isinstance(res, tuple):
-                            verified_lead, rev_cost = res
-                            total_llm_cost += rev_cost
-                            if verified_lead and verified_lead.get("email"):
-                                em = verified_lead["email"].lower()
-                                if em not in existing_emails:
-                                    existing_emails.add(em)
-                                    with session_factory() as db:
-                                        lead = OutreachLead(
-                                            task_id=task_id,
-                                            email=em,
-                                            company_name=verified_lead.get("company_name", ""),
-                                            phone=verified_lead.get("phone", ""),
-                                            website=verified_lead.get("website", ""),
-                                            inn=verified_lead.get("inn", ""),
-                                            category=prompt[:80],
-                                            activity_profile=verified_lead.get("activity_profile", ""),
-                                            relevance_score=verified_lead.get("relevance_score", 100),
-                                            source="search",
-                                            status="new",
-                                            mx_valid=bool(verified_lead.get("mx_valid", True)),
-                                        )
-                                        db.add(lead)
-                                        db.commit()
-                                    collected_count += 1
-
-                    current_scanned = min(i + batch_size, len(approved_candidates))
-                    current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
-                    current_total_cost = round(current_yandex_cost + total_llm_cost, 2)
-
-                    ACTIVE_SEARCH_TASKS[task_id]["collected"] = collected_count
-                    ACTIVE_SEARCH_TASKS[task_id]["scanned_sites"] = current_scanned
-                    ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = total_llm_cost
-                    ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_total_cost
-                    ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Собрано {collected_count} целевых поставщиков из {len(approved_candidates)} сайтов ({current_total_cost:.2f} ₽)..."
-
-                    with session_factory() as db:
-                        task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
-                        if task_rec:
-                            task_rec.collected_count = collected_count
-                            task_rec.scanned_sites = current_scanned
-                            task_rec.llm_cost_rub = total_llm_cost
-                            task_rec.total_cost_rub = current_total_cost
-                            task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
-                            db.commit()
-
-                    if collected_count >= target_count:
+                    if len(raw_candidates) >= max(int(remaining_needed * candidates_multiplier), 120):
                         break
 
+                    chunk = queries[q_i : q_i + q_chunk_size]
+                    results_chunk = await asyncio.gather(*[_fetch_q_candidates(q) for q in chunk], return_exceptions=True)
+                    for item in results_chunk:
+                        if isinstance(item, tuple):
+                            res_cands, req_c = item
+                            total_yandex_requests += req_c
+                            for c in res_cands:
+                                if c.domain and c.domain not in seen_domains and c.domain not in EXTENDED_BLOCKED_DOMAINS:
+                                    seen_domains.add(c.domain)
+                                    raw_candidates.append(c)
+
+                    current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+                    ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
+                    ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
+                    ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
+                    ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_yandex_cost
+                    ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}: найдено {len(raw_candidates)} сайтов (Яндекс: {current_yandex_cost:.2f} ₽)..."
+
+                # 2. AI Reranking
+                if raw_candidates:
+                    approved_candidates, _ = await ai_rerank_outreach_candidates(raw_candidates, active_prompt, sys_settings)
+                else:
+                    approved_candidates = []
+
+                if not approved_candidates:
+                    current_pass += 1
+                    continue
+
+                # 3. Deep Crawling & Verification
+                batch_size = 10
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=3.0, read=4.0, write=3.0, pool=3.0),
+                    verify=False,
+                    limits=httpx.Limits(max_connections=100, max_keepalive_connections=30),
+                ) as http_client:
+                    for i in range(0, len(approved_candidates), batch_size):
+                        if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
+                            ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
+                            return
+
+                        batch = approved_candidates[i : i + batch_size]
+                        crawl_tasks = [crawl_site_for_outreach_lead(cand, http_client) for cand in batch]
+                        crawled_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
+
+                        async def _evaluate_and_enrich(crawled_item):
+                            if not isinstance(crawled_item, dict) or not crawled_item.get("email"):
+                                return None, 0.0
+                            em_val = crawled_item["email"].lower().strip()
+                            if em_val in existing_emails:
+                                return None, 0.0
+                            reviewed_lead, rev_cost = await ai_review_outreach_lead(crawled_item, active_prompt, sys_settings)
+                            if not reviewed_lead:
+                                return None, rev_cost
+                            verified_lead = await enrich_lead_with_dadata(reviewed_lead)
+                            if not verified_lead:
+                                return None, rev_cost
+                            return verified_lead, rev_cost
+
+                        eval_tasks = [_evaluate_and_enrich(c) for c in crawled_results if isinstance(c, dict) and c.get("email")]
+                        eval_results = await asyncio.gather(*eval_tasks, return_exceptions=True)
+
+                        for res in eval_results:
+                            if isinstance(res, tuple):
+                                verified_lead, _ = res
+                                if verified_lead and verified_lead.get("email"):
+                                    em = verified_lead["email"].lower().strip()
+                                    if em not in existing_emails:
+                                        existing_emails.add(em)
+                                        with session_factory() as db:
+                                            lead = OutreachLead(
+                                                task_id=task_id,
+                                                wave_index=wave_index,
+                                                email=em,
+                                                company_name=verified_lead.get("company_name", ""),
+                                                phone=verified_lead.get("phone", ""),
+                                                website=verified_lead.get("website", ""),
+                                                inn=verified_lead.get("inn", ""),
+                                                category=active_prompt[:80],
+                                                activity_profile=verified_lead.get("activity_profile", ""),
+                                                relevance_score=verified_lead.get("relevance_score", 100),
+                                                source="search",
+                                                status="new",
+                                                mx_valid=bool(verified_lead.get("mx_valid", True)),
+                                            )
+                                            db.add(lead)
+                                            db.commit()
+                                        collected_count += 1
+
+                        current_scanned = scanned_so_far + min(i + batch_size, len(approved_candidates))
+                        current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+                        ACTIVE_SEARCH_TASKS[task_id]["collected"] = collected_count
+                        ACTIVE_SEARCH_TASKS[task_id]["scanned_sites"] = current_scanned
+                        ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
+                        ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
+                        ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Собрано {collected_count}/{target_count} целевых контактов (Яндекс: {current_yandex_cost:.2f} ₽)..."
+
+                        with session_factory() as db:
+                            task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                            if task_rec:
+                                task_rec.collected_count = collected_count
+                                task_rec.scanned_sites = current_scanned
+                                task_rec.yandex_requests = total_yandex_requests
+                                task_rec.yandex_cost_rub = current_yandex_cost
+                                task_rec.llm_cost_rub = 0.0
+                                task_rec.total_cost_rub = current_yandex_cost
+                                task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
+                                db.commit()
+
+                        if collected_count >= target_count:
+                            break
+
+                scanned_so_far += len(approved_candidates)
+                current_pass += 1
+
             final_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
-            final_total_cost = round(final_yandex_cost + total_llm_cost, 2)
+            final_total_cost = final_yandex_cost
 
             ACTIVE_SEARCH_TASKS[task_id]["status"] = "completed"
+            ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = final_yandex_cost
+            ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = final_yandex_cost
+            ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
 
             with session_factory() as db:
                 actual_count = db.query(OutreachLead).filter(OutreachLead.task_id == task_id).count()
@@ -948,14 +1056,33 @@ async def run_outreach_search_task(
                 if task_rec:
                     task_rec.status = "completed"
                     task_rec.collected_count = actual_count
-                    task_rec.scanned_sites = len(approved_candidates)
+                    task_rec.scanned_sites = initial_scanned + len(approved_candidates)
                     task_rec.yandex_requests = total_yandex_requests
                     task_rec.yandex_cost_rub = final_yandex_cost
-                    task_rec.llm_cost_rub = total_llm_cost
-                    task_rec.total_cost_rub = final_total_cost
+                    task_rec.llm_cost_rub = 0.0
+                    task_rec.total_cost_rub = final_yandex_cost
                     task_rec.completed_at = now_utc()
-                    task_rec.message = f"Готово! Собрано {actual_count} проверенных поставщиков. Стоимость: {final_total_cost:.2f} ₽."
+                    task_rec.message = f"Готово! В задаче собрано {actual_count} проверенных контактов. Расход Яндекса: {final_yandex_cost:.2f} ₽ ({total_yandex_requests} зап.)."
                     ACTIVE_SEARCH_TASKS[task_id]["message"] = task_rec.message
+
+                    # Update wave records in waves_json
+                    try:
+                        waves_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                    except Exception:
+                        waves_list = []
+                    
+                    wave_added = actual_count - initial_collected
+                    wave_reqs = max(0, total_yandex_requests - int(initial_yandex_cost / yandex_unit_price if yandex_unit_price > 0 else 0))
+                    for w in waves_list:
+                        if w.get("wave") == wave_index:
+                            w["collected"] = max(w.get("collected", 0), wave_added)
+                            w["status"] = "completed"
+                            w["yandex_requests"] = wave_reqs
+                            w["yandex_cost_rub"] = round(final_yandex_cost - initial_yandex_cost, 2)
+                            w["cost_rub"] = round(final_yandex_cost - initial_yandex_cost, 2)
+                    if waves_list:
+                        task_rec.waves_json = json.dumps(waves_list, ensure_ascii=False)
+
                     db.commit()
 
         except Exception as e:

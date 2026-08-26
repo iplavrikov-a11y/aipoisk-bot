@@ -197,11 +197,22 @@ async def send_single_email(
         except Exception as e:
             return False, f"Relay: {str(e)}"
 
+    # Normalize Cyrillic/IDN domains to ASCII punycode for reliable SMTP transport
+    normalized_to = to_email.strip()
+    if "@" in normalized_to:
+        u_part, d_part = normalized_to.split("@", 1)
+        try:
+            if any(ord(c) > 127 for c in d_part):
+                d_part = d_part.encode("idna").decode("ascii")
+                normalized_to = f"{u_part}@{d_part}"
+        except Exception:
+            pass
+
     # 2. SMTP via threadpool
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = formataddr((from_name, from_email))
-    msg["To"] = to_email
+    msg["To"] = normalized_to
     if settings.reply_to:
         msg["Reply-To"] = settings.reply_to
 
@@ -212,7 +223,7 @@ async def send_single_email(
     elif not body_text:
         msg.set_content("Здравствуйте!")
 
-    return await asyncio.to_thread(_send_smtp_sync, msg, settings, to_email)
+    return await asyncio.to_thread(_send_smtp_sync, msg, settings, normalized_to)
 
 
 async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:

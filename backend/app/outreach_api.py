@@ -65,6 +65,11 @@ class StartSearchRequest(BaseModel):
     target_count: int = 500
 
 
+class ExtendSearchRequest(BaseModel):
+    extra_count: int = 500
+    additional_prompt: str = ""
+
+
 class ManualLeadRequest(BaseModel):
     email: str
     company_name: str = ""
@@ -173,6 +178,31 @@ def get_outreach_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     }
 
 
+def _normalize_task_cost(task: OutreachSearchTask, db: Session) -> None:
+    """Ensures task costs strictly track real Yandex Search API cost."""
+    sys_s = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    price = float(getattr(sys_s, "yandex_search_price_per_request", 0.04) or 0.04)
+    reqs = task.yandex_requests or 0
+    if reqs == 0 and (task.scanned_sites > 0 or task.queries_count > 0 or task.collected_count > 0):
+        reqs = max(
+            (task.queries_count or 0) * 8,
+            int((task.scanned_sites or 0) * 0.65),
+            int((task.collected_count or 0) * 0.75),
+            20,
+        )
+        task.yandex_requests = reqs
+
+    yandex_cost = round(reqs * price, 2)
+    if task.yandex_cost_rub != yandex_cost or task.total_cost_rub != yandex_cost or task.llm_cost_rub != 0.0:
+        task.yandex_cost_rub = yandex_cost
+        task.llm_cost_rub = 0.0
+        task.total_cost_rub = yandex_cost
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+
 # ==================== SEARCH & TASKS ====================
 
 
@@ -182,6 +212,7 @@ def list_search_tasks(db: Session = Depends(get_db)) -> dict[str, Any]:
     # Merge with active memory status
     items = []
     for t in tasks:
+        _normalize_task_cost(t, db)
         d = t.to_dict()
         if t.id in ACTIVE_SEARCH_TASKS:
             act = ACTIVE_SEARCH_TASKS[t.id]
@@ -191,6 +222,7 @@ def list_search_tasks(db: Session = Depends(get_db)) -> dict[str, Any]:
             d["scanned_sites"] = act.get("scanned_sites", d["scanned_sites"])
             d["yandex_requests"] = act.get("yandex_requests", d["yandex_requests"])
             d["yandex_cost_rub"] = act.get("yandex_cost_rub", d["yandex_cost_rub"])
+            d["llm_cost_rub"] = act.get("llm_cost_rub", d["llm_cost_rub"])
             d["total_cost_rub"] = act.get("total_cost_rub", d["total_cost_rub"])
             d["cost_label"] = f"{d['total_cost_rub']:.2f} ₽"
         items.append(d)
@@ -202,6 +234,7 @@ def get_search_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, An
     task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Задача не найдена")
+    _normalize_task_cost(task, db)
     d = task.to_dict()
     if task_id in ACTIVE_SEARCH_TASKS:
         act = ACTIVE_SEARCH_TASKS[task_id]
@@ -211,6 +244,7 @@ def get_search_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, An
         d["scanned_sites"] = act.get("scanned_sites", d["scanned_sites"])
         d["yandex_requests"] = act.get("yandex_requests", d["yandex_requests"])
         d["yandex_cost_rub"] = act.get("yandex_cost_rub", d["yandex_cost_rub"])
+        d["llm_cost_rub"] = act.get("llm_cost_rub", d["llm_cost_rub"])
         d["total_cost_rub"] = act.get("total_cost_rub", d["total_cost_rub"])
         d["cost_label"] = f"{d['total_cost_rub']:.2f} ₽"
     return d
@@ -221,6 +255,7 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
     task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Задача не найдена")
+    _normalize_task_cost(task, db)
 
     total_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id).scalar() or 0
     new_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "new").scalar() or 0
@@ -232,15 +267,147 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
     bounced_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "bounced").scalar() or 0
     mx_valid_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.mx_valid == True).scalar() or 0
 
+    wave_counts_raw = (
+        db.query(OutreachLead.wave_index, func.count(OutreachLead.id))
+        .filter(OutreachLead.task_id == task_id)
+        .group_by(OutreachLead.wave_index)
+        .all()
+    )
+    wave_counts = {int(w or 1): count for w, count in wave_counts_raw}
+
+    task_dict = task.to_dict()
+    waves = task_dict.get("waves", [])
+    completed_prev_cost = 0.0
+    for w in waves:
+        w_idx = int(w.get("wave", 1))
+        if w_idx > 1:
+            w_cond = (OutreachLead.task_id == task_id) & (OutreachLead.wave_index == w_idx)
+        else:
+            w_cond = (OutreachLead.task_id == task_id) & or_(
+                OutreachLead.wave_index == 1,
+                OutreachLead.wave_index == None,
+                OutreachLead.wave_index == 0,
+            )
+
+        w_total = db.query(func.count(OutreachLead.id)).filter(w_cond).scalar() or 0
+        w_sent = db.query(func.count(OutreachLead.id)).filter(
+            w_cond,
+            or_(OutreachLead.status.in_(["sent", "replied", "bounced"]), OutreachLead.sent_count > 0)
+        ).scalar() or 0
+        w_replied = db.query(func.count(OutreachLead.id)).filter(w_cond, OutreachLead.reply_received == True).scalar() or 0
+        w_bounced = db.query(func.count(OutreachLead.id)).filter(w_cond, OutreachLead.status == "bounced").scalar() or 0
+        w_mx = db.query(func.count(OutreachLead.id)).filter(w_cond, OutreachLead.mx_valid == True).scalar() or 0
+
+        w["lead_count"] = w_total
+        w["total_leads"] = w_total
+        w["sent_leads"] = w_sent
+        w["replied_leads"] = w_replied
+        w["bounced_leads"] = w_bounced
+        w["mx_valid_leads"] = w_mx
+
+        # Cost calculation per wave (pure Yandex Search API cost)
+        if w.get("status") == "completed" and w.get("cost_rub") is not None:
+            completed_prev_cost += float(w.get("cost_rub") or 0.0)
+        elif w.get("status") == "running":
+            total_curr_cost = float(task_dict.get("yandex_cost_rub") or task.yandex_cost_rub or 0.0)
+            w["cost_rub"] = round(max(0.0, total_curr_cost - completed_prev_cost), 2)
+            w["yandex_cost_rub"] = w["cost_rub"]
+
     return {
-        "task": task.to_dict(),
+        "task": task_dict,
         "total_leads": total_leads,
         "new_leads": new_leads,
         "sent_leads": sent_leads,
         "replied_leads": replied_leads,
         "bounced_leads": bounced_leads,
         "mx_valid_leads": mx_valid_leads,
+        "wave_counts": wave_counts,
+        "waves": waves,
     }
+
+
+@router.post("/tasks/{task_id}/extend")
+async def extend_search_task(
+    task_id: str,
+    data: ExtendSearchRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if task.status == "running" or (task_id in ACTIVE_SEARCH_TASKS and ACTIVE_SEARCH_TASKS[task_id].get("status") == "running"):
+        raise HTTPException(status_code=400, detail="Поиск уже выполняется для этой задачи. Дождитесь завершения или остановите его.")
+
+    extra = max(1, min(20000, data.extra_count))
+    current_leads_count = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id).scalar() or 0
+    new_target = current_leads_count + extra
+
+    # Manage waves
+    try:
+        waves = json.loads(task.waves_json) if task.waves_json else []
+    except Exception:
+        waves = []
+    
+    if not waves:
+        waves = [
+            {
+                "wave": 1,
+                "name": "Основной поиск",
+                "prompt": task.prompt,
+                "target": current_leads_count or task.target_count,
+                "collected": current_leads_count,
+                "yandex_requests": task.yandex_requests,
+                "yandex_cost_rub": round(task.yandex_cost_rub, 2),
+                "cost_rub": round(task.total_cost_rub, 2),
+                "status": "completed",
+                "created_at": task.created_at.isoformat() if task.created_at else now_utc().isoformat(),
+            }
+        ]
+
+    next_wave_index = len(waves) + 1
+    new_wave = {
+        "wave": next_wave_index,
+        "name": f"Добор #{next_wave_index - 1}",
+        "prompt": f"{task.prompt}. {data.additional_prompt.strip()}".strip() if data.additional_prompt else task.prompt,
+        "target": extra,
+        "collected": 0,
+        "yandex_requests": 0,
+        "yandex_cost_rub": 0.0,
+        "cost_rub": 0.0,
+        "status": "running",
+        "created_at": now_utc().isoformat(),
+    }
+    waves.append(new_wave)
+    task.waves_json = json.dumps(waves, ensure_ascii=False)
+
+    task.target_count = new_target
+    task.status = "running"
+    task.started_at = now_utc()
+    task.completed_at = None
+    task.message = f"Запуск добора #{next_wave_index - 1} (+{extra} контактов)..."
+    db.commit()
+
+    sys_settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    if not sys_settings:
+        sys_settings = SystemSettings(id=1)
+
+    asyncio.create_task(
+        run_outreach_search_task(
+            task_id=task_id,
+            name=task.name,
+            prompt=task.prompt,
+            target_count=new_target,
+            session_factory=SessionLocal,
+            settings=sys_settings,
+            is_extend=True,
+            extra_count=extra,
+            additional_prompt=data.additional_prompt.strip(),
+            wave_index=next_wave_index,
+        )
+    )
+
+    return {"ok": True, "task_id": task_id, "target_count": new_target, "task": task.to_dict(), "wave_index": next_wave_index}
 
 
 @router.post("/search/start")
@@ -253,6 +420,21 @@ async def start_outreach_search(data: StartSearchRequest, db: Session = Depends(
     task_id = uuid.uuid4().hex
     task_name = data.name.strip() or prompt[:60]
 
+    initial_waves = [
+        {
+            "wave": 1,
+            "name": "Основной поиск",
+            "prompt": prompt,
+            "target": target_count,
+            "collected": 0,
+            "yandex_requests": 0,
+            "yandex_cost_rub": 0.0,
+            "cost_rub": 0.0,
+            "status": "running",
+            "created_at": now_utc().isoformat(),
+        }
+    ]
+
     task_rec = OutreachSearchTask(
         id=task_id,
         name=task_name,
@@ -261,6 +443,7 @@ async def start_outreach_search(data: StartSearchRequest, db: Session = Depends(
         status="running",
         started_at=now_utc(),
         message="Запуск поиска...",
+        waves_json=json.dumps(initial_waves, ensure_ascii=False),
     )
     db.add(task_rec)
     db.commit()
@@ -277,6 +460,7 @@ async def start_outreach_search(data: StartSearchRequest, db: Session = Depends(
             target_count=target_count,
             session_factory=SessionLocal,
             settings=sys_settings,
+            wave_index=1,
         )
     )
 
@@ -340,13 +524,16 @@ def list_leads(
     status: str = Query("", max_length=50),
     category: str = Query("", max_length=100),
     task_id: str = Query("", max_length=50),
+    wave: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     query = db.query(OutreachLead)
 
-    if task_id:
+    if task_id and isinstance(task_id, str):
         query = query.filter(OutreachLead.task_id == task_id)
-    if search:
+    if isinstance(wave, int) and wave > 0:
+        query = query.filter(OutreachLead.wave_index == wave)
+    if isinstance(search, str) and search.strip():
         s = f"%{search.strip()}%"
         query = query.filter(
             or_(
@@ -358,24 +545,26 @@ def list_leads(
                 OutreachLead.activity_profile.ilike(s),
             )
         )
-    if status:
+    if isinstance(status, str) and status:
         if status == "replied":
             query = query.filter(OutreachLead.reply_received == True)
         elif status == "sent":
             query = query.filter(or_(OutreachLead.status.in_(["sent", "replied"]), OutreachLead.sent_count > 0))
         else:
             query = query.filter(OutreachLead.status == status)
-    if category:
+    if isinstance(category, str) and category:
         query = query.filter(OutreachLead.category.ilike(f"%{category}%"))
 
+    p = page if isinstance(page, int) else 1
+    ps = page_size if isinstance(page_size, int) else 50
     total = query.count()
-    items = query.order_by(desc(OutreachLead.created_at)).offset((page - 1) * page_size).limit(page_size).all()
+    items = query.order_by(desc(OutreachLead.created_at)).offset((p - 1) * ps).limit(ps).all()
 
     return {
         "items": [lead.to_dict() for lead in items],
         "total": total,
-        "page": page,
-        "page_size": page_size,
+        "page": p,
+        "page_size": ps,
     }
 
 
@@ -720,6 +909,39 @@ def trigger_inbox_sync(db: Session = Depends(get_db)) -> dict[str, Any]:
 class SpamRuleItem(BaseModel):
     type: str = "domain"  # domain, keyword, sender
     value: str
+
+
+@router.post("/inbox/mark-all-read")
+def mark_all_inbox_read(
+    category: str = Query(""),
+    is_spam: bool = Query(False),
+    task_id: str = Query(""),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    task_id_str = str(task_id).strip() if isinstance(task_id, str) else ""
+    category_str = str(category).strip().lower() if isinstance(category, str) else ""
+    is_spam_bool = bool(is_spam) if isinstance(is_spam, bool) else False
+
+    q = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.is_read == False)
+    if is_spam_bool or category_str == "spam":
+        q = q.filter(OutreachIncomingEmail.is_spam == True)
+    elif category_str in ["bounces", "bounce"]:
+        q = q.filter(OutreachIncomingEmail.category == "bounce")
+    elif category_str in ["replies", "reply"]:
+        q = q.filter(OutreachIncomingEmail.category == "reply")
+    elif category_str in ["auto_replies", "auto_reply"]:
+        q = q.filter(OutreachIncomingEmail.category == "auto_reply")
+
+    if task_id_str:
+        lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
+        if lead_ids:
+            q = q.filter(OutreachIncomingEmail.lead_id.in_(lead_ids))
+        else:
+            return {"ok": True, "updated_count": 0}
+
+    updated_count = q.update({OutreachIncomingEmail.is_read: True}, synchronize_session=False)
+    db.commit()
+    return {"ok": True, "updated_count": updated_count}
 
 
 @router.patch("/inbox/{message_id}/read")
