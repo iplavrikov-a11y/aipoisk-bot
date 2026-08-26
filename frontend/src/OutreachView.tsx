@@ -147,21 +147,21 @@ interface LeadHistory {
 const COLD_EMAIL_TEMPLATES = [
   {
     id: 'tender_subcontract',
-    name: 'Поиск субподрядчиков и поставщиков (44-ФЗ / 223-ФЗ)',
-    subject: 'Сотрудничество по поставкам и субподрядам (44-ФЗ / 223-ФЗ)',
-    body: 'Здравствуйте!\n\nСервис TenderLex помогает оперативно находить проверенных производителей и поставщиков оборудования, материалов и комплексного снабжения по спецификациям 44-ФЗ и 223-ФЗ.\n\nПодскажите, актуально ли для вас ускорить подбор поставщиков и снизить себестоимость закрытия спецификаций?\n\nБудем рады предоставить тестовый доступ.\n\nС уважением,\nКоманда TenderLex\ninfo@tenderlex.ru | https://tenderlex.ru',
-  },
-  {
-    id: 'b2b_supply',
-    name: 'Коммерческое предложение по закупкам',
-    subject: 'Предложение по оптимизации снабжения и закупок',
-    body: 'Добрый день!\n\nПредлагаем автоматизированное решение для поиска прямых заводов-производителей и дилеров по вашим техническим заданиям.\n\nПреимущества:\n- Поиск по реестрам Минпромторга и прямым контактам ЛПР\n- Проверка контрагентов и актуальности цен\n- Экономия до 40% времени отдела снабжения\n\nГотовы направить короткую презентацию или провести демонстрацию.\n\nС уважением,\nОтдел развития TenderLex\ninfo@tenderlex.ru',
+    name: 'Основное: Поиск производителей под ТЗ и триал (44-ФЗ / 223-ФЗ)',
+    subject: 'Поиск производителей под спецификации и ТЗ (44-ФЗ / 223-ФЗ)',
+    body: 'Здравствуйте!\n\nЕсли вы участвуете в закупках или рассчитываете спецификации по 44-ФЗ и 223-ФЗ, то знаете главную сложность — оперативно найти прямых производителей оборудования и материалов без лишних наценок посредников, когда сроки подачи горят.\n\nМы создали сервис TenderLex (https://tenderlex.ru), который автоматизирует рутину снабжения:\n• ИИ разбирает файлы ТЗ любого формата (Word, Excel, PDF, сканы), извлекая ГОСТы и маркоразмеры;\n• За 2–3 минуты находит прямые контакты отделов продаж заводов РФ и официальных дилеров;\n• Автоматически формирует готовый официальный Запрос коммерческого предложения (КП);\n• Проверяет номенклатуру по реестру Минпромторга (нацрежим ПП 616/617).\n\nЧтобы вы оценили сервис на реальной задаче, мы открыли бесплатный пробный доступ: 4 полных поиска поставщиков или 4 аудита закупки (без привязки карты).\n\nПротестировать на вашем текущем ТЗ:\n👉 В веб-кабинете: https://tenderlex.ru/cabinet\n👉 Или в Telegram-боте: https://t.me/tenderlex_bot\n\nЕсли есть вопрос или сложная спецификация — просто ответьте на это письмо, поможем разобрать.\n\n--\nС уважением,\nКоманда TenderLex\ninfo@tenderlex.ru | https://tenderlex.ru\nОтписаться: ответьте словом «Стоп»',
   },
   {
     id: 'follow_up',
-    name: 'Краткое напоминание (Follow-up)',
-    subject: 'Re: Сотрудничество по закупкам',
-    body: 'Здравствуйте!\n\nНедавно отправляли вам предложение по автоматизации подбора поставщиков.\n\nУдалось ли ознакомиться? Готовы ответить на любые вопросы и подобрать поставщиков под один из ваших текущих запросов бесплатно в качестве теста.\n\nХорошего дня!\nКоманда TenderLex\ninfo@tenderlex.ru',
+    name: 'Follow-up: Напоминание тем, кто не ответил',
+    subject: 'Re: Поиск производителей под спецификации и ТЗ (44-ФЗ / 223-ФЗ)',
+    body: 'Здравствуйте!\n\nРанее отправляли вам информацию о сервисе TenderLex для быстрого подбора прямых заводов-производителей по ТЗ госзакупок.\n\nУдалось ли протестировать бесплатный доступ?\n\nЕсли у вас сейчас есть в работе спецификация или проект контракта — можете загрузить его в https://tenderlex.ru/cabinet или в Telegram-бот @tenderlex_bot. Сервис за пару минут соберет контакты отделов продаж заводов и проверит риски.\n\nХорошего рабочего дня!\n\n--\nTenderLex\ninfo@tenderlex.ru',
+  },
+  {
+    id: 'b2b_supply',
+    name: 'Краткий вариант (для руководителей тендерных отделов)',
+    subject: 'Контакты прямых заводов под ваши ТЗ и аудит рисков контрактов',
+    body: 'Добрый день!\n\nПишу коротко и по делу: команда TenderLex запустила ИИ-сервис для участников закупок и тендерных специалистов.\n\nЧто умеет сервис:\n1. Загружаете спецификацию или проект контракта.\n2. Сервис за пару минут находит прямые контакты заводов-производителей по РФ и дилеров (email отделов сбыта, телефоны, сайты).\n3. Проверяет контракт на кабальные штрафы, нереалистичные сроки и нацрежим Минпромторга.\n\nТестовый доступ бесплатный — 4 проверки доступны сразу после входа:\nhttps://tenderlex.ru/cabinet (или бот @tenderlex_bot)\n\nБудет полезно при ближайшем расчете тендера.\n\n--\nTenderLex\ninfo@tenderlex.ru\nЕсли тема неактуальна, ответьте словом «Стоп».',
   },
 ]
 
@@ -238,12 +238,10 @@ export function OutreachView() {
 
   // Campaign state (inside selected task)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [campSubject, setCampSubject] = useState('Сотрудничество с TenderLex')
-  const [campBody, setCampBody] = useState(
-    'Здравствуйте!\n\nПредлагаем автоматизированный поиск поставщиков и производителей по техническому заданию для ваших закупок и контрактов.\n\nБудем рады ответить на ваши вопросы,\nКоманда TenderLex\ninfo@tenderlex.ru\nhttps://tenderlex.ru'
-  )
-  const [campAudienceType, setCampAudienceType] = useState<'all' | 'selected'>('all')
-  const [campDelay, setCampDelay] = useState<number>(2.0)
+  const [campSubject, setCampSubject] = useState(COLD_EMAIL_TEMPLATES[0].subject)
+  const [campBody, setCampBody] = useState(COLD_EMAIL_TEMPLATES[0].body)
+  const [campAudienceType, setCampAudienceType] = useState<'new' | 'unanswered' | 'all' | 'selected'>('new')
+  const [campDelay, setCampDelay] = useState<number>(3.0)
   const [campTone, setCampTone] = useState('professional')
   const [campAiGenerating, setCampAiGenerating] = useState(false)
   const [testEmail, setTestEmail] = useState('')
@@ -661,6 +659,7 @@ export function OutreachView() {
         subject: campSubject.trim(),
         body_text: campBody.trim(),
         task_id_filter: selectedTask.id,
+        audience_type: campAudienceType,
         delay_seconds: campDelay,
       }
       if (campAudienceType === 'selected' && !selectAllAcrossPages) {
@@ -1687,20 +1686,45 @@ export function OutreachView() {
 
                 <form onSubmit={handleCreateCampaign} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <div>
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                      Аудитория получателей:
-                    </label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                        Аудитория получателей:
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCampAudienceType('unanswered')
+                          const followTpl = COLD_EMAIL_TEMPLATES.find((t) => t.id === 'follow_up')
+                          if (followTpl) {
+                            setCampSubject(followTpl.subject)
+                            setCampBody(followTpl.body)
+                          }
+                        }}
+                        className="outreach-btn outreach-btn-amber"
+                        style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                        title="Настроить рассылку тем, кто получил первое письмо, но еще не ответил"
+                      >
+                        <RotateCcw size={12} />
+                        <span>Режим Follow-up</span>
+                      </button>
+                    </div>
                     <select
                       value={campAudienceType}
                       onChange={(e) => setCampAudienceType(e.target.value as any)}
                       style={{ fontWeight: 600 }}
                     >
+                      <option value="new">
+                        🟢 Только новым (еще не отправленным) ({taskStats?.new_leads ?? selectedTask.collected_count} шт.)
+                      </option>
+                      <option value="unanswered">
+                        🟡 Follow-up: тем, кто получил письмо, но не ответил ({Math.max(0, (taskStats?.sent_leads ?? 0) - (taskStats?.replied_leads ?? 0))} шт.)
+                      </option>
                       <option value="all">
-                        Всем контактам этой задачи ({selectedTask.collected_count} шт.)
+                        🔵 Всем контактам этой задачи ({selectedTask.collected_count} шт.)
                       </option>
                       {selectedLeadIds.length > 0 && !selectAllAcrossPages && (
                         <option value="selected">
-                          Выбранным вручную в CRM контактам ({selectedLeadIds.length} шт.)
+                          🎯 Выбранным вручную в CRM контактам ({selectedLeadIds.length} шт.)
                         </option>
                       )}
                     </select>
@@ -1730,6 +1754,9 @@ export function OutreachView() {
                             if (tpl) {
                               setCampSubject(tpl.subject)
                               setCampBody(tpl.body)
+                              if (tpl.id === 'follow_up') {
+                                setCampAudienceType('unanswered')
+                              }
                             }
                           }}
                           defaultValue=""

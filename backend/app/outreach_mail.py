@@ -95,6 +95,67 @@ def render_template_text(template_str: str, lead: OutreachLead | None) -> str:
     return res
 
 
+def _send_smtp_sync(msg: EmailMessage, settings: OutreachSettings, to_email: str) -> tuple[bool, str]:
+    import socks
+    import ssl
+    import smtplib
+
+    smtp_host = (settings.smtp_host or "smtp.jino.ru").strip()
+    port = settings.smtp_port or 465
+    user = (settings.smtp_user or "info@tenderlex.ru").strip()
+    password = settings.smtp_password or ""
+
+    # 1. Try SOCKS5 Proxy 127.0.0.1:1080 (Primary for VPS bypass)
+    try:
+        s = socks.socksocket()
+        s.set_proxy(socks.SOCKS5, "127.0.0.1", 1080)
+        s.settimeout(15)
+        s.connect((smtp_host, port))
+
+        use_ssl = settings.smtp_use_ssl or port == 465 or "jino.ru" in smtp_host
+        if use_ssl:
+            ctx = ssl.create_default_context()
+            ss = ctx.wrap_socket(s, server_hostname=smtp_host)
+            smtp = smtplib.SMTP_SSL()
+            smtp.sock = ss
+            smtp.file = ss.makefile("rb")
+            smtp.getreply()
+        else:
+            smtp = smtplib.SMTP()
+            smtp.sock = s
+            smtp.file = s.makefile("rb")
+            smtp.getreply()
+            if settings.smtp_use_tls or port == 587:
+                smtp.starttls()
+
+        if user and password:
+            smtp.login(user, password)
+        smtp.send_message(msg)
+        smtp.close()
+        return True, ""
+    except Exception as pe:
+        logger.warning(f"SOCKS5 SMTP attempt failed: {pe}, trying direct SMTP fallback...")
+
+    # 2. Fallback to direct SMTP
+    try:
+        if settings.smtp_use_ssl or port == 465:
+            with smtplib.SMTP_SSL(smtp_host, port, timeout=15) as smtp:
+                if user and password:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, port, timeout=15) as smtp:
+                if settings.smtp_use_tls or port == 587:
+                    smtp.starttls()
+                if user and password:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+        return True, ""
+    except Exception as e:
+        logger.error(f"Email send error to {to_email}: {e}")
+        return False, f"SMTP: {str(e)}"
+
+
 async def send_single_email(
     to_email: str,
     subject: str,
@@ -136,11 +197,7 @@ async def send_single_email(
         except Exception as e:
             return False, f"Relay: {str(e)}"
 
-    # 2. SMTP fallback
-    smtp_host = (settings.smtp_host or "").strip()
-    if not smtp_host:
-        return False, "Neither Relay URL nor SMTP Host configured"
-
+    # 2. SMTP via threadpool
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = formataddr((from_name, from_email))
@@ -155,58 +212,7 @@ async def send_single_email(
     elif not body_text:
         msg.set_content("Здравствуйте!")
 
-    port = settings.smtp_port or 587
-    try:
-        # 1. Try Russian SOCKS5 Proxy 127.0.0.1:1080
-        sent = False
-        try:
-            import socks
-            socks.set_default_proxy(socks.PROXY_TYPE_SOCKS5, "127.0.0.1", 1080)
-            orig_socket = socket.socket
-            socket.socket = socks.socksocket
-            try:
-                use_ssl = settings.smtp_use_ssl or port == 465 or "jino.ru" in smtp_host
-                target_port = 465 if use_ssl else port
-                if use_ssl:
-                    with smtplib.SMTP_SSL(smtp_host, target_port, timeout=15) as smtp:
-                        smtp.ehlo()
-                        if settings.smtp_user and settings.smtp_password:
-                            smtp.login(settings.smtp_user, settings.smtp_password)
-                        smtp.send_message(msg)
-                else:
-                    with smtplib.SMTP(smtp_host, target_port, timeout=15) as smtp:
-                        if settings.smtp_use_tls or target_port == 587:
-                            smtp.ehlo()
-                            smtp.starttls()
-                            smtp.ehlo()
-                        if settings.smtp_user and settings.smtp_password:
-                            smtp.login(settings.smtp_user, settings.smtp_password)
-                        smtp.send_message(msg)
-                sent = True
-            finally:
-                socket.socket = orig_socket
-        except Exception as pe:
-            logger.debug(f"Proxy SMTP error: {pe}")
-
-        if sent:
-            return True, ""
-
-        # 2. Fallback to direct SMTP
-        if settings.smtp_use_ssl or port == 465:
-            with smtplib.SMTP_SSL(smtp_host, port, timeout=15) as smtp:
-                if settings.smtp_user and settings.smtp_password:
-                    smtp.login(settings.smtp_user, settings.smtp_password)
-                smtp.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, port, timeout=15) as smtp:
-                if settings.smtp_use_tls or port == 587:
-                    smtp.starttls()
-                if settings.smtp_user and settings.smtp_password:
-                    smtp.login(settings.smtp_user, settings.smtp_password)
-                smtp.send_message(msg)
-        return True, ""
-    except Exception as e:
-        return False, f"SMTP: {str(e)}"
+    return await asyncio.to_thread(_send_smtp_sync, msg, settings, to_email)
 
 
 async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
@@ -222,10 +228,17 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             db.add(settings)
             db.commit()
 
+        subject_template = campaign.subject
+        body_text_template = campaign.body_text
+        body_html_template = campaign.body_html
+        delay_seconds = max(1.0, float(campaign.delay_seconds or settings.delay_seconds or 2.0))
+        aud_type = getattr(campaign, "audience_type", "new") or "new"
+
         # Eligible leads
         q = db.query(OutreachLead).filter(
             OutreachLead.mx_valid == True,
         )
+
         if getattr(campaign, "selected_lead_ids", None):
             try:
                 ids = json.loads(campaign.selected_lead_ids)
@@ -234,54 +247,95 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             except Exception:
                 pass
         elif getattr(campaign, "task_id_filter", None):
-            q = q.filter(OutreachLead.task_id == campaign.task_id_filter, OutreachLead.status.in_(["new", "queued"]))
+            if aud_type in ["unanswered", "follow_up"]:
+                q = q.filter(
+                    OutreachLead.task_id == campaign.task_id_filter,
+                    OutreachLead.status == "sent",
+                    OutreachLead.reply_received == False,
+                )
+            elif aud_type == "all":
+                q = q.filter(OutreachLead.task_id == campaign.task_id_filter)
+            else:
+                q = q.filter(OutreachLead.task_id == campaign.task_id_filter, OutreachLead.status.in_(["new", "queued"]))
         elif campaign.category_filter:
-            q = q.filter(OutreachLead.category.ilike(f"%{campaign.category_filter}%"), OutreachLead.status.in_(["new", "queued"]))
+            if aud_type in ["unanswered", "follow_up"]:
+                q = q.filter(
+                    OutreachLead.category.ilike(f"%{campaign.category_filter}%"),
+                    OutreachLead.status == "sent",
+                    OutreachLead.reply_received == False,
+                )
+            else:
+                q = q.filter(OutreachLead.category.ilike(f"%{campaign.category_filter}%"), OutreachLead.status.in_(["new", "queued"]))
         else:
-            q = q.filter(OutreachLead.status.in_(["new", "queued"]))
+            if aud_type in ["unanswered", "follow_up"]:
+                q = q.filter(OutreachLead.status == "sent", OutreachLead.reply_received == False)
+            else:
+                q = q.filter(OutreachLead.status.in_(["new", "queued"]))
 
-        leads = q.all()
-        campaign.total_recipients = len(leads)
+        leads_data = [
+            {
+                "id": l.id,
+                "email": l.email,
+                "company_name": l.company_name or "",
+                "city": l.city or "",
+                "phone": l.phone or "",
+                "website": l.website or "",
+                "inn": l.inn or "",
+            }
+            for l in q.all()
+        ]
+        campaign.total_recipients = len(leads_data)
         campaign.status = "running"
         campaign.started_at = now_utc()
         campaign.error_message = ""
         db.commit()
 
-    for idx, lead in enumerate(leads):
+    for idx, lead_item in enumerate(leads_data):
         # Check if cancelled/paused
         with session_factory() as db:
             c: OutreachCampaign | None = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()
             if not c or c.status in ["paused", "stopped"]:
                 return
+            current_settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first() or OutreachSettings(id=1)
 
-        subj = render_template_text(campaign.subject, lead)
-        text_body = render_template_text(campaign.body_text, lead)
-        html_body = render_template_text(campaign.body_html, lead) if campaign.body_html else ""
+        # Render templates with lead mock object
+        mock_lead = OutreachLead(
+            id=lead_item["id"],
+            email=lead_item["email"],
+            company_name=lead_item["company_name"],
+            city=lead_item["city"],
+            phone=lead_item["phone"],
+            website=lead_item["website"],
+            inn=lead_item["inn"],
+        )
+        subj = render_template_text(subject_template, mock_lead)
+        text_body = render_template_text(body_text_template, mock_lead)
+        html_body = render_template_text(body_html_template, mock_lead) if body_html_template else ""
 
         success, err = await send_single_email(
-            to_email=lead.email,
+            to_email=lead_item["email"],
             subject=subj,
             body_text=text_body,
             body_html=html_body,
-            settings=settings,
+            settings=current_settings,
         )
 
         with session_factory() as db:
-            db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead.id).first()
+            db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
             if db_lead:
                 if success:
                     db_lead.status = "sent"
-                    db_lead.sent_count += 1
+                    db_lead.sent_count = (db_lead.sent_count or 0) + 1
                     db_lead.last_sent_at = now_utc()
                 else:
                     db_lead.notes = f"Ошибка: {err}"[:150]
 
             log = OutreachSendLog(
                 campaign_id=campaign_id,
-                lead_id=lead.id,
-                recipient_email=lead.email,
-                recipient_company=lead.company_name,
-                from_email=settings.from_email,
+                lead_id=lead_item["id"],
+                recipient_email=lead_item["email"],
+                recipient_company=lead_item["company_name"],
+                from_email=current_settings.from_email,
                 subject=subj,
                 status="sent" if success else "failed",
                 error_message=err,
@@ -291,14 +345,13 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             c = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()
             if c:
                 if success:
-                    c.sent_count += 1
+                    c.sent_count = (c.sent_count or 0) + 1
                 else:
-                    c.failed_count += 1
+                    c.failed_count = (c.failed_count or 0) + 1
                 c.current_index = idx + 1
             db.commit()
 
-        delay = max(1.0, float(campaign.delay_seconds or settings.delay_seconds or 2.0))
-        await asyncio.sleep(delay)
+        await asyncio.sleep(delay_seconds)
 
     with session_factory() as db:
         c = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()

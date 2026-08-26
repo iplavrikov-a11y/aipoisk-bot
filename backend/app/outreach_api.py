@@ -89,6 +89,7 @@ class CreateCampaignRequest(BaseModel):
     body_html: str = ""
     category_filter: str = ""
     task_id_filter: str = ""
+    audience_type: str = "new"  # new, all, unanswered, follow_up, selected
     lead_ids: list[str] = []
     delay_seconds: float = 2.0
 
@@ -236,7 +237,7 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
 
 
 @router.post("/search/start")
-def start_outreach_search(data: StartSearchRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def start_outreach_search(data: StartSearchRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     prompt = data.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Введите описание ниши для поиска")
@@ -429,7 +430,7 @@ def list_campaigns(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.post("/campaigns")
-def create_campaign(data: CreateCampaignRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def create_campaign(data: CreateCampaignRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     if not data.subject.strip() or not data.body_text.strip():
         raise HTTPException(status_code=400, detail="Укажите тему и текст письма")
 
@@ -441,6 +442,7 @@ def create_campaign(data: CreateCampaignRequest, db: Session = Depends(get_db)) 
         body_html=data.body_html.strip(),
         category_filter=data.category_filter.strip(),
         task_id_filter=data.task_id_filter.strip(),
+        audience_type=data.audience_type.strip() or "new",
         selected_lead_ids=selected_ids_str,
         delay_seconds=max(1.0, data.delay_seconds),
         status="draft",
@@ -467,7 +469,7 @@ def pause_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict[str,
 
 
 @router.post("/campaigns/{campaign_id}/resume")
-def resume_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def resume_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     c = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Рассылка не найдена")

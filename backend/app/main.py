@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -222,6 +223,16 @@ async def startup() -> None:
         cleanup_expired_jobs(db, settings)
         expire_stale_confirmations(db)
         recovered_job_ids = recover_interrupted_jobs(db)
+        try:
+            from .db import SessionLocal
+            from .outreach_models import OutreachCampaign
+            from .outreach_mail import run_campaign_worker, ACTIVE_CAMPAIGN_TASKS
+            running_camps = db.query(OutreachCampaign).filter(OutreachCampaign.status == "running").all()
+            for rc in running_camps:
+                task = asyncio.create_task(run_campaign_worker(rc.id, SessionLocal))
+                ACTIVE_CAMPAIGN_TASKS[rc.id] = task
+        except Exception as e:
+            logger.warning(f"Error resuming campaigns on startup: {e}")
     finally:
         db.close()
     for job_id in recovered_job_ids:

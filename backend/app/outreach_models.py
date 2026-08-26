@@ -122,6 +122,7 @@ class OutreachCampaign(Base):
     body_html: Mapped[str] = mapped_column(Text, default="")
     category_filter: Mapped[str] = mapped_column(String(100), default="")
     task_id_filter: Mapped[str] = mapped_column(String(32), default="", index=True)
+    audience_type: Mapped[str] = mapped_column(String(40), default="new")  # new, all, unanswered, follow_up, selected
     selected_lead_ids: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)  # draft, running, paused, completed, stopped
     total_recipients: Mapped[int] = mapped_column(Integer, default=0)
@@ -144,6 +145,7 @@ class OutreachCampaign(Base):
             "body_html": self.body_html,
             "category_filter": self.category_filter,
             "task_id_filter": self.task_id_filter,
+            "audience_type": self.audience_type or "new",
             "selected_lead_ids": json.loads(self.selected_lead_ids) if self.selected_lead_ids else [],
             "status": self.status,
             "total_recipients": self.total_recipients,
