@@ -4,6 +4,7 @@ import base64
 import hashlib
 import html as html_lib
 import hmac
+import json
 import logging
 import re
 import secrets
@@ -22,7 +23,15 @@ from sqlalchemy.orm import Session
 from .billing import grant_trial_balance
 from .config import config
 from .db import db_session
-from .models import Client, WebEmailVerificationToken, WebSession, WebUser, new_id, now_utc
+from .models import (
+    Client,
+    ClientTelegramAccount,
+    WebEmailVerificationToken,
+    WebSession,
+    WebUser,
+    new_id,
+    now_utc,
+)
 from .repository import get_or_create_settings
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
@@ -503,6 +512,25 @@ def build_yandex_oauth_url(*, redirect_uri: str, state: str) -> str:
     return f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
 
 
+def build_telegram_oauth_url(public_base_url: str = "") -> str:
+    from urllib.parse import urlencode
+
+    bot_token = str(config.bot_token or "").strip()
+    if not bot_token or ":" not in bot_token:
+        raise ValueError("Telegram Bot Token не настроен.")
+    bot_id = bot_token.split(":", 1)[0]
+    base = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return_to = f"{base}/cabinet"
+    params = {
+        "bot_id": bot_id,
+        "origin": base,
+        "embed": "0",
+        "request_access": "write",
+        "return_to": return_to,
+    }
+    return f"https://oauth.telegram.org/auth?{urlencode(params)}"
+
+
 def set_yandex_oauth_state_cookie(response: Response, state: str) -> None:
     secure = str(config.public_base_url or "").lower().startswith("https://")
     response.set_cookie(
@@ -632,4 +660,260 @@ def get_or_create_yandex_web_user(
         commit=True,
     )
     return user, True
+
+
+def extract_telegram_auth_payload(params: dict) -> dict[str, str | int]:
+    if not isinstance(params, dict):
+        return {}
+    if "tgAuthResult" in params:
+        raw_b64 = str(params["tgAuthResult"] or "").strip()
+        if raw_b64:
+            raw_b64 += "=" * ((4 - len(raw_b64) % 4) % 4)
+            try:
+                raw_json = base64.urlsafe_b64decode(
+                    raw_b64.encode("utf-8")
+                ).decode("utf-8")
+                decoded = json.loads(raw_json)
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception as exc:
+                logger.warning(
+                    "failed_to_decode_tgAuthResult",
+                    extra={"error": str(exc), "raw": raw_b64},
+                )
+    return params
+
+
+def verify_telegram_auth_payload(
+    data: dict[str, str | int],
+    bot_token: str,
+    *,
+    max_age_seconds: int = 86400,
+) -> bool:
+    if not bot_token:
+        logger.warning("telegram_auth_verification_failed: bot_token_empty")
+        return False
+
+    received_hash = str(data.get("hash") or "").strip()
+    if not received_hash:
+        return False
+
+    auth_date_raw = data.get("auth_date")
+    try:
+        auth_date = int(auth_date_raw or 0)
+    except (ValueError, TypeError):
+        return False
+
+    if max_age_seconds > 0:
+        now_ts = int(now_utc().timestamp())
+        if now_ts - auth_date > max_age_seconds:
+            logger.warning(
+                "telegram_auth_verification_failed: expired_auth_date",
+                extra={"auth_date": auth_date, "now": now_ts},
+            )
+            return False
+
+    check_pairs: list[str] = []
+    for key, value in sorted(data.items()):
+        if key == "hash" or value is None:
+            continue
+        check_pairs.append(f"{key}={value}")
+
+    data_check_string = "\n".join(check_pairs)
+    secret_key = hashlib.sha256(bot_token.strip().encode("utf-8")).digest()
+    expected_hash = hmac.new(
+        secret_key, data_check_string.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(expected_hash, received_hash)
+
+
+def get_or_create_telegram_web_user(
+    db: Session,
+    *,
+    telegram_user_id: str | int,
+    username: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    photo_url: str = "",
+) -> tuple[WebUser, bool]:
+    clean_telegram_id = str(telegram_user_id or "").strip()
+    if not clean_telegram_id:
+        raise ValueError("Не передан Telegram ID пользователя.")
+
+    clean_username = str(username or "").strip().lstrip("@")
+    parts = [str(first_name or "").strip(), str(last_name or "").strip()]
+    full_name = " ".join(p for p in parts if p).strip()
+    display_name = (
+        full_name
+        or (f"@{clean_username}" if clean_username else f"TG User {clean_telegram_id}")
+    )[:255]
+
+    # 1. Match existing ClientTelegramAccount
+    tg_account = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.telegram_id == clean_telegram_id)
+        .first()
+    )
+    if tg_account:
+        client = db.get(Client, tg_account.client_id)
+        if client:
+            if clean_username and tg_account.username != clean_username:
+                tg_account.username = clean_username
+            if display_name and tg_account.name != display_name:
+                tg_account.name = display_name
+
+            existing_web_user = (
+                db.query(WebUser).filter(WebUser.client_id == client.id).first()
+            )
+            if existing_web_user:
+                if display_name and not existing_web_user.name:
+                    existing_web_user.name = display_name
+                db.commit()
+                db.refresh(existing_web_user)
+                return existing_web_user, False
+
+            # Create WebUser for this existing Client
+            gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+            candidate_email = gen_email
+            counter = 1
+            while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+                candidate_email = (
+                    f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+                )
+                counter += 1
+
+            user = WebUser(
+                client_id=client.id,
+                email=candidate_email,
+                name=display_name,
+                password_hash=hash_password(generate_temporary_password(16)),
+                is_active=True,
+                is_email_verified=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            return user, False
+
+    # 2. Match Client by primary telegram_id
+    client = db.query(Client).filter(Client.telegram_id == clean_telegram_id).first()
+    if client:
+        db.add(
+            ClientTelegramAccount(
+                client_id=client.id,
+                telegram_id=clean_telegram_id,
+                username=clean_username,
+                name=display_name,
+                is_active=True,
+                notes="Telegram Login Widget auth link",
+            )
+        )
+        existing_web_user = (
+            db.query(WebUser).filter(WebUser.client_id == client.id).first()
+        )
+        if existing_web_user:
+            if display_name and not existing_web_user.name:
+                existing_web_user.name = display_name
+            db.commit()
+            db.refresh(existing_web_user)
+            return existing_web_user, False
+
+        gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+        candidate_email = gen_email
+        counter = 1
+        while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+            candidate_email = f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+            counter += 1
+
+        user = WebUser(
+            client_id=client.id,
+            email=candidate_email,
+            name=display_name,
+            password_hash=hash_password(generate_temporary_password(16)),
+            is_active=True,
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user, False
+
+    # 3. Create brand new Client + ClientTelegramAccount + WebUser
+    settings = get_or_create_settings(db)
+    trial_enabled = bool(settings.trial_enabled)
+    supplier_limit = (
+        max(0, int(settings.trial_supplier_search_limit or 0)) if trial_enabled else 0
+    )
+    report_limit = (
+        max(0, int(settings.trial_procurement_report_limit or 0))
+        if trial_enabled
+        else 0
+    )
+    file_limit = (
+        max(0, int(settings.trial_file_limit or WEB_DEFAULT_FILE_LIMIT))
+        if trial_enabled
+        else WEB_DEFAULT_FILE_LIMIT
+    )
+
+    client = Client(
+        telegram_id=clean_telegram_id,
+        name=display_name,
+        username=clean_username,
+        is_active=True,
+        is_trial=trial_enabled,
+        allowed_supplier_search=True,
+        allowed_procurement_report=True,
+        monthly_job_limit=supplier_limit + report_limit,
+        monthly_supplier_search_limit=supplier_limit,
+        monthly_procurement_report_limit=report_limit,
+        monthly_file_limit=file_limit,
+        notes=(
+            f"Website account created via Telegram: @{clean_username} (ID: {clean_telegram_id})"
+            if clean_username
+            else f"Website account created via Telegram (ID: {clean_telegram_id})"
+        ),
+    )
+    db.add(client)
+    db.flush()
+
+    if trial_enabled:
+        grant_trial_balance(
+            db,
+            client,
+            supplier_search_units=supplier_limit,
+            procurement_report_units=report_limit,
+        )
+
+    db.add(
+        ClientTelegramAccount(
+            client_id=client.id,
+            telegram_id=clean_telegram_id,
+            username=clean_username,
+            name=display_name,
+            is_active=True,
+            notes="Created via Telegram Login on website",
+        )
+    )
+
+    gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+    candidate_email = gen_email
+    counter = 1
+    while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+        candidate_email = f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+        counter += 1
+
+    user = WebUser(
+        client_id=client.id,
+        email=candidate_email,
+        name=display_name,
+        password_hash=hash_password(generate_temporary_password(16)),
+        is_active=True,
+        is_email_verified=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user, True
+
 

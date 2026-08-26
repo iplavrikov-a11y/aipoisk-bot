@@ -6,10 +6,13 @@
 - Customer cabinet: `https://tenderlex.ru/cabinet`
 - Online payment is not enabled yet.
 - Web users and Telegram users are separate. Internal `web:<id>` markers may exist in runtime data, but the owner-facing admin UI must not show them as Telegram accounts or Telegram IDs.
-- Customers can sign in using email/password or **Яндекс ID (OAuth 2.0)** with Instant Login.
+- Customers can sign in using email/password, **Яндекс ID (OAuth 2.0)**, or **Telegram (OAuth/Login Widget)**.
 - When logging in via Яндекс ID:
   - If a web user with that verified email already exists, their account is linked with `yandex_id` without duplicating records or losing balance/jobs.
   - If it is a new user, a new `Client` and `WebUser` are provisioned automatically with pre-verified email and active trial balance.
+- When logging in via Telegram:
+  - If the user already interacted with the Telegram bot (`ClientTelegramAccount`), their web session connects directly to their existing `Client` profile with full balance and task history.
+  - If it is a new user, a new unified `Client`, `ClientTelegramAccount`, and `WebUser` are created with initial trial balance.
 - Web access is managed manually from the admin panel by crediting or debiting a
   money amount. Search, analysis, and additional supplier search then debit the
   customer's balance according to effective prices.

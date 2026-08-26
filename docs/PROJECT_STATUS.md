@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Telegram Web Authentication & Unified Client Profile (2026-08):
+  - Added seamless 1-click Telegram Login/Registration alongside Yandex ID and Email in the customer web cabinet (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/web_auth.py`, `backend/app/main.py`).
+  - Unified Profiles & Balance Protection: Users who interacted with the Telegram bot are automatically linked to their existing `Client` profile upon logging into the website via Telegram without duplicate account creation or duplicate trial balance grants. Brand-new users receive a unified client account with initial trial access.
+  - Implemented secure HMAC-SHA256 signature verification with SHA256 bot token secret and 24-hour expiration checks.
+  - Added support for Telegram OAuth URL fragment (`#tgAuthResult=...`) and direct redirect parsing in both frontend client and backend API (`/api/customer/auth/telegram/login`, `/api/customer/auth/telegram/callback`, `/api/customer/auth/telegram/verify`).
+  - Added 8 automated unit tests in `backend/tests/test_telegram_web_auth.py` covering signature verification, token expiration, client reuse, new user trial grants, callback redirects, and payload extraction (100% pass).
 - Admin Panel Task Cards Streamlining & Visual Separation (2026-08):
   - Converted job cards from bulky accordion dropdowns into a single-level ultra-compact card layout with zero hidden content.
   - Relocated micro-timeline processing stages (`Создана` → `Входные` → `ИИ` → `Результат`) into the card header right beside action buttons.

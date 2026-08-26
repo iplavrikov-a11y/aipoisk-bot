@@ -148,14 +148,17 @@ from .web_auth import (
     YANDEX_OAUTH_COOKIE,
     WebAuthContext,
     authenticate_web_user,
+    build_telegram_oauth_url,
     build_yandex_oauth_url,
     clear_customer_session_cookie,
     clear_yandex_oauth_state_cookie,
     create_email_verification_token,
     create_web_session,
     create_web_user,
+    extract_telegram_auth_payload,
     fetch_yandex_oauth_profile,
     generate_temporary_password,
+    get_or_create_telegram_web_user,
     get_or_create_yandex_web_user,
     hash_password,
     send_email_verification,
@@ -167,6 +170,7 @@ from .web_auth import (
     set_yandex_oauth_state_cookie,
     validate_email,
     verify_email_token,
+    verify_telegram_auth_payload,
     yandex_oauth_redirect_uri,
 )
 from .supplier_search import (
@@ -457,6 +461,119 @@ def customer_yandex_callback_api(
     set_customer_session_cookie(resp, token)
     clear_yandex_oauth_state_cookie(resp)
     return resp
+
+
+@app.get("/api/customer/auth/telegram/login")
+def customer_telegram_login_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    settings = get_or_create_settings(db)
+    try:
+        telegram_auth_url = build_telegram_oauth_url(public_base_url=settings.public_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=telegram_auth_url, status_code=303)
+
+
+@app.get("/api/customer/auth/telegram/callback")
+def customer_telegram_callback_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    target_error_url = "/cabinet?auth_error="
+    query_params = dict(request.query_params)
+    auth_data = extract_telegram_auth_payload(query_params)
+
+    if not auth_data.get("hash") or not auth_data.get("id"):
+        logger.warning(
+            "telegram_callback_missing_data",
+            extra={"received_keys": list(query_params.keys())},
+        )
+        return RedirectResponse(
+            url=f"{target_error_url}telegram_no_data", status_code=303
+        )
+
+    if not verify_telegram_auth_payload(auth_data, config.bot_token):
+        logger.warning(
+            "telegram_auth_invalid_signature",
+            extra={
+                "params": {
+                    k: v for k, v in auth_data.items() if k != "hash"
+                }
+            },
+        )
+        return RedirectResponse(
+            url=f"{target_error_url}telegram_invalid", status_code=303
+        )
+
+    try:
+        user, is_new = get_or_create_telegram_web_user(
+            db,
+            telegram_user_id=auth_data["id"],
+            username=str(auth_data.get("username") or ""),
+            first_name=str(auth_data.get("first_name") or ""),
+            last_name=str(auth_data.get("last_name") or ""),
+            photo_url=str(auth_data.get("photo_url") or ""),
+        )
+    except Exception as exc:
+        logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
+        return RedirectResponse(
+            url=f"{target_error_url}user_creation_failed", status_code=303
+        )
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    resp = RedirectResponse(url="/cabinet", status_code=303)
+    set_customer_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/api/customer/auth/telegram/verify")
+def customer_telegram_verify_api(
+    data: dict,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    auth_data = extract_telegram_auth_payload(data) if isinstance(data, dict) else {}
+    if not isinstance(auth_data, dict) or not auth_data.get("hash") or not auth_data.get("id"):
+        raise HTTPException(
+            status_code=400, detail="Не переданы данные авторизации Telegram."
+        )
+
+    if not verify_telegram_auth_payload(auth_data, config.bot_token):
+        raise HTTPException(
+            status_code=400,
+            detail="Неверная подпись данных Telegram или время сессии истекло.",
+        )
+
+    try:
+        user, is_new = get_or_create_telegram_web_user(
+            db,
+            telegram_user_id=auth_data["id"],
+            username=str(auth_data.get("username") or ""),
+            first_name=str(auth_data.get("first_name") or ""),
+            last_name=str(auth_data.get("last_name") or ""),
+            photo_url=str(auth_data.get("photo_url") or ""),
+        )
+    except Exception as exc:
+        logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, token)
+    return {
+        "success": True,
+        "is_new": is_new,
+        "csrf_token": csrf_token,
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        },
+    }
 
 
 @app.post("/api/customer/auth/password-reset/request")

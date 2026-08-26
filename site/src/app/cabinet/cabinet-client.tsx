@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import { TelegramLoginWidget } from "@/components/telegram-login-widget";
 import {
   Bell,
   BellOff,
@@ -912,6 +913,46 @@ export function CabinetClient() {
   useEffect(() => {
     loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
+    const hashStr = typeof window !== "undefined" && window.location.hash ? window.location.hash.replace(/^#/, "") : "";
+    const hashParams = new URLSearchParams(hashStr);
+
+    const tgAuthResult = hashParams.get("tgAuthResult") || params.get("tgAuthResult");
+    const tgId = hashParams.get("id") || params.get("id");
+    const tgHash = hashParams.get("hash") || params.get("hash");
+
+    if (tgAuthResult || (tgId && tgHash)) {
+      const payload: Record<string, string> = {};
+      if (tgAuthResult) {
+        payload.tgAuthResult = tgAuthResult;
+      } else {
+        const source = tgId && hashParams.get("id") ? hashParams : params;
+        source.forEach((val, key) => {
+          payload[key] = val;
+        });
+      }
+
+      window.history.replaceState(null, "", window.location.pathname);
+
+      fetch("/api/customer/auth/telegram/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || "Ошибка верификации Telegram");
+          }
+          return res.json();
+        })
+        .then(() => {
+          return loadSession();
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : "Не удалось подтвердить авторизацию через Telegram.");
+        });
+    }
+
     const verified = params.get("email_verified");
     const verifyToken = params.get("email_verify_token");
     const authError = params.get("auth_error");
@@ -920,11 +961,14 @@ export function CabinetClient() {
     if (authError === "yandex_declined") {
       setError("Вход через Яндекс ID был отменён.");
       params.delete("auth_error");
+    } else if (authError === "telegram_invalid" || authError === "telegram_no_data") {
+      setError("Не удалось подтвердить авторизацию через Telegram. Попробуйте войти снова.");
+      params.delete("auth_error");
     } else if (authError === "invalid_state") {
       setError("Сессия авторизации устарела. Попробуйте войти снова.");
       params.delete("auth_error");
     } else if (authError === "fetch_failed" || authError === "user_creation_failed" || authError === "no_code") {
-      setError("Не удалось войти через Яндекс ID. Попробуйте ещё раз или используйте email.");
+      setError("Не удалось войти через выбранный сервис. Попробуйте ещё раз или используйте email.");
       params.delete("auth_error");
     }
     if (verifyToken) {
@@ -1469,7 +1513,7 @@ export function CabinetClient() {
             )}
 
             {authMode !== "reset" ? (
-              <div className="space-y-3 pt-1">
+              <div className="space-y-2.5 pt-1">
                 <a
                   href="/api/customer/auth/yandex/login"
                   className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
@@ -1479,6 +1523,17 @@ export function CabinetClient() {
                     <path fill="#FFFFFF" d="M13.32 7.02h-1.63c-1.39 0-2.19.74-2.19 1.86 0 1.15.58 1.8 1.48 2.5l-1.84 5.6h1.75l1.67-5.07h.76v5.07h1.66V7.02zm-1.55 3.53h-.45c-.56 0-.89-.34-.89-.88 0-.52.33-.87.89-.87h.45v1.75z" />
                   </svg>
                   <span>{authMode === "login" ? "Войти с Яндекс ID" : "Создать кабинет через Яндекс ID"}</span>
+                </a>
+
+                <a
+                  href="/api/customer/auth/telegram/login"
+                  className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 hover:text-slate-950 border border-slate-300 rounded-xl font-bold text-sm shadow-2xs transition-all flex items-center justify-center gap-3 cursor-pointer select-none group"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0" aria-hidden="true">
+                    <circle cx="12" cy="12" r="12" fill="#24A1DE" />
+                    <path fill="#FFFFFF" d="M17.5 7.5L6.5 11.75C5.75 12.05 5.75 12.47 6.36 12.65L9.18 13.53L15.71 9.41C16.02 9.22 16.3 9.33 16.07 9.53L10.78 14.3L10.59 17.15C10.87 17.15 11 17.02 11.16 16.86L12.53 15.53L15.38 17.63C15.91 17.92 16.29 17.77 16.42 17.14L18.29 8.33C18.48 7.57 18 7.22 17.5 7.5Z" />
+                  </svg>
+                  <span>{authMode === "login" ? "Войти через Telegram" : "Создать кабинет через Telegram"}</span>
                 </a>
 
                 <div className="relative flex py-1 items-center">
