@@ -795,7 +795,27 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 14px;
+  padding: 10px 14px 10px 12px;
+  border-left: 3.5px solid #cbd5e1;
+  transition: border-color 0.15s ease;
+}
+.job-card.compact.completed {
+  border-left-color: #16a34a;
+}
+.job-card.compact.failed {
+  border-left-color: #dc2626;
+}
+.job-card.compact.running {
+  border-left-color: #0284c7;
+}
+.job-card.compact.pending {
+  border-left-color: #f59e0b;
+}
+.job-card.compact.partial {
+  border-left-color: #8b5cf6;
+}
+.job-card.compact.cancelled {
+  border-left-color: #94a3b8;
 }
 .job-card.service { background: #f8fafc; }
 .job-card-top {
