@@ -62,6 +62,27 @@ class DocumentParserTests(unittest.TestCase):
         self.assertEqual(text, "Передвижная экологическая лаборатория")
         libreoffice.assert_called_once()
 
+    def test_corrupted_docx_relationships_fall_back_to_libreoffice_or_xml(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_docx", side_effect=KeyError("There is no item named 'word/NULL' in the archive")),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value="ТЗ на модульные дома"),
+        ):
+            text, status = document_parser.extract_text(Path("corrupted.docx"))
+
+        self.assertEqual(status, "docx_libreoffice_ok")
+        self.assertEqual(text, "ТЗ на модульные дома")
+
+    def test_corrupted_docx_falls_back_to_direct_xml_when_libreoffice_empty(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_docx", side_effect=KeyError("There is no item named 'word/NULL' in the archive")),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value=""),
+            patch.object(document_parser, "_extract_docx_xml", return_value="Прямой текст из XML документа"),
+        ):
+            text, status = document_parser.extract_text(Path("corrupted.docx"))
+
+        self.assertEqual(status, "docx_xml_ok")
+        self.assertEqual(text, "Прямой текст из XML документа")
+
     def test_broken_pandoc_does_not_block_libreoffice_fallback(self) -> None:
         with (
             patch.object(document_parser.shutil, "which", return_value="/usr/bin/pandoc"),

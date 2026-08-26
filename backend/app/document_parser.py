@@ -94,27 +94,52 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
         if suffix in {".html", ".htm", ".xml"}:
             return _extract_html(file_path), "ok"
         if suffix == ".docx":
+            status = "ok"
             try:
                 text = _extract_docx(file_path)
-                if len(text.strip()) < 80:
-                    fallback_text = _extract_via_libreoffice(
-                        file_path,
-                        ".txt",
-                        lambda converted: converted.read_text(encoding="utf-8", errors="ignore"),
-                    )
-                    if len(fallback_text.strip()) > len(text.strip()):
-                        return fallback_text, "docx_libreoffice_ok"
-                return text, "ok"
             except Exception:
-                if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
-                    text, status = _extract_archive(file_path, options, depth)
-                    if text.strip():
-                        return text, f"docx_archive_{status}"
-                raise
+                text = ""
+
+            if len(text.strip()) < 80:
+                fallback_lo = _extract_via_libreoffice(
+                    file_path,
+                    ".txt",
+                    lambda converted: converted.read_text(encoding="utf-8", errors="ignore"),
+                )
+                if len(fallback_lo.strip()) > len(text.strip()):
+                    text = fallback_lo
+                    status = "docx_libreoffice_ok"
+
+            if len(text.strip()) < 80:
+                fallback_xml = _extract_docx_xml(file_path)
+                if len(fallback_xml.strip()) > len(text.strip()):
+                    text = fallback_xml
+                    status = "docx_xml_ok"
+
+            if text.strip():
+                return text, status
+
+            if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
+                text, archive_status = _extract_archive(file_path, options, depth)
+                if text.strip():
+                    return text, f"docx_archive_{archive_status}"
+
+            return "", "docx_empty"
         if suffix == ".xlsx":
-            return _extract_xlsx(file_path), "ok"
+            try:
+                text = _extract_xlsx(file_path)
+                if text.strip():
+                    return text, "ok"
+            except Exception:
+                text = ""
+            fallback = _extract_via_libreoffice(file_path, ".csv", _extract_csv)
+            if fallback.strip():
+                return fallback, "xlsx_libreoffice_ok"
+            return text, "ok" if text.strip() else "xlsx_empty"
         if suffix == ".xls":
             text = _extract_via_libreoffice(file_path, ".xlsx", _extract_xlsx)
+            if not text.strip():
+                text = _extract_via_libreoffice(file_path, ".csv", _extract_csv)
             return text, "ok" if text.strip() else "parser_not_connected_yet"
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
@@ -186,6 +211,44 @@ def _extract_docx(path: Path) -> str:
             if any(cells):
                 blocks.append(" | ".join(cells))
     return "\n".join(blocks)
+
+
+def _extract_docx_xml(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        with zipfile.ZipFile(path) as z:
+            if "word/document.xml" not in z.namelist():
+                return ""
+            xml_data = z.read("word/document.xml")
+        soup = BeautifulSoup(xml_data, "xml")
+        body = soup.find(["w:body", "body"])
+        if not body:
+            return ""
+        blocks: list[str] = []
+        for child in body.children:
+            name = getattr(child, "name", "")
+            if not name:
+                continue
+            if name.endswith("p"):
+                text = "".join(t.get_text() for t in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
+                if text.strip():
+                    blocks.append(text.strip())
+            elif name.endswith("tbl"):
+                rows = []
+                for tr in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("tr"), recursive=False):
+                    cells = []
+                    for tc in tr.find_all(lambda tag: tag and tag.name and tag.name.endswith("tc"), recursive=False):
+                        cell_text = " ".join("".join(t.get_text() for t in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("t"))).split())
+                        cells.append(cell_text)
+                    if any(cells):
+                        rows.append(" | ".join(cells))
+                if rows:
+                    blocks.append("\n=== TABLE ===")
+                    blocks.extend(rows)
+        return "\n".join(blocks)
+    except Exception:
+        return ""
 
 
 def _is_docx_package(path: Path) -> bool:

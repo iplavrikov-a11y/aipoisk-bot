@@ -12,6 +12,11 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Resilient Document Parser Fallbacks & Recovery (2026-08):
+  - Fixed parser crash on non-standard/corrupted `.docx` files (e.g. invalid relationships such as `word/NULL` triggering `KeyError` in `python-docx`).
+  - Added multi-tier extraction pipeline: primary `python-docx` parser → secondary headless `LibreOffice` text extraction fallback → tertiary direct XML parser (`word/document.xml`) extracting structured paragraphs and tables (`w:p`, `w:tbl`).
+  - Added resilient fallback for `.xlsx` and `.xls` via headless `LibreOffice` to `.csv` on `openpyxl` reader failures.
+  - Added unit test suite in `backend/tests/test_document_parser.py` validating corrupted relationship recovery and XML fallback (100% pass).
 - Lead Generation & Outreach CRM Module (2026-08):
   - Added comprehensive B2B lead search, CRM contact management, bulk email campaigns, direct composer, and IMAP inbound reply inbox in admin panel (`frontend/src/OutreachView.tsx`, `backend/app/outreach_api.py`, `backend/app/outreach_mail.py`).
   - Database & Backend: Automatic SQLite schema migrations for `outreach_inbox` (`category`, `is_spam`) and `outreach_campaigns` (`selected_lead_ids`) in `backend/app/db.py`. Enriched `/api/outreach/inbox` with company name, phone, and task matching. Fixed AI generation endpoint with system settings and tier integration.
