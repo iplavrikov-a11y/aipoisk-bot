@@ -152,7 +152,9 @@ class UpdateSettingsRequest(BaseModel):
 def get_outreach_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     total_leads = db.query(func.count(OutreachLead.id)).scalar() or 0
     new_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.status == "new").scalar() or 0
-    sent_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.status == "sent").scalar() or 0
+    sent_leads = db.query(func.count(OutreachLead.id)).filter(
+        or_(OutreachLead.status.in_(["sent", "replied"]), OutreachLead.sent_count > 0)
+    ).scalar() or 0
     replied_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.reply_received == True).scalar() or 0
     mx_valid_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.mx_valid == True).scalar() or 0
     inbox_unread = db.query(func.count(OutreachIncomingEmail.id)).filter(OutreachIncomingEmail.is_read == False).scalar() or 0
@@ -222,7 +224,10 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
 
     total_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id).scalar() or 0
     new_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "new").scalar() or 0
-    sent_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "sent").scalar() or 0
+    sent_leads = db.query(func.count(OutreachLead.id)).filter(
+        OutreachLead.task_id == task_id,
+        or_(OutreachLead.status.in_(["sent", "replied"]), OutreachLead.sent_count > 0),
+    ).scalar() or 0
     replied_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.reply_received == True).scalar() or 0
     mx_valid_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.mx_valid == True).scalar() or 0
 
@@ -354,6 +359,8 @@ def list_leads(
     if status:
         if status == "replied":
             query = query.filter(OutreachLead.reply_received == True)
+        elif status == "sent":
+            query = query.filter(or_(OutreachLead.status.in_(["sent", "replied"]), OutreachLead.sent_count > 0))
         else:
             query = query.filter(OutreachLead.status == status)
     if category:

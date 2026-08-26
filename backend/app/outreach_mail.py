@@ -284,9 +284,13 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             }
             for l in q.all()
         ]
-        campaign.total_recipients = len(leads_data)
+        if not campaign.total_recipients or campaign.total_recipients == 0:
+            campaign.total_recipients = len(leads_data)
+        elif campaign.total_recipients < len(leads_data) + (campaign.sent_count or 0) + (campaign.failed_count or 0):
+            campaign.total_recipients = (campaign.sent_count or 0) + (campaign.failed_count or 0) + len(leads_data)
         campaign.status = "running"
-        campaign.started_at = now_utc()
+        if not campaign.started_at:
+            campaign.started_at = now_utc()
         campaign.error_message = ""
         db.commit()
 

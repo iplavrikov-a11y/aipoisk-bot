@@ -120,3 +120,57 @@ def test_outreach_search_task_crud():
         db.commit()
     finally:
         db.close()
+
+
+def test_outreach_stats_counts_sent_and_replied():
+    from app.outreach_api import get_task_stats
+    db = SessionLocal()
+    try:
+        task = OutreachSearchTask(
+            id="test-task-stats-123",
+            name="Тестовая задача",
+            prompt="тест",
+            target_count=10,
+        )
+        lead_new = OutreachLead(
+            id="lead-test-new",
+            task_id=task.id,
+            email="new@test.ru",
+            status="new",
+            mx_valid=True,
+        )
+        lead_sent = OutreachLead(
+            id="lead-test-sent",
+            task_id=task.id,
+            email="sent@test.ru",
+            status="sent",
+            sent_count=1,
+            mx_valid=True,
+        )
+        lead_replied = OutreachLead(
+            id="lead-test-replied",
+            task_id=task.id,
+            email="replied@test.ru",
+            status="replied",
+            reply_received=True,
+            sent_count=1,
+            mx_valid=True,
+        )
+        db.add_all([task, lead_new, lead_sent, lead_replied])
+        db.commit()
+
+        stats = get_task_stats(task.id, db)
+        assert stats["total_leads"] == 3
+        assert stats["new_leads"] == 1
+        assert stats["sent_leads"] == 2  # sent + replied
+        assert stats["replied_leads"] == 1
+        assert stats["mx_valid_leads"] == 3
+
+        db.delete(lead_new)
+        db.delete(lead_sent)
+        db.delete(lead_replied)
+        db.delete(task)
+        db.commit()
+    finally:
+        db.close()
+
