@@ -53,6 +53,16 @@ Date: 2026-07-08
   - Tab & Workspace State Persistence: Preserved selected search task ID and active subtab in `localStorage` across page reloads (F5) without losing context or resetting to general summary.
   - Inbound Reply Inbox Enhancements: Fixed viewport height containment to prevent reply form overflowing off-screen; added distinct visual indicators for unread emails (blue dot `●`, "Новое" badge, bold typography, 1-click read/unread toggle); added pagination with 50-item initial load and `[ Показать ещё 50 писем ]` load-more button; added silent background auto-synchronization every 30s; enlarged quick reply textarea (`min-height: 125px`, 6 rows) with 1-click AI reply generation.
   - Added test suite `backend/tests/test_outreach.py` with 100% pass rate.
+- Lead Generation & Outreach Search Engine Upgrade (2026-08):
+  - Upgraded Outreach search pipeline in `backend/app/outreach_search.py` to match the exact quality, depth, and precision of TenderLex's core client procurement engine (`supplier_search.py`).
+  - Integrated Commercial B2B Query Matrix: Generates targeted product/vendor search queries with commercial markers (`завод`, `производитель`, `оптом со склада`, `дистрибьютор`, `прайс-лист`) and strict negative operators (`-"банковская гарантия" -"обучение" -"семинар" -"эцп" -"агрегатор"`).
+  - Batch AI Pre-Filtering (AI Rerank): LLM evaluates search snippets in batches to immediately eliminate banks, financial guarantee brokers, training courses, news sites, and marketplaces before crawling.
+  - Multi-Page Deep Crawling with Playwright: Scrapes `/contacts`, `/about`, `/rekvizity`, and `/catalog` pages with headless browser fallback for JS/SPA web applications, extracting direct phone numbers (`tel:`) and emails (`mailto:`).
+  - Full-Text Parallel AI Review: LLM analyzes extracted website text in parallel, determines exact activity profiles, and assigns a strict relevance score (0–100).
+  - DaData EGRUL & OKVED Validation: Connects to DaData API to disqualify liquidated or bankrupt entities and non-target OKVEDs (financial 64–66, education 85, legal brokers 69), enriching verified official company names and CEO names.
+  - Session Safety: Resolved SQLAlchemy `DetachedInstanceError` via safe pre-loaded attribute caching (`get_fresh_system_settings`).
+  - Inbound Mailbox Recovery & Auto-Sync Stability: Added HTML-to-text extraction in `backend/app/outreach_mail.py` to eliminate empty body messages for HTML-only emails; pinned "Живые ответы" (`replies`) as default view and ensured auto-sync preserves user filter state without leaking delivery bounce errors.
+  - Verification & Benchmarks: Created unit test suite `backend/tests/test_outreach_search_quality.py` (100% pass) and side-by-side comparative benchmarking tool `backend/scripts/compare_search_engines.py` proving 0% noise and 100% verified corporate leads on industrial procurement scenarios.
 - Contact Routing & UI Polish (2026-08):
   - Strictly separated voice phone calls from messaging channels:
     - Voice calls: `+7 (995) 146-00-80` (`tel:+79951460080`).

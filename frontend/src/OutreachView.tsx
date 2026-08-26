@@ -355,7 +355,7 @@ export function OutreachView() {
 
   // Inbox state (inside selected task)
   const [inboxMessages, setInboxMessages] = useState<IncomingMessage[]>([])
-  const [inboxFilter, setInboxFilter] = useState<'all' | 'replies' | 'bounces' | 'unread' | 'spam'>('all')
+  const [inboxFilter, setInboxFilter] = useState<'all' | 'replies' | 'bounces' | 'unread' | 'spam'>('replies')
   const [inboxSearch, setInboxSearch] = useState('')
   const [inboxLimit, setInboxLimit] = useState(50)
   const [inboxTotal, setInboxTotal] = useState(0)
@@ -366,6 +366,12 @@ export function OutreachView() {
   const [sendingReply, setSendingReply] = useState(false)
   const [aiReplyGenerating, setAiReplyGenerating] = useState(false)
   const lastAutoSyncTimeRef = useRef<number>(0)
+  const inboxFilterRef = useRef(inboxFilter)
+  inboxFilterRef.current = inboxFilter
+  const inboxSearchRef = useRef(inboxSearch)
+  inboxSearchRef.current = inboxSearch
+  const inboxLimitRef = useRef(inboxLimit)
+  inboxLimitRef.current = inboxLimit
 
   // Settings state
   const [settings, setSettings] = useState<any>({
@@ -452,14 +458,17 @@ export function OutreachView() {
 
   // Fetch inbox for the selected task (with pagination limit)
   const fetchInbox = useCallback(
-    async (taskId: string, filter = inboxFilter, search = inboxSearch, limit = inboxLimit, isLoadMore = false) => {
+    async (taskId: string, filter?: 'all' | 'replies' | 'bounces' | 'unread' | 'spam', search?: string, limit?: number, isLoadMore = false) => {
+      const activeFilter = filter ?? inboxFilterRef.current
+      const activeSearch = search ?? inboxSearchRef.current
+      const activeLimit = limit ?? inboxLimitRef.current
       try {
         const params = new URLSearchParams({
-          limit: String(limit || 50),
-          unread_only: String(filter === 'unread'),
-          is_spam: String(filter === 'spam'),
-          category: filter === 'bounces' ? 'bounces' : filter === 'replies' ? 'replies' : '',
-          search,
+          limit: String(activeLimit || 50),
+          unread_only: String(activeFilter === 'unread'),
+          is_spam: String(activeFilter === 'spam'),
+          category: activeFilter === 'bounces' ? 'bounces' : activeFilter === 'replies' ? 'replies' : '',
+          search: activeSearch,
           task_id: taskId,
         })
         const data = await outreachFetch<{ items: IncomingMessage[]; total?: number }>(
@@ -477,7 +486,7 @@ export function OutreachView() {
         // ignore
       }
     },
-    [inboxFilter, inboxSearch, inboxLimit, selectedMsg]
+    [selectedMsg]
   )
 
   // Load more inbox messages (increment limit by 50)
@@ -487,7 +496,7 @@ export function OutreachView() {
     setInboxLimit(nextLimit)
     setLoadingMoreInbox(true)
     try {
-      await fetchInbox(selectedTask.id, inboxFilter, inboxSearch, nextLimit, true)
+      await fetchInbox(selectedTask.id, inboxFilterRef.current, inboxSearchRef.current, nextLimit, true)
     } finally {
       setLoadingMoreInbox(false)
     }
@@ -504,7 +513,7 @@ export function OutreachView() {
         await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
         const targetTaskId = taskId || selectedTask?.id
         if (targetTaskId) {
-          fetchInbox(targetTaskId, inboxFilter, inboxSearch, inboxLimit)
+          fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
           fetchTaskStats(targetTaskId)
         }
       } catch {
@@ -513,7 +522,7 @@ export function OutreachView() {
         setSyncingInbox(false)
       }
     },
-    [selectedTask, inboxFilter, inboxSearch, inboxLimit, fetchInbox, fetchTaskStats]
+    [selectedTask, fetchInbox, fetchTaskStats]
   )
 
   // Fetch settings
@@ -1174,9 +1183,9 @@ export function OutreachView() {
     setSyncingInbox(true)
     try {
       const res = await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
-      showSuccess(`Синхронизация завершена (новых писем: ${res.synced || 0})`)
+      showSuccess(`Синхронизация завершена (новых писем: ${res.new_messages || res.synced || 0})`)
       if (selectedTask) {
-        fetchInbox(selectedTask.id)
+        fetchInbox(selectedTask.id, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
         fetchTaskStats(selectedTask.id)
       }
     } catch (e: any) {
@@ -3028,7 +3037,18 @@ export function OutreachView() {
 
                       {/* Middle scrollable message body */}
                       <div className="outreach-inbox-detail-body">
-                        {selectedMsg.body_text || '(Пустое тело письма)'}
+                        {selectedMsg.body_text ? (
+                          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6, color: '#1e293b' }}>
+                            {selectedMsg.body_text}
+                          </div>
+                        ) : selectedMsg.body_html ? (
+                          <div
+                            style={{ lineHeight: 1.6, wordBreak: 'break-word', color: '#1e293b' }}
+                            dangerouslySetInnerHTML={{ __html: selectedMsg.body_html }}
+                          />
+                        ) : (
+                          <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>(Пустое тело письма)</span>
+                        )}
                       </div>
 
                       {/* Sticky bottom quick reply panel (Hidden for bounces) */}

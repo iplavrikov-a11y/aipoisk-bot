@@ -624,7 +624,9 @@ def list_inbox_messages(
     if category_str == "bounces":
         q = q.filter(OutreachIncomingEmail.category == "bounce")
     elif category_str == "replies":
-        q = q.filter(OutreachIncomingEmail.category.in_(["reply", "auto_reply", ""]))
+        q = q.filter(OutreachIncomingEmail.category.in_(["reply", "auto_reply"]))
+    elif unread_bool:
+        q = q.filter(OutreachIncomingEmail.is_read == False, OutreachIncomingEmail.category != "bounce")
 
     if task_id_str:
         lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
@@ -633,7 +635,7 @@ def list_inbox_messages(
         else:
             return {"items": [], "total": 0}
 
-    if unread_bool:
+    if unread_bool and category_str != "":
         q = q.filter(OutreachIncomingEmail.is_read == False)
     if search_str:
         term = f"%{search_str}%"

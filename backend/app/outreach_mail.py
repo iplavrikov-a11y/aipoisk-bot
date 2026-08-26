@@ -406,6 +406,20 @@ def parse_bounce_info(sender_email: str, sender_name: str, subject: str, body_te
     return True, matched_lead_id, target_email, reason
 
 
+def html_to_plain_text(html_content: str) -> str:
+    """Converts HTML email body to clean readable text."""
+    if not html_content:
+        return ""
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(p|div|tr|h[1-6]|li|blockquote|pre)[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"\r", "", text)
+    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
 def backfill_existing_bounces(db: Session) -> int:
     """Retroactively identifies and links existing unlinked bounces in outreach_inbox."""
     leads_map = {r[0].lower().rstrip('.'): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
@@ -414,6 +428,11 @@ def backfill_existing_bounces(db: Session) -> int:
 
     for msg in unlinked:
         body = msg.body_text or ""
+        if not body.strip() and msg.body_html:
+            body = html_to_plain_text(msg.body_html)
+            msg.body_text = body[:10000]
+            updated_count += 1
+
         is_bounce, matched_id, target_em, reason = parse_bounce_info(
             msg.sender_email, msg.sender_name, msg.subject, body, leads_map
         )
@@ -535,6 +554,9 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                         body_html = text_content
                     else:
                         body_text = text_content
+
+            if not body_text.strip() and body_html:
+                body_text = html_to_plain_text(body_html)
 
             is_bounce, matched_lead_id, target_em, bounce_reason = parse_bounce_info(
                 sender_email, sender_name, subject, body_text, leads_map
