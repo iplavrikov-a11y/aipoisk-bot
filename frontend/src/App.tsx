@@ -2595,6 +2595,62 @@ function ClientsView({
   const [resetNotes, setResetNotes] = useState<Record<string, string>>({})
   const [temporaryPasswords, setTemporaryPasswords] = useState<Record<string, string>>({})
   const [deletingClientId, setDeletingClientId] = useState<string | null>(null)
+
+  // Pagination & Filtering state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+
+  const webClientsCount = useMemo(
+    () => clients.filter(c => c.web_users && c.web_users.length > 0).length,
+    [clients]
+  )
+  const tgClientsCount = useMemo(
+    () => clients.filter(c => ((c.telegram_accounts || []).some(a => !isSyntheticWebTelegramAccount(a)) || Boolean(c.telegram_id))).length,
+    [clients]
+  )
+  const balanceClientsCount = useMemo(
+    () => clients.filter(c => (c.usage?.money?.available_kopeks || 0) > 0).length,
+    [clients]
+  )
+
+  const filteredClients = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return clients.filter(client => {
+      if (clientFilter === 'web') {
+        if (!client.web_users || client.web_users.length === 0) return false
+      } else if (clientFilter === 'tg') {
+        const realAccounts = (client.telegram_accounts || []).filter(a => !isSyntheticWebTelegramAccount(a))
+        if (!realAccounts.length && !client.telegram_id) return false
+      } else if (clientFilter === 'balance') {
+        if (!client.usage?.money || client.usage.money.available_kopeks <= 0) return false
+      }
+
+      if (!q) return true
+      const name = (client.name || '').toLowerCase()
+      const username = (client.username || '').toLowerCase()
+      const tgId = String(client.telegram_id || '').toLowerCase()
+      const notes = (client.notes || '').toLowerCase()
+      const tgAccounts = (client.telegram_accounts || []).some(a =>
+        (a.username || '').toLowerCase().includes(q) ||
+        String(a.telegram_id || '').toLowerCase().includes(q) ||
+        (a.name || '').toLowerCase().includes(q)
+      )
+      const webUsers = (client.web_users || []).some(u =>
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.name || '').toLowerCase().includes(q)
+      )
+      return name.includes(q) || username.includes(q) || tgId.includes(q) || notes.includes(q) || tgAccounts || webUsers
+    })
+  }, [clients, searchQuery, clientFilter])
+
+  const pageCount = Math.max(1, Math.ceil(filteredClients.length / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  const shownFrom = filteredClients.length ? (currentPage - 1) * pageSize + 1 : 0
+  const shownTo = Math.min(currentPage * pageSize, filteredClients.length)
+  const pagedClients = filteredClients.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
   async function createClient() {
     const usernames = parseTelegramUsernames(form.telegram_usernames)
     await api('/api/clients', {
@@ -2881,8 +2937,141 @@ function ClientsView({
           </button>
         </div>
       </div>
-      <div className="client-card-list">
-        {clients.map(client => {
+      <div className="list-toolbar">
+        <div className="list-toolbar-row">
+          <div className="list-toolbar-meta">
+            <strong>Клиенты: {shownFrom}-{shownTo} из {filteredClients.length}</strong>
+            {clients.length > filteredClients.length && (
+              <span className="inline-note">Всего в базе: {clients.length}</span>
+            )}
+          </div>
+          {filteredClients.length > pageSize && (
+            <div className="list-pagination toolbar-pagination">
+              <button
+                className="ghost small-text"
+                onClick={() => setPage(v => Math.max(1, v - 1))}
+                disabled={currentPage <= 1}
+              >
+                Назад
+              </button>
+              <span>Страница {currentPage} из {pageCount}</span>
+              <button
+                className="ghost small-text"
+                onClick={() => setPage(v => Math.min(pageCount, v + 1))}
+                disabled={currentPage >= pageCount}
+              >
+                Вперёд
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="list-toolbar-filters">
+          <input
+            className="toolbar-search"
+            placeholder="Найти клиента по имени, email, Telegram нику или ID..."
+            value={searchQuery}
+            onChange={e => {
+              setSearchQuery(e.target.value)
+              setPage(1)
+            }}
+          />
+          <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'all' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'all' ? '#0f766e' : 'transparent',
+                color: clientFilter === 'all' ? '#fff' : '#334155',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('all')
+                setPage(1)
+              }}
+            >
+              Все ({clients.length})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'web' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'web' ? '#0f766e' : 'transparent',
+                color: clientFilter === 'web' ? '#fff' : '#334155',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('web')
+                setPage(1)
+              }}
+            >
+              Web ({webClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'tg' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'tg' ? '#0f766e' : 'transparent',
+                color: clientFilter === 'tg' ? '#fff' : '#334155',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('tg')
+                setPage(1)
+              }}
+            >
+              Telegram ({tgClientsCount})
+            </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'balance' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'balance' ? '#0f766e' : 'transparent',
+                color: clientFilter === 'balance' ? '#fff' : '#334155',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('balance')
+                setPage(1)
+              }}
+            >
+              С балансом ({balanceClientsCount})
+            </button>
+          </div>
+          <select
+            value={pageSize}
+            onChange={e => {
+              setPageSize(Number(e.target.value))
+              setPage(1)
+            }}
+            style={{ width: 'auto', minWidth: 100, fontSize: 12 }}
+            title="Количество клиентов на странице"
+          >
+            <option value={25}>По 25</option>
+            <option value={50}>По 50</option>
+            <option value={100}>По 100</option>
+          </select>
+        </div>
+      </div>
+      {filteredClients.length === 0 ? (
+        <div className="form-panel full-width-panel" style={{ textAlign: 'center', padding: '36px 16px', color: '#64748b' }}>
+          <p style={{ margin: 0, fontWeight: 600 }}>Ничего не найдено</p>
+          <p style={{ margin: '4px 0 0', fontSize: 12 }}>Попробуйте изменить поисковый запрос или фильтр</p>
+        </div>
+      ) : (
+        <div className="client-card-list">
+          {pagedClients.map(client => {
           const draft = accountDraft(client)
           const accounts = (client.telegram_accounts || []).filter(account => !isSyntheticWebTelegramAccount(account))
           const webUsers = client.web_users?.length ? client.web_users : []
@@ -3207,6 +3396,32 @@ function ClientsView({
           )
         })}
       </div>
+      )}
+      {filteredClients.length > pageSize && (
+        <div className="list-pagination" style={{ marginTop: 8, marginBottom: 12 }}>
+          <button
+            className="ghost small-text"
+            onClick={() => {
+              setPage(v => Math.max(1, v - 1))
+              window.scrollTo({ top: 0, behavior: 'smooth' })
+            }}
+            disabled={currentPage <= 1}
+          >
+            Назад
+          </button>
+          <span>Страница {currentPage} из {pageCount}</span>
+          <button
+            className="ghost small-text"
+            onClick={() => {
+              setPage(v => Math.min(pageCount, v + 1))
+              window.scrollTo({ top: 0, behavior: 'smooth' })
+            }}
+            disabled={currentPage >= pageCount}
+          >
+            Вперёд
+          </button>
+        </div>
+      )}
     </section>
   )
 }

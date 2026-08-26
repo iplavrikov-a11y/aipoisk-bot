@@ -18,6 +18,11 @@ Date: 2026-07-08
   - Implemented secure HMAC-SHA256 signature verification with SHA256 bot token secret and 24-hour expiration checks.
   - Added support for Telegram OAuth URL fragment (`#tgAuthResult=...`) and direct redirect parsing in both frontend client and backend API (`/api/customer/auth/telegram/login`, `/api/customer/auth/telegram/callback`, `/api/customer/auth/telegram/verify`).
   - Added 8 automated unit tests in `backend/tests/test_telegram_web_auth.py` covering signature verification, token expiration, client reuse, new user trial grants, callback redirects, and payload extraction (100% pass).
+- Admin Panel Client Management Pagination, Search & Performance (2026-08):
+  - Rebuilt `ClientsView` in `frontend/src/App.tsx` with high-performance client-side pagination (default 25 clients per page, selectable 25/50/100) preventing browser memory bloat and UI lag on large user databases.
+  - Added instant multi-field search filtering across client name, web user email, Telegram username, Telegram ID, and manager notes.
+  - Added fast category filter tabs: `Все`, `Web` (site cabinet users), `Telegram` (bot users), and `С балансом` (positive credit balances) with real-time count badges.
+  - Added top and bottom pagination navigation controls (`Назад`, `Страница X из Y`, `Вперёд`) with smooth scrolling and total metrics (`Показано 1–25 из X`).
 - Admin Panel Task Cards Streamlining & Visual Separation (2026-08):
   - Converted job cards from bulky accordion dropdowns into a single-level ultra-compact card layout with zero hidden content.
   - Relocated micro-timeline processing stages (`Создана` → `Входные` → `ИИ` → `Результат`) into the card header right beside action buttons.
