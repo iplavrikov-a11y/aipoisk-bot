@@ -66,6 +66,7 @@ TERMINAL_JOB_STATUSES = {
     "needs_review",
     "failed",
     "cancelled",
+    "resolved",
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
     STATUS_CONFIRMATION_EXPIRED,

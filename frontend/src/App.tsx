@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   X,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Bot,
@@ -38,7 +39,7 @@ import {
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 
-type View = 'dashboard' | 'analytics' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach'
 
 type Dashboard = {
   clients: number
@@ -563,12 +564,8 @@ const supplierAiRoutingKeys = [
 
 const viewCopy: Record<View, { title: string; description: string }> = {
   dashboard: {
-    title: 'Сводка',
-    description: 'Короткая картина по клиентам, задачам и текущим настройкам сервиса.',
-  },
-  analytics: {
-    title: 'Статистика',
-    description: 'Воронка Telegram-бота, активность клиентов, триал для дожима и готовность оплаты.',
+    title: 'Сводка и аналитика',
+    description: 'Ключевые показатели сервиса, динамика запусков, состояние серверов и активность клиентов.',
   },
   clients: {
     title: 'Клиенты',
@@ -954,7 +951,7 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1056,13 +1053,14 @@ export function App() {
     setLoading(true)
     setError('')
     try {
-      const [dashboardData, clientsData, opsStatusData, settingsData, tariffData, passwordResetData] = await Promise.all([
+      const [dashboardData, clientsData, opsStatusData, settingsData, tariffData, passwordResetData, analyticsData] = await Promise.all([
         api<Dashboard>('/api/dashboard'),
         api<Client[]>('/api/clients'),
         api<OpsStatus>('/api/ops/system-status'),
         api<SettingsPayload>('/api/settings'),
         api<TariffPackage[]>('/api/tariffs'),
         api<PasswordResetRequest[]>('/api/web-password-resets?status=open'),
+        api<BotAnalytics>('/api/analytics/bot?period_days=30').catch(() => null),
       ])
       setDashboard(dashboardData)
       setClients(clientsData)
@@ -1070,6 +1068,7 @@ export function App() {
       setSettings(settingsData)
       setTariffs(tariffData)
       setPasswordResets(passwordResetData)
+      if (analyticsData) setAnalytics(analyticsData)
 
       // Fetch background / secondary data without delaying core view rendering
       void api<Job[]>('/api/jobs?include_internal=true&limit=200')
@@ -1253,7 +1252,6 @@ export function App() {
 
   const nav = [
     { id: 'dashboard' as const, label: 'Сводка', icon: ShieldCheck },
-    { id: 'analytics' as const, label: 'Статистика', icon: Database },
     { id: 'seo' as const, label: 'SEO и Трафик', icon: Globe },
     { id: 'clients' as const, label: 'Клиенты', icon: Users },
     { id: 'jobs' as const, label: 'Задачи', icon: FileText },
@@ -1315,8 +1313,8 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div>
-            <h1>{viewCopy[view].title}</h1>
-            <p>{viewCopy[view].description}</p>
+            <h1>{viewCopy[view]?.title || 'Панель управления'}</h1>
+            <p>{viewCopy[view]?.description || ''}</p>
           </div>
           <div className="top-actions">
             {opsStatus && (
@@ -1335,13 +1333,14 @@ export function App() {
                 </span>
                 {(() => {
                   const yandexSvc = opsStatus.services.find(s => s.id === 'yandex')
-                  const isWarn = yandexSvc?.warning || yandexSvc?.status !== 'ok'
-                  const balanceText = yandexSvc?.balance_label || 'OK'
+                  const isWarn = yandexSvc ? (yandexSvc.warning || yandexSvc.status !== 'ok') : false
+                  const balanceText = yandexSvc?.balance_label || 'н/д'
                   return (
                     <button
-                      className={`header-badge clickable ${isWarn ? 'critical' : 'warning'}`}
+                      type="button"
+                      className={`header-badge clickable ${isWarn ? 'warning' : 'balance'}`}
                       onClick={() => setShowServerModal(true)}
-                      title="Нажмите для просмотра состояния сервера и API балансов"
+                      title="Баланс Яндекс.Поиска (нажмите для подробностей сервера)"
                     >
                       <Search size={13} />
                       <span>Поиск Яндекс: {balanceText}</span>
@@ -1355,8 +1354,16 @@ export function App() {
         </header>
 
         {error && <div className="alert error"><XCircle size={18} />{error}</div>}
-        {isReady && view === 'dashboard' && <DashboardView dashboard={dashboard} settings={settings} opsStatus={opsStatus} />}
-        {isReady && view === 'analytics' && <AnalyticsView analytics={analytics} onLoad={loadAnalytics} />}
+        {isReady && view === 'dashboard' && (
+          <DashboardView
+            dashboard={dashboard}
+            analytics={analytics}
+            settings={settings}
+            opsStatus={opsStatus}
+            onNavigate={setView}
+            onRefresh={loadAll}
+          />
+        )}
         {isReady && view === 'seo' && <SeoView data={seoAnalytics} loading={loadingSeo} onRefresh={() => void loadSeoAnalytics(true)} />}
         {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
         {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
@@ -1483,240 +1490,386 @@ function AuthScreen({
   )
 }
 
-function DashboardView({ dashboard, settings, opsStatus }: { dashboard: Dashboard | null; settings: SettingsPayload | null; opsStatus: OpsStatus | null }) {
+function DashboardView({
+  dashboard,
+  analytics,
+  settings,
+  opsStatus,
+  onNavigate,
+  onRefresh,
+}: {
+  dashboard: Dashboard | null
+  analytics: BotAnalytics | null
+  settings: SettingsPayload | null
+  opsStatus: OpsStatus | null
+  onNavigate: (view: View) => void
+  onRefresh: () => Promise<void>
+}) {
+  const [resolving, setResolving] = useState(false)
+  const summary = analytics?.summary
+  const funnel = analytics?.funnel
+  const maxDaily = Math.max(1, ...(analytics?.jobs.daily.map(item => item.total) || [1]))
+
+  async function handleResolveAll() {
+    if (!window.confirm('Пометить все текущие ошибки как решённые? Они перестанут показываться в сводке и статусе.')) return
+    setResolving(true)
+    try {
+      await api('/api/jobs/resolve-failed', { method: 'POST' })
+      await onRefresh()
+    } catch (err) {
+      alert('Ошибка: ' + formatError(err))
+    } finally {
+      setResolving(false)
+    }
+  }
+
   const stats = [
-    { label: 'Клиентов', value: dashboard?.clients ?? 0, note: `${dashboard?.active_clients ?? 0} активных`, icon: Users },
-    { label: 'Задач', value: dashboard?.jobs ?? 0, note: `${dashboard?.running_jobs ?? 0} в работе`, icon: FileText },
-    { label: 'Готово', value: dashboard?.completed_jobs ?? 0, note: `${dashboard?.failed_jobs ?? 0} ошибок`, icon: CheckCircle2 },
-    { label: 'Поставщиков', value: dashboard?.suppliers ?? 0, note: 'проверенных строк', icon: Search },
+    {
+      label: 'Клиентов',
+      value: dashboard?.clients ?? 0,
+      note: `${dashboard?.active_clients ?? 0} активных · ${summary?.telegram_accounts ?? 0} TG`,
+      icon: Users,
+      onClick: () => onNavigate('clients'),
+    },
+    {
+      label: 'Задач',
+      value: dashboard?.jobs ?? 0,
+      note: `${summary?.period_jobs ?? 0} за 30 дней · ${dashboard?.running_jobs ?? 0} в работе`,
+      icon: FileText,
+      onClick: () => onNavigate('jobs'),
+    },
+    {
+      label: 'Готово',
+      value: dashboard?.completed_jobs ?? 0,
+      note: (dashboard?.failed_jobs ?? 0) > 0 ? `${dashboard?.failed_jobs} сбоев (7д)` : 'без сбоев за 7д',
+      icon: CheckCircle2,
+      warning: (dashboard?.failed_jobs ?? 0) > 0,
+      onClick: () => onNavigate('jobs'),
+    },
+    {
+      label: 'Поставщиков',
+      value: dashboard?.suppliers ?? 0,
+      note: 'проверенных строк в базе',
+      icon: Search,
+    },
+    {
+      label: 'Конверсия триала',
+      value: `${funnel?.trial_to_grant_percent ?? 0}%`,
+      note: `${funnel?.trial_with_grants ?? 0}/${funnel?.trial_started ?? 0} оплатили`,
+      icon: CreditCard,
+    },
   ]
-  const attentionItems = dashboardAttentionItems(dashboard, opsStatus)
+
+  const attentionItems = dashboardAttentionItems(dashboard, opsStatus, onNavigate)
+
   return (
-    <section className="content-grid">
-      {stats.map(item => {
-        const Icon = item.icon
-        return (
-          <div className="metric" key={item.label}>
-            <Icon size={20} />
-            <div>
-              <span>{item.label}</span>
-              <strong>{item.value}</strong>
-              <small>{item.note}</small>
-            </div>
-          </div>
-        )
-      })}
-      <DashboardAttentionPanel items={attentionItems} />
-      <SystemStatusPanel opsStatus={opsStatus} />
-      <div className="wide-panel">
-        <h2>Рабочие правила</h2>
-        <div className="rule-list">
-          <div><Bot size={17} />В боте работают только включённые клиенты и их менеджеры.</div>
-          <div><Search size={17} />В отчёт попадают только поставщики, проверенные ИИ.</div>
-          <div><Settings size={17} />Клиенту настраиваются баланс и доступные услуги, списание идёт по фактическому тарифу.</div>
-          <div><KeyRound size={17} />Модели ИИ выбираются в разделе «ИИ-модели».</div>
-        </div>
-      </div>
-      <div className="wide-panel">
-        <h2>Текущая конфигурация</h2>
-        <div className="settings-summary">
-          <span>Домен: {settings?.public_base_url || 'не задан'}</span>
-          <span>Поставщиков в выдаче: {settings?.default_supplier_target || 25}</span>
-          <span>Логистика: {settings?.logistics_enabled ? 'включена' : 'отключена'}</span>
-          <span>Частичные отчёты: {settings?.allow_partial_supplier_reports ? 'разрешены' : 'запрещены'}</span>
-          <span>Бесплатный период: {settings?.trial_enabled ? 'включён' : 'выключен'}</span>
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function dashboardAttentionItems(dashboard: Dashboard | null, opsStatus: OpsStatus | null) {
-  const items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode }> = []
-  const failedJobs = dashboard?.failed_jobs || opsStatus?.queue.failed || 0
-  const runningJobs = dashboard?.running_jobs || opsStatus?.queue.running || 0
-  const pendingJobs = opsStatus?.queue.pending || 0
-  const unconfiguredServices = opsStatus?.services.filter(service => !service.configured) || []
-
-  if (failedJobs > 0) {
-    items.push({ title: 'Ошибки задач', detail: `${failedJobs} задач требуют разбора или перезапуска`, tone: 'critical', icon: <XCircle size={18} /> })
-  }
-  if (pendingJobs > 0) {
-    items.push({ title: 'Очередь', detail: `${pendingJobs} задач ждут обработки`, tone: pendingJobs >= 50 ? 'critical' : 'warning', icon: <Server size={18} /> })
-  }
-  if (runningJobs > 0) {
-    items.push({ title: 'В обработке', detail: `${runningJobs} задач сейчас занимают worker`, tone: 'warning', icon: <Loader2 size={18} /> })
-  }
-  if (opsStatus?.warnings.length) {
-    items.push({ title: 'Сервер', detail: opsStatus.warnings[0], tone: 'warning', icon: <HardDrive size={18} /> })
-  }
-  if (unconfiguredServices.length) {
-    items.push({ title: 'Интеграции', detail: `Не настроено: ${unconfiguredServices.map(service => service.label).slice(0, 3).join(', ')}`, tone: 'warning', icon: <Settings size={18} /> })
-  }
-  if (!items.length) {
-    items.push({ title: 'Критичных сигналов нет', detail: 'Очередь, сервисы и последние задачи выглядят штатно', tone: 'ok', icon: <ShieldCheck size={18} /> })
-  }
-  return items.slice(0, 5)
-}
-
-function DashboardAttentionPanel({ items }: { items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode }> }) {
-  return (
-    <div className="attention-panel full-width-panel">
-      <div className="panel-heading">
-        <h2>Что требует внимания</h2>
-        <span className={items.some(item => item.tone === 'critical') ? 'status failed' : items.some(item => item.tone === 'warning') ? 'status warning' : 'status active'}>
-          {items.some(item => item.tone === 'critical') ? 'есть критичные' : items.some(item => item.tone === 'warning') ? 'проверить' : 'в норме'}
-        </span>
-      </div>
-      <div className="attention-grid">
-        {items.map(item => (
-          <div className={`attention-item ${item.tone}`} key={`${item.title}-${item.detail}`}>
-            {item.icon}
-            <div>
-              <strong>{item.title}</strong>
-              <span>{item.detail}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function AnalyticsView({ analytics, onLoad }: { analytics: BotAnalytics | null; onLoad: () => void }) {
-  useEffect(() => {
-    if (!analytics) onLoad()
-  }, [analytics, onLoad])
-  if (!analytics) return <div className="empty">Загрузка статистики...</div>
-  const summary = analytics.summary
-  const funnel = analytics.funnel
-  const maxDaily = Math.max(1, ...analytics.jobs.daily.map(item => item.total))
-  const metrics = [
-    { label: 'Клиентов', value: summary.clients_total, note: `${summary.active_clients} активных`, icon: Users },
-    { label: 'Telegram', value: summary.telegram_accounts, note: `${summary.period_active_users} активных за ${analytics.period_days} дней`, icon: Bot },
-    { label: 'Задач', value: summary.period_jobs, note: `${summary.period_active_clients} клиентов запускали бота`, icon: FileText },
-    { label: 'Триал', value: `${funnel.trial_to_grant_percent}%`, note: `${funnel.trial_with_grants}/${funnel.trial_started} дошли до оплаты`, icon: CreditCard },
-  ]
-  return (
-    <section className="stack">
-      <div className="content-grid">
-        {metrics.map(item => {
+    <section className="dash-container">
+      {/* Top 5 KPI Metrics */}
+      <div className="dash-kpi-grid">
+        {stats.map(item => {
           const Icon = item.icon
           return (
-            <div className="metric" key={item.label}>
-              <Icon size={20} />
-              <div>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.note}</small>
+            <div
+              className={`dash-kpi-card ${item.onClick ? 'clickable' : ''} ${item.warning ? 'warning' : ''}`}
+              key={item.label}
+              onClick={item.onClick}
+              title={item.onClick ? 'Перейти в раздел' : undefined}
+            >
+              <div className="dash-kpi-icon">
+                <Icon size={20} />
+              </div>
+              <div className="dash-kpi-content">
+                <span className="dash-kpi-label">{item.label}</span>
+                <span className="dash-kpi-value">{item.value}</span>
+                <span className="dash-kpi-note">{item.note}</span>
               </div>
             </div>
           )
         })}
       </div>
 
-      <div className="analytics-grid">
-        <div className="form-panel">
-          <h2>Воронка</h2>
-          <div className="kv-list">
-            <div><span>Триал создан</span><strong>{funnel.trial_started}</strong></div>
-            <div><span>Триал пользовался ботом</span><strong>{funnel.trial_used_bot}</strong></div>
-            <div><span>Получили начисления</span><strong>{funnel.trial_with_grants}</strong></div>
-            <div><span>Конверсия использования</span><strong>{funnel.usage_to_grant_percent}%</strong></div>
-          </div>
-        </div>
-        <div className="form-panel">
-          <h2>Задачи по режимам</h2>
-          <div className="kv-list">
-            {analytics.jobs.by_mode.map(item => <div key={item.mode}><span>{item.label}</span><strong>{item.count}</strong></div>)}
-            {!analytics.jobs.by_mode.length && <div className="inline-note">За период задач не было.</div>}
-          </div>
-        </div>
-        <div className="form-panel">
-          <h2>Статусы задач</h2>
-          <div className="kv-list">
-            {analytics.jobs.by_status.map(item => <div key={item.status}><span>{item.label}</span><strong>{item.count}</strong></div>)}
-            {!analytics.jobs.by_status.length && <div className="inline-note">Статусов за период нет.</div>}
-          </div>
-        </div>
-        <div className="form-panel">
-          <h2>Оплата</h2>
-          <div className="kv-list">
-            <div><span>Пополнение</span><strong>через менеджера</strong></div>
-          </div>
-          <div className="billing-mini-list">
-            {analytics.billing.period.map(item => (
-              <div key={item.kind}>
-                <strong>{item.label}</strong>
-                <span>{billingPeriodSummaryText(item)}</span>
-              </div>
-            ))}
-            {!analytics.billing.period.length && <span className="inline-note">Начислений за период нет.</span>}
-          </div>
-        </div>
-      </div>
+      {/* Что требует внимания */}
+      <DashboardAttentionPanel
+        items={attentionItems}
+        onResolveAll={handleResolveAll}
+        resolving={resolving}
+      />
 
-      <div className="form-panel full-width-panel">
-        <h2>Динамика запусков</h2>
-        <div className="daily-bars">
-          {analytics.jobs.daily.map(item => (
-            <div className="daily-bar" key={item.date} title={`${item.date}: ${item.total}`}>
-              <span style={{ height: `${Math.max(6, Math.round(item.total * 100 / maxDaily))}%` }} />
-              <small>{new Date(apiDateValue(item.date)).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', timeZone: MOSCOW_TIME_ZONE })}</small>
+      {/* Динамика запусков (30 дней) */}
+      {analytics && analytics.jobs.daily.length > 0 && (
+        <div className="dash-chart-card">
+          <div className="dash-chart-header">
+            <div>
+              <h2 style={{ fontSize: 14, margin: 0, fontWeight: 700, color: '#0f172a' }}>Динамика запусков</h2>
+              <small style={{ color: '#64748b', fontSize: 11.5 }}>
+                За последние {analytics.period_days} дней · всего {summary?.period_jobs ?? 0} запусков
+              </small>
             </div>
-          ))}
+            <div className="dash-chart-legend">
+              <div className="dash-chart-legend-item">
+                <span className="dash-chart-legend-dot" style={{ background: '#2563eb' }} />
+                <span>Поставщики ({analytics.jobs.by_mode.find(m => m.mode === 'supplier_search')?.count ?? 0})</span>
+              </div>
+              <div className="dash-chart-legend-item">
+                <span className="dash-chart-legend-dot" style={{ background: '#10b981' }} />
+                <span>Анализ ТЗ ({analytics.jobs.by_mode.find(m => m.mode === 'procurement_report')?.count ?? 0})</span>
+              </div>
+              <div className="dash-chart-legend-item">
+                <span className="dash-chart-legend-dot" style={{ background: '#8b5cf6' }} />
+                <span>Анализ + поиск ({analytics.jobs.by_mode.find(m => m.mode === 'analysis_and_suppliers')?.count ?? 0})</span>
+              </div>
+            </div>
+          </div>
+          <div className="dash-chart-bars">
+            {analytics.jobs.daily.map(item => {
+              const heightPct = Math.max(item.total > 0 ? 10 : 3, Math.round((item.total * 100) / maxDaily))
+              return (
+                <div
+                  className="dash-chart-col"
+                  key={item.date}
+                  title={`${item.date}: Всего ${item.total} (Поставщики: ${item.supplier_search}, Анализ: ${item.procurement_report}, Комбо: ${item.analysis_and_suppliers})`}
+                >
+                  <span
+                    className={`dash-chart-bar ${item.total > 0 ? 'active' : ''}`}
+                    style={{ height: `${heightPct}%` }}
+                  />
+                  <span className="dash-chart-date">
+                    {new Date(apiDateValue(item.date)).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', timeZone: MOSCOW_TIME_ZONE })}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
-      <AnalyticsClientList
-        title="Триал для дожима"
-        empty="Нет триальных клиентов с использованием без начислений."
-        clients={analytics.trial_followups}
-      />
-      <AnalyticsClientList
-        title="Топ клиентов за период"
-        empty="За период нет активных клиентов."
-        clients={analytics.top_clients}
-      />
+      {/* Состояние системы и сервисов */}
+      <SystemStatusPanel opsStatus={opsStatus} />
+
+      {/* 2-Column Split: Режимы и Статусы | Воронка и Топ клиентов */}
+      {analytics && (
+        <div className="dash-split-grid">
+          {/* Column 1: Задачи по режимам и статусам */}
+          <div className="dash-card">
+            <div className="dash-card-section">
+              <h3 className="dash-card-title">
+                <span>Задачи по режимам</span>
+                <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b' }}>за {analytics.period_days}д</span>
+              </h3>
+              <div className="dash-row-list">
+                {analytics.jobs.by_mode.map(item => (
+                  <div className="dash-row-item" key={item.mode}>
+                    <span>{item.label}</span>
+                    <strong>{item.count}</strong>
+                  </div>
+                ))}
+                {!analytics.jobs.by_mode.length && <div className="inline-note">За период задач не было.</div>}
+              </div>
+            </div>
+
+            <div className="dash-card-section" style={{ borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
+              <h3 className="dash-card-title">Статусы задач</h3>
+              <div className="dash-status-grid">
+                {analytics.jobs.by_status.map(item => (
+                  <div className="dash-status-pill" key={item.status}>
+                    <span style={{ color: '#475569' }}>{item.label}</span>
+                    <strong>{item.count}</strong>
+                  </div>
+                ))}
+                {!analytics.jobs.by_status.length && <div className="inline-note">Статусов за период нет.</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Column 2: Воронка триала и Топ клиентов */}
+          <div className="dash-card">
+            <div className="dash-card-section">
+              <h3 className="dash-card-title">
+                <span>Воронка триала</span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#059669' }}>
+                  конверсия {funnel?.trial_to_grant_percent ?? 0}%
+                </span>
+              </h3>
+              <div className="dash-row-list">
+                <div className="dash-row-item">
+                  <span>Триалов создано</span>
+                  <strong>{funnel?.trial_started ?? 0}</strong>
+                </div>
+                <div className="dash-row-item">
+                  <span>Пользовались ботом</span>
+                  <strong>{funnel?.trial_used_bot ?? 0}</strong>
+                </div>
+                <div className="dash-row-item">
+                  <span>Оплатили услуги</span>
+                  <strong className="dash-highlight">{funnel?.trial_with_grants ?? 0}</strong>
+                </div>
+                <div className="dash-row-item">
+                  <span>Конверсия активных пользователей</span>
+                  <strong className="dash-highlight">{funnel?.usage_to_grant_percent ?? 0}%</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="dash-card-section" style={{ borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
+              <h3 className="dash-card-title">
+                <span>Топ активных клиентов</span>
+                <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b' }}>за {analytics.period_days}д</span>
+              </h3>
+              <div className="dash-client-list">
+                {(analytics.top_clients || []).slice(0, 5).map(client => (
+                  <div
+                    className="dash-client-row"
+                    key={client.client_id}
+                    onClick={() => onNavigate('clients')}
+                    title="Открыть клиента в разделе Клиенты"
+                  >
+                    <div className="dash-client-info">
+                      <span className="dash-client-name">{client.name}</span>
+                      <span className="dash-client-meta">
+                        {client.username ? `@${client.username}` : client.telegram_id || 'ID'} · {client.jobs_total} задач
+                      </span>
+                    </div>
+                    <span className="dash-client-badge">
+                      поставщики: {client.supplier_jobs}
+                    </span>
+                  </div>
+                ))}
+                {(!analytics.top_clients || !analytics.top_clients.length) && (
+                  <div className="inline-note">За период нет активных клиентов.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
 
-function AnalyticsClientList({ title, empty, clients }: { title: string; empty: string; clients: AnalyticsClient[] }) {
+function dashboardAttentionItems(
+  dashboard: Dashboard | null,
+  opsStatus: OpsStatus | null,
+  onNavigate?: (view: View) => void,
+) {
+  const items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode; onClick?: () => void }> = []
+  const failedJobs = dashboard?.failed_jobs || opsStatus?.queue.failed || 0
+  const runningJobs = dashboard?.running_jobs || opsStatus?.queue.running || 0
+  const pendingJobs = opsStatus?.queue.pending || 0
+  const unconfiguredServices = opsStatus?.services.filter(service => !service.configured) || []
+
+  if (failedJobs > 0) {
+    items.push({
+      title: 'Ошибки задач',
+      detail: `${failedJobs} ${failedJobs === 1 ? 'задача' : failedJobs < 5 ? 'задачи' : 'задач'} за 7 дней требуют внимания`,
+      tone: 'warning',
+      icon: <AlertTriangle size={18} />,
+      onClick: () => onNavigate?.('jobs'),
+    })
+  }
+  if (pendingJobs > 0) {
+    items.push({
+      title: 'Очередь',
+      detail: `${pendingJobs} задач ждут обработки`,
+      tone: pendingJobs >= 50 ? 'critical' : 'warning',
+      icon: <Server size={18} />,
+      onClick: () => onNavigate?.('jobs'),
+    })
+  }
+  if (runningJobs > 0) {
+    items.push({
+      title: 'В обработке',
+      detail: `${runningJobs} задач сейчас выполняются`,
+      tone: 'warning',
+      icon: <Loader2 size={18} className="animate-spin" />,
+      onClick: () => onNavigate?.('jobs'),
+    })
+  }
+  if (opsStatus?.warnings.length) {
+    items.push({
+      title: 'Сервер',
+      detail: opsStatus.warnings[0],
+      tone: 'warning',
+      icon: <HardDrive size={18} />,
+    })
+  }
+  if (unconfiguredServices.length) {
+    items.push({
+      title: 'Интеграции',
+      detail: `Не настроено: ${unconfiguredServices.map(service => service.label).slice(0, 3).join(', ')}`,
+      tone: 'warning',
+      icon: <Settings size={18} />,
+      onClick: () => onNavigate?.('settings'),
+    })
+  }
+  if (!items.length) {
+    items.push({
+      title: 'Система работает штатно',
+      detail: 'Очередь, сервер и фоновые процессы в норме',
+      tone: 'ok',
+      icon: <ShieldCheck size={18} style={{ color: '#10b981' }} />,
+    })
+  }
+  return items.slice(0, 4)
+}
+
+function DashboardAttentionPanel({
+  items,
+  onResolveAll,
+  resolving,
+}: {
+  items: Array<{ title: string; detail: string; tone: 'critical' | 'warning' | 'ok'; icon: ReactNode; onClick?: () => void }>
+  onResolveAll?: () => void
+  resolving?: boolean
+}) {
+  const hasErrors = items.some(item => item.title === 'Ошибки задач')
+  const isOk = items.every(item => item.tone === 'ok')
+
   return (
-    <div className="form-panel full-width-panel">
-      <h2>{title}</h2>
-      <div className="analytics-client-list">
-        {clients.map(client => (
-          <div className="analytics-client-row" key={client.client_id}>
+    <div className="dash-attention-card">
+      <div className="dash-attention-header">
+        <div className="dash-attention-title">
+          <ShieldCheck size={18} style={{ color: isOk ? '#059669' : '#d97706' }} />
+          <span>Что требует внимания</span>
+          <span className={items.some(item => item.tone === 'critical') ? 'status failed' : items.some(item => item.tone === 'warning') ? 'status warning' : 'status active'}>
+            {items.some(item => item.tone === 'critical') ? 'есть ошибки' : items.some(item => item.tone === 'warning') ? 'проверить' : 'в норме'}
+          </span>
+        </div>
+
+        <div className="dash-attention-actions">
+          {hasErrors && onResolveAll && (
+            <button
+              type="button"
+              className="dash-resolve-btn"
+              onClick={onResolveAll}
+              disabled={resolving}
+              title="Пометить все текущие ошибки как решённые, чтобы они больше не отображались"
+            >
+              {resolving ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
+              <span>{resolving ? 'Сохранение...' : 'Отметить решёнными'}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="dash-attention-grid">
+        {items.map(item => (
+          <div
+            className={`dash-attention-item ${item.tone}`}
+            key={`${item.title}-${item.detail}`}
+            onClick={item.onClick}
+            style={item.onClick ? { cursor: 'pointer' } : undefined}
+            title={item.onClick ? 'Перейти в раздел' : undefined}
+          >
+            {item.icon}
             <div>
-              <strong>{client.name}</strong>
-              <small>{client.username ? `@${client.username}` : client.telegram_id || 'Telegram не указан'} · последний запуск {formatDate(client.last_job_at)}</small>
+              <strong style={{ fontSize: 13, display: 'block', color: '#0f172a' }}>{item.title}</strong>
+              <span style={{ fontSize: 12, display: 'block', marginTop: 3 }}>{item.detail}</span>
             </div>
-            <span>{client.jobs_total} задач</span>
-            <span>поставщики {client.supplier_jobs}</span>
-            <span>анализ {client.report_jobs}</span>
-            <span>{analyticsBalance(client)}</span>
           </div>
         ))}
-        {!clients.length && <div className="empty inline-empty">{empty}</div>}
       </div>
     </div>
   )
-}
-
-function analyticsBalance(client: AnalyticsClient) {
-  return `баланс: ${client.supplier_available ?? 'без лимита'} / ${client.report_available ?? 'без лимита'}`
-}
-
-function billingPeriodSummaryText(item: BotAnalytics['billing']['period'][number]) {
-  const parts = [
-    `начислено ${formatPrice(item.granted_amount_kopeks)}`,
-    `списано ${formatPrice(item.charged_amount_kopeks)}`,
-  ]
-  if (item.reserved_amount_kopeks > 0) parts.push(`в работе ${formatPrice(item.reserved_amount_kopeks)}`)
-  if (item.manual_debited_amount_kopeks > 0) parts.push(`коррекция ${formatPrice(item.manual_debited_amount_kopeks)}`)
-  return parts.join(' · ')
 }
 
 type RecommendationItem = {
@@ -2612,7 +2765,6 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
           </div>
         ))}
       </div>
-      <p className="field-help">Балансы не подставляются фиктивно: здесь показан факт подключения сервисов и состояние сервера. Реальные суммы можно добавить только через подтверждённые billing API.</p>
     </div>
   )
 }
@@ -3639,6 +3791,10 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
     await onChange()
   }
+  async function resolveJob(job: Job) {
+    await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
+    await onChange()
+  }
   async function cancelJob(job: Job) {
     if (!window.confirm('Отменить задачу?')) return
     await api(`/api/jobs/${job.id}/cancel`, { method: 'POST' })
@@ -3776,6 +3932,9 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                   )}
                   {(job.status === 'running' || job.status === 'pending') && (
                     <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
+                  )}
+                  {job.status === 'failed' && (
+                    <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
                   )}
                   <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
                 </div>

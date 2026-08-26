@@ -1000,13 +1000,16 @@ def auth_me() -> dict:
 
 @app.get("/api/dashboard", dependencies=[Depends(require_admin)])
 def dashboard(db: Session = Depends(db_session)) -> dict:
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
     return {
         "clients": db.query(Client).count(),
         "active_clients": db.query(Client).filter(Client.is_active.is_(True)).count(),
         "jobs": db.query(Job).count(),
         "running_jobs": db.query(Job).filter(Job.status.in_(["pending", "running"])).count(),
         "completed_jobs": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
-        "failed_jobs": db.query(Job).filter(Job.status == "failed").count(),
+        "failed_jobs": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
+        "failed_jobs_total": db.query(Job).filter(Job.status == "failed").count(),
         "suppliers": db.query(SupplierResult).count(),
     }
 
@@ -2112,6 +2115,31 @@ def force_fail_stale_jobs(
     if cancelled:
         db.commit()
     return {"cancelled": cancelled, "count": len(cancelled)}
+
+
+@app.post("/api/jobs/resolve-failed", dependencies=[Depends(require_admin)])
+def resolve_all_failed_jobs(db: Session = Depends(db_session)) -> dict:
+    """Mark all failed jobs as resolved so they no longer trigger error alerts."""
+    failed_jobs = db.query(Job).filter(Job.status == "failed").all()
+    count = len(failed_jobs)
+    for job in failed_jobs:
+        job.status = "resolved"
+        job.updated_at = now_utc()
+    if count > 0:
+        db.commit()
+    return {"success": True, "resolved_count": count}
+
+
+@app.post("/api/jobs/{job_id}/resolve", dependencies=[Depends(require_admin)])
+def resolve_single_job(job_id: str, db: Session = Depends(db_session)) -> dict:
+    """Mark a single failed job as resolved."""
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.status = "resolved"
+    job.updated_at = now_utc()
+    db.commit()
+    return {"success": True, "job": job_to_dict(job)}
 
 
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
@@ -3613,10 +3641,13 @@ def build_system_status(settings: SystemSettings, db: Session, yandex_balance: f
         "storage_used_gb": storage_disk["disk_used_gb"],
         "storage_percent": storage_disk["disk_percent"],
     }
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
     queue = {
         "pending": db.query(Job).filter(Job.status == "pending").count(),
         "running": db.query(Job).filter(Job.status == "running").count(),
-        "failed": db.query(Job).filter(Job.status == "failed").count(),
+        "failed": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
+        "failed_total": db.query(Job).filter(Job.status == "failed").count(),
         "completed": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
     }
     services = api_service_statuses(settings, yandex_balance=yandex_balance)

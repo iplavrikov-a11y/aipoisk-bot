@@ -17,7 +17,12 @@ Date: 2026-07-08
   - Unified Profiles & Balance Protection: Users who interacted with the Telegram bot are automatically linked to their existing `Client` profile upon logging into the website via Telegram without duplicate account creation or duplicate trial balance grants. Brand-new users receive a unified client account with initial trial access.
   - Implemented secure HMAC-SHA256 signature verification with SHA256 bot token secret and 24-hour expiration checks.
   - Added support for Telegram OAuth URL fragment (`#tgAuthResult=...`) and direct redirect parsing in both frontend client and backend API (`/api/customer/auth/telegram/login`, `/api/customer/auth/telegram/callback`, `/api/customer/auth/telegram/verify`).
-  - Added 8 automated unit tests in `backend/tests/test_telegram_web_auth.py` covering signature verification, token expiration, client reuse, new user trial grants, callback redirects, and payload extraction (100% pass).
+- Admin Panel Unified Dashboard & Analytics (2026-08):
+  - Merged "Сводка" and "Статистика" into a single, unified, high-density dashboard (`DashboardView` in `frontend/src/App.tsx`).
+  - Removed separate "Статистика" navigation tab and eliminated static noise/boilerplate ("Рабочие правила", "Текущая конфигурация", billing disclaimers).
+  - Integrated real-time 30-day bot launch dynamic chart (`daily-bars`), mode breakdown (`Поиск поставщиков`, `Анализ ТЗ`, `Анализ + поиск`), task status distribution, trial funnel conversion, and top active client leaders.
+  - Smart Error Window (7 Days): Updated `/api/dashboard` and `/api/ops/system-status` in `backend/app/main.py` to filter failed tasks within a 7-day window (`Job.created_at >= now - timedelta(days=7)`). Ancient historical failures from initial testing no longer trigger permanent red alert banners.
+  - Sleek Attention Banner: Attention panel only alerts on recent actionable failures, queue backlogs, or server warnings; displays green "Система работает штатно" when clear.
 - Admin Panel Client Management Pagination, Search & Performance (2026-08):
   - Rebuilt `ClientsView` in `frontend/src/App.tsx` with high-performance client-side pagination (default 25 clients per page, selectable 25/50/100) preventing browser memory bloat and UI lag on large user databases.
   - Added instant multi-field search filtering across client name, web user email, Telegram username, Telegram ID, and manager notes.
