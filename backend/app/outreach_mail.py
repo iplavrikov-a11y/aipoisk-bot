@@ -366,12 +366,89 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
 
 
 RE_GENERIC_EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", re.IGNORECASE)
+RE_GENERIC_URL = re.compile(r"(?:https?://|www\.)[a-zA-Z0-9-.]+\.[a-zA-Z]{2,}", re.IGNORECASE)
 RE_BOUNCE_SENDER = re.compile(r"mailer-daemon|postmaster|antispam|ksmg|mail delivery", re.IGNORECASE)
 RE_BOUNCE_SUBJECT = re.compile(r"undelivered|не удается доставить|delivery status|failure|undeliverable|returned to sender|mail delivery failed|не удалось доставить", re.IGNORECASE)
 RE_DIAGNOSTIC_REASON = re.compile(r"(?:said:|Diagnostic-Code:.*?|Status:.*?|error:)\s*([0-9]{3}[^\n\r]+|Access Denied|User unknown|Mailbox unavailable[^\n\r]*)", re.IGNORECASE)
 
+GENERIC_EMAIL_DOMAINS = {
+    "mail.ru", "bk.ru", "inbox.ru", "list.ru", "yandex.ru", "ya.ru",
+    "gmail.com", "rambler.ru", "internet.ru", "ro.ru", "mail.com",
+    "outlook.com", "icloud.com", "hotmail.com", "yahoo.com"
+}
 
-def parse_bounce_info(sender_email: str, sender_name: str, subject: str, body_text: str, leads_map: dict[str, str]) -> tuple[bool, str | None, str, str]:
+
+def clean_domain_name(val: str) -> str:
+    if not val:
+        return ""
+    s = val.lower().strip()
+    s = re.sub(r"^https?://", "", s)
+    s = re.sub(r"^www\.", "", s)
+    s = s.split("/")[0].split("@")[-1].split(":")[0].strip().rstrip(".")
+    return s
+
+
+def build_leads_lookup(db: Session) -> tuple[dict[str, str], dict[str, str]]:
+    """Builds (email_to_lead_id, domain_to_lead_id) maps."""
+    email_map: dict[str, str] = {}
+    domain_map: dict[str, str] = {}
+
+    leads = db.query(OutreachLead.id, OutreachLead.email, OutreachLead.website).all()
+    for lid, em, web in leads:
+        if em:
+            em_clean = em.lower().strip().rstrip(".")
+            email_map[em_clean] = lid
+            em_dom = clean_domain_name(em_clean)
+            if em_dom and em_dom not in GENERIC_EMAIL_DOMAINS and em_dom not in domain_map:
+                domain_map[em_dom] = lid
+        if web:
+            web_dom = clean_domain_name(web)
+            if web_dom and web_dom not in GENERIC_EMAIL_DOMAINS and web_dom not in domain_map:
+                domain_map[web_dom] = lid
+
+    return email_map, domain_map
+
+
+def find_matched_lead_id(
+    sender_email: str,
+    sender_name: str,
+    subject: str,
+    body_text: str,
+    email_map: dict[str, str],
+    domain_map: dict[str, str]
+) -> str | None:
+    """Finds lead ID using exact email, corporate domain, quoted email, or URL in body."""
+    s_clean = (sender_email or "").lower().strip().rstrip(".")
+    if s_clean in email_map:
+        return email_map[s_clean]
+
+    s_dom = clean_domain_name(s_clean)
+    if s_dom and s_dom not in GENERIC_EMAIL_DOMAINS and s_dom in domain_map:
+        return domain_map[s_dom]
+
+    # Quoted emails in body
+    for cand in RE_GENERIC_EMAIL.findall(body_text or ""):
+        c_clean = cand.lower().rstrip(".,;:>)")
+        if c_clean != "info@tenderlex.ru" and c_clean in email_map:
+            return email_map[c_clean]
+
+    # URLs/domains in body
+    for cand_url in RE_GENERIC_URL.findall(body_text or ""):
+        cand_dom = clean_domain_name(cand_url)
+        if cand_dom and cand_dom not in GENERIC_EMAIL_DOMAINS and cand_dom in domain_map:
+            return domain_map[cand_dom]
+
+    return None
+
+
+def parse_bounce_info(
+    sender_email: str,
+    sender_name: str,
+    subject: str,
+    body_text: str,
+    email_map: dict[str, str],
+    domain_map: dict[str, str] | None = None
+) -> tuple[bool, str | None, str, str]:
     """
     Checks if email is an NDR / delivery failure, extracts target lead email, lead_id and failure reason.
     Returns (is_bounce, matched_lead_id, target_email, failure_reason).
@@ -395,8 +472,13 @@ def parse_bounce_info(sender_email: str, sender_name: str, subject: str, body_te
     for raw_em in RE_GENERIC_EMAIL.findall(body_text):
         cand = raw_em.lower().rstrip('.,;:>)')
         if cand and cand != "info@tenderlex.ru" and cand != sender_clean.rstrip('.,;:>)'):
-            if cand in leads_map:
-                matched_lead_id = leads_map[cand]
+            if cand in email_map:
+                matched_lead_id = email_map[cand]
+                target_email = cand
+                break
+            cand_dom = clean_domain_name(cand)
+            if domain_map and cand_dom and cand_dom not in GENERIC_EMAIL_DOMAINS and cand_dom in domain_map:
+                matched_lead_id = domain_map[cand_dom]
                 target_email = cand
                 break
 
@@ -404,6 +486,167 @@ def parse_bounce_info(sender_email: str, sender_name: str, subject: str, body_te
     reason = reason_m.group(1).strip() if reason_m else "Не доставлено (ошибка почтового сервера получателя)"
     reason = re.sub(r"\s+", " ", reason)[:150]
     return True, matched_lead_id, target_email, reason
+
+
+def is_auto_reply_message(subject: str, body_text: str, sender_name: str = "", sender_email: str = "") -> bool:
+    """
+    Accurately classifies whether an incoming email is an automated reply,
+    helpdesk ticket notification, vacation responder, bot acknowledgement, or robot message.
+    """
+    subj_clean = re.sub(r"\s+", " ", (subject or "").lower()).strip()
+    body_clean = re.sub(r"\s+", " ", (body_text or "").lower()).strip()
+    name_clean = re.sub(r"\s+", " ", (sender_name or "").lower()).strip()
+    email_clean = (sender_email or "").lower().strip()
+
+    # Senders / Names indicating bot/support/ticket systems
+    bot_names = [
+        "поддержк", "support", "helpdesk", "service desk", "служба заботы",
+        "бот", "bot", "информационная служба", "robot", "noreply", "no-reply", "ticket",
+        "sd@", "hd@", "help@", "info@", "support@"
+    ]
+    if any(bn in name_clean or bn in email_clean for bn in bot_names):
+        if any(w in subj_clean or w in body_clean for w in [
+            "обращени", "заявк", "тикет", "ticket", "получен", "принят", "зарегистрирован",
+            "спешит на помощь", "в порядке очереди", "вернёмся с ответом", "номер",
+            "техническ", "служб", "порядок", "запрос", "рассмотрен"
+        ]):
+            return True
+
+    # Subject keywords
+    subj_patterns = [
+        "автоматический ответ", "автоответ", "automatic reply", "auto-reply", "auto reply",
+        "out of office", "в отпуске", "ваше обращение", "обращение принято", "обращение [",
+        "обращение #", "заявка принята", "заявка [", "заявка №", "запрос получен",
+        "мы получили ваше письмо", "получили запрос", "ваше письмо получено", "ticket-",
+        "[#", "[заявка"
+    ]
+    if any(p in subj_clean for p in subj_patterns):
+        return True
+
+    # Body keywords
+    body_patterns = [
+        "автоматический ответ", "автоматическое уведомление", "это письмо отправлено автоматически",
+        "робот", "я бот", "ваше обращение зарегистрировано", "зарегистрирована заявка",
+        "зарегистрирован инцидент", "зарегистрировано под номером", "присвоен номер #",
+        "принято в обработку", "дождитесь ответа менеджера", "наш менеджер свяжется с вами",
+        "специалист службы поддержки ответит", "вернёмся с ответом в течение",
+        "нахожусь в отпуске", "в отпуске до", "out of the office", "out of office",
+        "служба заботы о клиентах получила", "вы обратились в службу поддержки",
+        "вы обратились в техническую службу", "команда техподдержки", "зарегистрировано в пао",
+        "необходимая информация от вас получена", "для сокращения времени обработки обращений",
+        "наш менеджер свяжется с вами в ближайшее время", "спасибо за обращение! оно будет рассмотрено",
+        "все запросы обрабатываются в порядке очереди", "мы получили ваше письмо и уже спешим",
+        "спасибо за обращение в компанию", "письмо получено и принято в обработку",
+        "спасибо что обратились к нашему сервису", "спасибо, что обратились к нашему сервису"
+    ]
+    if any(p in body_clean for p in body_patterns):
+        return True
+
+    return False
+
+
+KNOWN_SPAM_DOMAINS = {
+    "rumixos.shop", "thespacebanana.com", "prorucane.pro", "rabbitandjohn.com",
+    "rulane.life", "mojim.com", "doublewin.co.ke", "baza-email-rf.ru",
+    "fin-broker77.ru", "aispiritdigital.store", "garden-tech24.ru",
+    "boiler-opt.ru", "prom-tool.ru",
+}
+
+SPAM_KEYWORDS = [
+    r"разошл[её]м ваше коммерческое предложение",
+    r"база данных\s+кол-во адресов",
+    r"базы данных компаний рф",
+    r"рассылка по whatsapp",
+    r"рассылк[аи]\s+по\s+email",
+    r"аккумуляторный секатор",
+    r"аккумуляторная болгарка",
+    r"инструмент\s+makita",
+    r"dewalt,?\s+bosch\s+со\s+скидкой",
+    r"горячая вода за 3 секунды",
+    r"получить горячую воду за",
+    r"водонагревател[ей|и|ь].*оптом",
+    r"бойлеры косвенного нагрева",
+    r"таро с нуля",
+    r"таро для женщин",
+    r"секрета ярких любовных отношений",
+    r"секрета женщин, которых мужчины не забывают",
+    r"женщиной, которую невозможно забыть",
+    r"выйти на 150 000 руб.*с помощью ии",
+    r"заработок на ии",
+    r"банковские гарантии 44-фз\s*/\s*223-фз от",
+    r"постельное белье от производителя",
+    r"умное зеркало - всё необходимое",
+    r"маркетолог-сеошник",
+    r"500 on-бонусов",
+    r"продвину ваш сайт",
+]
+
+
+def is_spam_message(
+    subject: str,
+    body_text: str,
+    sender_name: str = "",
+    sender_email: str = "",
+    has_lead_match: bool = False,
+    custom_rules: list[dict[str, Any]] | None = None,
+) -> tuple[bool, str]:
+    """
+    Evaluates whether an incoming email is spam/mass unsolicited advertising.
+    Returns (is_spam, reason).
+    """
+    subj_clean = re.sub(r"\s+", " ", (subject or "").lower()).strip()
+    body_clean = re.sub(r"\s+", " ", (body_text or "").lower()).strip()
+    name_clean = re.sub(r"\s+", " ", (sender_name or "").lower()).strip()
+    email_clean = (sender_email or "").lower().strip()
+    domain = email_clean.split("@")[-1] if "@" in email_clean else ""
+
+    # 1. Custom rules from DB/Settings
+    if custom_rules:
+        for rule in custom_rules:
+            rtype = rule.get("type", "domain")
+            rval = str(rule.get("value", "")).lower().strip()
+            if not rval:
+                continue
+            if rtype == "domain":
+                if domain == rval or domain.endswith("." + rval) or rval == email_clean:
+                    return True, f"Заблокированный домен: {rval}"
+            elif rtype == "keyword":
+                if rval in subj_clean or rval in body_clean or rval in name_clean:
+                    return True, f"Спам-ключ: {rval}"
+            elif rtype == "sender":
+                if rval in email_clean or rval in name_clean:
+                    return True, f"Заблокированный отправитель: {rval}"
+
+    # 2. Known Spam Domains & TLDs
+    if domain in KNOWN_SPAM_DOMAINS:
+        return True, f"Известный спам-домен: {domain}"
+
+    if domain.endswith((".shop", ".pro", ".co.ke", ".store", ".fun", ".click", ".top", ".loan", ".life")):
+        if not has_lead_match:
+            return True, f"Подозрительный спам-домен: {domain}"
+
+    # 3. Sender Name Patterns
+    if re.search(r"рассылк\w*\d{6,}", name_clean) or re.search(r"рассылка\s*\+?7", name_clean):
+        return True, f"Спам в имени отправителя: {sender_name}"
+
+    name_personas = [
+        "makita", "mаkitа", "садовый сезон", "водонагреватель", "женские секреты",
+        "love-коуч", "карты таро", "тотальная распродажа", "заработок на ии",
+    ]
+    if any(k in name_clean for k in name_personas):
+        return True, f"Спам-отправитель: {sender_name}"
+
+    # 4. Numeric mail.ru/bk.ru/inbox.ru free email accounts sending forms
+    if re.match(r"^\d{6,}@(mail\.ru|bk\.ru|inbox\.ru|list\.ru)$", email_clean):
+        if "docs.google.com/forms" in body_clean or "forms.gle" in body_clean or len(subj_clean.split()) <= 2:
+            return True, "Массовый спам-бот с номерного ящика mail.ru"
+
+    # 5. Content Keywords
+    for kw_pattern in SPAM_KEYWORDS:
+        if re.search(kw_pattern, subj_clean) or re.search(kw_pattern, body_clean):
+            return True, f"Спам-паттерн в тексте: {kw_pattern}"
+
+    return False, ""
 
 
 def html_to_plain_text(html_content: str) -> str:
@@ -421,8 +664,10 @@ def html_to_plain_text(html_content: str) -> str:
 
 
 def backfill_existing_bounces(db: Session) -> int:
-    """Retroactively identifies and links existing unlinked bounces in outreach_inbox."""
-    leads_map = {r[0].lower().rstrip('.'): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
+    """Retroactively identifies and links existing unlinked bounces, auto_replies, and spam."""
+    settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first()
+    custom_rules = json.loads(settings.spam_rules_json) if settings and settings.spam_rules_json else []
+    email_map, domain_map = build_leads_lookup(db)
     unlinked = db.query(OutreachIncomingEmail).all()
     updated_count = 0
 
@@ -433,29 +678,61 @@ def backfill_existing_bounces(db: Session) -> int:
             msg.body_text = body[:10000]
             updated_count += 1
 
+        matched_lead_id = find_matched_lead_id(
+            msg.sender_email, msg.sender_name, msg.subject, body, email_map, domain_map
+        )
+        has_lead_match = bool(matched_lead_id)
+
+        # 1. Check Spam first!
+        is_sp, spam_reason = is_spam_message(
+            msg.subject, body, msg.sender_name, msg.sender_email, has_lead_match, custom_rules
+        )
+        if is_sp:
+            if not msg.is_spam or msg.category != "spam":
+                msg.is_spam = True
+                msg.category = "spam"
+                updated_count += 1
+            continue
+
+        # 2. Check Bounce
         is_bounce, matched_id, target_em, reason = parse_bounce_info(
-            msg.sender_email, msg.sender_name, msg.subject, body, leads_map
+            msg.sender_email, msg.sender_name, msg.subject, body, email_map, domain_map
         )
         if is_bounce:
-            msg.category = "bounce"
-            if matched_id and not msg.lead_id:
-                msg.lead_id = matched_id
-                lead = db.query(OutreachLead).filter(OutreachLead.id == matched_id).first()
-                if lead:
-                    lead.status = "bounced"
-                    lead.notes = f"Ошибка доставки: {reason}"
-                updated_count += 1
-            elif msg.lead_id and not msg.category:
+            msg.is_spam = False
+            if msg.category != "bounce":
                 msg.category = "bounce"
                 updated_count += 1
-        else:
-            if not msg.category:
-                subj_low = (msg.subject or "").lower()
-                body_low = body.lower()
-                if "автоматический ответ" in subj_low or "automatic reply" in subj_low or "обращение" in subj_low or "заявка принята" in body_low:
-                    msg.category = "auto_reply"
-                else:
-                    msg.category = "reply"
+            if matched_id and msg.lead_id != matched_id:
+                msg.lead_id = matched_id
+                updated_count += 1
+            if msg.lead_id:
+                lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+                if lead and lead.status != "bounced":
+                    lead.status = "bounced"
+                    lead.notes = f"Ошибка доставки: {reason}"
+                    updated_count += 1
+            continue
+
+        # 3. Check Auto-Reply vs Live Reply
+        is_auto = is_auto_reply_message(msg.subject, body, msg.sender_name, msg.sender_email)
+        new_cat = "auto_reply" if is_auto else "reply"
+        msg.is_spam = False
+        if msg.category != new_cat:
+            msg.category = new_cat
+            updated_count += 1
+
+        if matched_lead_id and msg.lead_id != matched_lead_id:
+            msg.lead_id = matched_lead_id
+            updated_count += 1
+
+        if msg.lead_id:
+            lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+            if lead:
+                lead.reply_received = True
+                if new_cat == "reply" or lead.status not in ["replied", "bounced", "spam"]:
+                    lead.status = "replied"
+                updated_count += 1
 
     if updated_count > 0:
         db.commit()
@@ -499,7 +776,8 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
         recent_ids = msg_ids[-limit:] if len(msg_ids) > limit else msg_ids
 
         existing_msg_ids = {r[0] for r in db.query(OutreachIncomingEmail.message_id).filter(OutreachIncomingEmail.message_id != "").all()}
-        leads_map = {r[0].lower().rstrip('.'): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
+        email_map, domain_map = build_leads_lookup(db)
+        custom_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
 
         new_count = 0
         for m_id in reversed(recent_ids):
@@ -558,18 +836,31 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             if not body_text.strip() and body_html:
                 body_text = html_to_plain_text(body_html)
 
-            is_bounce, matched_lead_id, target_em, bounce_reason = parse_bounce_info(
-                sender_email, sender_name, subject, body_text, leads_map
+            # 1. Lead Match & Spam Check
+            matched_lead_id = find_matched_lead_id(
+                sender_email, sender_name, subject, body_text, email_map, domain_map
+            )
+            has_lead_match = bool(matched_lead_id)
+            is_spam, spam_reason = is_spam_message(
+                subject, body_text, sender_name, sender_email, has_lead_match, custom_rules
             )
 
-            lead_id = leads_map.get(sender_email.rstrip('.')) or matched_lead_id
-            
-            category = "bounce" if is_bounce else "reply"
-            if not is_bounce:
-                subj_low = subject.lower()
-                body_low = body_text.lower()
-                if "автоматический ответ" in subj_low or "automatic reply" in subj_low or "обращение" in subj_low or "заявка принята" in body_low:
-                    category = "auto_reply"
+            is_bounce, matched_bounce_id, target_em, bounce_reason = parse_bounce_info(
+                sender_email, sender_name, subject, body_text, email_map, domain_map
+            )
+
+            if is_spam:
+                lead_id = None
+                category = "spam"
+                is_spam_val = True
+            elif is_bounce:
+                lead_id = matched_bounce_id
+                category = "bounce"
+                is_spam_val = False
+            else:
+                lead_id = matched_lead_id
+                category = "auto_reply" if is_auto_reply_message(subject, body_text, sender_name, sender_email) else "reply"
+                is_spam_val = False
 
             inbound = OutreachIncomingEmail(
                 message_id=message_id_header,
@@ -580,12 +871,13 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                 body_text=body_text[:10000],
                 body_html=body_html[:50000],
                 category=category,
+                is_spam=is_spam_val,
                 date_received=dt_utc,
                 lead_id=lead_id,
             )
             db.add(inbound)
 
-            if lead_id:
+            if lead_id and not is_spam_val:
                 lead_obj = db.query(OutreachLead).filter(OutreachLead.id == lead_id).first()
                 if lead_obj:
                     if is_bounce:
@@ -593,7 +885,8 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                         lead_obj.notes = f"Ошибка доставки: {bounce_reason}"
                     else:
                         lead_obj.reply_received = True
-                        lead_obj.status = "replied"
+                        if category == "reply" or lead_obj.status not in ["replied", "bounced", "spam"]:
+                            lead_obj.status = "replied"
 
             if message_id_header:
                 existing_msg_ids.add(message_id_header)

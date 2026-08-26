@@ -174,3 +174,48 @@ def test_outreach_stats_counts_sent_and_replied():
     finally:
         db.close()
 
+
+def test_is_spam_message_detection():
+    from app.outreach_mail import is_spam_message
+
+    # 1. Spammer domains
+    is_sp, reason = is_spam_message("Привет", "текст", "Иван", "eyxowql@rumixos.shop")
+    assert is_sp is True
+    assert "rumixos.shop" in reason
+
+    is_sp, reason = is_spam_message("Рассылка", "текст", "Служба", "test@thespacebanana.com")
+    assert is_sp is True
+
+    # 2. Makita & tool keywords
+    is_sp, reason = is_spam_message("Аккумуляторный секатор Makita", "распродажа со склада", "Инструмент", "sales@some-store.ru")
+    assert is_sp is True
+
+    # 3. Water heaters
+    is_sp, reason = is_spam_message("Горячая вода за 3 секунды", "бойлеры косвенного нагрева", "Менеджер", "boiler@random.ru")
+    assert is_sp is True
+
+    # 4. Tarot / Love-coach / Scam
+    is_sp, reason = is_spam_message("3 секрета ярких любовных отношений", "вебинар для женщин", "Ева | Love-коуч", "eva@love.ru")
+    assert is_sp is True
+
+    # 5. Mass email pitch
+    is_sp, reason = is_spam_message("Разошлем ваше коммерческое предложение", "база директоров РФ", "Рассылки89299788445", "promo@mailer.ru")
+    assert is_sp is True
+
+    # 6. Real supplier replies must NOT be flagged as spam
+    is_sp, reason = is_spam_message(
+        "Re: Запрос КП: Задвижка чугунная фланцевая",
+        "Добрый день! Во вложении счет и коммерческое предложение на задвижки.",
+        "ООО Трубопроводная Арматура",
+        "sales@trubarm.ru",
+        has_lead_match=True,
+    )
+    assert is_sp is False
+    assert reason == ""
+
+    # 7. Custom rule matching
+    custom_rules = [{"type": "domain", "value": "customspammer.xyz"}]
+    is_sp, reason = is_spam_message("Тест", "Обычный текст", "Менеджер", "info@customspammer.xyz", custom_rules=custom_rules)
+    assert is_sp is True
+    assert "customspammer.xyz" in reason
+

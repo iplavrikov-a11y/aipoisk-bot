@@ -53,13 +53,15 @@ import {
   Columns,
   Rows,
   PanelRightClose,
-  PanelRightOpen,
   FileCheck,
   X,
   Sliders,
+  MailCheck,
+  LayoutTemplate,
 } from 'lucide-react'
 
-type TaskSubTab = 'leads' | 'campaign' | 'compose' | 'inbox' | 'settings'
+export type MainTab = 'tasks' | 'inbox' | 'compose' | 'settings'
+export type TaskSubTab = 'leads' | 'campaign'
 
 interface SearchTask {
   id: string
@@ -150,6 +152,15 @@ interface TaskStats {
   replied_leads: number
   bounced_leads?: number
   mx_valid_leads: number
+}
+
+interface InboxCounts {
+  all: number
+  replies: number
+  auto_replies: number
+  bounces: number
+  unread: number
+  spam: number
 }
 
 interface LeadHistory {
@@ -259,6 +270,22 @@ export function getStatusLabel(status: string): string {
 }
 
 export function OutreachView() {
+  // Global Module Navigation state
+  const [mainTab, setMainTab] = useState<MainTab>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_outreach_maintab') as MainTab
+      if (['tasks', 'inbox', 'compose', 'settings'].includes(saved)) return saved
+    } catch {}
+    return 'tasks'
+  })
+
+  const changeMainTab = (tab: MainTab) => {
+    setMainTab(tab)
+    try {
+      localStorage.setItem('tenderlex_outreach_maintab', tab)
+    } catch {}
+  }
+
   // Global & Task selection state
   const [tasks, setTasks] = useState<SearchTask[]>([])
   const [selectedTask, setSelectedTask] = useState<SearchTask | null>(null)
@@ -266,7 +293,7 @@ export function OutreachView() {
   const [taskSubTab, setTaskSubTab] = useState<TaskSubTab>(() => {
     try {
       const saved = localStorage.getItem('tenderlex_outreach_subtab') as TaskSubTab
-      if (['leads', 'campaign', 'compose', 'inbox', 'settings'].includes(saved)) return saved
+      if (['leads', 'campaign'].includes(saved)) return saved
     } catch {}
     return 'leads'
   })
@@ -328,6 +355,7 @@ export function OutreachView() {
   // CRM Picker Modal for Compose tab
   const [showCrmPickerModal, setShowCrmPickerModal] = useState(false)
   const [crmPickerSearch, setCrmPickerSearch] = useState('')
+  const [crmPickerTaskFilter, setCrmPickerTaskFilter] = useState('')
   const [crmPickerLeads, setCrmPickerLeads] = useState<Lead[]>([])
   const [crmPickerSelected, setCrmPickerSelected] = useState<string[]>([])
   const [crmPickerLoading, setCrmPickerLoading] = useState(false)
@@ -343,7 +371,7 @@ export function OutreachView() {
   const [testEmail, setTestEmail] = useState('')
   const [sendingTest, setSendingTest] = useState(false)
 
-  // Compose state (inside selected task)
+  // Compose state (standalone tab)
   const [composeRecipients, setComposeRecipients] = useState<string[]>([])
   const [composeRecipientInput, setComposeRecipientInput] = useState('')
   const [composeSubject, setComposeSubject] = useState('Предложение о сотрудничестве')
@@ -353,9 +381,18 @@ export function OutreachView() {
   const [aiGenerating, setAiGenerating] = useState(false)
   const [sendingDirect, setSendingDirect] = useState(false)
 
-  // Inbox state (inside selected task)
+  // Inbox state (standalone tab)
+  const [inboxTaskFilter, setInboxTaskFilter] = useState<string>('')
   const [inboxMessages, setInboxMessages] = useState<IncomingMessage[]>([])
-  const [inboxFilter, setInboxFilter] = useState<'all' | 'replies' | 'bounces' | 'unread' | 'spam'>('replies')
+  const [inboxFilter, setInboxFilter] = useState<'all' | 'replies' | 'auto_replies' | 'bounces' | 'unread' | 'spam'>('all')
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts>({
+    all: 0,
+    replies: 0,
+    auto_replies: 0,
+    bounces: 0,
+    unread: 0,
+    spam: 0,
+  })
   const [inboxSearch, setInboxSearch] = useState('')
   const [inboxLimit, setInboxLimit] = useState(50)
   const [inboxTotal, setInboxTotal] = useState(0)
@@ -372,6 +409,8 @@ export function OutreachView() {
   inboxSearchRef.current = inboxSearch
   const inboxLimitRef = useRef(inboxLimit)
   inboxLimitRef.current = inboxLimit
+  const inboxTaskFilterRef = useRef(inboxTaskFilter)
+  inboxTaskFilterRef.current = inboxTaskFilter
 
   // Settings state
   const [settings, setSettings] = useState<any>({
@@ -394,6 +433,12 @@ export function OutreachView() {
   })
   const [smtpPassword, setSmtpPassword] = useState('')
   const [imapPassword, setImapPassword] = useState('')
+
+  // Spam Rules State
+  const [spamRules, setSpamRules] = useState<Array<{ type: string; value: string }>>([])
+  const [newSpamRuleType, setNewSpamRuleType] = useState<string>('domain')
+  const [newSpamRuleVal, setNewSpamRuleVal] = useState<string>('')
+  const [savingSpamRule, setSavingSpamRule] = useState<boolean>(false)
 
   // Notifications helper
   const showSuccess = (msg: string) => {
@@ -456,27 +501,45 @@ export function OutreachView() {
     }
   }, [])
 
-  // Fetch inbox for the selected task (with pagination limit)
+  // Fetch inbox (all or for a specific task, with pagination limit)
   const fetchInbox = useCallback(
-    async (taskId: string, filter?: 'all' | 'replies' | 'bounces' | 'unread' | 'spam', search?: string, limit?: number, isLoadMore = false) => {
+    async (
+      taskId?: string | null,
+      filter?: 'all' | 'replies' | 'auto_replies' | 'bounces' | 'unread' | 'spam',
+      search?: string,
+      limit?: number,
+      isLoadMore = false
+    ) => {
       const activeFilter = filter ?? inboxFilterRef.current
       const activeSearch = search ?? inboxSearchRef.current
       const activeLimit = limit ?? inboxLimitRef.current
       try {
+        const categoryParam =
+          activeFilter === 'bounces'
+            ? 'bounces'
+            : activeFilter === 'replies'
+            ? 'replies'
+            : activeFilter === 'auto_replies'
+            ? 'auto_replies'
+            : ''
+
         const params = new URLSearchParams({
           limit: String(activeLimit || 50),
           unread_only: String(activeFilter === 'unread'),
           is_spam: String(activeFilter === 'spam'),
-          category: activeFilter === 'bounces' ? 'bounces' : activeFilter === 'replies' ? 'replies' : '',
+          category: categoryParam,
           search: activeSearch,
-          task_id: taskId,
+          task_id: taskId || '',
         })
-        const data = await outreachFetch<{ items: IncomingMessage[]; total?: number }>(
+        const data = await outreachFetch<{ items: IncomingMessage[]; total?: number; counts?: InboxCounts }>(
           `/api/outreach/inbox?${params.toString()}`
         )
         const items = data.items || []
         setInboxMessages(items)
         setInboxTotal(typeof data.total === 'number' ? data.total : items.length)
+        if (data.counts) {
+          setInboxCounts(data.counts)
+        }
         if (items.length && (!selectedMsg || (!isLoadMore && !items.some((m) => m.id === selectedMsg.id)))) {
           if (!isLoadMore) {
             setSelectedMsg(items[0])
@@ -491,12 +554,11 @@ export function OutreachView() {
 
   // Load more inbox messages (increment limit by 50)
   const handleLoadMoreInbox = async () => {
-    if (!selectedTask) return
     const nextLimit = inboxLimit + 50
     setInboxLimit(nextLimit)
     setLoadingMoreInbox(true)
     try {
-      await fetchInbox(selectedTask.id, inboxFilterRef.current, inboxSearchRef.current, nextLimit, true)
+      await fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, nextLimit, true)
     } finally {
       setLoadingMoreInbox(false)
     }
@@ -511,10 +573,10 @@ export function OutreachView() {
       setSyncingInbox(true)
       try {
         await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
-        const targetTaskId = taskId || selectedTask?.id
-        if (targetTaskId) {
-          fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
-          fetchTaskStats(targetTaskId)
+        const targetTaskId = taskId !== undefined ? taskId : (inboxTaskFilterRef.current || null)
+        fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+        if (selectedTask) {
+          fetchTaskStats(selectedTask.id)
         }
       } catch {
         // silent background failure
@@ -525,11 +587,14 @@ export function OutreachView() {
     [selectedTask, fetchInbox, fetchTaskStats]
   )
 
-  // Fetch settings
+  // Fetch settings & spam rules
   const fetchSettings = useCallback(async () => {
     try {
       const data = await outreachFetch<any>('/api/outreach/settings')
       setSettings(data)
+      if (data.spam_rules) {
+        setSpamRules(data.spam_rules)
+      }
     } catch {
       // ignore
     }
@@ -553,7 +618,6 @@ export function OutreachView() {
           fetchTaskStats(found.id)
           fetchLeads(found.id, 1, '', '')
           fetchCampaigns(found.id)
-          fetchInbox(found.id)
         }
       }
 
@@ -569,12 +633,13 @@ export function OutreachView() {
       console.error('fetchTasks error:', e)
       showError(`Ошибка загрузки задач: ${e.message}`)
     }
-  }, [activeTaskId, fetchTaskStats, fetchLeads, fetchCampaigns, fetchInbox])
+  }, [activeTaskId, fetchTaskStats, fetchLeads, fetchCampaigns])
 
   // Initial load
   useEffect(() => {
     fetchTasks()
     fetchSettings()
+    fetchInbox(null)
   }, [])
 
   // When a task is selected, load its workspace data
@@ -592,8 +657,7 @@ export function OutreachView() {
     fetchTaskStats(task.id)
     fetchLeads(task.id, 1, '', '')
     fetchCampaigns(task.id)
-    fetchInbox(task.id)
-  }, [fetchTaskStats, fetchLeads, fetchCampaigns, fetchInbox, taskSubTab])
+  }, [fetchTaskStats, fetchLeads, fetchCampaigns, taskSubTab])
 
   // Polling for active search task
   useEffect(() => {
@@ -619,7 +683,7 @@ export function OutreachView() {
 
   // Realtime polling for active campaigns and task stats
   useEffect(() => {
-    if (!selectedTask) return
+    if (!selectedTask || mainTab !== 'tasks') return
     const isAnyRunning = campaigns.some((c) => c.status === 'running' || c.status === 'pending')
     const intervalMs = isAnyRunning ? 2000 : (taskSubTab === 'campaign' ? 3500 : 7000)
 
@@ -637,23 +701,23 @@ export function OutreachView() {
     }, intervalMs)
 
     return () => clearInterval(interval)
-  }, [selectedTask, campaigns, taskSubTab])
+  }, [selectedTask, campaigns, taskSubTab, mainTab])
 
   // Trigger auto-sync on entering Inbox tab
   useEffect(() => {
-    if (selectedTask && taskSubTab === 'inbox') {
-      triggerAutoSync(selectedTask.id)
+    if (mainTab === 'inbox') {
+      triggerAutoSync(inboxTaskFilter || undefined)
     }
-  }, [selectedTask?.id, taskSubTab, triggerAutoSync])
+  }, [mainTab, inboxTaskFilter, triggerAutoSync])
 
-  // Periodic background auto-sync every 30 seconds when in inbox subtab
+  // Periodic background auto-sync every 30 seconds when in inbox tab
   useEffect(() => {
-    if (!selectedTask || taskSubTab !== 'inbox') return
+    if (mainTab !== 'inbox') return
     const interval = setInterval(() => {
-      triggerAutoSync(selectedTask.id)
+      triggerAutoSync(inboxTaskFilter || undefined)
     }, 30000)
     return () => clearInterval(interval)
-  }, [selectedTask?.id, taskSubTab, triggerAutoSync])
+  }, [mainTab, inboxTaskFilter, triggerAutoSync])
 
   // Template CRUD Handlers
   const saveTemplates = (newTpls: EmailTemplate[]) => {
@@ -928,7 +992,7 @@ export function OutreachView() {
     changeTaskSubTab('campaign')
   }
 
-  // Send selected leads to compose tab inside task
+  // Send selected leads to compose tab
   const handleSendSelectedToCompose = async () => {
     if (!selectedLeadIds.length && !selectAllAcrossPages) {
       showError('Выберите хотя бы один контакт')
@@ -941,7 +1005,7 @@ export function OutreachView() {
         )
         const allEmails = (data.items || []).map((l) => l.email).filter(Boolean)
         setComposeRecipients(allEmails)
-        changeTaskSubTab('compose')
+        changeMainTab('compose')
         showSuccess(`Добавлено ${allEmails.length} получателей во вкладку "Написать письмо"`)
       } catch (e: any) {
         showError(e.message)
@@ -949,20 +1013,22 @@ export function OutreachView() {
     } else {
       const selectedEmails = leads.filter((l) => selectedLeadIds.includes(l.id)).map((l) => l.email)
       setComposeRecipients(selectedEmails)
-      changeTaskSubTab('compose')
+      changeMainTab('compose')
       showSuccess(`Добавлено ${selectedEmails.length} получателей во вкладку "Написать письмо"`)
     }
   }
 
   // Open CRM Picker Modal directly in Compose Tab
-  const handleOpenCrmPicker = async () => {
-    if (!selectedTask) return
+  const handleOpenCrmPicker = async (taskIdFilter?: string | React.MouseEvent) => {
     setShowCrmPickerModal(true)
     setCrmPickerLoading(true)
+    const targetTaskId = typeof taskIdFilter === 'string' ? taskIdFilter : (selectedTask?.id || '')
+    setCrmPickerTaskFilter(targetTaskId)
     try {
-      const data = await outreachFetch<{ items: Lead[] }>(
-        `/api/outreach/leads?task_id=${selectedTask.id}&page=1&page_size=5000`
-      )
+      const url = targetTaskId
+        ? `/api/outreach/leads?task_id=${targetTaskId}&page=1&page_size=5000`
+        : `/api/outreach/leads?page=1&page_size=5000`
+      const data = await outreachFetch<{ items: Lead[] }>(url)
       setCrmPickerLeads(data.items || [])
       setCrmPickerSelected([])
     } catch (e: any) {
@@ -1184,8 +1250,8 @@ export function OutreachView() {
     try {
       const res = await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
       showSuccess(`Синхронизация завершена (новых писем: ${res.new_messages || res.synced || 0})`)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       if (selectedTask) {
-        fetchInbox(selectedTask.id, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
         fetchTaskStats(selectedTask.id)
       }
     } catch (e: any) {
@@ -1213,8 +1279,8 @@ export function OutreachView() {
       })
       showSuccess(`Ответ отправлен на ${selectedMsg.sender_email}!`)
       setReplyText('')
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       if (selectedTask) {
-        fetchInbox(selectedTask.id)
         fetchTaskStats(selectedTask.id)
       }
     } catch (e: any) {
@@ -1258,11 +1324,66 @@ export function OutreachView() {
   const handleToggleSpam = async (msg: IncomingMessage) => {
     try {
       const res = await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/spam`, { method: 'POST' })
-      showSuccess(res.is_spam ? 'Письмо перемещено в Спам' : 'Письмо возвращено из Спама')
+      if (res.is_spam) {
+        const extra = res.auto_blocked_rule
+          ? ` Домен @${res.auto_blocked_rule.value} добавлен в чёрный список (${res.affected_count} писем перенесено в спам).`
+          : ''
+        showSuccess(`Письмо перемещено в Спам.${extra}`)
+      } else {
+        showSuccess('Письмо возвращено из Спама')
+      }
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+      fetchSettings()
       if (selectedTask) {
-        fetchInbox(selectedTask.id)
         fetchTaskStats(selectedTask.id)
       }
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
+  // Purge all spam messages
+  const handlePurgeSpam = async () => {
+    if (!confirm(`Вы действительно хотите навсегда удалить все (${inboxCounts.spam}) спам-писем?`)) return
+    try {
+      const res = await outreachFetch<any>('/api/outreach/inbox/purge-spam', { method: 'POST' })
+      showSuccess(`Удалено ${res.deleted_count || 0} спам-писем`)
+      if (selectedMsg?.is_spam) setSelectedMsg(null)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
+  // Add Custom Spam Rule
+  const handleAddSpamRule = async () => {
+    const val = newSpamRuleVal.trim().toLowerCase()
+    if (!val) return
+    setSavingSpamRule(true)
+    try {
+      const data = await outreachFetch<{ rules: Array<{ type: string; value: string }> }>('/api/outreach/spam-rules', {
+        method: 'POST',
+        body: JSON.stringify({ type: newSpamRuleType, value: val }),
+      })
+      setSpamRules(data.rules || [])
+      setNewSpamRuleVal('')
+      showSuccess(`Правило блокировки «${val}» добавлено и применено!`)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+    } catch (e: any) {
+      showError(e.message)
+    } finally {
+      setSavingSpamRule(false)
+    }
+  }
+
+  // Delete Custom Spam Rule
+  const handleDeleteSpamRule = async (idx: number) => {
+    try {
+      const data = await outreachFetch<{ rules: Array<{ type: string; value: string }> }>(`/api/outreach/spam-rules/${idx}`, {
+        method: 'DELETE',
+      })
+      setSpamRules(data.rules || [])
+      showSuccess('Правило блокировки удалено')
     } catch (e: any) {
       showError(e.message)
     }
@@ -1275,8 +1396,8 @@ export function OutreachView() {
       await outreachFetch(`/api/outreach/inbox/${id}`, { method: 'DELETE' })
       showSuccess('Письмо удалено')
       if (selectedMsg?.id === id) setSelectedMsg(null)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       if (selectedTask) {
-        fetchInbox(selectedTask.id)
         fetchTaskStats(selectedTask.id)
       }
     } catch (e: any) {
@@ -1339,10 +1460,61 @@ export function OutreachView() {
         </div>
       )}
 
+      {/* Global Module Navigation Tabs */}
+      <div className="outreach-tabs" style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          onClick={() => changeMainTab('tasks')}
+          className={`outreach-tab-btn ${mainTab === 'tasks' ? 'active' : ''}`}
+        >
+          <FolderOpen size={16} />
+          <span>Задачи поиска ({tasks.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            changeMainTab('inbox')
+            fetchInbox(inboxTaskFilter || null, inboxFilter, inboxSearch, inboxLimit)
+          }}
+          className={`outreach-tab-btn ${mainTab === 'inbox' ? 'active' : ''}`}
+        >
+          <Inbox size={16} />
+          <span>Входящие ответы</span>
+          {inboxCounts.unread > 0 && (
+            <span className="outreach-tab-badge">{inboxCounts.unread}</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => changeMainTab('compose')}
+          className={`outreach-tab-btn ${mainTab === 'compose' ? 'active' : ''}`}
+        >
+          <PenTool size={16} />
+          <span>Написать письмо</span>
+          {composeRecipients.length > 0 && (
+            <span className="outreach-tab-badge">{composeRecipients.length}</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => changeMainTab('settings')}
+          className={`outreach-tab-btn ${mainTab === 'settings' ? 'active' : ''}`}
+        >
+          <SettingsIcon size={16} />
+          <span>Настройки почты</span>
+        </button>
+      </div>
+
       {/* ========================================================================= */}
-      {/* LEVEL 1: NO TASK SELECTED (MAIN DASHBOARD: LIST OF SEARCH PROJECTS)       */}
+      {/* TAB 1: SEARCH TASKS & CAMPAIGNS (PROJECTS REGISTRY / TASK WORKSPACE)      */}
       {/* ========================================================================= */}
-      {!selectedTask && (
+      {mainTab === 'tasks' && (
+        <>
+          {/* LEVEL 1: NO TASK SELECTED (MAIN DASHBOARD: LIST OF SEARCH PROJECTS)       */}
+          {!selectedTask && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* Active Search Banner (if running) */}
           {searchStatus && (searchStatus.status === 'running' || activeTaskId) && (
@@ -1545,66 +1717,97 @@ export function OutreachView() {
                 </button>
               </div>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14, marginTop: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
                 {tasks.map((task) => (
                   <div
                     key={task.id}
+                    className="outreach-task-row"
                     style={{
                       background: '#fff',
-                      border: '1px solid #cbd5e1',
+                      border: '1px solid #e2e8f0',
                       borderRadius: 10,
-                      padding: 16,
+                      padding: '14px 18px',
                       display: 'flex',
-                      flexDirection: 'column',
+                      alignItems: 'center',
                       justifyContent: 'space-between',
-                      gap: 12,
-                      boxShadow: '0 2px 4px rgba(15, 23, 42, 0.04)',
+                      gap: 16,
+                      boxShadow: '0 1px 3px rgba(15, 23, 42, 0.04)',
                       transition: 'all 0.15s ease',
+                      flexWrap: 'wrap',
                     }}
                   >
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a', lineHeight: 1.3 }}>
+                    {/* Left: Title, Badges, Query Prompt */}
+                    <div style={{ flex: 1, minWidth: 280 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+                        <h3
+                          onClick={() => handleSelectTask(task)}
+                          style={{
+                            margin: 0,
+                            fontSize: 14.5,
+                            fontWeight: 700,
+                            color: '#0f172a',
+                            cursor: 'pointer',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.color = '#0d9488')}
+                          onMouseLeave={(e) => (e.currentTarget.style.color = '#0f172a')}
+                        >
                           {task.name}
                         </h3>
+
                         {task.status === 'completed' && (
-                          <span className="outreach-badge completed" style={{ flexShrink: 0 }}>
+                          <span className="outreach-badge completed" style={{ fontSize: 11, padding: '2px 8px' }}>
                             <CheckCircle2 size={12} /> Готово
                           </span>
                         )}
                         {task.status === 'running' && (
-                          <span className="outreach-badge running" style={{ flexShrink: 0 }}>
+                          <span className="outreach-badge running" style={{ fontSize: 11, padding: '2px 8px' }}>
                             <RefreshCw size={12} className="animate-spin" /> В процессе
                           </span>
                         )}
                         {task.status === 'cancelled' && (
-                          <span className="outreach-badge cancelled" style={{ flexShrink: 0 }}>Остановлена</span>
+                          <span className="outreach-badge cancelled" style={{ fontSize: 11, padding: '2px 8px' }}>
+                            Остановлена
+                          </span>
                         )}
+
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                          {formatDate(task.created_at)}
+                        </span>
                       </div>
 
-                      <p style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                        {task.prompt}
-                      </p>
+                      {task.prompt && (
+                        <p style={{ margin: '0 0 8px 0', fontSize: 12, color: '#64748b', lineHeight: 1.4 }}>
+                          {task.prompt}
+                        </p>
+                      )}
 
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                        <div style={{ background: '#f1f5f9', padding: '4px 8px', borderRadius: 6, fontSize: 11, color: '#334155' }}>
-                          Лидов: <strong style={{ color: '#0f172a' }}>{task.collected_count}</strong> / {task.target_count}
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                        <div style={{ background: '#f1f5f9', padding: '3px 8px', borderRadius: 6, fontSize: 11, color: '#334155', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Users size={12} style={{ color: '#0f766e' }} />
+                          <span>Лидов собрано:</span>
+                          <strong style={{ color: '#0f172a' }}>{task.collected_count}</strong>
+                          <span style={{ color: '#64748b' }}>/ {task.target_count}</span>
                         </div>
-                        <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '4px 8px', borderRadius: 6, fontSize: 11, color: '#047857', fontWeight: 700 }}>
+
+                        <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '3px 8px', borderRadius: 6, fontSize: 11, color: '#047857', fontWeight: 600 }}>
                           Себестоимость: {task.cost_label || `${(task.total_cost_rub || 0).toFixed(2)} ₽`}
                         </div>
-                        <div style={{ background: '#f8fafc', padding: '4px 8px', borderRadius: 6, fontSize: 11, color: '#94a3b8' }}>
-                          {formatDate(task.created_at)}
-                        </div>
+
+                        {task.yandex_requests ? (
+                          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '3px 8px', borderRadius: 6, fontSize: 11, color: '#64748b' }}>
+                            Запросов Яндекса: <strong>{task.yandex_requests}</strong>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTop: '1px solid #f1f5f9' }}>
+                    {/* Right: Actions */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                       <button
                         type="button"
                         onClick={() => handleSelectTask(task)}
                         className="outreach-btn outreach-btn-primary"
-                        style={{ padding: '6px 14px', fontSize: 12, flex: 1, marginRight: 8 }}
+                        style={{ padding: '7px 16px', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 6 }}
                       >
                         <FolderOpen size={14} />
                         <span>Открыть задачу ({task.collected_count}) →</span>
@@ -1614,7 +1817,7 @@ export function OutreachView() {
                         type="button"
                         onClick={() => setDeleteTaskId(task.id)}
                         className="outreach-btn outreach-btn-danger"
-                        style={{ padding: '6px 8px' }}
+                        style={{ padding: '7px 10px' }}
                         title="Удалить задачу"
                       >
                         <Trash2 size={14} />
@@ -1747,41 +1950,6 @@ export function OutreachView() {
             >
               <Send size={16} />
               <span>Email-рассылка</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => changeTaskSubTab('compose')}
-              className={`outreach-tab-btn ${taskSubTab === 'compose' ? 'active' : ''}`}
-            >
-              <PenTool size={16} />
-              <span>Написать письмо</span>
-              {composeRecipients.length > 0 && (
-                <span className="outreach-tab-badge">{composeRecipients.length}</span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => changeTaskSubTab('inbox')}
-              className={`outreach-tab-btn ${taskSubTab === 'inbox' ? 'active' : ''}`}
-            >
-              <Inbox size={16} />
-              <span>Входящие ответы</span>
-              {inboxMessages.length > 0 && (
-                <span className="outreach-tab-badge" style={{ background: '#3b82f6' }}>
-                  {inboxMessages.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => changeTaskSubTab('settings')}
-              className={`outreach-tab-btn ${taskSubTab === 'settings' ? 'active' : ''}`}
-            >
-              <SettingsIcon size={16} />
-              <span>Настройки почты</span>
             </button>
           </div>
 
@@ -2001,7 +2169,7 @@ export function OutreachView() {
                                     type="button"
                                     onClick={() => {
                                       setComposeRecipients([lead.email])
-                                      changeTaskSubTab('compose')
+                                      changeMainTab('compose')
                                     }}
                                     className="outreach-btn outreach-btn-secondary"
                                     style={{ padding: '3px 8px', fontSize: 11 }}
@@ -2458,836 +2626,985 @@ export function OutreachView() {
               </div>
             </div>
           )}
-          {/* SUBTAB 3: COMPOSE IN TASK */}
-          {taskSubTab === 'compose' && (
-            <div className="outreach-panel" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid #e2e8f0' }}>
-                <div className="outreach-composer-row">
-                  <span className="outreach-composer-label">От кого</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <strong style={{ fontSize: 13, color: '#0f172a' }}>
-                      {settings.from_name || 'TenderLex'} &lt;{settings.from_email || 'info@tenderlex.ru'}&gt;
-                    </strong>
-                    <span className="outreach-badge completed">SMTP готов</span>
-                  </div>
-                </div>
+        </div>
+      )}
+    </>
+  )}
 
-                <div className="outreach-composer-row">
-                  <span className="outreach-composer-label">Кому</span>
-                  <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, border: '1px solid #cbd5e1', borderRadius: 8, padding: '4px 8px', minHeight: 38, background: '#fff' }}>
-                    {composeRecipients.map((rec) => (
-                      <span
-                        key={rec}
-                        style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6, padding: '2px 6px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                      >
-                        {rec}
-                        <button
-                          type="button"
-                          onClick={() => setComposeRecipients((prev) => prev.filter((r) => r !== rec))}
-                          style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', padding: 0, fontSize: 14 }}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                    <input
-                      type="text"
-                      placeholder={composeRecipients.length === 0 ? 'Введите email получателей из этой задачи (через Enter)...' : ''}
-                      value={composeRecipientInput}
-                      onChange={(e) => setComposeRecipientInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ',') {
-                          e.preventDefault()
-                          if (composeRecipientInput.trim() && composeRecipientInput.includes('@')) {
-                            setComposeRecipients((prev) => [...new Set([...prev, composeRecipientInput.trim()])])
-                            setComposeRecipientInput('')
-                          }
-                        }
-                      }}
-                      style={{ border: 'none', outline: 'none', flex: 1, minWidth: 200, minHeight: 28, padding: 0 }}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleOpenCrmPicker}
-                    className="outreach-btn outreach-btn-secondary"
-                  >
-                    <Users size={14} />
-                    <span>Выбрать из CRM</span>
-                  </button>
-                </div>
+  {/* ========================================================================= */}
+  {/* TAB 2: GLOBAL INBOX (info@tenderlex.ru)                                    */}
+  {/* ========================================================================= */}
+  {mainTab === 'inbox' && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="outreach-panel" style={{ padding: '10px 14px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, flexWrap: 'wrap' }}>
+            <select
+              value={inboxTaskFilter}
+              onChange={(e) => {
+                const val = e.target.value
+                setInboxTaskFilter(val)
+                setInboxLimit(50)
+                fetchInbox(val || null, inboxFilter, inboxSearch, 50)
+              }}
+              style={{ height: 32, fontSize: 12, fontWeight: 600, padding: '0 8px', maxWidth: 220 }}
+            >
+              <option value="">🌐 Все задачи и внешние ответы</option>
+              {tasks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  📁 {t.name}
+                </option>
+              ))}
+            </select>
 
-                <div className="outreach-composer-row">
-                  <span className="outreach-composer-label">Тема</span>
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input
-                      type="text"
-                      placeholder="Тема письма..."
-                      value={composeSubject}
-                      onChange={(e) => setComposeSubject(e.target.value)}
-                      style={{ fontWeight: 600 }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleAiAction('subject', 'compose')}
-                      disabled={aiGenerating}
-                      className="outreach-btn outreach-btn-indigo"
-                      title="Сгенерировать привлекательную тему с помощью AI"
-                    >
-                      <Sparkles size={14} />
-                      <span>AI Тема</span>
-                    </button>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <select
-                      value=""
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (val === '__manage__') {
-                          handleOpenTemplateModal('compose')
-                          return
-                        }
-                        if (val === '__save_current__') {
-                          handleSaveCurrentAsTemplate('compose')
-                          return
-                        }
-                        const tpl = templates.find((t) => t.id === val)
-                        if (tpl) handleApplyTemplate(tpl, 'compose')
-                      }}
-                      style={{ width: 'auto', minWidth: 160, height: 26, fontSize: 11, padding: '0 6px' }}
-                    >
-                      <option value="" disabled>📋 Выбрать шаблон ({templates.length})...</option>
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                      <option disabled>──────────</option>
-                      <option value="__save_current__">💾 Сохранить это письмо как шаблон</option>
-                      <option value="__manage__">⚙️ Управление шаблонами...</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Formatting & AI Toolbar */}
-              <div className="outreach-composer-toolbar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={() => setComposeBody((prev) => `**${prev}**`)}
-                    className="outreach-btn outreach-btn-ghost"
-                    style={{ padding: '4px 6px' }}
-                    title="Жирный"
-                  >
-                    <Bold size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setComposeBody((prev) => `*${prev}*`)}
-                    className="outreach-btn outreach-btn-ghost"
-                    style={{ padding: '4px 6px' }}
-                    title="Курсив"
-                  >
-                    <Italic size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setComposeBody((prev) => `_${prev}_`)}
-                    className="outreach-btn outreach-btn-ghost"
-                    style={{ padding: '4px 6px' }}
-                    title="Подчеркнутый"
-                  >
-                    <Underline size={15} />
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleAiAction('cold_email', 'compose')}
-                    disabled={aiGenerating}
-                    className="outreach-btn outreach-btn-indigo"
-                  >
-                    <Sparkles size={14} />
-                    <span>{aiGenerating ? 'AI пишет...' : '✨ Написать с AI'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleAiAction('improve', 'compose')}
-                    disabled={aiGenerating || !composeBody.trim()}
-                    className="outreach-btn outreach-btn-secondary"
-                  >
-                    <Wand2 size={14} style={{ color: '#6366f1' }} />
-                    <span>Улучшить</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleAiAction('shorten', 'compose')}
-                    disabled={aiGenerating || !composeBody.trim()}
-                    className="outreach-btn outreach-btn-secondary"
-                  >
-                    <Scissors size={14} style={{ color: '#f59e0b' }} />
-                    <span>Сократить</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleAiAction('grammar', 'compose')}
-                    disabled={aiGenerating || !composeBody.trim()}
-                    className="outreach-btn outreach-btn-secondary"
-                  >
-                    <SpellCheck size={14} style={{ color: '#10b981' }} />
-                    <span>Орфография</span>
-                  </button>
-
-                  <select
-                    value={composeTone}
-                    onChange={(e) => setComposeTone(e.target.value)}
-                    style={{ width: 'auto', minWidth: 120 }}
-                  >
-                    <option value="professional">Деловой тон</option>
-                    <option value="friendly">Дружелюбный</option>
-                    <option value="selling">Продающий</option>
-                    <option value="concise">Краткий</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Text Area */}
-              <div style={{ padding: 16 }}>
-                <textarea
-                  rows={16}
-                  placeholder="Напишите текст письма здесь или используйте кнопку «✨ Написать с AI»..."
-                  value={composeBody}
-                  onChange={(e) => setComposeBody(e.target.value)}
-                  style={{ border: 'none', outline: 'none', resize: 'vertical', width: '100%', minHeight: 380, fontSize: 13.5, lineHeight: 1.6, padding: 0 }}
-                />
-              </div>
-
-              {/* Footer */}
-              <div style={{ padding: '12px 18px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ fontSize: 12, color: '#64748b' }}>
-                  Получателей: <strong style={{ color: '#0f172a' }}>{composeRecipients.length}</strong>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCampSubject(composeSubject)
-                      setCampBody(composeBody)
-                      changeTaskSubTab('campaign')
-                    }}
-                    className="outreach-btn outreach-btn-secondary"
-                  >
-                    Перенести в рассылку по задаче
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={sendingDirect || composeRecipients.length === 0}
-                    onClick={handleSendDirect}
-                    className="outreach-btn outreach-btn-primary"
-                    style={{ padding: '8px 18px', fontSize: 13 }}
-                  >
-                    <Send size={15} />
-                    <span>{sendingDirect ? 'Отправка...' : 'Отправить письмо сейчас'}</span>
-                  </button>
-                </div>
-              </div>
+            <div style={{ position: 'relative', minWidth: 220 }}>
+              <input
+                type="text"
+                placeholder="Поиск по входящим ответам..."
+                value={inboxSearch}
+                onChange={(e) => setInboxSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setInboxLimit(50)
+                    fetchInbox(inboxTaskFilter || null, inboxFilter, inboxSearch, 50)
+                  }
+                }}
+                style={{ paddingLeft: 28, height: 32, fontSize: 12 }}
+              />
+              <Search size={13} style={{ position: 'absolute', left: 8, top: 10, color: '#94a3b8' }} />
             </div>
-          )}
 
-          {/* SUBTAB 4: INBOX IN TASK */}
-          {taskSubTab === 'inbox' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div className="outreach-panel" style={{ padding: '10px 14px' }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, flexWrap: 'wrap' }}>
-                    <div style={{ position: 'relative', minWidth: 240 }}>
-                      <input
-                        type="text"
-                        placeholder="Поиск по ответам в задаче..."
-                        value={inboxSearch}
-                        onChange={(e) => setInboxSearch(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            setInboxLimit(50)
-                            fetchInbox(selectedTask.id, inboxFilter, inboxSearch, 50)
-                          }
-                        }}
-                        style={{ paddingLeft: 28, height: 32, fontSize: 12 }}
-                      />
-                      <Search size={13} style={{ position: 'absolute', left: 8, top: 10, color: '#94a3b8' }} />
-                    </div>
+            <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('all')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'all', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'all' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
+              >
+                Все ({inboxCounts.all})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('replies')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'replies', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'replies' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11, background: inboxFilter === 'replies' ? '#059669' : void 0, color: inboxFilter === 'replies' ? '#fff' : '#047857', borderColor: '#a7f3d0' }}
+              >
+                🟢 Живые ответы ({inboxCounts.replies})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('auto_replies')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'auto_replies', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'auto_replies' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11, background: inboxFilter === 'auto_replies' ? '#d97706' : void 0, color: inboxFilter === 'auto_replies' ? '#fff' : '#b45309', borderColor: '#fde68a' }}
+              >
+                🟡 Автоответы ({inboxCounts.auto_replies})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('bounces')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'bounces', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'bounces' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11, background: inboxFilter === 'bounces' ? '#dc2626' : void 0, color: inboxFilter === 'bounces' ? '#fff' : '#b91c1c', borderColor: '#fca5a5' }}
+              >
+                🔴 Ошибки доставки ({inboxCounts.bounces})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('unread')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'unread', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'unread' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
+              >
+                Новые ({inboxCounts.unread})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInboxFilter('spam')
+                  setInboxLimit(50)
+                  fetchInbox(inboxTaskFilter || null, 'spam', inboxSearch, 50)
+                }}
+                className={`outreach-btn ${inboxFilter === 'spam' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
+              >
+                Спам ({inboxCounts.spam})
+              </button>
+            </div>
 
-                    <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2, flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInboxFilter('all')
-                          setInboxLimit(50)
-                          fetchInbox(selectedTask.id, 'all', inboxSearch, 50)
-                        }}
-                        className={`outreach-btn ${inboxFilter === 'all' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
-                      >
-                        Все
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInboxFilter('replies')
-                          setInboxLimit(50)
-                          fetchInbox(selectedTask.id, 'replies', inboxSearch, 50)
-                        }}
-                        className={`outreach-btn ${inboxFilter === 'replies' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
-                      >
-                        Живые ответы
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInboxFilter('bounces')
-                          setInboxLimit(50)
-                          fetchInbox(selectedTask.id, 'bounces', inboxSearch, 50)
-                        }}
-                        className={`outreach-btn ${inboxFilter === 'bounces' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11, background: inboxFilter === 'bounces' ? '#dc2626' : void 0, color: inboxFilter === 'bounces' ? '#fff' : '#b91c1c', borderColor: '#fca5a5' }}
-                      >
-                        Ошибки доставки
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInboxFilter('unread')
-                          setInboxLimit(50)
-                          fetchInbox(selectedTask.id, 'unread', inboxSearch, 50)
-                        }}
-                        className={`outreach-btn ${inboxFilter === 'unread' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
-                      >
-                        Новые
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInboxFilter('spam')
-                          setInboxLimit(50)
-                          fetchInbox(selectedTask.id, 'spam', inboxSearch, 50)
-                        }}
-                        className={`outreach-btn ${inboxFilter === 'spam' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
-                      >
-                        Спам
-                      </button>
-                    </div>
+            {/* Auto-sync indicator */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+              {syncingInbox ? (
+                <>
+                  <RefreshCw size={11} className="animate-spin" style={{ color: '#2563eb' }} />
+                  <span style={{ color: '#2563eb', fontWeight: 600 }}>Синхронизация...</span>
+                </>
+              ) : (
+                <>
+                  <span className="outreach-live-dot" style={{ width: 6, height: 6 }} />
+                  <span style={{ color: '#059669', fontWeight: 600 }}>Автосинхронизация каждые 30 сек</span>
+                </>
+              )}
+            </div>
+          </div>
 
-                    {/* Auto-sync indicator */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                      {syncingInbox ? (
-                        <>
-                          <RefreshCw size={11} className="animate-spin" style={{ color: '#2563eb' }} />
-                          <span style={{ color: '#2563eb', fontWeight: 600 }}>Синхронизация...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="outreach-live-dot" style={{ width: 6, height: 6 }} />
-                          <span style={{ color: '#059669', fontWeight: 600 }}>Автосинхронизация каждые 30 сек</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {inboxFilter === 'spam' && inboxCounts.spam > 0 && (
+              <button
+                type="button"
+                onClick={handlePurgeSpam}
+                className="outreach-btn"
+                style={{ padding: '4px 10px', fontSize: 11, minHeight: 30, background: '#fef2f2', color: '#b91c1c', border: '1px solid #fca5a5' }}
+                title="Удалить все спам-письма"
+              >
+                <Trash2 size={12} />
+                <span>Очистить весь спам ({inboxCounts.spam})</span>
+              </button>
+            )}
 
-                  <button
-                    type="button"
-                    onClick={handleSyncInbox}
-                    disabled={syncingInbox}
-                    className="outreach-btn outreach-btn-secondary"
-                    style={{ padding: '4px 10px', fontSize: 11, minHeight: 28 }}
-                    title="Принудительно проверить почтовый ящик сейчас"
+            <button
+              type="button"
+              onClick={handleSyncInbox}
+              disabled={syncingInbox}
+              className="outreach-btn outreach-btn-secondary"
+              style={{ padding: '4px 10px', fontSize: 11, minHeight: 30 }}
+            >
+              <RefreshCw size={12} className={syncingInbox ? 'animate-spin' : ''} />
+              <span>Синхронизировать сейчас</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Inbox Split View (Left: List, Right: Message) */}
+      <div className="outreach-inbox-split">
+        {/* Messages List Pane (Left) */}
+        <div className="outreach-inbox-list">
+          {inboxMessages.length === 0 ? (
+            <div style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
+              <Inbox size={30} style={{ margin: '0 auto 8px', opacity: 0.6 }} />
+              <p style={{ margin: 0, fontWeight: 600, fontSize: 12.5 }}>Входящих писем пока нет</p>
+              <p style={{ margin: '4px 0 0', fontSize: 11 }}>
+                Новые ответы на адрес info@tenderlex.ru появляются здесь автоматически.
+              </p>
+            </div>
+          ) : (
+            <>
+              {inboxMessages.map((msg) => {
+                const isSelected = selectedMsg?.id === msg.id
+                const isBounce = msg.category === 'bounce'
+                const displayName = isBounce
+                  ? (msg.lead_company || msg.lead_email || msg.sender_name || msg.sender_email)
+                  : (msg.sender_name || msg.sender_email.split('@')[0])
+                const initial = isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
+                const isUnread = !msg.is_read
+                return (
+                  <div
+                    key={msg.id}
+                    onClick={() => {
+                      setSelectedMsg(msg)
+                      if (isUnread) {
+                        setInboxMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m)))
+                        outreachFetch(`/api/outreach/inbox/${msg.id}/read`, {
+                          method: 'PATCH',
+                          body: JSON.stringify({ is_read: true }),
+                        })
+                      }
+                    }}
+                    className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
+                    style={isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
                   >
-                    <RefreshCw size={12} className={syncingInbox ? 'animate-spin' : ''} />
-                    <span>Синхронизировать сейчас</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 2-Pane Split Inbox (Viewport fitting & internally scrollable) */}
-              <div className="outreach-inbox-split">
-                <div className="outreach-inbox-list">
-                  {inboxMessages.length === 0 ? (
-                    <div style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
-                      <Inbox size={30} style={{ margin: '0 auto 8px', opacity: 0.6 }} />
-                      <p style={{ margin: 0, fontWeight: 600, fontSize: 12.5 }}>Ответов по этой задаче пока нет</p>
-                      <p style={{ margin: '4px 0 0', fontSize: 11 }}>
-                        Ответы появятся здесь автоматически после рассылки по контактам этой задачи.
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      {inboxMessages.map((msg) => {
-                        const isSelected = selectedMsg?.id === msg.id
-                        const isBounce = msg.category === 'bounce'
-                        const displayName = isBounce
-                          ? (msg.lead_company || msg.lead_email || msg.sender_name || msg.sender_email)
-                          : (msg.sender_name || msg.sender_email.split('@')[0])
-                        const initial = isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
-                        const isUnread = !msg.is_read
-                        return (
-                          <div
-                            key={msg.id}
-                            onClick={() => {
-                              setSelectedMsg(msg)
-                              if (isUnread) {
-                                setInboxMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m)))
-                                outreachFetch(`/api/outreach/inbox/${msg.id}/read`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ is_read: true }),
-                                })
-                              }
-                            }}
-                            className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
-                            style={isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
-                          >
-                            <div className="outreach-inbox-avatar" style={isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                                  {isUnread && (
-                                    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
-                                  )}
-                                  <strong style={{ fontSize: 12, color: isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {displayName}
-                                  </strong>
-                                </div>
-                                <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
-                              </div>
-                              <div style={{ fontSize: 11.5, fontWeight: isUnread ? 700 : 400, color: isUnread ? '#0f172a' : '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
-                                {msg.subject || '(Без темы)'}
-                              </div>
-                              <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
-                                {msg.body_text}
-                              </div>
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center' }}>
-                                {isUnread && (
-                                  <span className="outreach-badge new" style={{ padding: '1px 5px', fontSize: 9 }}>
-                                    Новое
-                                  </span>
-                                )}
-                                {isBounce ? (
-                                  <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
-                                    🔴 Не доставлено
-                                  </span>
-                                ) : msg.category === 'auto_reply' ? (
-                                  <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
-                                    🟡 Автоответ
-                                  </span>
-                                ) : (
-                                  <span style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
-                                    🟢 Ответ
-                                  </span>
-                                )}
-                                {msg.lead_company && (
-                                  <span style={{ background: '#f1f5f9', color: '#334155', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
-                                    🏢 {msg.lead_company}
-                                  </span>
-                                )}
-                                {msg.is_spam && (
-                                  <span className="outreach-badge spam" style={{ padding: '1px 5px', fontSize: 9 }}>
-                                    Спам
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        )
-                      })}
-
-                      {/* Pagination: Load More button */}
-                      {inboxMessages.length < inboxTotal && (
-                        <div className="outreach-inbox-pagination">
-                          <span style={{ fontSize: 11, color: '#64748b' }}>
-                            Показано <strong>{inboxMessages.length}</strong> из <strong>{inboxTotal}</strong> писем
-                          </span>
-                          <button
-                            type="button"
-                            onClick={handleLoadMoreInbox}
-                            disabled={loadingMoreInbox}
-                            className="outreach-btn outreach-btn-secondary"
-                            style={{ width: '100%', padding: '6px 12px', fontSize: 11.5, minHeight: 30, justifyContent: 'center' }}
-                          >
-                            {loadingMoreInbox ? (
-                              <>
-                                <RefreshCw size={12} className="animate-spin" />
-                                <span>Загрузка писем...</span>
-                              </>
-                            ) : (
-                              <span>Показать ещё 50 писем</span>
-                            )}
-                          </button>
+                    <div className="outreach-inbox-avatar" style={isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                          {isUnread && (
+                            <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
+                          )}
+                          <strong style={{ fontSize: 12, color: isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {displayName}
+                          </strong>
                         </div>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="outreach-inbox-detail">
-                  {selectedMsg ? (
-                    <>
-                      {/* Top Header */}
-                      <div className="outreach-inbox-detail-header">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
-                              {selectedMsg.subject || '(Без темы)'}
-                            </h3>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>
-                                {selectedMsg.sender_name || selectedMsg.sender_email}
-                              </span>
-                              <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
-                                &lt;{selectedMsg.sender_email}&gt;
-                              </span>
-                              <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                                {formatDate(selectedMsg.date_received)}
-                              </span>
-                            </div>
-                            {(selectedMsg.lead_company || selectedMsg.task_name) && (
-                              <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                                {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
-                                {selectedMsg.lead_email && <span>• ✉️ {selectedMsg.lead_email}</span>}
-                                {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
-                                {selectedMsg.task_name && <span>• 🎯 {selectedMsg.task_name}</span>}
-                              </div>
-                            )}
-
-                            {selectedMsg.category === 'bounce' && (
-                              <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 12, marginTop: 8 }}>
-                                <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  🔴 Сбой доставки письма (Bounce / Non-Delivery Report)
-                                </div>
-                                <div style={{ marginTop: 3 }}>
-                                  Получатель: <strong>{selectedMsg.lead_email || 'Указан в отчёте ниже'}</strong> {selectedMsg.lead_company && `(Компания: ${selectedMsg.lead_company})`}
-                                </div>
-                                {selectedMsg.lead_notes && (
-                                  <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 3 }}>
-                                    {selectedMsg.lead_notes}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const newStatus = !selectedMsg.is_read
-                                setSelectedMsg({ ...selectedMsg, is_read: newStatus })
-                                setInboxMessages((prev) => prev.map((m) => (m.id === selectedMsg.id ? { ...m, is_read: newStatus } : m)))
-                                await outreachFetch(`/api/outreach/inbox/${selectedMsg.id}/read`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ is_read: newStatus }),
-                                })
-                              }}
-                              className="outreach-btn outreach-btn-secondary"
-                              style={{ padding: '3px 8px', fontSize: 11, minHeight: 26 }}
-                              title={selectedMsg.is_read ? 'Отметить как непрочитанное' : 'Отметить как прочитанное'}
-                            >
-                              <Mail size={12} />
-                              <span>{selectedMsg.is_read ? 'Не прочитано' : 'Прочитано'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleToggleSpam(selectedMsg)}
-                              className={`outreach-btn ${selectedMsg.is_spam ? 'outreach-btn-danger' : 'outreach-btn-secondary'}`}
-                              style={{ padding: '3px 8px', fontSize: 11, minHeight: 26 }}
-                              title={selectedMsg.is_spam ? 'Убрать из спама' : 'В спам'}
-                            >
-                              <ShieldAlert size={12} />
-                              <span>{selectedMsg.is_spam ? 'В спаме' : 'Спам'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => window.print()}
-                              className="outreach-btn outreach-btn-secondary"
-                              style={{ padding: '3px 6px', minHeight: 26 }}
-                              title="Распечатать письмо"
-                            >
-                              <Printer size={12} />
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteInboxMsg(selectedMsg.id)}
-                              className="outreach-btn outreach-btn-danger"
-                              style={{ padding: '3px 6px', minHeight: 26 }}
-                              title="Удалить"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
+                        <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
                       </div>
-
-                      {/* Middle scrollable message body */}
-                      <div className="outreach-inbox-detail-body">
-                        {selectedMsg.body_text ? (
-                          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6, color: '#1e293b' }}>
-                            {selectedMsg.body_text}
-                          </div>
-                        ) : selectedMsg.body_html ? (
-                          <div
-                            style={{ lineHeight: 1.6, wordBreak: 'break-word', color: '#1e293b' }}
-                            dangerouslySetInnerHTML={{ __html: selectedMsg.body_html }}
-                          />
+                      <div style={{ fontSize: 11.5, fontWeight: isUnread ? 700 : 400, color: isUnread ? '#0f172a' : '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+                        {msg.subject || '(Без темы)'}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+                        {msg.body_text}
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center' }}>
+                        {isUnread && (
+                          <span className="outreach-badge new" style={{ padding: '1px 5px', fontSize: 9 }}>
+                            Новое
+                          </span>
+                        )}
+                        {isBounce ? (
+                          <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                            🔴 Не доставлено
+                          </span>
+                        ) : msg.category === 'auto_reply' ? (
+                          <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                            🟡 Автоответ
+                          </span>
                         ) : (
-                          <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>(Пустое тело письма)</span>
+                          <span style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                            🟢 Ответ
+                          </span>
+                        )}
+                        {msg.task_name && (
+                          <span style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', padding: '1px 5px', borderRadius: 4, fontSize: 9.5, fontWeight: 600 }}>
+                            📁 {msg.task_name}
+                          </span>
                         )}
                       </div>
-
-                      {/* Sticky bottom quick reply panel (Hidden for bounces) */}
-                      {selectedMsg.category !== 'bounce' ? (
-                        <div className="outreach-inbox-detail-reply">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                          <strong style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <Sparkles size={13} style={{ color: '#4f46e5' }} />
-                            Быстрый ответ с AI
-                          </strong>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button
-                              type="button"
-                              onClick={() => handleAiReply('agree')}
-                              disabled={aiReplyGenerating}
-                              className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
-                            >
-                              ✓ Согласиться
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleAiReply('request_quote')}
-                              disabled={aiReplyGenerating}
-                              className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
-                            >
-                              📋 Запросить КП
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleAiReply('decline')}
-                              disabled={aiReplyGenerating}
-                              className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
-                            >
-                              ✕ Вежливый отказ
-                            </button>
-                          </div>
-                        </div>
-
-                        <textarea
-                          rows={6}
-                          placeholder="Напишите ответ поставщику или выберите быстрый шаблон ответа выше..."
-                          value={replyText}
-                          onChange={(e) => setReplyText(e.target.value)}
-                          style={{ minHeight: 125, maxHeight: 240, fontSize: 13, padding: '10px 12px', resize: 'vertical', lineHeight: 1.55 }}
-                        />
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                            Ответ с адреса info@tenderlex.ru
-                          </span>
-                          <button
-                            type="button"
-                            onClick={handleSendReply}
-                            disabled={sendingReply || !replyText.trim()}
-                            className="outreach-btn outreach-btn-primary"
-                            style={{ padding: '6px 16px', fontSize: 12, minHeight: 30 }}
-                          >
-                            <Send size={12} />
-                            <span>{sendingReply ? 'Отправка...' : 'Отправить ответ'}</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                    </>
-                  ) : (
-                    <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', margin: 'auto' }}>
-                      <Mail size={36} style={{ margin: '0 auto 8px', opacity: 0.5 }} />
-                      <p style={{ margin: 0, fontWeight: 500 }}>Выберите письмо из списка слева</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* SUBTAB 5: SETTINGS */}
-          {taskSubTab === 'settings' && (
-            <div className="outreach-panel" style={{ maxWidth: 720 }}>
-              <div>
-                <h2 className="outreach-panel-title">Настройки почты и подключения</h2>
-                <p className="outreach-panel-desc">
-                  Параметры SMTP для отправки писем и IMAP для чтения входящих ответов.
-                </p>
-              </div>
-
-              <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>Отправитель</strong>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        Имя отправителя:
-                      </label>
-                      <input
-                        type="text"
-                        value={settings.from_name || ''}
-                        onChange={(e) => setSettings({ ...settings, from_name: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        Email отправителя:
-                      </label>
-                      <input
-                        type="email"
-                        value={settings.from_email || ''}
-                        onChange={(e) => setSettings({ ...settings, from_email: e.target.value })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
                     </div>
                   </div>
-                </div>
+                )
+              })}
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
-                  <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>SMTP (Исходящая почта)</strong>
-                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        SMTP Сервер:
-                      </label>
-                      <input
-                        type="text"
-                        value={settings.smtp_host || ''}
-                        onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        Порт:
-                      </label>
-                      <input
-                        type="number"
-                        value={settings.smtp_port || 465}
-                        onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 465 })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        SMTP Логин:
-                      </label>
-                      <input
-                        type="text"
-                        value={settings.smtp_user || ''}
-                        onChange={(e) => setSettings({ ...settings, smtp_user: e.target.value })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        SMTP Пароль {settings.smtp_password_set && <span style={{ color: '#059669', fontWeight: 'normal' }}>(установлен)</span>}:
-                      </label>
-                      <input
-                        type="password"
-                        placeholder={settings.smtp_password_set ? '••••••••' : 'Введите пароль'}
-                        value={smtpPassword}
-                        onChange={(e) => setSmtpPassword(e.target.value)}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
-                  <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>IMAP (Входящая почта)</strong>
-                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        IMAP Сервер:
-                      </label>
-                      <input
-                        type="text"
-                        value={settings.imap_host || ''}
-                        onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        Порт:
-                      </label>
-                      <input
-                        type="number"
-                        value={settings.imap_port || 993}
-                        onChange={(e) => setSettings({ ...settings, imap_port: parseInt(e.target.value) || 993 })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        IMAP Логин:
-                      </label>
-                      <input
-                        type="text"
-                        value={settings.imap_user || ''}
-                        onChange={(e) => setSettings({ ...settings, imap_user: e.target.value })}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                        IMAP Пароль {settings.imap_password_set && <span style={{ color: '#059669', fontWeight: 'normal' }}>(установлен)</span>}:
-                      </label>
-                      <input
-                        type="password"
-                        placeholder={settings.imap_password_set ? '••••••••' : 'Введите пароль'}
-                        value={imapPassword}
-                        onChange={(e) => setImapPassword(e.target.value)}
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+              {inboxTotal > inboxMessages.length && (
+                <div style={{ padding: '8px 12px', borderTop: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: '#64748b' }}>
+                    Показано <strong>{inboxMessages.length}</strong> из <strong>{inboxTotal}</strong> писем
+                  </span>
                   <button
-                    type="submit"
-                    disabled={loading}
-                    className="outreach-btn outreach-btn-primary"
-                    style={{ padding: '8px 18px', fontSize: 13 }}
+                    type="button"
+                    onClick={handleLoadMoreInbox}
+                    disabled={loadingMoreInbox}
+                    className="outreach-btn outreach-btn-secondary"
+                    style={{ width: '100%', padding: '6px 12px', fontSize: 11.5, minHeight: 30, justifyContent: 'center' }}
                   >
-                    {loading ? 'Сохранение...' : 'Сохранить настройки'}
+                    {loadingMoreInbox ? (
+                      <>
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Загрузка писем...</span>
+                      </>
+                    ) : (
+                      <span>Показать ещё 50 писем</span>
+                    )}
                   </button>
                 </div>
-              </form>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Message Detail Pane (Right) */}
+        <div className="outreach-inbox-detail">
+          {selectedMsg ? (
+            <>
+              {/* Top Header */}
+              <div className="outreach-inbox-detail-header">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+                      {selectedMsg.subject || '(Без темы)'}
+                    </h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>
+                        {selectedMsg.sender_name || selectedMsg.sender_email}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                        &lt;{selectedMsg.sender_email}&gt;
+                      </span>
+                      <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                        {formatDate(selectedMsg.date_received)}
+                      </span>
+                    </div>
+                    {(selectedMsg.lead_company || selectedMsg.task_name) && (
+                      <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                        {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
+                        {selectedMsg.lead_email && <span>• ✉️ {selectedMsg.lead_email}</span>}
+                        {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
+                        {selectedMsg.task_name && <span>• 🎯 {selectedMsg.task_name}</span>}
+                      </div>
+                    )}
+
+                    {selectedMsg.category === 'bounce' && (
+                      <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 12, marginTop: 8 }}>
+                        <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          🔴 Сбой доставки письма (Bounce / Non-Delivery Report)
+                        </div>
+                        <div style={{ marginTop: 3 }}>
+                          Получатель: <strong>{selectedMsg.lead_email || 'Указан в отчёте ниже'}</strong> {selectedMsg.lead_company && `(Компания: ${selectedMsg.lead_company})`}
+                        </div>
+                        {selectedMsg.lead_notes && (
+                          <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 3 }}>
+                            {selectedMsg.lead_notes}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const newStatus = !selectedMsg.is_read
+                        setSelectedMsg({ ...selectedMsg, is_read: newStatus })
+                        setInboxMessages((prev) => prev.map((m) => (m.id === selectedMsg.id ? { ...m, is_read: newStatus } : m)))
+                        await outreachFetch(`/api/outreach/inbox/${selectedMsg.id}/read`, {
+                          method: 'PATCH',
+                          body: JSON.stringify({ is_read: newStatus }),
+                        })
+                      }}
+                      className="outreach-btn outreach-btn-ghost"
+                      style={{ padding: '4px 8px', fontSize: 11 }}
+                      title={selectedMsg.is_read ? 'Отметить как непрочитанное' : 'Отметить как прочитанное'}
+                    >
+                      {selectedMsg.is_read ? <Mail size={13} /> : <MailCheck size={13} />}
+                      <span>{selectedMsg.is_read ? 'Не прочитано' : 'Прочитано'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSpam(selectedMsg)}
+                      className="outreach-btn outreach-btn-ghost"
+                      style={{ padding: '4px 8px', fontSize: 11, color: selectedMsg.is_spam ? '#2563eb' : '#64748b' }}
+                      title="Спам"
+                    >
+                      <ShieldAlert size={13} />
+                      <span>{selectedMsg.is_spam ? 'Не спам' : 'В спам'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteInboxMsg(selectedMsg.id)}
+                      className="outreach-btn outreach-btn-ghost"
+                      style={{ padding: '4px 8px', fontSize: 11, color: '#ef4444' }}
+                      title="Удалить письмо"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Body Text */}
+              <div className="outreach-inbox-detail-body">
+                {selectedMsg.is_spam && (
+                  <div style={{ margin: '0 0 14px 0', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, color: '#991b1b' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <ShieldAlert size={18} style={{ color: '#ef4444', flexShrink: 0 }} />
+                      <span><strong>Спам-фильтр:</strong> Письмо изолировано от живых ответов и входящих.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSpam(selectedMsg)}
+                      className="outreach-btn"
+                      style={{ padding: '2px 8px', fontSize: 11, background: '#fff', border: '1px solid #fca5a5', color: '#b91c1c' }}
+                    >
+                      Восстановить (не спам)
+                    </button>
+                  </div>
+                )}
+                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 13, color: '#1e293b' }}>
+                  {selectedMsg.body_text || '(Текст письма пуст)'}
+                </div>
+              </div>
+
+              {/* Quick Reply Form (only for non-bounce, non-spam messages) */}
+              {selectedMsg.category !== 'bounce' && !selectedMsg.is_spam ? (
+                <div className="outreach-inbox-reply-box">
+                  {/* AI Quick Reply Buttons */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Sparkles size={12} style={{ color: '#8b5cf6' }} />
+                        Быстрый ответ с AI:
+                      </span>
+                      <button
+                        type="button"
+                        disabled={aiReplyGenerating}
+                        onClick={() => handleAiReply('agree')}
+                        className="outreach-btn outreach-btn-secondary"
+                        style={{ padding: '2px 8px', fontSize: 11, minHeight: 24, background: '#ecfdf5', color: '#047857', borderColor: '#a7f3d0' }}
+                      >
+                        ✓ Согласиться
+                      </button>
+                      <button
+                        type="button"
+                        disabled={aiReplyGenerating}
+                        onClick={() => handleAiReply('request_quote')}
+                        className="outreach-btn outreach-btn-secondary"
+                        style={{ padding: '2px 8px', fontSize: 11, minHeight: 24, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}
+                      >
+                        📑 Запросить КП
+                      </button>
+                      <button
+                        type="button"
+                        disabled={aiReplyGenerating}
+                        onClick={() => handleAiReply('decline')}
+                        className="outreach-btn outreach-btn-secondary"
+                        style={{ padding: '2px 8px', fontSize: 11, minHeight: 24, background: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' }}
+                      >
+                        ✕ Вежливый отказ
+                      </button>
+                    </div>
+                  </div>
+
+                  <textarea
+                    rows={6}
+                    placeholder="Напишите ответ поставщику или выберите быстрый шаблон ответа выше..."
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    style={{ minHeight: 125, maxHeight: 240, fontSize: 13, padding: '10px 12px', resize: 'vertical', lineHeight: 1.55 }}
+                  />
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Ответ с адреса info@tenderlex.ru
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleSendReply}
+                      disabled={sendingReply || !replyText.trim()}
+                      className="outreach-btn outreach-btn-primary"
+                      style={{ padding: '6px 16px', fontSize: 12, minHeight: 30 }}
+                    >
+                      <Send size={12} />
+                      <span>{sendingReply ? 'Отправка...' : 'Отправить ответ'}</span>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', margin: 'auto' }}>
+              <Mail size={36} style={{ margin: '0 auto 8px', opacity: 0.5 }} />
+              <p style={{ margin: 0, fontWeight: 500 }}>Выберите письмо из списка слева</p>
             </div>
           )}
         </div>
-      )}
+      </div>
+    </div>
+  )}
+
+  {/* ========================================================================= */}
+  {/* TAB 3: STANDALONE COMPOSE (info@tenderlex.ru)                              */}
+  {/* ========================================================================= */}
+  {mainTab === 'compose' && (
+    <div className="outreach-panel" style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid #e2e8f0' }}>
+        <div className="outreach-composer-row">
+          <span className="outreach-composer-label">От кого</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <strong style={{ fontSize: 13, color: '#0f172a' }}>
+              {settings.from_name || 'TenderLex'} &lt;{settings.from_email || 'info@tenderlex.ru'}&gt;
+            </strong>
+            <span className="outreach-badge completed">SMTP готов</span>
+          </div>
+        </div>
+
+        <div className="outreach-composer-row">
+          <span className="outreach-composer-label">Кому</span>
+          <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, border: '1px solid #cbd5e1', borderRadius: 8, padding: '4px 8px', minHeight: 38, background: '#fff' }}>
+            {composeRecipients.map((rec) => (
+              <span
+                key={rec}
+                style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6, padding: '2px 6px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                {rec}
+                <button
+                  type="button"
+                  onClick={() => setComposeRecipients((prev) => prev.filter((r) => r !== rec))}
+                  style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', padding: 0, fontSize: 14 }}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <input
+              type="email"
+              placeholder={composeRecipients.length === 0 ? 'Введите email и нажмите Enter...' : 'Добавить email...'}
+              value={composeRecipientInput}
+              onChange={(e) => setComposeRecipientInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault()
+                  const val = composeRecipientInput.trim().replace(',', '')
+                  if (val && val.includes('@') && !composeRecipients.includes(val)) {
+                    setComposeRecipients((prev) => [...prev, val])
+                    setComposeRecipientInput('')
+                  }
+                }
+              }}
+              onBlur={() => {
+                const val = composeRecipientInput.trim().replace(',', '')
+                if (val && val.includes('@') && !composeRecipients.includes(val)) {
+                  setComposeRecipients((prev) => [...prev, val])
+                  setComposeRecipientInput('')
+                }
+              }}
+              style={{ border: 'none', outline: 'none', flex: 1, minWidth: 160, height: 26, fontSize: 12.5 }}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleOpenCrmPicker}
+            className="outreach-btn outreach-btn-secondary"
+            style={{ height: 38, fontSize: 12 }}
+          >
+            <Users size={13} />
+            <span>Выбрать из CRM</span>
+          </button>
+          {composeRecipients.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setComposeRecipients([])}
+              className="outreach-btn outreach-btn-ghost"
+              style={{ height: 38, fontSize: 12, color: '#ef4444' }}
+            >
+              Очистить ({composeRecipients.length})
+            </button>
+          )}
+        </div>
+
+        <div className="outreach-composer-row">
+          <span className="outreach-composer-label">Тема</span>
+          <div style={{ flex: 1, display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              placeholder="Тема письма..."
+              value={composeSubject}
+              onChange={(e) => setComposeSubject(e.target.value)}
+              style={{ flex: 1, height: 36, fontSize: 13, fontWeight: 600 }}
+            />
+            <button
+              type="button"
+              disabled={aiGenerating}
+              onClick={() => handleAiAction('subject', 'compose')}
+              className="outreach-btn outreach-btn-secondary"
+              style={{ height: 36, fontSize: 12 }}
+            >
+              <Sparkles size={13} style={{ color: '#8b5cf6' }} />
+              <span>AI Тема</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Template Selector for Compose */}
+        <div className="outreach-composer-row">
+          <span className="outreach-composer-label">Шаблон</span>
+          <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => handleOpenTemplateModal('compose')}
+              className="outreach-btn outreach-btn-secondary"
+              style={{ height: 32, fontSize: 12 }}
+            >
+              <LayoutTemplate size={13} style={{ color: '#0f766e' }} />
+              <span>Библиотека шаблонов ({templates.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSaveCurrentAsTemplate('compose')}
+              className="outreach-btn outreach-btn-ghost"
+              style={{ height: 32, fontSize: 11.5 }}
+            >
+              <Save size={12} />
+              <span>Сохранить текущее как шаблон</span>
+            </button>
+          </div>
+        </div>
+
+        {/* AI Assistant Quick Tools */}
+        <div className="outreach-composer-row" style={{ alignItems: 'flex-start' }}>
+          <span className="outreach-composer-label" style={{ paddingTop: 6 }}>AI Помощник</span>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                type="text"
+                placeholder="Например: 'Предложи бесплатный аудит тендерных закупок'..."
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                style={{ flex: 1, height: 32, fontSize: 12 }}
+              />
+              <button
+                type="button"
+                disabled={aiGenerating}
+                onClick={() => handleAiAction('cold_email', 'compose')}
+                className="outreach-btn outreach-btn-primary"
+                style={{ height: 32, fontSize: 12, padding: '0 12px' }}
+              >
+                <Sparkles size={13} className={aiGenerating ? 'animate-spin' : ''} />
+                <span>{aiGenerating ? 'AI пишет...' : '✨ Написать с AI'}</span>
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <button
+                type="button"
+                disabled={aiGenerating || !composeBody.trim()}
+                onClick={() => handleAiAction('improve', 'compose')}
+                className="outreach-btn outreach-btn-ghost"
+                style={{ fontSize: 11, padding: '2px 8px', minHeight: 26 }}
+              >
+                <Wand2 size={11} />
+                <span>Улучшить текст</span>
+              </button>
+              <button
+                type="button"
+                disabled={aiGenerating || !composeBody.trim()}
+                onClick={() => handleAiAction('shorten', 'compose')}
+                className="outreach-btn outreach-btn-ghost"
+                style={{ fontSize: 11, padding: '2px 8px', minHeight: 26 }}
+              >
+                <Sliders size={11} />
+                <span>Сделать короче</span>
+              </button>
+              <button
+                type="button"
+                disabled={aiGenerating || !composeBody.trim()}
+                onClick={() => handleAiAction('grammar', 'compose')}
+                className="outreach-btn outreach-btn-ghost"
+                style={{ fontSize: 11, padding: '2px 8px', minHeight: 26 }}
+              >
+                <FileCheck size={11} />
+                <span>Исправить ошибки</span>
+              </button>
+
+              <select
+                value={composeTone}
+                onChange={(e) => setComposeTone(e.target.value)}
+                style={{ width: 'auto', minWidth: 120 }}
+              >
+                <option value="professional">Деловой тон</option>
+                <option value="friendly">Дружелюбный</option>
+                <option value="selling">Продающий</option>
+                <option value="concise">Краткий</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Text Area */}
+      <div style={{ padding: 16 }}>
+        <textarea
+          rows={16}
+          placeholder="Напишите текст письма здесь или используйте кнопку «✨ Написать с AI»..."
+          value={composeBody}
+          onChange={(e) => setComposeBody(e.target.value)}
+          style={{ border: 'none', outline: 'none', resize: 'vertical', width: '100%', minHeight: 380, fontSize: 13.5, lineHeight: 1.6, padding: 0 }}
+        />
+      </div>
+
+      {/* Footer */}
+      <div style={{ padding: '12px 18px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 12, color: '#64748b' }}>
+          Получателей: <strong style={{ color: '#0f172a' }}>{composeRecipients.length}</strong>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {selectedTask && (
+            <button
+              type="button"
+              onClick={() => {
+                setCampSubject(composeSubject)
+                setCampBody(composeBody)
+                changeMainTab('tasks')
+                changeTaskSubTab('campaign')
+              }}
+              className="outreach-btn outreach-btn-secondary"
+            >
+              Перенести в рассылку по задаче
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={sendingDirect || composeRecipients.length === 0}
+            onClick={handleSendDirect}
+            className="outreach-btn outreach-btn-primary"
+            style={{ padding: '8px 18px', fontSize: 13 }}
+          >
+            <Send size={15} />
+            <span>{sendingDirect ? 'Отправка...' : 'Отправить письмо сейчас'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* ========================================================================= */}
+  {/* TAB 4: MAIL SETTINGS (SMTP / IMAP / ANTI-SPAM)                            */}
+  {/* ========================================================================= */}
+  {mainTab === 'settings' && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 720 }}>
+      <div className="outreach-panel">
+        <div>
+          <h2 className="outreach-panel-title">Настройки почты и подключения</h2>
+        <p className="outreach-panel-desc">
+          Параметры SMTP для отправки писем и IMAP для чтения входящих ответов.
+        </p>
+      </div>
+
+      <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>Отправитель</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                Имя отправителя:
+              </label>
+              <input
+                type="text"
+                value={settings.from_name || ''}
+                onChange={(e) => setSettings({ ...settings, from_name: e.target.value })}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                Email отправителя:
+              </label>
+              <input
+                type="email"
+                value={settings.from_email || ''}
+                onChange={(e) => setSettings({ ...settings, from_email: e.target.value })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+          <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>SMTP (Исходящая почта)</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                SMTP Сервер:
+              </label>
+              <input
+                type="text"
+                value={settings.smtp_host || ''}
+                onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                Порт:
+              </label>
+              <input
+                type="number"
+                value={settings.smtp_port || 465}
+                onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 465 })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                SMTP Логин:
+              </label>
+              <input
+                type="text"
+                value={settings.smtp_user || ''}
+                onChange={(e) => setSettings({ ...settings, smtp_user: e.target.value })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                SMTP Пароль {settings.smtp_password_set && <span style={{ color: '#059669', fontWeight: 'normal' }}>(установлен)</span>}:
+              </label>
+              <input
+                type="password"
+                placeholder={settings.smtp_password_set ? '••••••••' : 'Введите пароль'}
+                value={smtpPassword}
+                onChange={(e) => setSmtpPassword(e.target.value)}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+          <strong style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase' }}>IMAP (Входящая почта)</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                IMAP Сервер:
+              </label>
+              <input
+                type="text"
+                value={settings.imap_host || ''}
+                onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                Порт:
+              </label>
+              <input
+                type="number"
+                value={settings.imap_port || 993}
+                onChange={(e) => setSettings({ ...settings, imap_port: parseInt(e.target.value) || 993 })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                IMAP Логин:
+              </label>
+              <input
+                type="text"
+                value={settings.imap_user || ''}
+                onChange={(e) => setSettings({ ...settings, imap_user: e.target.value })}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                IMAP Пароль {settings.imap_password_set && <span style={{ color: '#059669', fontWeight: 'normal' }}>(установлен)</span>}:
+              </label>
+              <input
+                type="password"
+                placeholder={settings.imap_password_set ? '••••••••' : 'Введите пароль'}
+                value={imapPassword}
+                onChange={(e) => setImapPassword(e.target.value)}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+          <button
+            type="submit"
+            disabled={loading}
+            className="outreach-btn outreach-btn-primary"
+            style={{ padding: '8px 18px', fontSize: 13 }}
+          >
+            {loading ? 'Сохранение...' : 'Сохранить настройки'}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    {/* Anti-Spam & Blacklist Card */}
+    <div className="outreach-panel" style={{ maxWidth: 720, marginTop: 16 }}>
+      <div>
+        <h2 className="outreach-panel-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ShieldAlert size={18} style={{ color: '#ef4444' }} />
+          <span>🛡️ Антиспам-фильтр и чёрный список</span>
+        </h2>
+        <p className="outreach-panel-desc">
+          Система автоматически изолирует рассылки одноразовых доменов (Makita, водонагреватели, таро, курсы, заработок на ИИ, базы РФ, Google Forms),
+          а также блокирует добавленные вами домены и фразы.
+        </p>
+      </div>
+
+      {/* Add rule input */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}>
+        <select
+          value={newSpamRuleType}
+          onChange={(e) => setNewSpamRuleType(e.target.value)}
+          style={{ width: 150, padding: '6px 8px', fontSize: 12, borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff' }}
+        >
+          <option value="domain">Заблокировать домен</option>
+          <option value="keyword">Заблокировать фразу</option>
+          <option value="sender">Заблокировать email</option>
+        </select>
+        <input
+          type="text"
+          placeholder={newSpamRuleType === 'domain' ? 'например: spammers.shop' : newSpamRuleType === 'keyword' ? 'например: продажа баз данных' : 'например: spam@domain.com'}
+          value={newSpamRuleVal}
+          onChange={(e) => setNewSpamRuleVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddSpamRule(); } }}
+          style={{ flex: 1, padding: '6px 10px', fontSize: 12, borderRadius: 6, border: '1px solid #cbd5e1' }}
+        />
+        <button
+          type="button"
+          onClick={handleAddSpamRule}
+          disabled={savingSpamRule || !newSpamRuleVal.trim()}
+          className="outreach-btn outreach-btn-primary"
+          style={{ minHeight: 32, padding: '4px 12px', fontSize: 12 }}
+        >
+          {savingSpamRule ? 'Добавление...' : 'Добавить правило'}
+        </button>
+      </div>
+
+      {/* Rules list */}
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Пользовательские правила блокировки ({spamRules.length}):</span>
+          {spamRules.length > 0 && (
+            <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 'normal' }}>
+              Письма сразу отправляются в спам
+            </span>
+          )}
+        </div>
+        {spamRules.length === 0 ? (
+          <div style={{ padding: '14px', background: '#f8fafc', borderRadius: 6, border: '1px dashed #cbd5e1', fontSize: 12, color: '#64748b', textAlign: 'center' }}>
+            Пользовательских правил пока нет. При нажатии кнопки «В спам» во входящих спам-домены будут сохраняться сюда автоматически.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 180, overflowY: 'auto', padding: 8, background: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+            {spamRules.map((rule, idx) => (
+              <span
+                key={idx}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  background: '#fff',
+                  border: '1px solid #e2e8f0',
+                  padding: '3px 8px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  color: '#334155',
+                }}
+              >
+                <span style={{ fontSize: 10, textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>
+                  {rule.type === 'domain' ? 'Домен' : rule.type === 'keyword' ? 'Фраза' : 'Email'}:
+                </span>
+                <strong style={{ color: '#0f172a' }}>{rule.value}</strong>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteSpamRule(idx)}
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8', padding: 0, display: 'flex', alignItems: 'center' }}
+                  title="Удалить правило"
+                >
+                  <Trash2 size={11} style={{ color: '#ef4444' }} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Built-in heuristics summary */}
+      <div style={{ padding: '10px 12px', background: '#f1f5f9', borderRadius: 6, fontSize: 11, color: '#475569', lineHeight: 1.5 }}>
+        <strong>🛡️ Встроенная защита ядра:</strong> Автоматически фильтрует известные спам-сетки (.shop, .pro, .life, .store), массовую рекламу инструментов (Makita), водонагревателей, эзотерики/курсов, инфо-цыган, коммерческих рассылок и фишинговые формы Google Forms.
+      </div>
+    </div>
+  </div>
+  )}
 
       {/* ==================== LEAD HISTORY MODAL ==================== */}
       {historyLead && (
@@ -3348,7 +3665,7 @@ export function OutreachView() {
                 onClick={() => {
                   setComposeRecipients([historyLead.lead.email])
                   setHistoryLead(null)
-                  changeTaskSubTab('compose')
+                  changeMainTab('compose')
                 }}
                 className="outreach-btn outreach-btn-primary"
               >
@@ -3361,13 +3678,18 @@ export function OutreachView() {
       )}
 
       {/* ==================== CRM PICKER MODAL ==================== */}
-      {showCrmPickerModal && selectedTask && (
+      {showCrmPickerModal && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(15, 23, 42, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div style={{ background: '#fff', borderRadius: 10, width: '100%', maxWidth: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
+          <div style={{ background: '#fff', borderRadius: 10, width: '100%', maxWidth: 680, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
             <div style={{ padding: '14px 18px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <strong style={{ fontSize: 14, color: '#0f172a' }}>Выбрать получателей из базы CRM</strong>
-                <div style={{ fontSize: 11, color: '#64748b' }}>Задача: «{selectedTask.name}» (всего {crmPickerLeads.length} контактов)</div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>
+                  {crmPickerTaskFilter && tasks.find((t) => t.id === crmPickerTaskFilter)
+                    ? `Задача: «${tasks.find((t) => t.id === crmPickerTaskFilter)?.name}»`
+                    : 'Все контакты по всем задачам'}{' '}
+                  ({crmPickerLeads.length} контактов)
+                </div>
               </div>
               <button type="button" onClick={() => setShowCrmPickerModal(false)} className="outreach-btn outreach-btn-ghost" style={{ padding: 4 }}>
                 ✕
@@ -3375,6 +3697,34 @@ export function OutreachView() {
             </div>
 
             <div style={{ padding: '12px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <select
+                value={crmPickerTaskFilter}
+                onChange={async (e) => {
+                  const val = e.target.value
+                  setCrmPickerTaskFilter(val)
+                  setCrmPickerLoading(true)
+                  try {
+                    const url = val
+                      ? `/api/outreach/leads?task_id=${val}&page=1&page_size=5000`
+                      : `/api/outreach/leads?page=1&page_size=5000`
+                    const data = await outreachFetch<{ items: Lead[] }>(url)
+                    setCrmPickerLeads(data.items || [])
+                  } catch (err: any) {
+                    showError(err.message)
+                  } finally {
+                    setCrmPickerLoading(false)
+                  }
+                }}
+                style={{ height: 32, fontSize: 11, padding: '0 8px', maxWidth: 180 }}
+              >
+                <option value="">Все задачи ({tasks.length})</option>
+                {tasks.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+
               <div style={{ position: 'relative', flex: 1 }}>
                 <input
                   type="text"

@@ -615,8 +615,15 @@ def list_inbox_messages(
     limit_int = int(limit) if isinstance(limit, (int, float)) else 50
     offset_int = int(offset) if isinstance(offset, (int, float)) else 0
 
+    lead_ids = []
+    if task_id_str:
+        lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
+
+    has_leads_in_scope = not task_id_str or bool(lead_ids)
+
+    # Base query for messages
     q = db.query(OutreachIncomingEmail)
-    if is_spam_bool:
+    if is_spam_bool or category_str == "spam":
         q = q.filter(OutreachIncomingEmail.is_spam == True)
     else:
         q = q.filter(OutreachIncomingEmail.is_spam == False)
@@ -624,18 +631,25 @@ def list_inbox_messages(
     if category_str == "bounces":
         q = q.filter(OutreachIncomingEmail.category == "bounce")
     elif category_str == "replies":
+        q = q.filter(OutreachIncomingEmail.category == "reply")
+    elif category_str == "auto_replies":
+        q = q.filter(OutreachIncomingEmail.category == "auto_reply")
+    elif category_str == "all_replies":
         q = q.filter(OutreachIncomingEmail.category.in_(["reply", "auto_reply"]))
-    elif unread_bool:
+    elif unread_bool or category_str == "unread":
         q = q.filter(OutreachIncomingEmail.is_read == False, OutreachIncomingEmail.category != "bounce")
 
     if task_id_str:
-        lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
         if lead_ids:
             q = q.filter(OutreachIncomingEmail.lead_id.in_(lead_ids))
         else:
-            return {"items": [], "total": 0}
+            return {
+                "items": [],
+                "total": 0,
+                "counts": {"all": 0, "replies": 0, "auto_replies": 0, "bounces": 0, "unread": 0, "spam": 0},
+            }
 
-    if unread_bool and category_str != "":
+    if (unread_bool or category_str == "unread") and category_str not in ["", "unread"]:
         q = q.filter(OutreachIncomingEmail.is_read == False)
     if search_str:
         term = f"%{search_str}%"
@@ -651,8 +665,25 @@ def list_inbox_messages(
     total_count = q.count()
     messages = q.order_by(desc(OutreachIncomingEmail.date_received)).offset(offset_int).limit(limit_int).all()
 
-    lead_ids = [m.lead_id for m in messages if m.lead_id]
-    leads_map = {l.id: l for l in db.query(OutreachLead).filter(OutreachLead.id.in_(lead_ids)).all()} if lead_ids else {}
+    # Calculate count stats for tabs within same scope
+    base_count_q = db.query(OutreachIncomingEmail)
+    if task_id_str:
+        if lead_ids:
+            base_count_q = base_count_q.filter(OutreachIncomingEmail.lead_id.in_(lead_ids))
+        else:
+            base_count_q = base_count_q.filter(False)
+
+    counts = {
+        "all": base_count_q.filter(OutreachIncomingEmail.is_spam == False).count() if has_leads_in_scope else 0,
+        "replies": base_count_q.filter(OutreachIncomingEmail.is_spam == False, OutreachIncomingEmail.category == "reply").count() if has_leads_in_scope else 0,
+        "auto_replies": base_count_q.filter(OutreachIncomingEmail.is_spam == False, OutreachIncomingEmail.category == "auto_reply").count() if has_leads_in_scope else 0,
+        "bounces": base_count_q.filter(OutreachIncomingEmail.is_spam == False, OutreachIncomingEmail.category == "bounce").count() if has_leads_in_scope else 0,
+        "unread": base_count_q.filter(OutreachIncomingEmail.is_spam == False, OutreachIncomingEmail.is_read == False, OutreachIncomingEmail.category != "bounce").count() if has_leads_in_scope else 0,
+        "spam": base_count_q.filter(OutreachIncomingEmail.is_spam == True).count() if has_leads_in_scope else 0,
+    }
+
+    lead_ids_for_msgs = [m.lead_id for m in messages if m.lead_id]
+    leads_map = {l.id: l for l in db.query(OutreachLead).filter(OutreachLead.id.in_(lead_ids_for_msgs)).all()} if lead_ids_for_msgs else {}
     task_ids = [l.task_id for l in leads_map.values() if l.task_id]
     tasks_map = {t.id: t.name for t in db.query(OutreachSearchTask).filter(OutreachSearchTask.id.in_(task_ids)).all()} if task_ids else {}
 
@@ -676,7 +707,7 @@ def list_inbox_messages(
             d["task_name"] = ""
         items.append(d)
 
-    return {"items": items, "total": total_count}
+    return {"items": items, "total": total_count, "counts": counts}
 
 
 @router.post("/inbox/sync")
@@ -684,6 +715,11 @@ def trigger_inbox_sync(db: Session = Depends(get_db)) -> dict[str, Any]:
     settings = _get_or_create_outreach_settings(db)
     result = sync_imap_inbox(settings=settings, db=db, limit=100)
     return result
+
+
+class SpamRuleItem(BaseModel):
+    type: str = "domain"  # domain, keyword, sender
+    value: str
 
 
 @router.patch("/inbox/{message_id}/read")
@@ -701,13 +737,125 @@ def toggle_inbox_spam(message_id: str, db: Session = Depends(get_db)) -> dict[st
     msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
-    msg.is_spam = not getattr(msg, "is_spam", False)
-    if msg.lead_id:
-        lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
-        if lead:
-            lead.status = "spam" if msg.is_spam else "new"
+
+    settings = _get_or_create_outreach_settings(db)
+    spam_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+
+    sender_email = (msg.sender_email or "").strip().lower()
+    sender_domain = sender_email.split("@")[-1] if "@" in sender_email else ""
+    generic_domains = {
+        "gmail.com", "yandex.ru", "mail.ru", "bk.ru", "inbox.ru", "list.ru",
+        "rambler.ru", "ya.ru", "internet.ru", "outlook.com", "hotmail.com",
+    }
+
+    new_is_spam = not getattr(msg, "is_spam", False)
+    msg.is_spam = new_is_spam
+
+    auto_blocked_rule = None
+    affected_count = 1
+
+    if new_is_spam:
+        msg.category = "spam"
+        if msg.lead_id:
+            lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+            if lead:
+                lead.status = "spam"
+
+        # If sender domain is not generic free mail, auto-learn domain rule
+        if sender_domain and sender_domain not in generic_domains and len(sender_domain) > 3:
+            rule_exists = any(r.get("type") == "domain" and r.get("value") == sender_domain for r in spam_rules)
+            if not rule_exists:
+                auto_blocked_rule = {"type": "domain", "value": sender_domain}
+                spam_rules.append(auto_blocked_rule)
+                settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+
+            # Retroactively mark all emails from this domain as spam
+            other_msgs = db.query(OutreachIncomingEmail).filter(
+                OutreachIncomingEmail.sender_email.ilike(f"%@{sender_domain}")
+            ).all()
+            for om in other_msgs:
+                if not om.is_spam:
+                    om.is_spam = True
+                    om.category = "spam"
+                    affected_count += 1
+        elif sender_email:
+            rule_exists = any(r.get("type") == "sender" and r.get("value") == sender_email for r in spam_rules)
+            if not rule_exists:
+                auto_blocked_rule = {"type": "sender", "value": sender_email}
+                spam_rules.append(auto_blocked_rule)
+                settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+    else:
+        # Unmarking spam: recalculate category
+        from .outreach_mail import build_leads_lookup, parse_bounce_info, is_auto_reply_message
+        email_map, domain_map = build_leads_lookup(db)
+        is_bounce, _, _, _ = parse_bounce_info(msg.sender_email, msg.sender_name, msg.subject, msg.body_text, email_map, domain_map)
+        if is_bounce:
+            msg.category = "bounce"
+        else:
+            is_auto = is_auto_reply_message(msg.subject, msg.body_text, msg.sender_name, msg.sender_email)
+            msg.category = "auto_reply" if is_auto else "reply"
+
+        # Remove domain or sender rule if was added
+        spam_rules = [r for r in spam_rules if not (r.get("value") in [sender_domain, sender_email])]
+        settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+
     db.commit()
-    return {"ok": True, "is_spam": msg.is_spam}
+    return {
+        "ok": True,
+        "is_spam": msg.is_spam,
+        "auto_blocked_rule": auto_blocked_rule,
+        "affected_count": affected_count,
+    }
+
+
+@router.post("/inbox/purge-spam")
+def purge_inbox_spam(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Deletes all messages flagged as spam."""
+    spam_msgs = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.is_spam == True).all()
+    count = len(spam_msgs)
+    for m in spam_msgs:
+        db.delete(m)
+    db.commit()
+    return {"ok": True, "deleted_count": count}
+
+
+@router.get("/spam-rules")
+def get_spam_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Returns the list of active custom spam rules (domains, keywords, senders)."""
+    settings = _get_or_create_outreach_settings(db)
+    rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+    return {"rules": rules}
+
+
+@router.post("/spam-rules")
+def add_spam_rule(rule: SpamRuleItem, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Adds a new blocked domain or keyword rule and retroactively applies it."""
+    from .outreach_mail import backfill_existing_bounces
+    settings = _get_or_create_outreach_settings(db)
+    rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+    val = rule.value.strip().lower()
+    if not val:
+        raise HTTPException(status_code=400, detail="Значение правила не может быть пустым")
+
+    if not any(r.get("type") == rule.type and r.get("value") == val for r in rules):
+        rules.append({"type": rule.type, "value": val})
+        settings.spam_rules_json = json.dumps(rules, ensure_ascii=False)
+        db.commit()
+
+    backfill_existing_bounces(db)
+    return {"ok": True, "rules": rules}
+
+
+@router.delete("/spam-rules/{rule_index}")
+def delete_spam_rule(rule_index: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Deletes a spam rule by index."""
+    settings = _get_or_create_outreach_settings(db)
+    rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+    if 0 <= rule_index < len(rules):
+        rules.pop(rule_index)
+        settings.spam_rules_json = json.dumps(rules, ensure_ascii=False)
+        db.commit()
+    return {"ok": True, "rules": rules}
 
 
 @router.delete("/inbox/{message_id}")

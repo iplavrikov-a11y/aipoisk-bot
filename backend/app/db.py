@@ -279,6 +279,13 @@ def _ensure_schema() -> None:
         for column, definition in outreach_inbox_additions.items():
             if outreach_inbox_existing and column not in outreach_inbox_existing:
                 connection.execute(text(f"ALTER TABLE outreach_inbox ADD COLUMN {column} {definition}"))
+        outreach_settings_existing = _existing_columns(inspector, "outreach_settings")
+        outreach_settings_additions = {
+            "spam_rules_json": "TEXT DEFAULT '[]'",
+        }
+        for column, definition in outreach_settings_additions.items():
+            if outreach_settings_existing and column not in outreach_settings_existing:
+                connection.execute(text(f"ALTER TABLE outreach_settings ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:

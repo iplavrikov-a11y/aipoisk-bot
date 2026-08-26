@@ -259,6 +259,7 @@ class OutreachSettings(Base):
     # Sending throttles
     delay_seconds: Mapped[float] = mapped_column(Float, default=2.0)
     daily_limit: Mapped[int] = mapped_column(Integer, default=500)
+    spam_rules_json: Mapped[str] = mapped_column(Text, default="[]")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     def to_dict(self, include_secrets: bool = False) -> dict[str, Any]:
@@ -281,6 +282,7 @@ class OutreachSettings(Base):
             "imap_use_ssl": self.imap_use_ssl,
             "delay_seconds": self.delay_seconds,
             "daily_limit": self.daily_limit,
+            "spam_rules": json.loads(self.spam_rules_json) if self.spam_rules_json else [],
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
