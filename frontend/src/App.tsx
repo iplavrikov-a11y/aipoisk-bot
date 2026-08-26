@@ -3597,33 +3597,53 @@ function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?
   }
   const files = details.files || []
   const sources = details.sources || []
+  const hasAi = Boolean(job.ai_model || job.ai_provider_name || job.ai_provider)
+  const hasYandex = Boolean(job.yandex_requests_count || job.yandex_cost_rub)
+
   return (
     <div className="job-detail-panel">
       <JobTimeline job={job} hasInput={files.length > 0 || sources.length > 0} />
       {(files.length > 0 || sources.length > 0) && (
-        <div className="job-detail-section">
-          <strong>Что загрузил клиент</strong>
-          {files.map(file => (
-            <button className="ghost small-text input-file-download" key={file.id} onClick={() => void onDownloadInput(job, file)}>
-              <Download size={14} />{file.original_filename}
-            </button>
-          ))}
-          {sources.map(source => (
-            <span key={source.id}>{source.label || 'Ссылка'}: {source.value}</span>
-          ))}
+        <div className="job-detail-row">
+          <span className="job-detail-label">Входные данные:</span>
+          <div className="job-detail-files">
+            {files.map(file => (
+              <button
+                type="button"
+                className="input-file-pill"
+                key={file.id}
+                onClick={() => void onDownloadInput(job, file)}
+                title={`Скачать: ${file.original_filename}`}
+              >
+                <Download size={12} />
+                <span className="input-file-name">{file.original_filename}</span>
+              </button>
+            ))}
+            {sources.map(source => (
+              <span className="input-source-pill" key={source.id} title={source.value}>
+                <Globe size={11} /> {source.label || 'Ссылка'}: {source.value}
+              </span>
+            ))}
+          </div>
         </div>
       )}
       {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
-      {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
-        <div className="job-detail-section ai-metrics">
-          <strong>Искусственный интеллект:</strong>
-          <span> Провайдер: {job.ai_provider_name || job.ai_provider || '—'}</span> · <span>Модель: {job.ai_model || '—'}</span>
-        </div>
-      )}
-      {Boolean(job.yandex_requests_count || job.yandex_cost_rub) && (
-        <div className="job-detail-section yandex-metrics">
-          <strong>Расход Yandex Search API:</strong>
-          <span> Запросов: {job.yandex_requests_count || 0}</span> · <span>Стоимость: {(job.yandex_cost_rub || 0).toFixed(2)} ₽</span>
+      {(hasAi || hasYandex) && (
+        <div className="job-detail-metrics-row">
+          {hasAi && (
+            <span className="job-metric-chip ai">
+              <BrainCircuit size={12} />
+              <span className="metric-title">ИИ:</span>
+              <span className="metric-val">{job.ai_provider_name || job.ai_provider || '—'} · {job.ai_model || '—'}</span>
+            </span>
+          )}
+          {hasYandex && (
+            <span className="job-metric-chip yandex">
+              <Search size={11} />
+              <span className="metric-title">Yandex Search:</span>
+              <span className="metric-val">{job.yandex_requests_count || 0} запр. ({(job.yandex_cost_rub || 0).toFixed(2)} ₽)</span>
+            </span>
+          )}
         </div>
       )}
       {job.error && <div className="job-detail-error">{job.error}</div>}
@@ -3644,8 +3664,8 @@ function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
     <div className="job-timeline" aria-label="Этапы обработки задачи">
       {steps.map(step => (
         <div className={`job-timeline-step ${step.state}`} key={step.label}>
-          <span />
-          <strong>{step.label}</strong>
+          <span className="timeline-dot" />
+          <span className="timeline-text">{step.label}</span>
         </div>
       ))}
     </div>
