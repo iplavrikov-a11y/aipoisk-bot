@@ -126,7 +126,9 @@ interface IncomingMessage {
   sender_email: string
   sender_name: string
   lead_company?: string
+  lead_email?: string
   lead_phone?: string
+  lead_notes?: string
   task_id?: string
   task_name?: string
   subject: string
@@ -146,6 +148,7 @@ interface TaskStats {
   new_leads: number
   sent_leads: number
   replied_leads: number
+  bounced_leads?: number
   mx_valid_leads: number
 }
 
@@ -352,7 +355,7 @@ export function OutreachView() {
 
   // Inbox state (inside selected task)
   const [inboxMessages, setInboxMessages] = useState<IncomingMessage[]>([])
-  const [inboxFilter, setInboxFilter] = useState<'all' | 'unread' | 'spam'>('all')
+  const [inboxFilter, setInboxFilter] = useState<'all' | 'replies' | 'bounces' | 'unread' | 'spam'>('all')
   const [inboxSearch, setInboxSearch] = useState('')
   const [inboxLimit, setInboxLimit] = useState(50)
   const [inboxTotal, setInboxTotal] = useState(0)
@@ -455,6 +458,7 @@ export function OutreachView() {
           limit: String(limit || 50),
           unread_only: String(filter === 'unread'),
           is_spam: String(filter === 'spam'),
+          category: filter === 'bounces' ? 'bounces' : filter === 'replies' ? 'replies' : '',
           search,
           task_id: taskId,
         })
@@ -2709,7 +2713,7 @@ export function OutreachView() {
                       <Search size={13} style={{ position: 'absolute', left: 8, top: 10, color: '#94a3b8' }} />
                     </div>
 
-                    <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2 }}>
+                    <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2, flexWrap: 'wrap' }}>
                       <button
                         type="button"
                         onClick={() => {
@@ -2721,6 +2725,30 @@ export function OutreachView() {
                         style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
                       >
                         Все
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInboxFilter('replies')
+                          setInboxLimit(50)
+                          fetchInbox(selectedTask.id, 'replies', inboxSearch, 50)
+                        }}
+                        className={`outreach-btn ${inboxFilter === 'replies' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
+                      >
+                        Живые ответы
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInboxFilter('bounces')
+                          setInboxLimit(50)
+                          fetchInbox(selectedTask.id, 'bounces', inboxSearch, 50)
+                        }}
+                        className={`outreach-btn ${inboxFilter === 'bounces' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
+                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11, background: inboxFilter === 'bounces' ? '#dc2626' : void 0, color: inboxFilter === 'bounces' ? '#fff' : '#b91c1c', borderColor: '#fca5a5' }}
+                      >
+                        Ошибки доставки
                       </button>
                       <button
                         type="button"
@@ -2793,7 +2821,11 @@ export function OutreachView() {
                     <>
                       {inboxMessages.map((msg) => {
                         const isSelected = selectedMsg?.id === msg.id
-                        const initial = (msg.sender_name || msg.sender_email || 'U').charAt(0).toUpperCase()
+                        const isBounce = msg.category === 'bounce'
+                        const displayName = isBounce
+                          ? (msg.lead_company || msg.lead_email || msg.sender_name || msg.sender_email)
+                          : (msg.sender_name || msg.sender_email.split('@')[0])
+                        const initial = isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
                         const isUnread = !msg.is_read
                         return (
                           <div
@@ -2809,16 +2841,17 @@ export function OutreachView() {
                               }
                             }}
                             className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
+                            style={isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
                           >
-                            <div className="outreach-inbox-avatar">{initial}</div>
+                            <div className="outreach-inbox-avatar" style={isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
                                   {isUnread && (
                                     <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
                                   )}
-                                  <strong style={{ fontSize: 12, color: isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {msg.sender_name || msg.sender_email.split('@')[0]}
+                                  <strong style={{ fontSize: 12, color: isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {displayName}
                                   </strong>
                                 </div>
                                 <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
@@ -2833,6 +2866,19 @@ export function OutreachView() {
                                 {isUnread && (
                                   <span className="outreach-badge new" style={{ padding: '1px 5px', fontSize: 9 }}>
                                     Новое
+                                  </span>
+                                )}
+                                {isBounce ? (
+                                  <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                                    🔴 Не доставлено
+                                  </span>
+                                ) : msg.category === 'auto_reply' ? (
+                                  <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                    🟡 Автоответ
+                                  </span>
+                                ) : (
+                                  <span style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                    🟢 Ответ
                                   </span>
                                 )}
                                 {msg.lead_company && (
@@ -2885,7 +2931,7 @@ export function OutreachView() {
                       {/* Top Header */}
                       <div className="outreach-inbox-detail-header">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                          <div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
                             <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
                               {selectedMsg.subject || '(Без темы)'}
                             </h3>
@@ -2903,8 +2949,25 @@ export function OutreachView() {
                             {(selectedMsg.lead_company || selectedMsg.task_name) && (
                               <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                                 {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
+                                {selectedMsg.lead_email && <span>• ✉️ {selectedMsg.lead_email}</span>}
                                 {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
                                 {selectedMsg.task_name && <span>• 🎯 {selectedMsg.task_name}</span>}
+                              </div>
+                            )}
+
+                            {selectedMsg.category === 'bounce' && (
+                              <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 12, marginTop: 8 }}>
+                                <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  🔴 Сбой доставки письма (Bounce / Non-Delivery Report)
+                                </div>
+                                <div style={{ marginTop: 3 }}>
+                                  Получатель: <strong>{selectedMsg.lead_email || 'Указан в отчёте ниже'}</strong> {selectedMsg.lead_company && `(Компания: ${selectedMsg.lead_company})`}
+                                </div>
+                                {selectedMsg.lead_notes && (
+                                  <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 3 }}>
+                                    {selectedMsg.lead_notes}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -2968,8 +3031,9 @@ export function OutreachView() {
                         {selectedMsg.body_text || '(Пустое тело письма)'}
                       </div>
 
-                      {/* Sticky bottom quick reply panel (Comfortable spacious area) */}
-                      <div className="outreach-inbox-detail-reply">
+                      {/* Sticky bottom quick reply panel (Hidden for bounces) */}
+                      {selectedMsg.category !== 'bounce' ? (
+                        <div className="outreach-inbox-detail-reply">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                           <strong style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Sparkles size={13} style={{ color: '#4f46e5' }} />
@@ -3030,6 +3094,7 @@ export function OutreachView() {
                           </button>
                         </div>
                       </div>
+                    ) : null}
                     </>
                   ) : (
                     <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', margin: 'auto' }}>

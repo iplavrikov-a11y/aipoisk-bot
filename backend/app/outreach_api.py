@@ -226,9 +226,10 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
     new_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "new").scalar() or 0
     sent_leads = db.query(func.count(OutreachLead.id)).filter(
         OutreachLead.task_id == task_id,
-        or_(OutreachLead.status.in_(["sent", "replied"]), OutreachLead.sent_count > 0),
+        or_(OutreachLead.status.in_(["sent", "replied", "bounced"]), OutreachLead.sent_count > 0),
     ).scalar() or 0
     replied_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.reply_received == True).scalar() or 0
+    bounced_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.status == "bounced").scalar() or 0
     mx_valid_leads = db.query(func.count(OutreachLead.id)).filter(OutreachLead.task_id == task_id, OutreachLead.mx_valid == True).scalar() or 0
 
     return {
@@ -237,6 +238,7 @@ def get_task_stats(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any
         "new_leads": new_leads,
         "sent_leads": sent_leads,
         "replied_leads": replied_leads,
+        "bounced_leads": bounced_leads,
         "mx_valid_leads": mx_valid_leads,
     }
 
@@ -600,12 +602,14 @@ def list_inbox_messages(
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
     is_spam: bool = Query(False),
+    category: str = Query(""),
     search: str = Query(""),
     task_id: str = Query(""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     task_id_str = str(task_id).strip() if isinstance(task_id, str) else ""
     search_str = str(search).strip() if isinstance(search, str) else ""
+    category_str = str(category).strip().lower() if isinstance(category, str) else ""
     unread_bool = bool(unread_only) if isinstance(unread_only, bool) else False
     is_spam_bool = bool(is_spam) if isinstance(is_spam, bool) else False
     limit_int = int(limit) if isinstance(limit, (int, float)) else 50
@@ -616,6 +620,11 @@ def list_inbox_messages(
         q = q.filter(OutreachIncomingEmail.is_spam == True)
     else:
         q = q.filter(OutreachIncomingEmail.is_spam == False)
+
+    if category_str == "bounces":
+        q = q.filter(OutreachIncomingEmail.category == "bounce")
+    elif category_str == "replies":
+        q = q.filter(OutreachIncomingEmail.category.in_(["reply", "auto_reply", ""]))
 
     if task_id_str:
         lead_ids = [l.id for l in db.query(OutreachLead.id).filter(OutreachLead.task_id == task_id_str).all()]
@@ -651,12 +660,16 @@ def list_inbox_messages(
         if m.lead_id and m.lead_id in leads_map:
             lead = leads_map[m.lead_id]
             d["lead_company"] = lead.company_name
+            d["lead_email"] = lead.email
             d["lead_phone"] = lead.phone
+            d["lead_notes"] = lead.notes
             d["task_id"] = lead.task_id
             d["task_name"] = tasks_map.get(lead.task_id, "")
         else:
             d["lead_company"] = ""
+            d["lead_email"] = ""
             d["lead_phone"] = ""
+            d["lead_notes"] = ""
             d["task_id"] = ""
             d["task_name"] = ""
         items.append(d)

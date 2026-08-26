@@ -365,8 +365,86 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             db.commit()
 
 
+RE_GENERIC_EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", re.IGNORECASE)
+RE_BOUNCE_SENDER = re.compile(r"mailer-daemon|postmaster|antispam|ksmg|mail delivery", re.IGNORECASE)
+RE_BOUNCE_SUBJECT = re.compile(r"undelivered|не удается доставить|delivery status|failure|undeliverable|returned to sender|mail delivery failed|не удалось доставить", re.IGNORECASE)
+RE_DIAGNOSTIC_REASON = re.compile(r"(?:said:|Diagnostic-Code:.*?|Status:.*?|error:)\s*([0-9]{3}[^\n\r]+|Access Denied|User unknown|Mailbox unavailable[^\n\r]*)", re.IGNORECASE)
+
+
+def parse_bounce_info(sender_email: str, sender_name: str, subject: str, body_text: str, leads_map: dict[str, str]) -> tuple[bool, str | None, str, str]:
+    """
+    Checks if email is an NDR / delivery failure, extracts target lead email, lead_id and failure reason.
+    Returns (is_bounce, matched_lead_id, target_email, failure_reason).
+    """
+    is_bounce = False
+    sender_clean = sender_email.lower().strip()
+    name_clean = sender_name.lower().strip()
+    subj_clean = subject.lower().strip()
+    body_clean = body_text.lower()
+
+    if RE_BOUNCE_SENDER.search(sender_clean) or RE_BOUNCE_SENDER.search(name_clean) or RE_BOUNCE_SUBJECT.search(subj_clean):
+        is_bounce = True
+    elif "this is the mail system" in body_clean or "permanent error" in body_clean or "could not be delivered" in body_clean:
+        is_bounce = True
+
+    if not is_bounce:
+        return False, None, "", ""
+
+    matched_lead_id = None
+    target_email = ""
+    for raw_em in RE_GENERIC_EMAIL.findall(body_text):
+        cand = raw_em.lower().rstrip('.,;:>)')
+        if cand and cand != "info@tenderlex.ru" and cand != sender_clean.rstrip('.,;:>)'):
+            if cand in leads_map:
+                matched_lead_id = leads_map[cand]
+                target_email = cand
+                break
+
+    reason_m = RE_DIAGNOSTIC_REASON.search(body_text)
+    reason = reason_m.group(1).strip() if reason_m else "Не доставлено (ошибка почтового сервера получателя)"
+    reason = re.sub(r"\s+", " ", reason)[:150]
+    return True, matched_lead_id, target_email, reason
+
+
+def backfill_existing_bounces(db: Session) -> int:
+    """Retroactively identifies and links existing unlinked bounces in outreach_inbox."""
+    leads_map = {r[0].lower().rstrip('.'): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
+    unlinked = db.query(OutreachIncomingEmail).all()
+    updated_count = 0
+
+    for msg in unlinked:
+        body = msg.body_text or ""
+        is_bounce, matched_id, target_em, reason = parse_bounce_info(
+            msg.sender_email, msg.sender_name, msg.subject, body, leads_map
+        )
+        if is_bounce:
+            msg.category = "bounce"
+            if matched_id and not msg.lead_id:
+                msg.lead_id = matched_id
+                lead = db.query(OutreachLead).filter(OutreachLead.id == matched_id).first()
+                if lead:
+                    lead.status = "bounced"
+                    lead.notes = f"Ошибка доставки: {reason}"
+                updated_count += 1
+            elif msg.lead_id and not msg.category:
+                msg.category = "bounce"
+                updated_count += 1
+        else:
+            if not msg.category:
+                subj_low = (msg.subject or "").lower()
+                body_low = body.lower()
+                if "автоматический ответ" in subj_low or "automatic reply" in subj_low or "обращение" in subj_low or "заявка принята" in body_low:
+                    msg.category = "auto_reply"
+                else:
+                    msg.category = "reply"
+
+    if updated_count > 0:
+        db.commit()
+    return updated_count
+
+
 def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -> dict[str, Any]:
-    """Syncs incoming replies from info@tenderlex.ru via IMAP."""
+    """Syncs incoming replies and bounce notifications from info@tenderlex.ru via IMAP."""
     imap_host = (settings.imap_host or "127.0.0.1").strip()
     imap_port = settings.imap_port or 19993
     imap_user = (settings.imap_user or settings.from_email or "info@tenderlex.ru").strip()
@@ -374,6 +452,12 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
 
     if not imap_pass:
         return {"success": False, "error": "Пароль IMAP не указан в настройках", "new_messages": 0}
+
+    # Run backfill on existing unlinked records
+    try:
+        backfill_existing_bounces(db)
+    except Exception as be:
+        logger.warning(f"Error backfilling existing bounces: {be}")
 
     try:
         if settings.imap_use_ssl or imap_port in (993, 19993):
@@ -396,7 +480,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
         recent_ids = msg_ids[-limit:] if len(msg_ids) > limit else msg_ids
 
         existing_msg_ids = {r[0] for r in db.query(OutreachIncomingEmail.message_id).filter(OutreachIncomingEmail.message_id != "").all()}
-        leads_map = {r[0].lower(): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
+        leads_map = {r[0].lower().rstrip('.'): r[1] for r in db.query(OutreachLead.email, OutreachLead.id).all()}
 
         new_count = 0
         for m_id in reversed(recent_ids):
@@ -452,7 +536,18 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                     else:
                         body_text = text_content
 
-            lead_id = leads_map.get(sender_email)
+            is_bounce, matched_lead_id, target_em, bounce_reason = parse_bounce_info(
+                sender_email, sender_name, subject, body_text, leads_map
+            )
+
+            lead_id = leads_map.get(sender_email.rstrip('.')) or matched_lead_id
+            
+            category = "bounce" if is_bounce else "reply"
+            if not is_bounce:
+                subj_low = subject.lower()
+                body_low = body_text.lower()
+                if "автоматический ответ" in subj_low or "automatic reply" in subj_low or "обращение" in subj_low or "заявка принята" in body_low:
+                    category = "auto_reply"
 
             inbound = OutreachIncomingEmail(
                 message_id=message_id_header,
@@ -462,6 +557,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                 subject=subject,
                 body_text=body_text[:10000],
                 body_html=body_html[:50000],
+                category=category,
                 date_received=dt_utc,
                 lead_id=lead_id,
             )
@@ -470,8 +566,12 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             if lead_id:
                 lead_obj = db.query(OutreachLead).filter(OutreachLead.id == lead_id).first()
                 if lead_obj:
-                    lead_obj.reply_received = True
-                    lead_obj.status = "replied"
+                    if is_bounce:
+                        lead_obj.status = "bounced"
+                        lead_obj.notes = f"Ошибка доставки: {bounce_reason}"
+                    else:
+                        lead_obj.reply_received = True
+                        lead_obj.status = "replied"
 
             if message_id_header:
                 existing_msg_ids.add(message_id_header)

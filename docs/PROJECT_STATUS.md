@@ -908,9 +908,16 @@ Load-test boundary:
 - **Safe Cascading Client Deletion (2026-08-14)**:
   - Fixed `_force_delete_client` in `backend/app/main.py` to safely delete all cascading dependencies of a specific client in correct foreign key dependency order (`WebSession`, `WebPasswordResetRequest`, `WebEmailVerificationToken`, `AccountLinkToken`, `WebUser`, `ClientTelegramAccount`, `UserJourneyEvent`, `OnboardingReminder`, `ClientTariffOverride`, `SupplierResult`, `JobFile`, `JobSource`, `BillingTransaction`, `Job` and on-disk job folders).
   - Prevents SQLite IntegrityError/500 failures and ensures 100% isolation from other clients or global system state.
-- **Admin Panel Live Reactive Updates & Compact Modern UI (2026-08-14)**:
-  - Replaced broken EventSource connection with an adaptive background polling loop: 2.5s interval during active jobs, 6s when idle, 30s when tab is hidden, and instant refresh on window focus / visibility change.
-  - Implemented compact high-density design for `JobsView` and `ClientsView`: card heights reduced by >2x, fitting 8–10 jobs and 12–14 clients on a standard screen without losing any buttons, download links, tags, or fields.
+- **Admin Clients Tab Real-Time Polling & Instant Refresh (2026-08-26)**:
+  - Integrated dedicated background polling loop for `/api/clients` and `/api/dashboard` (8s on active Clients tab, 25s on other tabs, and instant refresh on window focus / tab visibility / view change), so new customer registrations appear immediately without manual page reload.
+- **B2B Outreach Email Bounce / NDR Diagnostics & Auto-Categorization (2026-08-26)**:
+  - Added dedicated Bounce / Non-Delivery Report parser (`parse_bounce_info`, `sync_imap_inbox`) recognizing `MAILER-DAEMON`, `postmaster`, `ksmg`, and antispam failure notices.
+  - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and updates task bounce statistics.
+  - Implemented retroactive backfill linking existing bounce records in the database.
+  - Added filter tabs in Admin Outreach View: `Все`, `Живые ответы`, `Ошибки доставки (Bounce)`, `Новые`, `Спам` with visual badges and diagnostic reason cards.
+- **Outreach Search Negative ICP & Domain Filtering (2026-08-26)**:
+  - Expanded `EXTENDED_BLOCKED_DOMAINS` and added semantic negative keyword filters in `outreach_search.py` (`crawl_site_for_contact`) to exclude non-target entities (banks, OFD/EDS providers, tender aggregators/consultants, training centers, media holdings, and `.gov.ru`/`.edu.ru` state domains).
+  - Automatically filters out irrelevant contacts from B2B supplier search tasks.
 
 Detailed task evidence for an earlier admin UI / limits / provider-settings pass
 is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.

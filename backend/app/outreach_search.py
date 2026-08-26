@@ -38,21 +38,50 @@ EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", re.I)
 PHONE_RE = re.compile(r"(?:\+7|8)[\s\-(]?\d{3}[\s\-)]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
 INN_RE = re.compile(r"\b\d{10}\b|\b\d{12}\b")
 
-# Generic blocked portal domains (aggregators, job boards, message boards, social media)
+# Generic blocked portal domains (aggregators, job boards, message boards, social media, banks, OFD, tender software)
 EXTENDED_BLOCKED_DOMAINS = BLOCKED_DOMAINS | {
-    "klerk.ru",
-    "leboard.ru",
-    "profi.ru",
-    "kwork.ru",
-    "youla.ru",
-    "hh.ru",
-    "superjob.ru",
-    "zakon.guru",
-    "garant.ru",
-    "audit-it.ru",
-    "vc.ru",
-    "journal.tinkoff.ru",
+    "klerk.ru", "leboard.ru", "profi.ru", "kwork.ru", "youla.ru", "hh.ru", "superjob.ru",
+    "zakon.guru", "garant.ru", "audit-it.ru", "vc.ru", "journal.tinkoff.ru",
+    # Banks & Financial Brokers
+    "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",
+    "psbank.ru", "lockobank.ru", "open.ru", "sovcombank.ru", "raiffeisen.ru", "mkb.ru", "rshb.ru",
+    "domrfbank.ru", "uralsib.ru", "zenit.ru", "absolutbank.ru", "metallinvestbank.ru", "bspb.ru",
+    "sravni.ru", "banki.ru", "cifin.ru", "vsezaimy.ru", "vbr.ru", "fintender.ru", "tender-garant.ru",
+    "finstar.ru", "expertcentre.org",
+    # OFD, EDS, Reporting & Tax Software
+    "1-ofd.ru", "astral.ru", "tensor.ru", "sbis.ru", "kontur.ru", "taxcom.ru", "platformaofd.ru",
+    "taxnet.ru", "e-dis.ru", "ecplegko.ru", "ed-sro.ru",
+    # Tender Aggregators, Consulting Brokers & Procurement Software
+    "tenderplan.ru", "seldon-pro.ru", "seldon.ru", "b2b-center.ru", "bicotender.ru", "synapsenet.ru",
+    "rostender.info", "zakupki.gov.ru", "sberbank-ast.ru", "rts-tender.ru", "roseltorg.ru", "etp-ets.ru",
+    "tektorg.ru", "fabrikant.ru", "gz-spb.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru",
+    "tendergo.pro", "izhtender.ru", "bidexpert.ru", "tenderopora.ru", "tendercorp.ru", "tendercapital.ru",
+    "gos-44.ru", "tenderup.ru", "b2g-partner.ru", "torgi223.ru", "tender-life.ru",
+    # Media Holdings, Libraries, Education & Research
+    "znanium.ru", "shkulev.ru", "e-library.ru", "cyberleninka.ru", "consultant.ru", "garant.ru",
+    "sudact.ru", "gosuslugi.ru", "nalog.gov.ru", "cbr.ru", "fas.gov.ru", "minfin.gov.ru",
 }
+
+IRRELEVANT_PATTERNS = [
+    r"банковск(?:ая|ие|ую|их)\s+гаранти",
+    r"открыти(?:е|я)\s+расчетн(?:ого|ых)\s+счет",
+    r"кредитован(?:ие|ия)\s+бизнеса",
+    r"сравнен(?:ие|ия)\s+кредит",
+    r"онлайн[\s-]касс",
+    r"электронн(?:ая|ой|ую|ые)\s+подпис",
+    r"выпуск\s+эцп",
+    r"оператор\s+фискальных\s+данных",
+    r"курсы\s+повышения\s+квалификации",
+    r"обучение\s+(?:44-фз|223-фз|госзакупк)",
+    r"электронная\s+библиотечная\s+система",
+    r"сетевое\s+издание",
+    r"городской\s+портал",
+    r"новости\s+городов",
+    r"агрегатор\s+тендеров",
+    r"поиск\s+тендеров\s+и\s+закупок",
+    r"тендерное\s+сопровождение",
+]
+RE_IRRELEVANT = re.compile("|".join(IRRELEVANT_PATTERNS), re.IGNORECASE)
 
 
 def _clean_email(email_str: str) -> str:
@@ -305,6 +334,16 @@ async def crawl_site_for_contact(origin_url: str, client: httpx.AsyncClient | No
             pass
 
     if not emails:
+        return None
+
+    # Filter out state, municipal and educational domain suffixes
+    lower_dom = root_dom.lower()
+    if lower_dom.endswith((".gov.ru", ".edu.ru", ".mil.ru", ".adm.ru", "gosuslugi.ru", "nalog.ru")):
+        return None
+
+    # Semantic relevance check: skip banks, guarantee brokers, training centers, OFD, news aggregators
+    if RE_IRRELEVANT.search(page_title) or (len(RE_IRRELEVANT.findall(combined_text)) >= 2 and not any(k in combined_text.lower() for k in ["производство", "завод", "поставка товара", "оптовые продажи", "дистрибьютор", "каталог продукции", "подрядные работы"])):
+        logger.debug(f"Skipping irrelevant domain {root_dom} ({page_title})")
         return None
 
     # Activity profile

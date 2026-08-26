@@ -1024,6 +1024,17 @@ export function App() {
     }
   }, [authenticated, view, seoAnalytics, loadingSeo])
 
+  useEffect(() => {
+    if (authenticated && view === 'clients') {
+      void api<Client[]>('/api/clients')
+        .then(data => { if (data) setClients(data) })
+        .catch(() => {})
+      void api<PasswordResetRequest[]>('/api/web-password-resets?status=open')
+        .then(data => { if (data) setPasswordResets(data) })
+        .catch(() => {})
+    }
+  }, [authenticated, view])
+
   const isReady = authenticated
   const canLogin = username.trim().length > 0 && password.length > 0
 
@@ -1138,6 +1149,7 @@ export function App() {
 
     let timeoutId: any = null
     let cancelled = false
+    let lastClientsPoll = 0
 
     async function loop() {
       if (cancelled) return
@@ -1164,6 +1176,26 @@ export function App() {
                 }).catch(() => {})
               }
             }
+
+            // Live polling for clients & dashboard
+            const now = Date.now()
+            const pollInterval = view === 'clients' ? 8000 : 25000
+            if (now - lastClientsPoll >= pollInterval) {
+              lastClientsPoll = now
+              const promises: [Promise<Client[] | null>, Promise<Dashboard | null>, Promise<PasswordResetRequest[] | null>?] = [
+                api<Client[]>('/api/clients').catch(() => null),
+                api<Dashboard>('/api/dashboard').catch(() => null),
+              ]
+              if (view === 'clients') {
+                promises.push(api<PasswordResetRequest[]>('/api/web-password-resets?status=open').catch(() => null))
+              }
+              const [cData, dData, pData] = await Promise.all(promises)
+              if (!cancelled) {
+                if (cData) setClients(cData)
+                if (dData) setDashboard(dData)
+                if (pData) setPasswordResets(pData)
+              }
+            }
           } catch {
             // Ignore transient background network glitches
           }
@@ -1181,6 +1213,17 @@ export function App() {
         void api<Job[]>('/api/jobs?include_internal=true&limit=200').then(updatedJobs => {
           if (!cancelled && updatedJobs) setJobs(updatedJobs)
         }).catch(() => {})
+        void api<Client[]>('/api/clients').then(cData => {
+          if (!cancelled && cData) setClients(cData)
+        }).catch(() => {})
+        void api<Dashboard>('/api/dashboard').then(dData => {
+          if (!cancelled && dData) setDashboard(dData)
+        }).catch(() => {})
+        if (view === 'clients') {
+          void api<PasswordResetRequest[]>('/api/web-password-resets?status=open').then(pData => {
+            if (!cancelled && pData) setPasswordResets(pData)
+          }).catch(() => {})
+        }
       }
     }
 
@@ -1193,7 +1236,7 @@ export function App() {
       window.removeEventListener('focus', handleVisibilityOrFocus)
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
     }
-  }, [authenticated])
+  }, [authenticated, view])
 
   useEffect(() => {
     function handleUnhandled(event: PromiseRejectionEvent) {
