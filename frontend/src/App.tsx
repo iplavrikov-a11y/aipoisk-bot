@@ -954,7 +954,7 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'seo', 'clients', 'jobs', 'billing', 'settings', 'ai'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'analytics', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1249,10 +1249,21 @@ export function App() {
           {nav.map(item => {
             const Icon = item.icon
             return (
-              <button key={item.id} className={view === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setError(''); setView(item.id) }}>
+              <a
+                key={item.id}
+                href={`#${item.id}`}
+                className={view === item.id ? 'nav-item active' : 'nav-item'}
+                onClick={(e) => {
+                  if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+                    e.preventDefault()
+                    setError('')
+                    setView(item.id)
+                  }
+                }}
+              >
                 <Icon size={17} />
                 <span>{item.label}</span>
-              </button>
+              </a>
             )
           })}
         </nav>

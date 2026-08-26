@@ -589,7 +589,8 @@ def list_send_logs(limit: int = Query(100, ge=1, le=500), db: Session = Depends(
 
 @router.get("/inbox")
 def list_inbox_messages(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
     is_spam: bool = Query(False),
     search: str = Query(""),
@@ -601,6 +602,7 @@ def list_inbox_messages(
     unread_bool = bool(unread_only) if isinstance(unread_only, bool) else False
     is_spam_bool = bool(is_spam) if isinstance(is_spam, bool) else False
     limit_int = int(limit) if isinstance(limit, (int, float)) else 50
+    offset_int = int(offset) if isinstance(offset, (int, float)) else 0
 
     q = db.query(OutreachIncomingEmail)
     if is_spam_bool:
@@ -613,7 +615,7 @@ def list_inbox_messages(
         if lead_ids:
             q = q.filter(OutreachIncomingEmail.lead_id.in_(lead_ids))
         else:
-            return {"items": []}
+            return {"items": [], "total": 0}
 
     if unread_bool:
         q = q.filter(OutreachIncomingEmail.is_read == False)
@@ -627,7 +629,9 @@ def list_inbox_messages(
                 OutreachIncomingEmail.body_text.ilike(term),
             )
         )
-    messages = q.order_by(desc(OutreachIncomingEmail.date_received)).limit(limit_int).all()
+
+    total_count = q.count()
+    messages = q.order_by(desc(OutreachIncomingEmail.date_received)).offset(offset_int).limit(limit_int).all()
 
     lead_ids = [m.lead_id for m in messages if m.lead_id]
     leads_map = {l.id: l for l in db.query(OutreachLead).filter(OutreachLead.id.in_(lead_ids)).all()} if lead_ids else {}
@@ -650,7 +654,7 @@ def list_inbox_messages(
             d["task_name"] = ""
         items.append(d)
 
-    return {"items": items}
+    return {"items": items, "total": total_count}
 
 
 @router.post("/inbox/sync")

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search,
   Mail,
@@ -46,6 +46,17 @@ import {
   Italic,
   Underline,
   FolderOpen,
+  GripVertical,
+  Maximize2,
+  Minimize2,
+  Save,
+  Columns,
+  Rows,
+  PanelRightClose,
+  PanelRightOpen,
+  FileCheck,
+  X,
+  Sliders,
 } from 'lucide-react'
 
 type TaskSubTab = 'leads' | 'campaign' | 'compose' | 'inbox' | 'settings'
@@ -144,26 +155,40 @@ interface LeadHistory {
   incoming: IncomingMessage[]
 }
 
-const COLD_EMAIL_TEMPLATES = [
+export interface EmailTemplate {
+  id: string
+  name: string
+  subject: string
+  body: string
+  isDefault?: boolean
+  updatedAt?: string
+}
+
+const DEFAULT_COLD_EMAIL_TEMPLATES: EmailTemplate[] = [
   {
     id: 'tender_subcontract',
     name: 'Основное: Поиск производителей под ТЗ и триал (44-ФЗ / 223-ФЗ)',
     subject: 'Поиск производителей под спецификации и ТЗ (44-ФЗ / 223-ФЗ)',
     body: 'Здравствуйте!\n\nЕсли вы участвуете в закупках или рассчитываете спецификации по 44-ФЗ и 223-ФЗ, то знаете главную сложность — оперативно найти прямых производителей оборудования и материалов без лишних наценок посредников, когда сроки подачи горят.\n\nМы создали сервис TenderLex (https://tenderlex.ru), который автоматизирует рутину снабжения:\n• ИИ разбирает файлы ТЗ любого формата (Word, Excel, PDF, сканы), извлекая ГОСТы и маркоразмеры;\n• За 2–3 минуты находит прямые контакты отделов продаж заводов РФ и официальных дилеров;\n• Автоматически формирует готовый официальный Запрос коммерческого предложения (КП);\n• Проверяет номенклатуру по реестру Минпромторга (нацрежим ПП 616/617).\n\nЧтобы вы оценили сервис на реальной задаче, мы открыли бесплатный пробный доступ: 4 полных поиска поставщиков или 4 аудита закупки (без привязки карты).\n\nПротестировать на вашем текущем ТЗ:\n👉 В веб-кабинете: https://tenderlex.ru/cabinet\n👉 Или в Telegram-боте: https://t.me/tenderlex_bot\n\nЕсли есть вопрос или сложная спецификация — просто ответьте на это письмо, поможем разобрать.\n\n--\nС уважением,\nКоманда TenderLex\ninfo@tenderlex.ru | https://tenderlex.ru\nОтписаться: ответьте словом «Стоп»',
+    isDefault: true,
   },
   {
     id: 'follow_up',
     name: 'Follow-up: Напоминание тем, кто не ответил',
     subject: 'Re: Поиск производителей под спецификации и ТЗ (44-ФЗ / 223-ФЗ)',
     body: 'Здравствуйте!\n\nРанее отправляли вам информацию о сервисе TenderLex для быстрого подбора прямых заводов-производителей по ТЗ госзакупок.\n\nУдалось ли протестировать бесплатный доступ?\n\nЕсли у вас сейчас есть в работе спецификация или проект контракта — можете загрузить его в https://tenderlex.ru/cabinet или в Telegram-бот @tenderlex_bot. Сервис за пару минут соберет контакты отделов продаж заводов и проверит риски.\n\nХорошего рабочего дня!\n\n--\nTenderLex\ninfo@tenderlex.ru',
+    isDefault: true,
   },
   {
     id: 'b2b_supply',
     name: 'Краткий вариант (для руководителей тендерных отделов)',
     subject: 'Контакты прямых заводов под ваши ТЗ и аудит рисков контрактов',
     body: 'Добрый день!\n\nПишу коротко и по делу: команда TenderLex запустила ИИ-сервис для участников закупок и тендерных специалистов.\n\nЧто умеет сервис:\n1. Загружаете спецификацию или проект контракта.\n2. Сервис за пару минут находит прямые контакты заводов-производителей по РФ и дилеров (email отделов сбыта, телефоны, сайты).\n3. Проверяет контракт на кабальные штрафы, нереалистичные сроки и нацрежим Минпромторга.\n\nТестовый доступ бесплатный — 4 проверки доступны сразу после входа:\nhttps://tenderlex.ru/cabinet (или бот @tenderlex_bot)\n\nБудет полезно при ближайшем расчете тендера.\n\n--\nTenderLex\ninfo@tenderlex.ru\nЕсли тема неактуальна, ответьте словом «Стоп».',
+    isDefault: true,
   },
 ]
+
+const COLD_EMAIL_TEMPLATES = DEFAULT_COLD_EMAIL_TEMPLATES
 
 async function outreachFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -195,16 +220,84 @@ async function outreachFetch<T>(path: string, options: RequestInit = {}): Promis
   return res.json() as Promise<T>
 }
 
+export function getStatusLabel(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'Отправка'
+    case 'pending':
+      return 'В очереди'
+    case 'paused':
+      return 'На паузе'
+    case 'completed':
+      return 'Завершена'
+    case 'stopped':
+    case 'cancelled':
+      return 'Остановлена'
+    case 'failed':
+    case 'error':
+      return 'Сбой'
+    case 'new':
+      return 'Новый'
+    case 'sent':
+      return 'Отправлено'
+    case 'replied':
+      return 'Ответил'
+    case 'opened':
+      return 'Открыто'
+    case 'bounced':
+      return 'Отклонено'
+    case 'unsubscribed':
+      return 'Отписан'
+    case 'spam':
+      return 'Спам'
+    default:
+      return status
+  }
+}
+
 export function OutreachView() {
   // Global & Task selection state
   const [tasks, setTasks] = useState<SearchTask[]>([])
   const [selectedTask, setSelectedTask] = useState<SearchTask | null>(null)
   const [taskStats, setTaskStats] = useState<TaskStats | null>(null)
-  const [taskSubTab, setTaskSubTab] = useState<TaskSubTab>('leads')
+  const [taskSubTab, setTaskSubTab] = useState<TaskSubTab>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_outreach_subtab') as TaskSubTab
+      if (['leads', 'campaign', 'compose', 'inbox', 'settings'].includes(saved)) return saved
+    } catch {}
+    return 'leads'
+  })
+
+  const changeTaskSubTab = (tab: TaskSubTab) => {
+    setTaskSubTab(tab)
+    try {
+      localStorage.setItem('tenderlex_outreach_subtab', tab)
+    } catch {}
+  }
 
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+
+  // Templates state
+  const [templates, setTemplates] = useState<EmailTemplate[]>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_email_templates')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      }
+    } catch {}
+    return DEFAULT_COLD_EMAIL_TEMPLATES
+  })
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
+  const [templateModalTarget, setTemplateModalTarget] = useState<'campaign' | 'compose'>('campaign')
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(DEFAULT_COLD_EMAIL_TEMPLATES[0].id)
+  const [editingTemplateName, setEditingTemplateName] = useState(DEFAULT_COLD_EMAIL_TEMPLATES[0].name)
+  const [editingTemplateSubject, setEditingTemplateSubject] = useState(DEFAULT_COLD_EMAIL_TEMPLATES[0].subject)
+  const [editingTemplateBody, setEditingTemplateBody] = useState(DEFAULT_COLD_EMAIL_TEMPLATES[0].body)
+  const [templateSearch, setTemplateSearch] = useState('')
+  const [isCreatingNewTemplate, setIsCreatingNewTemplate] = useState(false)
 
   // New Search Task Modal / Form state
   const [showNewTaskModal, setShowNewTaskModal] = useState(false)
@@ -238,8 +331,8 @@ export function OutreachView() {
 
   // Campaign state (inside selected task)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [campSubject, setCampSubject] = useState(COLD_EMAIL_TEMPLATES[0].subject)
-  const [campBody, setCampBody] = useState(COLD_EMAIL_TEMPLATES[0].body)
+  const [campSubject, setCampSubject] = useState(DEFAULT_COLD_EMAIL_TEMPLATES[0].subject)
+  const [campBody, setCampBody] = useState(DEFAULT_COLD_EMAIL_TEMPLATES[0].body)
   const [campAudienceType, setCampAudienceType] = useState<'new' | 'unanswered' | 'all' | 'selected'>('new')
   const [campDelay, setCampDelay] = useState<number>(3.0)
   const [campTone, setCampTone] = useState('professional')
@@ -261,11 +354,15 @@ export function OutreachView() {
   const [inboxMessages, setInboxMessages] = useState<IncomingMessage[]>([])
   const [inboxFilter, setInboxFilter] = useState<'all' | 'unread' | 'spam'>('all')
   const [inboxSearch, setInboxSearch] = useState('')
+  const [inboxLimit, setInboxLimit] = useState(50)
+  const [inboxTotal, setInboxTotal] = useState(0)
+  const [loadingMoreInbox, setLoadingMoreInbox] = useState(false)
   const [syncingInbox, setSyncingInbox] = useState(false)
   const [selectedMsg, setSelectedMsg] = useState<IncomingMessage | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
   const [aiReplyGenerating, setAiReplyGenerating] = useState(false)
+  const lastAutoSyncTimeRef = useRef<number>(0)
 
   // Settings state
   const [settings, setSettings] = useState<any>({
@@ -301,25 +398,6 @@ export function OutreachView() {
     setMessage('')
     setTimeout(() => setError(''), 7000)
   }
-
-  // Fetch all tasks
-  const fetchTasks = useCallback(async () => {
-    try {
-      const data = await outreachFetch<{ items: SearchTask[] }>('/api/outreach/tasks')
-      setTasks(data.items || [])
-      const running = data.items?.find((t) => t.status === 'running')
-      if (running) {
-        setActiveTaskId(running.id)
-        setSearchStatus(running)
-      } else if (activeTaskId) {
-        const current = data.items?.find((t) => t.id === activeTaskId)
-        if (current) setSearchStatus(current)
-      }
-    } catch (e: any) {
-      console.error('fetchTasks error:', e)
-      showError(`Ошибка загрузки задач: ${e.message}`)
-    }
-  }, [activeTaskId])
 
   // Fetch stats for the selected task
   const fetchTaskStats = useCallback(async (taskId: string) => {
@@ -369,27 +447,69 @@ export function OutreachView() {
     }
   }, [])
 
-  // Fetch inbox for the selected task
+  // Fetch inbox for the selected task (with pagination limit)
   const fetchInbox = useCallback(
-    async (taskId: string, filter = inboxFilter, search = inboxSearch) => {
+    async (taskId: string, filter = inboxFilter, search = inboxSearch, limit = inboxLimit, isLoadMore = false) => {
       try {
         const params = new URLSearchParams({
-          limit: '100',
+          limit: String(limit || 50),
           unread_only: String(filter === 'unread'),
           is_spam: String(filter === 'spam'),
           search,
           task_id: taskId,
         })
-        const data = await outreachFetch<{ items: IncomingMessage[] }>(`/api/outreach/inbox?${params.toString()}`)
-        setInboxMessages(data.items || [])
-        if (data.items?.length && !selectedMsg) {
-          setSelectedMsg(data.items[0])
+        const data = await outreachFetch<{ items: IncomingMessage[]; total?: number }>(
+          `/api/outreach/inbox?${params.toString()}`
+        )
+        const items = data.items || []
+        setInboxMessages(items)
+        setInboxTotal(typeof data.total === 'number' ? data.total : items.length)
+        if (items.length && (!selectedMsg || (!isLoadMore && !items.some((m) => m.id === selectedMsg.id)))) {
+          if (!isLoadMore) {
+            setSelectedMsg(items[0])
+          }
         }
       } catch {
         // ignore
       }
     },
-    [inboxFilter, inboxSearch, selectedMsg]
+    [inboxFilter, inboxSearch, inboxLimit, selectedMsg]
+  )
+
+  // Load more inbox messages (increment limit by 50)
+  const handleLoadMoreInbox = async () => {
+    if (!selectedTask) return
+    const nextLimit = inboxLimit + 50
+    setInboxLimit(nextLimit)
+    setLoadingMoreInbox(true)
+    try {
+      await fetchInbox(selectedTask.id, inboxFilter, inboxSearch, nextLimit, true)
+    } finally {
+      setLoadingMoreInbox(false)
+    }
+  }
+
+  // Silent auto-sync for inbox
+  const triggerAutoSync = useCallback(
+    async (taskId?: string) => {
+      const now = Date.now()
+      if (now - lastAutoSyncTimeRef.current < 15000) return
+      lastAutoSyncTimeRef.current = now
+      setSyncingInbox(true)
+      try {
+        await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
+        const targetTaskId = taskId || selectedTask?.id
+        if (targetTaskId) {
+          fetchInbox(targetTaskId, inboxFilter, inboxSearch, inboxLimit)
+          fetchTaskStats(targetTaskId)
+        }
+      } catch {
+        // silent background failure
+      } finally {
+        setSyncingInbox(false)
+      }
+    },
+    [selectedTask, inboxFilter, inboxSearch, inboxLimit, fetchInbox, fetchTaskStats]
   )
 
   // Fetch settings
@@ -402,6 +522,42 @@ export function OutreachView() {
     }
   }, [])
 
+  // Fetch all tasks and restore selected task on page refresh
+  const fetchTasks = useCallback(async () => {
+    try {
+      const data = await outreachFetch<{ items: SearchTask[] }>('/api/outreach/tasks')
+      const items = data.items || []
+      setTasks(items)
+
+      // Restore previously opened task on page refresh
+      const savedTaskId = localStorage.getItem('tenderlex_outreach_selected_task_id')
+      if (savedTaskId && items.length > 0) {
+        const found = items.find((t) => t.id === savedTaskId)
+        if (found) {
+          setSelectedTask(found)
+          const savedSubTab = (localStorage.getItem('tenderlex_outreach_subtab') || 'leads') as TaskSubTab
+          setTaskSubTab(savedSubTab)
+          fetchTaskStats(found.id)
+          fetchLeads(found.id, 1, '', '')
+          fetchCampaigns(found.id)
+          fetchInbox(found.id)
+        }
+      }
+
+      const running = items.find((t) => t.status === 'running')
+      if (running) {
+        setActiveTaskId(running.id)
+        setSearchStatus(running)
+      } else if (activeTaskId) {
+        const current = items.find((t) => t.id === activeTaskId)
+        if (current) setSearchStatus(current)
+      }
+    } catch (e: any) {
+      console.error('fetchTasks error:', e)
+      showError(`Ошибка загрузки задач: ${e.message}`)
+    }
+  }, [activeTaskId, fetchTaskStats, fetchLeads, fetchCampaigns, fetchInbox])
+
   // Initial load
   useEffect(() => {
     fetchTasks()
@@ -409,9 +565,14 @@ export function OutreachView() {
   }, [])
 
   // When a task is selected, load its workspace data
-  const handleSelectTask = (task: SearchTask) => {
+  const handleSelectTask = useCallback((task: SearchTask, customSubTab?: TaskSubTab) => {
     setSelectedTask(task)
-    setTaskSubTab('leads')
+    const targetTab = customSubTab || taskSubTab || 'leads'
+    setTaskSubTab(targetTab)
+    try {
+      localStorage.setItem('tenderlex_outreach_selected_task_id', task.id)
+      localStorage.setItem('tenderlex_outreach_subtab', targetTab)
+    } catch {}
     setSelectedLeadIds([])
     setSearchFilter('')
     setStatusFilter('')
@@ -419,7 +580,7 @@ export function OutreachView() {
     fetchLeads(task.id, 1, '', '')
     fetchCampaigns(task.id)
     fetchInbox(task.id)
-  }
+  }, [fetchTaskStats, fetchLeads, fetchCampaigns, fetchInbox, taskSubTab])
 
   // Polling for active search task
   useEffect(() => {
@@ -442,6 +603,216 @@ export function OutreachView() {
     }, 3000)
     return () => clearInterval(interval)
   }, [activeTaskId, selectedTask, searchFilter, statusFilter, fetchTasks, fetchTaskStats, fetchLeads])
+
+  // Realtime polling for active campaigns and task stats
+  useEffect(() => {
+    if (!selectedTask) return
+    const isAnyRunning = campaigns.some((c) => c.status === 'running' || c.status === 'pending')
+    const intervalMs = isAnyRunning ? 2000 : (taskSubTab === 'campaign' ? 3500 : 7000)
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await outreachFetch<{ items: Campaign[] }>('/api/outreach/campaigns')
+        const filtered = (data.items || []).filter((c) => !c.task_id_filter || c.task_id_filter === selectedTask.id)
+        setCampaigns(filtered)
+
+        const stats = await outreachFetch<TaskStats>(`/api/outreach/tasks/${selectedTask.id}/stats`)
+        setTaskStats(stats)
+      } catch {
+        // ignore network error
+      }
+    }, intervalMs)
+
+    return () => clearInterval(interval)
+  }, [selectedTask, campaigns, taskSubTab])
+
+  // Trigger auto-sync on entering Inbox tab
+  useEffect(() => {
+    if (selectedTask && taskSubTab === 'inbox') {
+      triggerAutoSync(selectedTask.id)
+    }
+  }, [selectedTask?.id, taskSubTab, triggerAutoSync])
+
+  // Periodic background auto-sync every 30 seconds when in inbox subtab
+  useEffect(() => {
+    if (!selectedTask || taskSubTab !== 'inbox') return
+    const interval = setInterval(() => {
+      triggerAutoSync(selectedTask.id)
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [selectedTask?.id, taskSubTab, triggerAutoSync])
+
+  // Template CRUD Handlers
+  const saveTemplates = (newTpls: EmailTemplate[]) => {
+    setTemplates(newTpls)
+    try {
+      localStorage.setItem('tenderlex_email_templates', JSON.stringify(newTpls))
+    } catch {}
+  }
+
+  const handleOpenTemplateModal = (target: 'campaign' | 'compose', tplId?: string) => {
+    setTemplateModalTarget(target)
+    const targetId = tplId || (templates.length > 0 ? templates[0].id : '')
+    const tpl = templates.find((t) => t.id === targetId) || templates[0]
+    if (tpl) {
+      setSelectedTemplateId(tpl.id)
+      setEditingTemplateName(tpl.name)
+      setEditingTemplateSubject(tpl.subject)
+      setEditingTemplateBody(tpl.body)
+      setIsCreatingNewTemplate(false)
+    } else {
+      setIsCreatingNewTemplate(true)
+      setSelectedTemplateId('')
+      setEditingTemplateName('Новый шаблон')
+      setEditingTemplateSubject('')
+      setEditingTemplateBody('')
+    }
+    setShowTemplateModal(true)
+  }
+
+  const handleSelectTemplateInList = (tpl: EmailTemplate) => {
+    setSelectedTemplateId(tpl.id)
+    setEditingTemplateName(tpl.name)
+    setEditingTemplateSubject(tpl.subject)
+    setEditingTemplateBody(tpl.body)
+    setIsCreatingNewTemplate(false)
+  }
+
+  const handleStartNewTemplate = () => {
+    setIsCreatingNewTemplate(true)
+    setSelectedTemplateId('')
+    setEditingTemplateName('Новый шаблон')
+    setEditingTemplateSubject(campSubject || '')
+    setEditingTemplateBody(campBody || '')
+  }
+
+  const handleSaveTemplate = () => {
+    if (!editingTemplateName.trim() || !editingTemplateSubject.trim() || !editingTemplateBody.trim()) {
+      showError('Заполните название, тему и текст шаблона')
+      return
+    }
+
+    if (isCreatingNewTemplate) {
+      const newTpl: EmailTemplate = {
+        id: 'tpl_' + Date.now(),
+        name: editingTemplateName.trim(),
+        subject: editingTemplateSubject.trim(),
+        body: editingTemplateBody.trim(),
+        isDefault: false,
+        updatedAt: new Date().toISOString(),
+      }
+      const updated = [newTpl, ...templates]
+      saveTemplates(updated)
+      setSelectedTemplateId(newTpl.id)
+      setIsCreatingNewTemplate(false)
+      showSuccess(`Шаблон «${newTpl.name}» успешно создан!`)
+    } else {
+      const updated = templates.map((t) => {
+        if (t.id === selectedTemplateId) {
+          return {
+            ...t,
+            name: editingTemplateName.trim(),
+            subject: editingTemplateSubject.trim(),
+            body: editingTemplateBody.trim(),
+            updatedAt: new Date().toISOString(),
+          }
+        }
+        return t
+      })
+      saveTemplates(updated)
+      showSuccess('Шаблон успешно обновлен!')
+    }
+  }
+
+  const handleDeleteTemplate = (tplId: string) => {
+    if (templates.length <= 1) {
+      showError('Нельзя удалить последний оставшийся шаблон')
+      return
+    }
+    const tpl = templates.find((t) => t.id === tplId)
+    if (!window.confirm(`Удалить шаблон «${tpl?.name || tplId}»?`)) return
+
+    const updated = templates.filter((t) => t.id !== tplId)
+    saveTemplates(updated)
+    if (selectedTemplateId === tplId) {
+      const first = updated[0]
+      setSelectedTemplateId(first.id)
+      setEditingTemplateName(first.name)
+      setEditingTemplateSubject(first.subject)
+      setEditingTemplateBody(first.body)
+      setIsCreatingNewTemplate(false)
+    }
+    showSuccess('Шаблон удален')
+  }
+
+  const handleDuplicateTemplate = (tpl: EmailTemplate) => {
+    const copy: EmailTemplate = {
+      id: 'tpl_' + Date.now(),
+      name: `${tpl.name} (копия)`,
+      subject: tpl.subject,
+      body: tpl.body,
+      isDefault: false,
+      updatedAt: new Date().toISOString(),
+    }
+    const updated = [copy, ...templates]
+    saveTemplates(updated)
+    setSelectedTemplateId(copy.id)
+    setEditingTemplateName(copy.name)
+    setEditingTemplateSubject(copy.subject)
+    setEditingTemplateBody(copy.body)
+    setIsCreatingNewTemplate(false)
+    showSuccess('Создана копия шаблона')
+  }
+
+  const handleResetDefaultTemplates = () => {
+    if (!window.confirm('Сбросить шаблоны к исходным по умолчанию? Все пользовательские изменения будут заменены.')) return
+    saveTemplates(DEFAULT_COLD_EMAIL_TEMPLATES)
+    const first = DEFAULT_COLD_EMAIL_TEMPLATES[0]
+    setSelectedTemplateId(first.id)
+    setEditingTemplateName(first.name)
+    setEditingTemplateSubject(first.subject)
+    setEditingTemplateBody(first.body)
+    setIsCreatingNewTemplate(false)
+    showSuccess('Шаблоны сброшены к стандартным')
+  }
+
+  const handleApplyTemplate = (tpl: EmailTemplate, target: 'campaign' | 'compose') => {
+    if (target === 'campaign') {
+      setCampSubject(tpl.subject)
+      setCampBody(tpl.body)
+      if (tpl.id === 'follow_up') {
+        setCampAudienceType('unanswered')
+      }
+    } else {
+      setComposeSubject(tpl.subject)
+      setComposeBody(tpl.body)
+    }
+    setShowTemplateModal(false)
+    showSuccess(`Применен шаблон «${tpl.name}»`)
+  }
+
+  const handleSaveCurrentAsTemplate = (target: 'campaign' | 'compose') => {
+    const subj = target === 'campaign' ? campSubject : composeSubject
+    const body = target === 'campaign' ? campBody : composeBody
+    if (!subj.trim() || !body.trim()) {
+      showError('Заполните тему и текст письма перед сохранением шаблона')
+      return
+    }
+    const namePrompt = window.prompt('Введите название для нового шаблона:', subj.slice(0, 40) || 'Пользовательский шаблон')
+    if (!namePrompt || !namePrompt.trim()) return
+
+    const newTpl: EmailTemplate = {
+      id: 'tpl_' + Date.now(),
+      name: namePrompt.trim(),
+      subject: subj.trim(),
+      body: body.trim(),
+      isDefault: false,
+      updatedAt: new Date().toISOString(),
+    }
+    const updated = [newTpl, ...templates]
+    saveTemplates(updated)
+    showSuccess(`Шаблон «${newTpl.name}» сохранен в библиотеку!`)
+  }
 
   // Start search task
   const handleStartSearch = async (e: React.FormEvent) => {
@@ -541,7 +912,7 @@ export function OutreachView() {
       setCampAudienceType('selected')
       showSuccess(`Выбрано ${selectedLeadIds.length} контактов для рассылки`)
     }
-    setTaskSubTab('campaign')
+    changeTaskSubTab('campaign')
   }
 
   // Send selected leads to compose tab inside task
@@ -557,7 +928,7 @@ export function OutreachView() {
         )
         const allEmails = (data.items || []).map((l) => l.email).filter(Boolean)
         setComposeRecipients(allEmails)
-        setTaskSubTab('compose')
+        changeTaskSubTab('compose')
         showSuccess(`Добавлено ${allEmails.length} получателей во вкладку "Написать письмо"`)
       } catch (e: any) {
         showError(e.message)
@@ -565,7 +936,7 @@ export function OutreachView() {
     } else {
       const selectedEmails = leads.filter((l) => selectedLeadIds.includes(l.id)).map((l) => l.email)
       setComposeRecipients(selectedEmails)
-      setTaskSubTab('compose')
+      changeTaskSubTab('compose')
       showSuccess(`Добавлено ${selectedEmails.length} получателей во вкладку "Написать письмо"`)
     }
   }
@@ -1256,6 +1627,9 @@ export function OutreachView() {
                 type="button"
                 onClick={() => {
                   setSelectedTask(null)
+                  try {
+                    localStorage.removeItem('tenderlex_outreach_selected_task_id')
+                  } catch {}
                   fetchTasks()
                 }}
                 className="outreach-btn outreach-btn-secondary"
@@ -1346,7 +1720,7 @@ export function OutreachView() {
           <div className="outreach-tabs">
             <button
               type="button"
-              onClick={() => setTaskSubTab('leads')}
+              onClick={() => changeTaskSubTab('leads')}
               className={`outreach-tab-btn ${taskSubTab === 'leads' ? 'active' : ''}`}
             >
               <Users size={16} />
@@ -1355,7 +1729,7 @@ export function OutreachView() {
 
             <button
               type="button"
-              onClick={() => setTaskSubTab('campaign')}
+              onClick={() => changeTaskSubTab('campaign')}
               className={`outreach-tab-btn ${taskSubTab === 'campaign' ? 'active' : ''}`}
             >
               <Send size={16} />
@@ -1364,7 +1738,7 @@ export function OutreachView() {
 
             <button
               type="button"
-              onClick={() => setTaskSubTab('compose')}
+              onClick={() => changeTaskSubTab('compose')}
               className={`outreach-tab-btn ${taskSubTab === 'compose' ? 'active' : ''}`}
             >
               <PenTool size={16} />
@@ -1376,7 +1750,7 @@ export function OutreachView() {
 
             <button
               type="button"
-              onClick={() => setTaskSubTab('inbox')}
+              onClick={() => changeTaskSubTab('inbox')}
               className={`outreach-tab-btn ${taskSubTab === 'inbox' ? 'active' : ''}`}
             >
               <Inbox size={16} />
@@ -1390,7 +1764,7 @@ export function OutreachView() {
 
             <button
               type="button"
-              onClick={() => setTaskSubTab('settings')}
+              onClick={() => changeTaskSubTab('settings')}
               className={`outreach-tab-btn ${taskSubTab === 'settings' ? 'active' : ''}`}
             >
               <SettingsIcon size={16} />
@@ -1605,7 +1979,7 @@ export function OutreachView() {
                               </td>
                               <td style={{ textAlign: 'center' }}>
                                 <span className={`outreach-badge ${lead.status}`}>
-                                  {lead.status === 'new' ? 'Новый' : lead.status === 'sent' ? 'Отправлено' : lead.status === 'replied' ? 'Ответил' : lead.status}
+                                  {getStatusLabel(lead.status)}
                                 </span>
                               </td>
                               <td style={{ textAlign: 'right' }}>
@@ -1614,7 +1988,7 @@ export function OutreachView() {
                                     type="button"
                                     onClick={() => {
                                       setComposeRecipients([lead.email])
-                                      setTaskSubTab('compose')
+                                      changeTaskSubTab('compose')
                                     }}
                                     className="outreach-btn outreach-btn-secondary"
                                     style={{ padding: '3px 8px', fontSize: 11 }}
@@ -1674,14 +2048,22 @@ export function OutreachView() {
 
           {/* SUBTAB 2: CAMPAIGN IN TASK */}
           {taskSubTab === 'campaign' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 18 }}>
-              {/* Campaign Form */}
-              <div className="outreach-panel" style={{ gridColumn: 'span 7' }}>
-                <div>
-                  <h2 className="outreach-panel-title">Email-рассылка по задаче «{selectedTask.name}»</h2>
-                  <p className="outreach-panel-desc">
-                    Персональная отправка писем по базе контактов текущей задачи с автоподстановкой данных компаний и AI-помощником.
-                  </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Campaign Composer Form (Full Width) */}
+              <div className="outreach-panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <h2 className="outreach-panel-title">Email-рассылка по задаче «{selectedTask.name}»</h2>
+                    <p className="outreach-panel-desc">
+                      Персональная отправка писем по базе контактов текущей задачи с AI-помощником.
+                    </p>
+                  </div>
+                  {campaigns.some((c) => c.status === 'running') && (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 999, fontSize: 11, color: '#047857', fontWeight: 600 }}>
+                      <span className="outreach-live-dot" />
+                      <span>Рассылка идет онлайн (автообновление)</span>
+                    </div>
+                  )}
                 </div>
 
                 <form onSubmit={handleCreateCampaign} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1694,7 +2076,7 @@ export function OutreachView() {
                         type="button"
                         onClick={() => {
                           setCampAudienceType('unanswered')
-                          const followTpl = COLD_EMAIL_TEMPLATES.find((t) => t.id === 'follow_up')
+                          const followTpl = templates.find((t) => t.id === 'follow_up') || templates[0]
                           if (followTpl) {
                             setCampSubject(followTpl.subject)
                             setCampBody(followTpl.body)
@@ -1731,17 +2113,17 @@ export function OutreachView() {
                   </div>
 
                   <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
                       <label style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
                         Тема письма:
                       </label>
-                      <div style={{ display: 'flex', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <button
                           type="button"
                           onClick={() => handleAiAction('subject', 'campaign')}
                           disabled={campAiGenerating}
                           className="outreach-btn outreach-btn-indigo"
-                          style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                          style={{ padding: '2px 8px', fontSize: 11, minHeight: 26 }}
                           title="Сгенерировать привлекательную тему рассылки с AI"
                         >
                           <Sparkles size={12} />
@@ -1749,23 +2131,29 @@ export function OutreachView() {
                         </button>
 
                         <select
+                          value=""
                           onChange={(e) => {
-                            const tpl = COLD_EMAIL_TEMPLATES.find((t) => t.id === e.target.value)
-                            if (tpl) {
-                              setCampSubject(tpl.subject)
-                              setCampBody(tpl.body)
-                              if (tpl.id === 'follow_up') {
-                                setCampAudienceType('unanswered')
-                              }
+                            const val = e.target.value
+                            if (val === '__manage__') {
+                              handleOpenTemplateModal('campaign')
+                              return
                             }
+                            if (val === '__save_current__') {
+                              handleSaveCurrentAsTemplate('campaign')
+                              return
+                            }
+                            const tpl = templates.find((t) => t.id === val)
+                            if (tpl) handleApplyTemplate(tpl, 'campaign')
                           }}
-                          defaultValue=""
-                          style={{ width: 'auto', minWidth: 160, height: 24, fontSize: 11, padding: '0 6px' }}
+                          style={{ width: 'auto', minWidth: 160, height: 26, fontSize: 11, padding: '0 6px' }}
                         >
-                          <option value="" disabled>📋 Выбрать шаблон...</option>
-                          {COLD_EMAIL_TEMPLATES.map((t) => (
+                          <option value="" disabled>📋 Выбрать шаблон ({templates.length})...</option>
+                          {templates.map((t) => (
                             <option key={t.id} value={t.id}>{t.name}</option>
                           ))}
+                          <option disabled>──────────</option>
+                          <option value="__save_current__">💾 Сохранить это письмо как шаблон</option>
+                          <option value="__manage__">⚙️ Управление шаблонами...</option>
                         </select>
                       </div>
                     </div>
@@ -1779,7 +2167,7 @@ export function OutreachView() {
                     />
                   </div>
 
-                  {/* Formatting, Variables & AI Toolbar for Campaign */}
+                  {/* Formatting & AI Toolbar for Campaign (No variable chips) */}
                   <div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, background: '#f8fafc', border: '1px solid #cbd5e1', borderBottom: 'none', borderRadius: '8px 8px 0 0', padding: '6px 10px' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
@@ -1874,9 +2262,9 @@ export function OutreachView() {
                     </div>
 
                     <textarea
-                      rows={9}
+                      rows={16}
                       required
-                      style={{ borderRadius: '0 0 8px 8px', borderTop: 'none', minHeight: 180, fontSize: 13, lineHeight: 1.6 }}
+                      style={{ borderRadius: '0 0 8px 8px', borderTop: 'none', minHeight: 380, fontSize: 13.5, lineHeight: 1.6, padding: '12px 14px' }}
                       value={campBody}
                       onChange={(e) => setCampBody(e.target.value)}
                       placeholder="Текст рассылки..."
@@ -1904,7 +2292,7 @@ export function OutreachView() {
                       type="submit"
                       disabled={loading}
                       className="outreach-btn outreach-btn-emerald"
-                      style={{ padding: '8px 20px', fontSize: 13 }}
+                      style={{ padding: '8px 22px', fontSize: 13, fontWeight: 700 }}
                     >
                       <Send size={15} />
                       <span>Запустить рассылку</span>
@@ -1914,7 +2302,7 @@ export function OutreachView() {
                   {/* Test Send */}
                   <div style={{ paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
                     <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                      Отправить тест на свою почту (с предпросмотром подстановки):
+                      Отправить тест на свою почту:
                     </label>
                     <div style={{ display: 'flex', gap: 8 }}>
                       <input
@@ -1937,84 +2325,130 @@ export function OutreachView() {
                 </form>
               </div>
 
-              {/* Campaigns History */}
-              <div className="outreach-panel" style={{ gridColumn: 'span 5' }}>
-                <h2 className="outreach-panel-title">Рассылки по этой задаче</h2>
+              {/* Campaigns History (Always Below Form, Full Width) */}
+              <div className="outreach-panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <h2 className="outreach-panel-title">Рассылки по этой задаче</h2>
+                  {campaigns.length > 0 && (
+                    <span style={{ fontSize: 12, color: '#64748b' }}>
+                      Всего рассылок: <strong>{campaigns.length}</strong>
+                    </span>
+                  )}
+                </div>
+
                 {campaigns.length === 0 ? (
                   <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '30px 0' }}>
                     Рассылок по этой задаче пока не было.
                   </p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {campaigns.map((c) => (
-                      <div
-                        key={c.id}
-                        style={{ padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <strong style={{ fontSize: 13, color: '#0f172a' }}>{c.name}</strong>
-                          <span className={`outreach-badge ${c.status}`}>{c.status}</span>
-                        </div>
+                    {campaigns.map((c) => {
+                      const percent = Math.min(100, Math.round(((c.sent_count || 0) / (c.total_recipients || 1)) * 100))
+                      return (
+                        <div
+                          key={c.id}
+                          style={{
+                            padding: 14,
+                            background: c.status === 'running' ? '#f0fdf4' : '#f8fafc',
+                            border: c.status === 'running' ? '1px solid #86efac' : '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            transition: 'all 0.2s ease',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                            <strong style={{ fontSize: 13, color: '#0f172a' }}>{c.name}</strong>
+                            <span className={`outreach-badge ${c.status}`}>
+                              {c.status === 'running' && <span className="outreach-live-dot" style={{ width: 6, height: 6 }} />}
+                              {getStatusLabel(c.status)}
+                            </span>
+                          </div>
 
-                        <div style={{ fontSize: 12, color: '#64748b' }}>
-                          Отправлено: <strong style={{ color: '#0f172a' }}>{c.sent_count}</strong> из{' '}
-                          <strong style={{ color: '#0f172a' }}>{c.total_recipients}</strong>
-                        </div>
-
-                        <div style={{ width: '100%', height: 6, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden' }}>
-                          <div
-                            style={{
-                              height: '100%',
-                              background: '#0f766e',
-                              borderRadius: 999,
-                              width: `${Math.min(100, Math.round((c.sent_count / (c.total_recipients || 1)) * 100))}%`,
-                            }}
-                          />
-                        </div>
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: '#94a3b8' }}>
-                          <span>{formatDate(c.created_at)}</span>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            {c.status === 'running' && (
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await outreachFetch(`/api/outreach/campaigns/${c.id}/pause`, { method: 'POST' })
-                                  fetchCampaigns(selectedTask.id)
-                                }}
-                                className="outreach-btn outreach-btn-secondary"
-                                style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
-                              >
-                                Пауза
-                              </button>
-                            )}
-                            {c.status === 'paused' && (
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await outreachFetch(`/api/outreach/campaigns/${c.id}/resume`, { method: 'POST' })
-                                  fetchCampaigns(selectedTask.id)
-                                }}
-                                className="outreach-btn outreach-btn-emerald"
-                                style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
-                              >
-                                Возобновить
-                              </button>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: '#475569' }}>
+                            <div>
+                              Отправлено: <strong style={{ color: '#0f172a', fontSize: 13 }}>{c.sent_count}</strong> из{' '}
+                              <strong style={{ color: '#0f172a' }}>{c.total_recipients}</strong>
+                              <span style={{ marginLeft: 6, color: '#059669', fontWeight: 700 }}>({percent}%)</span>
+                            </div>
+                            {c.failed_count > 0 && (
+                              <span style={{ fontSize: 11, color: '#dc2626', fontWeight: 600 }}>
+                                {c.failed_count} сбоев
+                              </span>
                             )}
                           </div>
+
+                          <div style={{ width: '100%', height: 7, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden' }}>
+                            <div
+                              style={{
+                                height: '100%',
+                                background: c.status === 'running' ? 'linear-gradient(90deg, #059669, #10b981)' : '#0f766e',
+                                borderRadius: 999,
+                                width: `${percent}%`,
+                                transition: 'width 0.4s ease',
+                              }}
+                            />
+                          </div>
+
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: '#94a3b8' }}>
+                            <span>{formatDate(c.created_at)}</span>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              {c.status === 'running' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await outreachFetch(`/api/outreach/campaigns/${c.id}/pause`, { method: 'POST' })
+                                    fetchCampaigns(selectedTask.id)
+                                  }}
+                                  className="outreach-btn outreach-btn-secondary"
+                                  style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                                >
+                                  Пауза
+                                </button>
+                              )}
+                              {c.status === 'paused' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await outreachFetch(`/api/outreach/campaigns/${c.id}/resume`, { method: 'POST' })
+                                    fetchCampaigns(selectedTask.id)
+                                  }}
+                                  className="outreach-btn outreach-btn-emerald"
+                                  style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                                >
+                                  Возобновить
+                                </button>
+                              )}
+                              {(c.status === 'running' || c.status === 'paused') && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (window.confirm('Остановить рассылку навсегда?')) {
+                                      await outreachFetch(`/api/outreach/campaigns/${c.id}/stop`, { method: 'POST' })
+                                      fetchCampaigns(selectedTask.id)
+                                    }
+                                  }}
+                                  className="outreach-btn outreach-btn-danger"
+                                  style={{ padding: '2px 8px', fontSize: 11, minHeight: 24 }}
+                                >
+                                  Стоп
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>
             </div>
           )}
-
           {/* SUBTAB 3: COMPOSE IN TASK */}
           {taskSubTab === 'compose' && (
             <div className="outreach-panel" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid #e2e8f0' }}>
+              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid #e2e8f0' }}>
                 <div className="outreach-composer-row">
                   <span className="outreach-composer-label">От кого</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -2092,23 +2526,33 @@ export function OutreachView() {
                     </button>
                   </div>
 
-                  <select
-                    onChange={(e) => {
-                      const tpl = COLD_EMAIL_TEMPLATES.find((t) => t.id === e.target.value)
-                      if (tpl) {
-                        setComposeSubject(tpl.subject)
-                        setComposeBody(tpl.body)
-                      }
-                    }}
-                    style={{ width: 'auto', minWidth: 180 }}
-                  >
-                    <option value="">Выбрать шаблон...</option>
-                    {COLD_EMAIL_TEMPLATES.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (val === '__manage__') {
+                          handleOpenTemplateModal('compose')
+                          return
+                        }
+                        if (val === '__save_current__') {
+                          handleSaveCurrentAsTemplate('compose')
+                          return
+                        }
+                        const tpl = templates.find((t) => t.id === val)
+                        if (tpl) handleApplyTemplate(tpl, 'compose')
+                      }}
+                      style={{ width: 'auto', minWidth: 160, height: 26, fontSize: 11, padding: '0 6px' }}
+                    >
+                      <option value="" disabled>📋 Выбрать шаблон ({templates.length})...</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                      <option disabled>──────────</option>
+                      <option value="__save_current__">💾 Сохранить это письмо как шаблон</option>
+                      <option value="__manage__">⚙️ Управление шаблонами...</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -2144,7 +2588,7 @@ export function OutreachView() {
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <button
                     type="button"
                     onClick={() => handleAiAction('cold_email', 'compose')}
@@ -2199,13 +2643,13 @@ export function OutreachView() {
               </div>
 
               {/* Text Area */}
-              <div style={{ padding: 18 }}>
+              <div style={{ padding: 16 }}>
                 <textarea
-                  rows={14}
+                  rows={16}
                   placeholder="Напишите текст письма здесь или используйте кнопку «✨ Написать с AI»..."
                   value={composeBody}
                   onChange={(e) => setComposeBody(e.target.value)}
-                  style={{ border: 'none', outline: 'none', resize: 'vertical', width: '100%', minHeight: 280, fontSize: 14, lineHeight: 1.6, padding: 0 }}
+                  style={{ border: 'none', outline: 'none', resize: 'vertical', width: '100%', minHeight: 380, fontSize: 13.5, lineHeight: 1.6, padding: 0 }}
                 />
               </div>
 
@@ -2220,7 +2664,7 @@ export function OutreachView() {
                     onClick={() => {
                       setCampSubject(composeSubject)
                       setCampBody(composeBody)
-                      setTaskSubTab('campaign')
+                      changeTaskSubTab('campaign')
                     }}
                     className="outreach-btn outreach-btn-secondary"
                   >
@@ -2244,31 +2688,37 @@ export function OutreachView() {
 
           {/* SUBTAB 4: INBOX IN TASK */}
           {taskSubTab === 'inbox' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div className="outreach-panel" style={{ padding: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div className="outreach-panel" style={{ padding: '10px 14px' }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-                    <div style={{ position: 'relative', minWidth: 260 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, flexWrap: 'wrap' }}>
+                    <div style={{ position: 'relative', minWidth: 240 }}>
                       <input
                         type="text"
                         placeholder="Поиск по ответам в задаче..."
                         value={inboxSearch}
                         onChange={(e) => setInboxSearch(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && fetchInbox(selectedTask.id, inboxFilter, inboxSearch)}
-                        style={{ paddingLeft: 30 }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            setInboxLimit(50)
+                            fetchInbox(selectedTask.id, inboxFilter, inboxSearch, 50)
+                          }
+                        }}
+                        style={{ paddingLeft: 28, height: 32, fontSize: 12 }}
                       />
-                      <Search size={14} style={{ position: 'absolute', left: 9, top: 11, color: '#94a3b8' }} />
+                      <Search size={13} style={{ position: 'absolute', left: 8, top: 10, color: '#94a3b8' }} />
                     </div>
 
-                    <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 3, gap: 2 }}>
+                    <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 8, padding: 2, gap: 2 }}>
                       <button
                         type="button"
                         onClick={() => {
                           setInboxFilter('all')
-                          fetchInbox(selectedTask.id, 'all', inboxSearch)
+                          setInboxLimit(50)
+                          fetchInbox(selectedTask.id, 'all', inboxSearch, 50)
                         }}
                         className={`outreach-btn ${inboxFilter === 'all' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 28, padding: '2px 10px', fontSize: 11 }}
+                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
                       >
                         Все
                       </button>
@@ -2276,10 +2726,11 @@ export function OutreachView() {
                         type="button"
                         onClick={() => {
                           setInboxFilter('unread')
-                          fetchInbox(selectedTask.id, 'unread', inboxSearch)
+                          setInboxLimit(50)
+                          fetchInbox(selectedTask.id, 'unread', inboxSearch, 50)
                         }}
                         className={`outreach-btn ${inboxFilter === 'unread' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 28, padding: '2px 10px', fontSize: 11 }}
+                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
                       >
                         Новые
                       </button>
@@ -2287,13 +2738,29 @@ export function OutreachView() {
                         type="button"
                         onClick={() => {
                           setInboxFilter('spam')
-                          fetchInbox(selectedTask.id, 'spam', inboxSearch)
+                          setInboxLimit(50)
+                          fetchInbox(selectedTask.id, 'spam', inboxSearch, 50)
                         }}
                         className={`outreach-btn ${inboxFilter === 'spam' ? 'outreach-btn-primary' : 'outreach-btn-ghost'}`}
-                        style={{ minHeight: 28, padding: '2px 10px', fontSize: 11 }}
+                        style={{ minHeight: 26, padding: '2px 8px', fontSize: 11 }}
                       >
                         Спам
                       </button>
+                    </div>
+
+                    {/* Auto-sync indicator */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                      {syncingInbox ? (
+                        <>
+                          <RefreshCw size={11} className="animate-spin" style={{ color: '#2563eb' }} />
+                          <span style={{ color: '#2563eb', fontWeight: 600 }}>Синхронизация...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="outreach-live-dot" style={{ width: 6, height: 6 }} />
+                          <span style={{ color: '#059669', fontWeight: 600 }}>Автосинхронизация каждые 30 сек</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -2302,145 +2769,210 @@ export function OutreachView() {
                     onClick={handleSyncInbox}
                     disabled={syncingInbox}
                     className="outreach-btn outreach-btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: 11, minHeight: 28 }}
+                    title="Принудительно проверить почтовый ящик сейчас"
                   >
-                    <RefreshCw size={13} className={syncingInbox ? 'animate-spin' : ''} />
-                    <span>{syncingInbox ? 'Синхронизация...' : 'Синхронизировать почту'}</span>
+                    <RefreshCw size={12} className={syncingInbox ? 'animate-spin' : ''} />
+                    <span>Синхронизировать сейчас</span>
                   </button>
                 </div>
               </div>
 
-              {/* 2-Pane Split Inbox */}
+              {/* 2-Pane Split Inbox (Viewport fitting & internally scrollable) */}
               <div className="outreach-inbox-split">
                 <div className="outreach-inbox-list">
                   {inboxMessages.length === 0 ? (
                     <div style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
-                      <Inbox size={32} style={{ margin: '0 auto 8px', opacity: 0.6 }} />
-                      <p style={{ margin: 0, fontWeight: 500, fontSize: 13 }}>Ответов по этой задаче пока нет</p>
+                      <Inbox size={30} style={{ margin: '0 auto 8px', opacity: 0.6 }} />
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: 12.5 }}>Ответов по этой задаче пока нет</p>
                       <p style={{ margin: '4px 0 0', fontSize: 11 }}>
                         Ответы появятся здесь автоматически после рассылки по контактам этой задачи.
                       </p>
                     </div>
                   ) : (
-                    inboxMessages.map((msg) => {
-                      const isSelected = selectedMsg?.id === msg.id
-                      const initial = (msg.sender_name || msg.sender_email || 'U').charAt(0).toUpperCase()
-                      return (
-                        <div
-                          key={msg.id}
-                          onClick={() => {
-                            setSelectedMsg(msg)
-                            if (!msg.is_read) {
-                              outreachFetch(`/api/outreach/inbox/${msg.id}/read`, { method: 'PATCH' })
-                            }
-                          }}
-                          className={`outreach-inbox-item ${isSelected ? 'selected' : ''}`}
-                        >
-                          <div className="outreach-inbox-avatar">{initial}</div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                              <strong style={{ fontSize: 12, color: !msg.is_read ? '#0f172a' : '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {msg.sender_name || msg.sender_email.split('@')[0]}
-                              </strong>
-                              <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
-                            </div>
-                            <div style={{ fontSize: 12, fontWeight: !msg.is_read ? 700 : 500, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
-                              {msg.subject || '(Без темы)'}
-                            </div>
-                            <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
-                              {msg.body_text}
-                            </div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                              {msg.lead_company && (
-                                <span style={{ background: '#f1f5f9', color: '#334155', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
-                                  🏢 {msg.lead_company}
-                                </span>
-                              )}
-                              {msg.task_name && (
-                                <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
-                                  🎯 {msg.task_name}
-                                </span>
-                              )}
-                              {msg.is_spam && (
-                                <span className="outreach-badge spam">
-                                  Спам
-                                </span>
-                              )}
+                    <>
+                      {inboxMessages.map((msg) => {
+                        const isSelected = selectedMsg?.id === msg.id
+                        const initial = (msg.sender_name || msg.sender_email || 'U').charAt(0).toUpperCase()
+                        const isUnread = !msg.is_read
+                        return (
+                          <div
+                            key={msg.id}
+                            onClick={() => {
+                              setSelectedMsg(msg)
+                              if (isUnread) {
+                                setInboxMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m)))
+                                outreachFetch(`/api/outreach/inbox/${msg.id}/read`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ is_read: true }),
+                                })
+                              }
+                            }}
+                            className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
+                          >
+                            <div className="outreach-inbox-avatar">{initial}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                                  {isUnread && (
+                                    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
+                                  )}
+                                  <strong style={{ fontSize: 12, color: isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {msg.sender_name || msg.sender_email.split('@')[0]}
+                                  </strong>
+                                </div>
+                                <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
+                              </div>
+                              <div style={{ fontSize: 11.5, fontWeight: isUnread ? 700 : 400, color: isUnread ? '#0f172a' : '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+                                {msg.subject || '(Без темы)'}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+                                {msg.body_text}
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center' }}>
+                                {isUnread && (
+                                  <span className="outreach-badge new" style={{ padding: '1px 5px', fontSize: 9 }}>
+                                    Новое
+                                  </span>
+                                )}
+                                {msg.lead_company && (
+                                  <span style={{ background: '#f1f5f9', color: '#334155', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                    🏢 {msg.lead_company}
+                                  </span>
+                                )}
+                                {msg.is_spam && (
+                                  <span className="outreach-badge spam" style={{ padding: '1px 5px', fontSize: 9 }}>
+                                    Спам
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
+                        )
+                      })}
+
+                      {/* Pagination: Load More button */}
+                      {inboxMessages.length < inboxTotal && (
+                        <div className="outreach-inbox-pagination">
+                          <span style={{ fontSize: 11, color: '#64748b' }}>
+                            Показано <strong>{inboxMessages.length}</strong> из <strong>{inboxTotal}</strong> писем
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleLoadMoreInbox}
+                            disabled={loadingMoreInbox}
+                            className="outreach-btn outreach-btn-secondary"
+                            style={{ width: '100%', padding: '6px 12px', fontSize: 11.5, minHeight: 30, justifyContent: 'center' }}
+                          >
+                            {loadingMoreInbox ? (
+                              <>
+                                <RefreshCw size={12} className="animate-spin" />
+                                <span>Загрузка писем...</span>
+                              </>
+                            ) : (
+                              <span>Показать ещё 50 писем</span>
+                            )}
+                          </button>
                         </div>
-                      )
-                    })
+                      )}
+                    </>
                   )}
                 </div>
 
                 <div className="outreach-inbox-detail">
                   {selectedMsg ? (
                     <>
-                      <div style={{ paddingBottom: 14, borderBottom: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
-                          {selectedMsg.subject || '(Без темы)'}
-                        </h2>
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <div className="outreach-inbox-avatar" style={{ width: 36, height: 36, fontSize: 14 }}>
-                              {(selectedMsg.sender_name || selectedMsg.sender_email || 'U').charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <strong style={{ fontSize: 13, color: '#0f172a' }}>
+                      {/* Top Header */}
+                      <div className="outreach-inbox-detail-header">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                          <div>
+                            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+                              {selectedMsg.subject || '(Без темы)'}
+                            </h3>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>
                                 {selectedMsg.sender_name || selectedMsg.sender_email}
-                              </strong>
-                              <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
-                                {selectedMsg.sender_email}
-                              </div>
-                              {(selectedMsg.lead_company || selectedMsg.task_name) && (
-                                <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                                  {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
-                                  {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
-                                  {selectedMsg.task_name && <span>• 🎯 Задача: {selectedMsg.task_name}</span>}
-                                </div>
-                              )}
+                              </span>
+                              <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                                &lt;{selectedMsg.sender_email}&gt;
+                              </span>
+                              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                                {formatDate(selectedMsg.date_received)}
+                              </span>
                             </div>
+                            {(selectedMsg.lead_company || selectedMsg.task_name) && (
+                              <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                {selectedMsg.lead_company && <span>🏢 {selectedMsg.lead_company}</span>}
+                                {selectedMsg.lead_phone && <span>• 📞 {selectedMsg.lead_phone}</span>}
+                                {selectedMsg.task_name && <span>• 🎯 {selectedMsg.task_name}</span>}
+                              </div>
+                            )}
                           </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const newStatus = !selectedMsg.is_read
+                                setSelectedMsg({ ...selectedMsg, is_read: newStatus })
+                                setInboxMessages((prev) => prev.map((m) => (m.id === selectedMsg.id ? { ...m, is_read: newStatus } : m)))
+                                await outreachFetch(`/api/outreach/inbox/${selectedMsg.id}/read`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ is_read: newStatus }),
+                                })
+                              }}
+                              className="outreach-btn outreach-btn-secondary"
+                              style={{ padding: '3px 8px', fontSize: 11, minHeight: 26 }}
+                              title={selectedMsg.is_read ? 'Отметить как непрочитанное' : 'Отметить как прочитанное'}
+                            >
+                              <Mail size={12} />
+                              <span>{selectedMsg.is_read ? 'Не прочитано' : 'Прочитано'}</span>
+                            </button>
+
                             <button
                               type="button"
                               onClick={() => handleToggleSpam(selectedMsg)}
                               className={`outreach-btn ${selectedMsg.is_spam ? 'outreach-btn-danger' : 'outreach-btn-secondary'}`}
+                              style={{ padding: '3px 8px', fontSize: 11, minHeight: 26 }}
                               title={selectedMsg.is_spam ? 'Убрать из спама' : 'В спам'}
                             >
-                              <ShieldAlert size={14} />
-                              <span>{selectedMsg.is_spam ? 'В спаме' : 'В спам'}</span>
+                              <ShieldAlert size={12} />
+                              <span>{selectedMsg.is_spam ? 'В спаме' : 'Спам'}</span>
                             </button>
+
                             <button
                               type="button"
                               onClick={() => window.print()}
                               className="outreach-btn outreach-btn-secondary"
+                              style={{ padding: '3px 6px', minHeight: 26 }}
                               title="Распечатать письмо"
                             >
-                              <Printer size={14} />
+                              <Printer size={12} />
                             </button>
+
                             <button
                               type="button"
                               onClick={() => handleDeleteInboxMsg(selectedMsg.id)}
                               className="outreach-btn outreach-btn-danger"
+                              style={{ padding: '3px 6px', minHeight: 26 }}
                               title="Удалить"
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={12} />
                             </button>
                           </div>
                         </div>
                       </div>
 
-                      <div style={{ fontSize: 13, lineHeight: 1.6, color: '#1e293b', whiteSpace: 'pre-wrap', flex: 1 }}>
+                      {/* Middle scrollable message body */}
+                      <div className="outreach-inbox-detail-body">
                         {selectedMsg.body_text || '(Пустое тело письма)'}
                       </div>
 
-                      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {/* Sticky bottom quick reply panel (Comfortable spacious area) */}
+                      <div className="outreach-inbox-detail-reply">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                           <strong style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <Sparkles size={14} style={{ color: '#4f46e5' }} />
+                            <Sparkles size={13} style={{ color: '#4f46e5' }} />
                             Быстрый ответ с AI
                           </strong>
                           <div style={{ display: 'flex', gap: 6 }}>
@@ -2449,7 +2981,7 @@ export function OutreachView() {
                               onClick={() => handleAiReply('agree')}
                               disabled={aiReplyGenerating}
                               className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
                             >
                               ✓ Согласиться
                             </button>
@@ -2458,7 +2990,7 @@ export function OutreachView() {
                               onClick={() => handleAiReply('request_quote')}
                               disabled={aiReplyGenerating}
                               className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
                             >
                               📋 Запросить КП
                             </button>
@@ -2467,7 +2999,7 @@ export function OutreachView() {
                               onClick={() => handleAiReply('decline')}
                               disabled={aiReplyGenerating}
                               className="outreach-btn outreach-btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              style={{ fontSize: 11, padding: '3px 9px', minHeight: 25 }}
                             >
                               ✕ Вежливый отказ
                             </button>
@@ -2475,24 +3007,25 @@ export function OutreachView() {
                         </div>
 
                         <textarea
-                          rows={3}
-                          placeholder="Напишите ответ или выберите шаблон выше..."
+                          rows={6}
+                          placeholder="Напишите ответ поставщику или выберите быстрый шаблон ответа выше..."
                           value={replyText}
                           onChange={(e) => setReplyText(e.target.value)}
-                          style={{ minHeight: 70 }}
+                          style={{ minHeight: 125, maxHeight: 240, fontSize: 13, padding: '10px 12px', resize: 'vertical', lineHeight: 1.55 }}
                         />
 
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                            Ответ будет отправлен через info@tenderlex.ru
+                            Ответ с адреса info@tenderlex.ru
                           </span>
                           <button
                             type="button"
                             onClick={handleSendReply}
                             disabled={sendingReply || !replyText.trim()}
                             className="outreach-btn outreach-btn-primary"
+                            style={{ padding: '6px 16px', fontSize: 12, minHeight: 30 }}
                           >
-                            <Send size={13} />
+                            <Send size={12} />
                             <span>{sendingReply ? 'Отправка...' : 'Отправить ответ'}</span>
                           </button>
                         </div>
@@ -2730,7 +3263,7 @@ export function OutreachView() {
                 onClick={() => {
                   setComposeRecipients([historyLead.lead.email])
                   setHistoryLead(null)
-                  setTaskSubTab('compose')
+                  changeTaskSubTab('compose')
                 }}
                 className="outreach-btn outreach-btn-primary"
               >
@@ -2879,6 +3412,225 @@ export function OutreachView() {
                   Вставить в письмо ({crmPickerSelected.length})
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TEMPLATE MANAGER MODAL ==================== */}
+      {showTemplateModal && (
+        <div className="outreach-modal-overlay" onClick={() => setShowTemplateModal(false)}>
+          <div className="outreach-modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 960 }}>
+            {/* Modal Header */}
+            <div className="outreach-modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Sliders size={18} style={{ color: '#0f766e' }} />
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#0f172a' }}>
+                    Библиотека шаблонов писем
+                  </h3>
+                  <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+                    Создавайте, редактируйте тексты, удаляйте шаблоны и вставляйте динамические переменные
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTemplateModal(false)}
+                className="outreach-btn outreach-btn-ghost"
+                style={{ padding: 4 }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body: 2 columns */}
+            <div className="outreach-modal-body" style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, padding: 18, minHeight: 480 }}>
+              {/* Left Column: Template List & Search */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderRight: '1px solid #e2e8f0', paddingRight: 16 }}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="Поиск шаблонов..."
+                    value={templateSearch}
+                    onChange={(e) => setTemplateSearch(e.target.value)}
+                    style={{ fontSize: 12, height: 32, padding: '4px 8px' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleStartNewTemplate}
+                    className="outreach-btn outreach-btn-primary"
+                    style={{ padding: '4px 8px', fontSize: 11, minHeight: 32 }}
+                    title="Создать новый шаблон"
+                  >
+                    <Plus size={14} />
+                    <span>Новый</span>
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', maxHeight: 420 }}>
+                  {templates
+                    .filter((t) => !templateSearch.trim() || t.name.toLowerCase().includes(templateSearch.toLowerCase()) || t.subject.toLowerCase().includes(templateSearch.toLowerCase()))
+                    .map((t) => {
+                      const isSelected = !isCreatingNewTemplate && selectedTemplateId === t.id
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => handleSelectTemplateInList(t)}
+                          style={{
+                            padding: '10px 12px',
+                            background: isSelected ? '#f0fdfa' : '#f8fafc',
+                            border: isSelected ? '1.5px solid #0f766e' : '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <strong style={{ fontSize: 12, color: isSelected ? '#0f766e' : '#0f172a', lineHeight: 1.3 }}>
+                              {t.name}
+                            </strong>
+                          </div>
+                          <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {t.subject || 'Без темы'}
+                          </span>
+                        </div>
+                      )
+                    })}
+                </div>
+
+                <div style={{ marginTop: 'auto', paddingTop: 8, borderTop: '1px solid #f1f5f9' }}>
+                  <button
+                    type="button"
+                    onClick={handleResetDefaultTemplates}
+                    className="outreach-btn outreach-btn-ghost"
+                    style={{ width: '100%', fontSize: 11, color: '#94a3b8' }}
+                  >
+                    <RotateCcw size={12} />
+                    <span>Сбросить к стандартным</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Template Editor & Preview */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>
+                    {isCreatingNewTemplate ? '➕ Создание нового шаблона' : '✏️ Редактирование шаблона'}
+                  </span>
+                  {!isCreatingNewTemplate && selectedTemplateId && (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {templates.find((t) => t.id === selectedTemplateId) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const t = templates.find((tpl) => tpl.id === selectedTemplateId)
+                            if (t) handleDuplicateTemplate(t)
+                          }}
+                          className="outreach-btn outreach-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                          title="Создать копию этого шаблона"
+                        >
+                          <Copy size={12} />
+                          <span>Копия</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTemplate(selectedTemplateId)}
+                        className="outreach-btn outreach-btn-danger"
+                        style={{ padding: '3px 8px', fontSize: 11, minHeight: 24 }}
+                        title="Удалить этот шаблон"
+                      >
+                        <Trash2 size={12} />
+                        <span>Удалить</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                    Название шаблона (для меню выбора):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Например: Поиск прямых производителей ТЗ..."
+                    value={editingTemplateName}
+                    onChange={(e) => setEditingTemplateName(e.target.value)}
+                    style={{ fontWeight: 600, fontSize: 13 }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                    Тема письма:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Тема рассылки или письма..."
+                    value={editingTemplateSubject}
+                    onChange={(e) => setEditingTemplateSubject(e.target.value)}
+                    style={{ fontWeight: 600, fontSize: 13 }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                    Текст письма (шаблон):
+                  </label>
+                  <textarea
+                    rows={12}
+                    value={editingTemplateBody}
+                    onChange={(e) => setEditingTemplateBody(e.target.value)}
+                    placeholder="Здравствуйте! Текст шаблона..."
+                    style={{ borderRadius: 8, minHeight: 280, fontSize: 13, lineHeight: 1.55 }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="outreach-modal-footer">
+              <button
+                type="button"
+                onClick={() => setShowTemplateModal(false)}
+                className="outreach-btn outreach-btn-secondary"
+              >
+                Закрыть
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveTemplate}
+                className="outreach-btn outreach-btn-primary"
+              >
+                <Save size={14} />
+                <span>{isCreatingNewTemplate ? 'Создать шаблон' : 'Сохранить изменения'}</span>
+              </button>
+
+              {!isCreatingNewTemplate && selectedTemplateId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const t = templates.find((tpl) => tpl.id === selectedTemplateId)
+                    if (t) {
+                      handleApplyTemplate(
+                        { ...t, name: editingTemplateName, subject: editingTemplateSubject, body: editingTemplateBody },
+                        templateModalTarget
+                      )
+                    }
+                  }}
+                  className="outreach-btn outreach-btn-emerald"
+                  style={{ fontWeight: 700 }}
+                >
+                  <CheckCircle2 size={14} />
+                  <span>Вставить в {templateModalTarget === 'campaign' ? 'рассылку' : 'письмо'}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

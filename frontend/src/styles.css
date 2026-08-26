@@ -21,7 +21,7 @@ button { border: 0; cursor: pointer; }
 .brand-name { font-size: 17px; font-weight: 750; }
 .brand-sub { color: #94a3b8; font-size: 12px; margin-top: 2px; }
 .nav { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; }
-.nav-item { display: flex; align-items: center; gap: 10px; width: 100%; height: 42px; padding: 0 12px; border-radius: 8px; color: #cbd5e1; background: transparent; text-align: left; }
+.nav-item { display: flex; align-items: center; gap: 10px; width: 100%; height: 42px; padding: 0 12px; border-radius: 8px; color: #cbd5e1; background: transparent; text-align: left; text-decoration: none; cursor: pointer; border: none; font: inherit; outline: none; box-sizing: border-box; user-select: none; transition: background 0.15s, color 0.15s; }
 .nav-item:hover, .nav-item.active { background: #1e293b; color: #fff; }
 
 .main { min-width: 0; padding: 26px 30px 48px; overflow: auto; }
@@ -2077,17 +2077,18 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 /* 2-Pane Split Inbox */
 .outreach-inbox-split {
   display: grid;
-  grid-template-columns: 360px 1fr;
-  border: 1px solid #e2e8f0;
+  grid-template-columns: 340px 1fr;
+  border: 1px solid #cbd5e1;
   border-radius: 10px;
   background: #fff;
-  min-height: 580px;
-  max-height: 700px;
+  height: calc(100vh - 210px);
+  min-height: 560px;
   overflow: hidden;
 }
 @media (max-width: 900px) {
   .outreach-inbox-split {
     grid-template-columns: 1fr;
+    height: auto;
     max-height: none;
   }
 }
@@ -2096,42 +2097,90 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  background: #f8fafc;
 }
 .outreach-inbox-item {
-  padding: 12px 14px;
-  border-bottom: 1px solid #f1f5f9;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
   cursor: pointer;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
-  transition: background 0.15s;
+  transition: all 0.15s ease;
+  background: #f8fafc;
 }
 .outreach-inbox-item:hover {
+  background: #f1f5f9;
+}
+.outreach-inbox-item.unread {
+  background: #ffffff;
+  border-left: 3px solid #2563eb;
+}
+.outreach-inbox-item.unread:hover {
   background: #f8fafc;
 }
 .outreach-inbox-item.selected {
-  background: #eff6ff;
+  background: #eff6ff !important;
   border-left: 3px solid #2563eb;
 }
 .outreach-inbox-avatar {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  background: #2563eb;
+  background: #3b82f6;
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 11px;
   flex-shrink: 0;
 }
 .outreach-inbox-detail {
-  padding: 20px;
-  overflow-y: auto;
+  padding: 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+}
+.outreach-inbox-detail-header {
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.outreach-inbox-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+  white-space: pre-wrap;
+}
+.outreach-inbox-detail-reply {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-top: auto;
+}
+.outreach-inbox-pagination {
+  padding: 10px 12px;
+  border-top: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Composer */
@@ -2173,8 +2222,180 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .outreach-badge.sent { background: #eff6ff; color: #1d4ed8; }
 .outreach-badge.replied { background: #ecfdf5; color: #047857; }
 .outreach-badge.spam { background: #fef2f2; color: #b91c1c; }
-.outreach-badge.running { background: #eff6ff; color: #1d4ed8; }
+.outreach-badge.running { background: #eff6ff; color: #1d4ed8; animation: outreachPulse 2s infinite ease-in-out; }
 .outreach-badge.completed { background: #ecfdf5; color: #047857; }
 .outreach-badge.cancelled { background: #fffbeb; color: #b45309; }
 .outreach-badge.error { background: #fef2f2; color: #b91c1c; }
+
+@keyframes outreachPulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.82; transform: scale(1.02); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* Outreach Split Container & Layouts */
+.outreach-split-container {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  position: relative;
+  min-height: 520px;
+}
+.outreach-split-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  overflow: visible;
+}
+.outreach-split-divider {
+  width: 14px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  user-select: none;
+  touch-action: none;
+  flex-shrink: 0;
+  margin: 0 2px;
+  z-index: 10;
+}
+.outreach-split-divider::before {
+  content: '';
+  width: 3px;
+  height: 100%;
+  min-height: 240px;
+  background: #cbd5e1;
+  border-radius: 4px;
+  transition: background 0.15s ease, width 0.15s ease;
+}
+.outreach-split-divider:hover::before,
+.outreach-split-divider.dragging::before {
+  background: #0f766e;
+  width: 5px;
+}
+.outreach-split-handle {
+  position: absolute;
+  top: 45%;
+  width: 18px;
+  height: 38px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  pointer-events: none;
+  transition: all 0.15s ease;
+}
+.outreach-split-divider:hover .outreach-split-handle,
+.outreach-split-divider.dragging .outreach-split-handle {
+  border-color: #0f766e;
+  color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+}
+.outreach-split-right {
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  overflow: visible;
+}
+
+/* Vertical / Stacked Layout Mode */
+.outreach-stacked-container {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+}
+
+/* Template Variables Chips */
+.outreach-var-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #0f766e;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.outreach-var-chip:hover {
+  background: #ccfbf1;
+  border-color: #5eead4;
+  color: #115e59;
+  transform: translateY(-1px);
+}
+
+/* Live Progress Bar & Pulse */
+.outreach-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: outreachDotPulse 1.6s infinite;
+}
+@keyframes outreachDotPulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Template Manager Modal */
+.outreach-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+.outreach-modal-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 960px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+.outreach-modal-header {
+  padding: 16px 22px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f8fafc;
+}
+.outreach-modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+.outreach-modal-footer {
+  padding: 14px 22px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  background: #f8fafc;
+}
+
 
