@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Admin Panel Task Cards Streamlining & Visual Separation (2026-08):
+  - Converted job cards from bulky accordion dropdowns into a single-level ultra-compact card layout with zero hidden content.
+  - Relocated micro-timeline processing stages (`Создана` → `Входные` → `ИИ` → `Результат`) into the card header right beside action buttons.
+  - Placed client input file download buttons (`input_files`) directly in the actions bar alongside result files, styled in a distinctive blue tone (`📄 file.docx`) to separate inputs from generated outputs.
+  - Unified Yandex Search API metrics directly in the top badge row (`🔍 36 запр. · 1.44 ₽`) eliminating redundant bottom boxes.
+  - Added clean status-colored left border accents (`border-left: 3.5px solid`) to clearly delimit cards visually (`green` for completed, `red` for failed, `blue` for running, `amber` for pending) without interface noise.
 - Resilient Document Parser Fallbacks & Recovery (2026-08):
   - Fixed parser crash on non-standard/corrupted `.docx` files (e.g. invalid relationships such as `word/NULL` triggering `KeyError` in `python-docx`).
   - Added multi-tier extraction pipeline: primary `python-docx` parser → secondary headless `LibreOffice` text extraction fallback → tertiary direct XML parser (`word/document.xml`) extracting structured paragraphs and tables (`w:p`, `w:tbl`).
