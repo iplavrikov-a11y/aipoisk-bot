@@ -3786,10 +3786,11 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "input_files": [file_to_dict(item) for item in job.files],
+        "sources": [source_to_dict(item) for item in job.sources],
     }
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
-        data["sources"] = [source_to_dict(item) for item in job.sources]
         data["suppliers"] = [supplier_to_dict(item) for item in job.suppliers]
     return data
 

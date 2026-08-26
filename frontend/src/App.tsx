@@ -219,6 +219,8 @@ type Job = {
   yandex_requests_count?: number
   yandex_cost_rub?: number
   yandex_cost_label?: string
+  input_files?: JobInputFile[]
+  sources?: JobSource[]
 }
 
 type JobResultOffer = {
@@ -3470,8 +3472,6 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
       </div>
       <div className="job-list">
         {visibleJobs.map(job => {
-          const expanded = Boolean(expandedJobs[job.id])
-          const details = jobDetails[job.id]
           const supplierPolicyLabel = supplierSearchPolicyLabel(job)
           const supplierRunLabel = supplierRunTypeLabel(job)
           const fallbackOffer = registryFallbackOffer(job)
@@ -3479,17 +3479,13 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           const isFinished = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled'
           const showProgress = !isFinished || (job.status === 'running' || job.status === 'pending')
           const hasResult = job.has_result || (job.result_files && job.result_files.length > 0)
+          const inputFiles = job.input_files || []
+          const inputSources = job.sources || []
+          const hasInput = inputFiles.length > 0 || inputSources.length > 0 || job.file_count > 0
+
           return (
           <article className={`job-card compact ${job.is_internal ? 'service' : ''} ${job.status}`} key={job.id}>
             <div className="job-card-top">
-              <button
-                className="client-expand-button compact"
-                title={expanded ? 'Свернуть задачу' : 'Открыть задачу'}
-                aria-expanded={expanded}
-                onClick={() => void toggleJobDetails(job)}
-              >
-                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </button>
               <div className="job-title-group">
                 <div className="job-title-row">
                   <h2 title={job.title}>{job.human_title || humanMode(job.mode)}</h2>
@@ -3503,14 +3499,17 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                   {' · '}менеджер {job.created_by_telegram_id || job.telegram_id || 'не указан'}
                 </p>
               </div>
-              <div className="job-card-actions">
-                {hasResult && !job.result_files?.length && (
-                  <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={13} /></button>
-                )}
-                {(job.status === 'running' || job.status === 'pending') && (
-                  <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
-                )}
-                <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
+              <div className="job-card-top-right">
+                <JobTimeline job={job} hasInput={hasInput} />
+                <div className="job-card-actions">
+                  {hasResult && !job.result_files?.length && (
+                    <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={13} /></button>
+                  )}
+                  {(job.status === 'running' || job.status === 'pending') && (
+                    <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
+                  )}
+                  <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
+                </div>
               </div>
             </div>
 
@@ -3535,24 +3534,37 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 <span className="badge-pill count">{job.mode === 'procurement_report' ? 'Анализ ТЗ' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
                 {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) && (
                   <span className="badge-pill yandex-cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
-                    🔍 {(job.yandex_cost_rub || 0).toFixed(2)} ₽
+                    🔍 {job.yandex_requests_count ? `${job.yandex_requests_count} запр. · ` : ''}{(job.yandex_cost_rub || 0).toFixed(2)} ₽
                   </span>
                 )}
               </div>
-              {job.result_files && job.result_files.length > 0 && (
-                <div className="job-inline-downloads">
-                  {job.result_files.map(file => (
-                    <button
-                      key={`${job.id}-${file.kind}`}
-                      className="download-pill"
-                      onClick={() => void download(job, file)}
-                      title={file.filename}
-                    >
-                      <Download size={12} />{file.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="job-inline-downloads">
+                {inputFiles.map(file => (
+                  <button
+                    key={`in-${job.id}-${file.id}`}
+                    className="download-pill input-file"
+                    onClick={() => void downloadInputFile(job, file)}
+                    title={`Входной файл клиента: ${file.original_filename}`}
+                  >
+                    <FileText size={12} /> {file.original_filename}
+                  </button>
+                ))}
+                {inputSources.map(source => (
+                  <span key={`src-${job.id}-${source.id}`} className="download-pill input-source" title={source.value}>
+                    <Globe size={11} /> {source.label || 'Ссылка'}: {source.value}
+                  </span>
+                ))}
+                {job.result_files && job.result_files.length > 0 && job.result_files.map(file => (
+                  <button
+                    key={`${job.id}-${file.kind}`}
+                    className="download-pill result-file"
+                    onClick={() => void download(job, file)}
+                    title={file.filename}
+                  >
+                    <Download size={12} />{file.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {showProgress && (
@@ -3563,14 +3575,6 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
 
             {job.status === 'failed' && Boolean(job.error) && !showProgress && (
               <div className="alert error compact">{job.error}</div>
-            )}
-
-            {expanded && (
-              <JobDetailsPanel
-                job={job}
-                details={details}
-                onDownloadInput={downloadInputFile}
-              />
             )}
           </article>
           )
@@ -3588,82 +3592,19 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   )
 }
 
-function JobDetailsPanel({ job, details, onDownloadInput }: { job: Job; details?: JobDetail | JobDetailError; onDownloadInput: (job: Job, file: JobInputFile) => Promise<void> }) {
-  if (!details) {
-    return <div className="job-detail-panel"><div className="inline-note">Загружаю детали задачи...</div></div>
-  }
-  if ('detail_error' in details) {
-    return <div className="job-detail-panel"><div className="alert error compact">{details.detail_error}</div></div>
-  }
-  const files = details.files || []
-  const sources = details.sources || []
-  const hasAi = Boolean(job.ai_model || job.ai_provider_name || job.ai_provider)
-  const hasYandex = Boolean(job.yandex_requests_count || job.yandex_cost_rub)
-
-  return (
-    <div className="job-detail-panel">
-      <JobTimeline job={job} hasInput={files.length > 0 || sources.length > 0} />
-      {(files.length > 0 || sources.length > 0) && (
-        <div className="job-detail-row">
-          <span className="job-detail-label">Входные данные:</span>
-          <div className="job-detail-files">
-            {files.map(file => (
-              <button
-                type="button"
-                className="input-file-pill"
-                key={file.id}
-                onClick={() => void onDownloadInput(job, file)}
-                title={`Скачать: ${file.original_filename}`}
-              >
-                <Download size={12} />
-                <span className="input-file-name">{file.original_filename}</span>
-              </button>
-            ))}
-            {sources.map(source => (
-              <span className="input-source-pill" key={source.id} title={source.value}>
-                <Globe size={11} /> {source.label || 'Ссылка'}: {source.value}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {!files.length && !sources.length && <div className="inline-note">Входные файлы не найдены.</div>}
-      {(hasAi || hasYandex) && (
-        <div className="job-detail-metrics-row">
-          {hasAi && (
-            <span className="job-metric-chip ai">
-              <BrainCircuit size={12} />
-              <span className="metric-title">ИИ:</span>
-              <span className="metric-val">{job.ai_provider_name || job.ai_provider || '—'} · {job.ai_model || '—'}</span>
-            </span>
-          )}
-          {hasYandex && (
-            <span className="job-metric-chip yandex">
-              <Search size={11} />
-              <span className="metric-title">Yandex Search:</span>
-              <span className="metric-val">{job.yandex_requests_count || 0} запр. ({(job.yandex_cost_rub || 0).toFixed(2)} ₽)</span>
-            </span>
-          )}
-        </div>
-      )}
-      {job.error && <div className="job-detail-error">{job.error}</div>}
-    </div>
-  )
-}
-
 function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
   const failed = job.status === 'failed' || Boolean(job.error)
   const completed = job.status === 'completed' || job.has_result || (job.result_files?.length || 0) > 0
   const steps = [
     { label: 'Создана', state: 'done' },
-    { label: 'Входные данные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
-    { label: 'ИИ-проверка', state: failed ? 'error' : completed || job.progress >= 70 ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
+    { label: 'Входные', state: hasInput ? 'done' : job.status === 'pending' ? 'current' : 'waiting' },
+    { label: 'ИИ', state: failed ? 'error' : completed || job.progress >= 70 ? 'done' : job.status === 'running' ? 'current' : 'waiting' },
     { label: 'Результат', state: failed ? 'error' : completed ? 'done' : job.status === 'running' || job.status === 'pending' ? 'current' : 'waiting' },
   ]
   return (
     <div className="job-timeline" aria-label="Этапы обработки задачи">
       {steps.map(step => (
-        <div className={`job-timeline-step ${step.state}`} key={step.label}>
+        <div className={`job-timeline-step ${step.state}`} key={step.label} title={`Этап: ${step.label} (${step.state})`}>
           <span className="timeline-dot" />
           <span className="timeline-text">{step.label}</span>
         </div>
