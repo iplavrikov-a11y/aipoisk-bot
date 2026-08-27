@@ -2566,7 +2566,7 @@ export function OutreachView() {
                         title="Продолжить сбор сохраненных кандидатов без запросов в Яндекс"
                       >
                         <Play size={14} />
-                        <span>Продолжить сбор (0 ₽)</span>
+                        <span>Продолжить сбор</span>
                       </button>
                     )}
 
@@ -2995,62 +2995,74 @@ export function OutreachView() {
 
           {/* Live Paused / Resumable Status Banner */}
           {!((searchStatus && searchStatus.status === 'running' && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id)) || selectedTask.status === 'running') &&
-            (selectedTask.status === 'paused' || selectedTask.status === 'cancelling' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) && (
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #78350f 0%, #b45309 100%)',
-                color: '#fff',
-                borderRadius: 10,
-                padding: '12px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 16,
-                boxShadow: '0 4px 12px rgba(180, 83, 9, 0.2)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 22 }}>⏸️</span>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>Сбор контактов приостановлен</span>
-                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.2)', padding: '1px 6px', borderRadius: 4 }}>
-                      Собрано: {selectedTask.collected_count} из {selectedTask.target_count}
-                    </span>
+            (selectedTask.status === 'paused' || selectedTask.status === 'cancelling' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) &&
+            (() => {
+              const allWaves = taskStats?.waves || selectedTask.waves || []
+              const activeWaveObj = selectedWave !== null ? allWaves.find((w) => w.wave === selectedWave) : allWaves[allWaves.length - 1]
+              const isSpecificWave = selectedWave !== null && activeWaveObj
+              const waveCollected = activeWaveObj ? (activeWaveObj.lead_count ?? activeWaveObj.collected ?? 0) : (selectedTask.collected_count || 0)
+              const waveTarget = activeWaveObj ? (activeWaveObj.target ?? activeWaveObj.target_count ?? 100) : (selectedTask.target_count || 0)
+              const badgeText = isSpecificWave
+                ? (activeWaveObj.wave === 1 ? `Собрано: ${waveCollected} из ${waveTarget}` : `Собрано в доборе #${activeWaveObj.wave - 1}: ${waveCollected} из ${waveTarget}`)
+                : `Собрано: ${selectedTask.collected_count || 0} из ${selectedTask.target_count || 0}`
+
+              return (
+                <div
+                  style={{
+                    background: 'linear-gradient(135deg, #78350f 0%, #b45309 100%)',
+                    color: '#fff',
+                    borderRadius: 10,
+                    padding: '12px 18px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 16,
+                    boxShadow: '0 4px 12px rgba(180, 83, 9, 0.2)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: 22 }}>⏸️</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span>Сбор контактов приостановлен</span>
+                        <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.2)', padding: '1px 6px', borderRadius: 4 }}>
+                          {badgeText}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#fef3c7', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {selectedTask.message || 'Сбор можно продолжить в один клик.'}
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: '#fef3c7', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {selectedTask.message || 'Сбор можно продолжить в один клик без повторной оплаты Яндекса.'}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleResumeSearch(selectedTask.id)}
+                      className="outreach-btn"
+                      style={{
+                        background: '#10b981',
+                        color: '#fff',
+                        border: 'none',
+                        padding: '8px 18px',
+                        fontSize: 13,
+                        borderRadius: 6,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
+                      }}
+                      title="Возобновить сбор контактов"
+                    >
+                      <Play size={14} />
+                      <span>Продолжить сбор</span>
+                    </button>
                   </div>
                 </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                <button
-                  type="button"
-                  onClick={() => handleResumeSearch(selectedTask.id)}
-                  className="outreach-btn"
-                  style={{
-                    background: '#10b981',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '8px 18px',
-                    fontSize: 13,
-                    borderRadius: 6,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
-                  }}
-                  title="Возобновить обход сохраненных сайтов (0 ₽ Яндекс)"
-                >
-                  <Play size={14} />
-                  <span>▶️ Продолжить сбор (0 ₽)</span>
-                </button>
-              </div>
-            </div>
-          )}
+              )
+            })()}
 
           {/* Sub-Navigation Tabs inside Selected Task */}
           <div className="outreach-tabs">
