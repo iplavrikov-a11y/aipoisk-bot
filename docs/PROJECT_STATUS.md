@@ -49,12 +49,14 @@ Date: 2026-07-08
   - Added multi-tier extraction pipeline: primary `python-docx` parser → secondary headless `LibreOffice` text extraction fallback → tertiary direct XML parser (`word/document.xml`) extracting structured paragraphs and tables (`w:p`, `w:tbl`).
   - Added resilient fallback for `.xlsx` and `.xls` via headless `LibreOffice` to `.csv` on `openpyxl` reader failures.
   - Added unit test suite in `backend/tests/test_document_parser.py` validating corrupted relationship recovery and XML fallback (100% pass).
-- Outreach Lead Dobor Optimization & Yandex Search Economics (2026-08):
+- Outreach Lead Dobor Optimization, Persona Alignment & Wave Lifecycle (2026-08):
   - Solved 3–4x higher unit cost and query duplication during supplementary lead collection (доборы / волны 2+).
-  - Specialized Multi-Angle Dobor Query Matrix: Enhanced `generate_search_queries_matrix` with dobor-aware prompting (`is_extend=True`, `wave_index > 1`). Instructs LLM to generate targeted niche commodity segments (OKPD2, GOST, nomenclature), specific regional industrial hubs (Urals, Volga, Siberia, South, Far East), and manufacturer dealer/distribution networks, eliminating repetitive generic phrases.
-  - Task Query Registry & Deduplication: Integrated `executed_queries: set[str]` cache into the multi-pass search engine in `backend/app/outreach_search.py`, preventing duplicate API requests for previously executed query strings.
-  - Optimized SERP Traversal: Calibrated `dynamic_max_pages` to focus on high-relevance top 40–60 positions per query, maximizing unique lead yields per request.
-  - Verification & Safety: Added unit and mock AI test suite in `backend/tests/test_outreach.py` (18/18 tests passing, 100%). Deployed live via `./scripts/deploy_tenderlex_live.sh`.
+  - Persona-Aware Multi-Angle Query Generation: Enhanced `generate_search_queries_matrix` in `backend/app/outreach_search.py` with intelligent prompt semantic detection (`is_tender_or_trading`). When the user searches for complex suppliers, trading houses, or tender contractors by technical specifications (ТЗ) under 44-FZ / 223-FZ, the system targets multi-brand supply operators and applies negative operators (`-завод -фабрика -производство -изготовитель`), while fully preserving factory/manufacturer targeting when requested.
+  - Dual-Layer AI Reranking & Review: `ai_rerank_outreach_candidates` and `ai_review_outreach_lead` dynamically align with user prompt criteria, filtering out unwanted direct factories and mono-brand dealers from complex procurement campaigns.
+  - Task Query Registry & Deduplication: Integrated `executed_queries: set[str]` cache into the multi-pass search engine, preventing duplicate API requests for previously executed queries.
+  - Wave Status Lifecycle & Isolated Progress: Fixed wave state transitions in `backend/app/outreach_api.py` (`extend_search_task`, `cancel_search_task`) ensuring prior waves are cleanly finalized as `completed` with actual lead counts preserved.
+  - UI Polishing: Updated `frontend/src/OutreachView.tsx` so wave buttons and paused status banners strictly display wave-isolated progress (`Собрано в доборе #N: X из Y`) and removed redundant `(0 ₽)` button labels.
+  - Verification & Safety: Expanded test suite in `backend/tests/test_outreach.py` (19/19 tests passing, 100%). Deployed live via `./scripts/deploy_tenderlex_live.sh`.
 
 - Lead Generation & Outreach CRM Module (2026-08):
   - Added comprehensive B2B lead search, CRM contact management, bulk email campaigns, direct composer, and IMAP inbound reply inbox in admin panel (`frontend/src/OutreachView.tsx`, `backend/app/outreach_api.py`, `backend/app/outreach_mail.py`).
