@@ -63,6 +63,7 @@ import {
   Phone,
   Check,
 } from 'lucide-react'
+import EmailBodyFrame from './EmailBodyFrame'
 
 export type MainTab = 'tasks' | 'inbox' | 'compose' | 'settings'
 export type TaskSubTab = 'leads' | 'campaign'
@@ -4506,9 +4507,11 @@ export function OutreachView() {
                     </div>
                   </div>
                 )}
-                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 13, color: '#1e293b' }}>
-                  {selectedMsg.body_text || '(Текст письма пуст)'}
-                </div>
+                <EmailBodyFrame
+                  html={selectedMsg.body_html}
+                  text={selectedMsg.body_text}
+                  minHeight={200}
+                />
               </div>
 
               {/* Quick Reply Form (only for non-bounce, non-spam messages) */}
@@ -5353,20 +5356,14 @@ export function OutreachView() {
                       </div>
 
                       {/* Body */}
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: '#334155',
-                          lineHeight: 1.55,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          background: isIncoming ? '#f8fafc' : '#ffffff',
-                          padding: '8px 10px',
-                          borderRadius: 6,
-                          border: '1px solid #e2e8f0',
-                        }}
-                      >
-                        {item.body_text || '(Текст сообщения отсутствует)'}
+                      <div style={{ marginTop: 6 }}>
+                        <EmailBodyFrame
+                          html={item.body_html}
+                          text={item.body_text}
+                          minHeight={80}
+                          maxHeight={800}
+                          showToggle={Boolean(item.body_html)}
+                        />
                       </div>
                     </div>
                   )

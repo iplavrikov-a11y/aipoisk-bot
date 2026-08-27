@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 ACTIVE_CAMPAIGN_TASKS: dict[str, asyncio.Task] = {}
 
 
+def _decode_bytes_losslessly(payload: bytes, declared_charset: str | None = None) -> str:
+    """Decode MIME text without crashing on weird or missing charsets."""
+    if not isinstance(payload, bytes):
+        return str(payload or "")
+    candidates = [declared_charset, "utf-8", "utf-8-sig", "cp1251", "koi8-r", "iso-8859-5", "latin-1"]
+    tried: set[str] = set()
+    for candidate in candidates:
+        normalized = str(candidate or "").strip().lower()
+        if not normalized or normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return payload.decode(normalized, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return payload.decode("latin-1", errors="replace")
+
+
 def _decode_mime_header(header_value: str | None) -> str:
     if not header_value:
         return ""
@@ -40,10 +58,7 @@ def _decode_mime_header(header_value: str | None) -> str:
     decoded = []
     for part, enc in parts:
         if isinstance(part, bytes):
-            try:
-                decoded.append(part.decode(enc or "utf-8", errors="replace"))
-            except Exception:
-                decoded.append(part.decode("latin1", errors="replace"))
+            decoded.append(_decode_bytes_losslessly(part, enc))
         else:
             decoded.append(str(part))
     return " ".join(decoded)
@@ -814,22 +829,142 @@ def is_spam_message(
     return False, ""
 
 
-def html_to_plain_text(html_content: str) -> str:
-    """Converts HTML email body to clean readable text."""
+def looks_like_html(text: str | None) -> bool:
+    """Returns True if the text contains obvious HTML markup tags."""
+    if not text:
+        return False
+    return bool(re.search(r"<(?:!doctype|html|head|body|table|tbody|tr|td|th|div|p|span|style|br|font)\b", text, re.IGNORECASE))
+
+
+def html_to_plain_text(html_content: str | None) -> str:
+    """Converts HTML email body to clean, readable text."""
     if not html_content:
         return ""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+    # Strip dangerous/invisible elements and comments
+    text = re.sub(r"<(script|style|head|xml|svg|noscript)[^>]*>.*?</\1>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    # Convert breaks and block elements to newlines
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</?(p|div|tr|h[1-6]|li|blockquote|pre)[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(tr|p|div|h[1-6]|li|blockquote|pre|table|tbody|section|article)[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(td|th)[^>]*>", " ", text, flags=re.IGNORECASE)
+    # Strip all remaining tags
     text = re.sub(r"<[^>]+>", "", text)
+    # Unescape HTML entities (&nbsp;, &laquo;, &#39;, etc.)
     text = html.unescape(text)
+    text = text.replace("\xa0", " ")
     text = re.sub(r"\r", "", text)
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    # Clean whitespace line by line
+    text = re.sub(r"[ \t]+", " ", text)
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    # Collapse 3+ consecutive newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def extract_email_bodies(msg: email.message.Message) -> tuple[str, str]:
+    """Extracts (clean_body_text, raw_body_html) from an email message.
+    Guarantees body_text is always clean plain text without HTML tags.
+    """
+    body_text_parts: list[str] = []
+    body_html_parts: list[str] = []
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_maintype() == "multipart":
+                continue
+            content_type = (part.get_content_type() or "").lower()
+            content_disposition = str(part.get("Content-Disposition", "")).lower()
+            if "attachment" in content_disposition:
+                continue
+            filename = part.get_filename()
+            if filename and content_type not in ("text/plain", "text/html"):
+                continue
+
+            try:
+                payload = part.get_payload(decode=True)
+                if not payload or not isinstance(payload, bytes):
+                    continue
+                charset = part.get_content_charset()
+                text_decoded = _decode_bytes_losslessly(payload, charset)
+                if content_type == "text/html":
+                    body_html_parts.append(text_decoded)
+                elif content_type == "text/plain":
+                    body_text_parts.append(text_decoded)
+            except Exception as e:
+                logger.debug(f"Error parsing MIME part: {e}")
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            if payload and isinstance(payload, bytes):
+                charset = msg.get_content_charset()
+                text_decoded = _decode_bytes_losslessly(payload, charset)
+                if (msg.get_content_type() or "").lower() == "text/html":
+                    body_html_parts.append(text_decoded)
+                else:
+                    body_text_parts.append(text_decoded)
+        except Exception as e:
+            logger.debug(f"Error parsing non-multipart email: {e}")
+
+    raw_html = "\n".join(body_html_parts).strip()
+    raw_text = "\n".join(body_text_parts).strip()
+
+    if looks_like_html(raw_text):
+        if not raw_html:
+            raw_html = raw_text
+        clean_text = html_to_plain_text(raw_text)
+    elif raw_text:
+        clean_text = raw_text
+    elif raw_html:
+        clean_text = html_to_plain_text(raw_html)
+    else:
+        clean_text = ""
+
+    if raw_html and (not clean_text or looks_like_html(clean_text)):
+        clean_text = html_to_plain_text(raw_html)
+
+    return clean_text, raw_html
+
+
+def clean_existing_inbox_bodies(db: Session) -> int:
+    """Retroactively cleans raw HTML in body_text and preserves body_html across existing records."""
+    updated_count = 0
+    inbound_msgs = db.query(OutreachIncomingEmail).all()
+    for msg in inbound_msgs:
+        changed = False
+        text_val = msg.body_text or ""
+        html_val = msg.body_html or ""
+
+        if looks_like_html(text_val):
+            if not html_val.strip():
+                msg.body_html = text_val[:50000]
+                html_val = text_val
+            msg.body_text = html_to_plain_text(text_val)[:10000]
+            changed = True
+        elif not text_val.strip() and html_val.strip():
+            msg.body_text = html_to_plain_text(html_val)[:10000]
+            changed = True
+
+        if changed:
+            updated_count += 1
+
+    if updated_count > 0:
+        try:
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to commit cleaned bodies: {e}")
+            db.rollback()
+
+    return updated_count
 
 
 def backfill_existing_bounces(db: Session) -> int:
     """Retroactively identifies and links existing unlinked bounces, auto_replies, and spam."""
+    try:
+        clean_existing_inbox_bodies(db)
+    except Exception as ce:
+        logger.warning(f"Error cleaning existing email bodies: {ce}")
+
     settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first()
     custom_rules = json.loads(settings.spam_rules_json) if settings and settings.spam_rules_json else []
     email_map, domain_map = build_leads_lookup(db)
@@ -972,34 +1107,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             else:
                 dt_utc = now_utc()
 
-            body_text = ""
-            body_html = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    content_type = part.get_content_type()
-                    content_disposition = str(part.get("Content-Disposition", ""))
-                    if "attachment" in content_disposition:
-                        continue
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        text_content = payload.decode(charset, errors="replace")
-                        if content_type == "text/plain" and not body_text:
-                            body_text = text_content
-                        elif content_type == "text/html" and not body_html:
-                            body_html = text_content
-            else:
-                payload = msg.get_payload(decode=True)
-                if payload:
-                    charset = msg.get_content_charset() or "utf-8"
-                    text_content = payload.decode(charset, errors="replace")
-                    if msg.get_content_type() == "text/html":
-                        body_html = text_content
-                    else:
-                        body_text = text_content
-
-            if not body_text.strip() and body_html:
-                body_text = html_to_plain_text(body_html)
+            body_text, body_html = extract_email_bodies(msg)
 
             # 1. Lead Match & Spam Check
             matched_lead_id = find_matched_lead_id(

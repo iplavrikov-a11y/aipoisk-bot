@@ -12,6 +12,11 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
+  - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
+  - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").
+  - Backend Extraction & Cleaning: Enhanced `html_to_plain_text`, `looks_like_html`, and `extract_email_bodies` in `backend/app/outreach_mail.py` to always provide human-readable plain text in `body_text` (for search, snippets, AI prompts) and store rich markup in `body_html`.
+  - Retroactive Database Backfill: Automatically cleaned existing database records via `clean_existing_inbox_bodies`, resolving broken views for existing incoming messages.
 - Outreach Correspondence Thread History & Fast Reply (2026-08):
   - Added dedicated "История" button in Outreach Inbox message detail view and Leads table, bringing the full conversation thread modal system from `emailagent` / `AITender`.
   - Full Chronological Timeline: Displays all incoming responses and outgoing campaign/direct emails for the specific contact/company in unified timeline cards with green/emerald incoming highlights and indigo outgoing highlights, timestamps, subject lines, body text, category badges, and copy buttons.

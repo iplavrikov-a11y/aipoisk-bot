@@ -771,6 +771,69 @@ def test_outreach_thread_endpoints():
         db.close()
 
 
+def test_html_to_plain_text_and_body_extraction():
+    from email.message import EmailMessage
+    from app.outreach_mail import looks_like_html, html_to_plain_text, extract_email_bodies
+
+    # 1. Test looks_like_html
+    assert looks_like_html('<table style="border-collapse:collapse"><tr><td>Test</td></tr></table>') is True
+    assert looks_like_html('<html><body><p>Hello world</p></body></html>') is True
+    assert looks_like_html('<div>Plain-looking text inside div</div>') is True
+    assert looks_like_html('Just simple plain text message from supplier without any tags.') is False
+    assert looks_like_html('') is False
+
+    # 2. Test html_to_plain_text
+    raw_html = '''
+    <style>body { font-size: 14px; }</style>
+    <div class="msg">
+        <p>Добрый день!</p>
+        <p>Ваше обращение <b>№ АА-198138</b> от 27.08.2026 получено.</p>
+        <table border="1">
+            <tr><th>Товар</th><th>Цена</th></tr>
+            <tr><td>Кабель ВВГнг 3x2.5</td><td>120 руб/м</td></tr>
+        </table>
+        <br/>
+        С уважением,<br/>
+        Отдел продаж
+    </div>
+    '''
+    clean_txt = html_to_plain_text(raw_html)
+    assert "<style>" not in clean_txt
+    assert "<b>" not in clean_txt
+    assert "<tr>" not in clean_txt
+    assert "Добрый день!" in clean_txt
+    assert "№ АА-198138" in clean_txt
+    assert "Кабель ВВГнг 3x2.5" in clean_txt
+    assert "120 руб/м" in clean_txt
+    assert "Отдел продаж" in clean_txt
+
+    # 3. Test extract_email_bodies on multipart email
+    msg = EmailMessage()
+    msg["Subject"] = "Тест КП"
+    msg["From"] = "supplier@pro-solution.ru"
+    msg["To"] = "info@tenderlex.ru"
+    msg.set_content("Простой текст")
+    msg.add_alternative("<h1>КП</h1><p>Текст предложения</p>", subtype="html")
+
+    txt, htm = extract_email_bodies(msg)
+    assert "Простой текст" in txt
+    assert "КП" in htm
+    assert "<p>Текст предложения</p>" in htm
+
+    # 4. Test extract_email_bodies when text/plain is raw HTML
+    msg_corrupt = EmailMessage()
+    msg_corrupt["Subject"] = "Ответ от 1C"
+    msg_corrupt["From"] = "1c@pro-solution.ru"
+    msg_corrupt["To"] = "info@tenderlex.ru"
+    msg_corrupt.set_content('<table width="100%"><tr><td>Заказ принят в работу</td></tr></table>')
+
+    txt_c, htm_c = extract_email_bodies(msg_corrupt)
+    assert "Заказ принят в работу" in txt_c
+    assert "<table" not in txt_c
+    assert "<table" in htm_c
+
+
+
 
 
 
