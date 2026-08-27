@@ -197,7 +197,15 @@ def get_fresh_system_settings(session_factory: Any = None) -> SystemSettings | N
     return None
 
 
-async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_settings: SystemSettings | None = None) -> tuple[list[str], float]:
+async def generate_search_queries_matrix(
+    prompt: str,
+    count: int = 40,
+    sys_settings: SystemSettings | None = None,
+    is_extend: bool = False,
+    wave_index: int = 1,
+    existing_count: int = 0,
+    executed_queries: set[str] | None = None,
+) -> tuple[list[str], float]:
     """Generates an extensive matrix of targeted commercial B2B supplier search queries."""
     if count <= 120:
         target_q_count = min(70, max(35, count // 2))
@@ -207,21 +215,42 @@ async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_setti
         target_q_count = min(220, max(120, count // 7))
     else:
         target_q_count = min(280, max(180, count // 10))
-    system_prompt = (
-        "Ты ведущий эксперт по поиску реальных B2B поставщиков, заводов и коммерческих организаций. "
-        "Твоя задача — составить глубокую и точную матрицу поисковых запросов для Яндекса и Google, "
-        "которая найдет официальные сайты реальных поставщиков и производителей по заданной теме пользователя. "
-        "СТРОГИЕ ПРАВИЛА СОСТАВЛЕНИЯ ЗАПРОСОВ: "
-        "1) Фокусируйся на товарных и отраслевых коммерческих запросах: заводы, производители, оптовые поставщики, дистрибьюторы, склады, каталоги продукции, коммерческие отделы продаж. "
-        "2) Добавляй коммерческие модификаторы: 'производитель', 'завод', 'оптом со склада', 'официальный дилер', 'дистрибьютор', 'прайс-лист', 'отдел продаж', 'каталог'. "
-        "3) СПЕЦИАЛИЗАЦИЯ ПО ТЕНДЕРАМ / 44-ФЗ / 223-ФЗ: Если в запросе пользователя указаны участники тендеров, поставщики по 44-ФЗ/223-ФЗ или госконтрактам — ОБЯЗАТЕЛЬНО составляй специализированные запросы, находящие компании с подтвержденным опытом закупок: 'поставки по 44-ФЗ', 'поставки по 223-ФЗ', 'исполненные госконтракты', 'реестр контрактов', 'поставки для бюджетных учреждений', 'поставки для госучреждений', 'опыт работы по 44-ФЗ', 'тендерный отдел поставщика', 'государственные закупки поставщик'. "
-        "4) Используй отрицательные операторы Яндекса для исключения мусора: -'банковская гарантия' -'обучение' -'семинар' -'эцп' -'агрегатор' -'курсы'. "
-        "5) Включай географический охват: крупнейшие регионы РФ (Москва, Санкт-Петербург, Урал, Поволжье, Сибирь, Юг РФ, общероссийские формулировки). "
-        "6) НЕ составляй запросы 'как выиграть тендер' или 'обучение госзакупкам'. Нужны только сайты реальных поставщиков товаров и услуг. "
-        f"Сгенерируй от {target_q_count} разнообразных целевых поисковых запросов. "
-        "Верни ТОЛЬКО валидный JSON массив строк, например: [\"запрос 1\", \"запрос 2\"]."
-    )
-    user_prompt = f"Целевая отрасль / профиль поставщиков:\n{prompt}\n\nКоличество контактов: {count}. Сгенерируй {target_q_count} поисковых запросов в виде JSON массива:"
+
+    if is_extend or wave_index > 1:
+        system_prompt = (
+            f"Ты ведущий эксперт по поиску реальных B2B поставщиков, заводов и коммерческих организаций. "
+            f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). В базе уже собрано {existing_count}+ базовых федеральных организаций по этой теме. "
+            "СТРОГИЕ ПРАВИЛА ДОБОРА: "
+            "1) СТРОГО ЗАПРЕЩЕНО повторять общие шаблонные фразы (например: 'поставщики оптом', 'участники тендеров 44-фз'), так как они уже полностью исчерпаны. "
+            "2) УЗКИЕ НОМЕНКЛАТУРНЫЕ ПОДКАТЕГОРИИ: разбей заданную тему на 6-10 конкретных товарных групп, видов сырья, комплектующих, оборудования или номенклатуры (с кодами ОКПД2, ГОСТ, ТУ, марками, специфическими отраслевыми терминами). "
+            "3) РЕГИОНАЛЬНЫЕ КЛАСТЕРЫ И ЦЕНТРЫ СБЫТА: обязательно привязывай запросы к конкретным промышленным регионам и городам РФ (Урал: Екатеринбург, Челябинск, Пермь; Поволжье: Казань, Самара, Нижний Новгород, Уфа; Сибирь: Новосибирск, Красноярск, Омск; Юг: Ростов-на-Дону, Краснодар; СЗФО: СПб; ЦФО: Воронеж, Ярославль, Калуга; ДВФО: Хабаровск, Владивосток). "
+            "4) СТАТУСНЫЕ ОПЕРАТОРЫ СНАБЖЕНИЯ: 'официальный дилер завода', 'торговый дом производителя', 'региональный распределительный склад', 'комплектация промышленных предприятий', 'реестр исполненных госконтрактов по профилю', 'складской комплекс опт'. "
+            "5) ТЕНДЕРНЫЙ ОПЫТ: если в теме указаны закупки/тендеры — используй маркеры реальных исполнителей: 'поставки по 44-ФЗ', 'поставки по 223-ФЗ', 'реестр договоров', 'отдел корпоративных закупок'. "
+            "6) ИСКЛЮЧЕНИЕ МУСОРА: используй отрицательные операторы: -'банковская гарантия' -'обучение' -'семинар' -'эцп' -'агрегатор' -'курсы'. "
+            f"Сгенерируй от {target_q_count} разнообразных глубоких целевых поисковых запросов. "
+            "Верни ТОЛЬКО валидный JSON массив строк, например: [\"запрос 1\", \"запрос 2\"]."
+        )
+        user_prompt = (
+            f"Целевая отрасль / профиль поставщиков:\n{prompt}\n\n"
+            f"Параметры добора: Волна #{wave_index}, требуется дополнительно контактов: {count}. "
+            f"Сгенерируй {target_q_count} глубоких специализированных поисковых запросов в виде JSON массива:"
+        )
+    else:
+        system_prompt = (
+            "Ты ведущий эксперт по поиску реальных B2B поставщиков, заводов и коммерческих организаций. "
+            "Твоя задача — составить глубокую и точную матрицу поисковых запросов для Яндекса и Google, "
+            "которая найдет официальные сайты реальных поставщиков и производителей по заданной теме пользователя. "
+            "СТРОГИЕ ПРАВИЛА СОСТАВЛЕНИЯ ЗАПРОСОВ: "
+            "1) Фокусируйся на товарных и отраслевых коммерческих запросах: заводы, производители, оптовые поставщики, дистрибьюторы, склады, каталоги продукции, коммерческие отделы продаж. "
+            "2) Добавляй коммерческие модификаторы: 'производитель', 'завод', 'оптом со склада', 'официальный дилер', 'дистрибьютор', 'прайс-лист', 'отдел продаж', 'каталог'. "
+            "3) СПЕЦИАЛИЗАЦИЯ ПО ТЕНДЕРАМ / 44-ФЗ / 223-ФЗ: Если в запросе пользователя указаны участники тендеров, поставщики по 44-ФЗ/223-ФЗ или госконтрактам — ОБЯЗАТЕЛЬНО составляй специализированные запросы, находящие компании с подтвержденным опытом закупок: 'поставки по 44-ФЗ', 'поставки по 223-ФЗ', 'исполненные госконтракты', 'реестр контрактов', 'поставки для бюджетных учреждений', 'поставки для госучреждений', 'опыт работы по 44-ФЗ', 'тендерный отдел поставщика', 'государственные закупки поставщик'. "
+            "4) Используй отрицательные операторы Яндекса для исключения мусора: -'банковская гарантия' -'обучение' -'семинар' -'эцп' -'агрегатор' -'курсы'. "
+            "5) Включай географический охват: крупнейшие регионы РФ (Москва, Санкт-Петербург, Урал, Поволжье, Сибирь, Юг РФ, общероссийские формулировки). "
+            "6) НЕ составляй запросы 'как выиграть тендер' или 'обучение госзакупкам'. Нужны только сайты реальных поставщиков товаров и услуг. "
+            f"Сгенерируй от {target_q_count} разнообразных целевых поисковых запросов. "
+            "Верни ТОЛЬКО валидный JSON массив строк, например: [\"запрос 1\", \"запрос 2\"]."
+        )
+        user_prompt = f"Целевая отрасль / профиль поставщиков:\n{prompt}\n\nКоличество контактов: {count}. Сгенерируй {target_q_count} поисковых запросов в виде JSON массива:"
 
     estimated_llm_cost = 0.02  # Gemini Flash-Lite query matrix generation
 
@@ -243,9 +272,11 @@ async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_setti
             text = text.strip()
             data = json.loads(text)
             if isinstance(data, list):
-                queries = [str(q).strip() for q in data if str(q).strip()]
-                if queries:
-                    return queries[:target_q_count], estimated_llm_cost
+                raw_q = [str(q).strip() for q in data if str(q).strip()]
+                if executed_queries:
+                    raw_q = [q for q in raw_q if q.strip().lower() not in executed_queries]
+                if raw_q:
+                    return raw_q[:target_q_count], estimated_llm_cost
     except Exception as e:
         logger.warning(f"Error generating search queries with AI: {e}")
 
@@ -253,20 +284,34 @@ async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_setti
     base = prompt.strip()
     words = [w for w in re.split(r"[,;\s]+", base) if len(w) > 2]
     keywords = " ".join(words[:4]) if words else base
-    regions = ["Москва", "СПб", "Екатеринбург", "Новосибирск", "Казань", "Нижний Новгород", "Самара", "Краснодар", "Россия", "ЦФО", "Урал", "Поволжье"]
-    types = [
-        "завод производитель оптом",
-        "официальный дистрибьютор склад",
-        "торговый дом поставщик прайс",
-        "каталог продукции отдел продаж",
-        "оптовые поставки от производителя",
-        "производство и поставка опт",
-    ]
+    if is_extend or wave_index > 1:
+        regions = ["Екатеринбург", "Казань", "Самара", "Новосибирск", "Нижний Новгород", "Ростов-на-Дону", "Краснодар", "Уфа", "Челябинск", "Пермь", "Красноярск", "Воронеж", "Владивосток", "Хабаровск", "СПб", "Ярославль"]
+        types = [
+            "официальный дилер завода склад",
+            "торговый дом производитель оптом",
+            "комплексное снабжение предприятий прайс",
+            "отдел продаж производителя каталог",
+            "региональный распределительный центр опт",
+            "поставки для госучреждений опыт 44-фз",
+            "реестр исполненных контрактов поставщик 223-фз",
+        ]
+    else:
+        regions = ["Москва", "СПб", "Екатеринбург", "Новосибирск", "Казань", "Нижний Новгород", "Самара", "Краснодар", "Россия", "ЦФО", "Урал", "Поволжье"]
+        types = [
+            "завод производитель оптом",
+            "официальный дистрибьютор склад",
+            "торговый дом поставщик прайс",
+            "каталог продукции отдел продаж",
+            "оптовые поставки от производителя",
+            "производство и поставка опт",
+        ]
 
     fallback = []
     for reg in regions:
         for t in types:
-            fallback.append(f"{keywords} {t} {reg} -\"банковская гарантия\" -\"обучение\"")
+            q_str = f"{keywords} {t} {reg} -\"банковская гарантия\" -\"обучение\""
+            if not executed_queries or q_str.strip().lower() not in executed_queries:
+                fallback.append(q_str)
     return fallback[:75], 0.0
 
 
@@ -916,6 +961,7 @@ async def run_outreach_search_task(
             scanned_so_far = initial_scanned
             max_passes = 6
             current_pass = 1
+            executed_queries: set[str] = set()
 
             sem = asyncio.Semaphore(4)
             queue_file = Path(f"data/outreach_queue_{task_id}.json")
@@ -953,20 +999,63 @@ async def run_outreach_search_task(
                 if not approved_candidates:
                     # 1. Generate / Expand Query Matrix with distinct strategy per pass
                     if current_pass == 1:
-                        queries, _ = await generate_search_queries_matrix(active_prompt, count=queries_target_count, sys_settings=sys_settings)
+                        queries, _ = await generate_search_queries_matrix(
+                            active_prompt,
+                            count=queries_target_count,
+                            sys_settings=sys_settings,
+                            is_extend=is_extend,
+                            wave_index=wave_index,
+                            existing_count=initial_collected,
+                            executed_queries=executed_queries,
+                        )
                     elif current_pass == 2:
                         regions_str = "Москва, Санкт-Петербург, Урал, Екатеринбург, Поволжье, Казань, Самара, Нижний Новгород, Сибирь, Новосибирск, Краснодар, Ростов-на-Дону, Владивосток, Хабаровск, Пермь, Воронеж, Уфа, Челябинск, Красноярск"
                         pass_prompt = f"{active_prompt}. Региональные коммерческие поставщики и дистрибьюторы: {regions_str}. Официальные дилеры, складские комплексы, оптовые отделы продаж и снабжения."
-                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 70), sys_settings=sys_settings)
+                        queries, _ = await generate_search_queries_matrix(
+                            pass_prompt,
+                            count=max(remaining_needed * 3, 70),
+                            sys_settings=sys_settings,
+                            is_extend=True,
+                            wave_index=max(wave_index, 2),
+                            existing_count=collected_count,
+                            executed_queries=executed_queries,
+                        )
                     elif current_pass == 3:
                         pass_prompt = f"{active_prompt}. Отраслевая номенклатура, комплексное снабжение предприятий, поставка оборудования и материалов по ТЗ, тендерный отдел поставщика, торговые дома, реестр контрактов."
-                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 70), sys_settings=sys_settings)
+                        queries, _ = await generate_search_queries_matrix(
+                            pass_prompt,
+                            count=max(remaining_needed * 3, 70),
+                            sys_settings=sys_settings,
+                            is_extend=True,
+                            wave_index=max(wave_index, 3),
+                            existing_count=collected_count,
+                            executed_queries=executed_queries,
+                        )
                     elif current_pass == 4:
                         pass_prompt = f"{active_prompt}. Федеральные поставщики, оптовая дистрибуция со склада, оптовый прайс-лист, отдел сбыта, коммерческие контракты, поставки для бюджетных и коммерческих заказчиков."
-                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 2, 60), sys_settings=sys_settings)
+                        queries, _ = await generate_search_queries_matrix(
+                            pass_prompt,
+                            count=max(remaining_needed * 2, 60),
+                            sys_settings=sys_settings,
+                            is_extend=True,
+                            wave_index=max(wave_index, 4),
+                            existing_count=collected_count,
+                            executed_queries=executed_queries,
+                        )
                     else:
                         pass_prompt = f"{active_prompt}. Оптовые склады, торгово-производственные компании, операторы материально-технического снабжения, каталоги b2b продукции (проход {current_pass})."
-                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 2, 50), sys_settings=sys_settings)
+                        queries, _ = await generate_search_queries_matrix(
+                            pass_prompt,
+                            count=max(remaining_needed * 2, 50),
+                            sys_settings=sys_settings,
+                            is_extend=True,
+                            wave_index=max(wave_index, current_pass),
+                            existing_count=collected_count,
+                            executed_queries=executed_queries,
+                        )
+
+                    # Filter out already executed queries in this task session
+                    queries = [q for q in queries if q.strip().lower() not in executed_queries]
 
                     ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}/{max_passes}: сгенерировано {len(queries)} B2B запросов (цель: +{remaining_needed} лидов)..."
 
@@ -980,23 +1069,23 @@ async def run_outreach_search_task(
                             task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
                             db.commit()
 
-                    # Dynamic parameters for this pass
+                    # Dynamic parameters for this pass: focus on top 40-60 highest-density results
                     if remaining_needed <= 120:
+                        dynamic_max_pages = 2
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.0
+                    elif remaining_needed <= 500:
+                        dynamic_max_pages = 3
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.0
+                    elif remaining_needed <= 1500:
                         dynamic_max_pages = 4
                         dynamic_groups_on_page = 20
-                        candidates_multiplier = 3.5
-                    elif remaining_needed <= 500:
+                        candidates_multiplier = 3.0
+                    else:
                         dynamic_max_pages = 5
                         dynamic_groups_on_page = 20
-                        candidates_multiplier = 3.5
-                    elif remaining_needed <= 1500:
-                        dynamic_max_pages = 8
-                        dynamic_groups_on_page = 20
-                        candidates_multiplier = 3.5
-                    else:
-                        dynamic_max_pages = 10
-                        dynamic_groups_on_page = 20
-                        candidates_multiplier = 3.5
+                        candidates_multiplier = 3.0
 
                     async def _fetch_q_candidates(q_text: str) -> tuple[list[OutreachCandidate], int]:
                         async with sem:
@@ -1018,6 +1107,9 @@ async def run_outreach_search_task(
                     q_chunk_size = 4
 
                     for q_i in range(0, len(queries), q_chunk_size):
+                        chunk = queries[q_i : q_i + q_chunk_size]
+                        for q in chunk:
+                            executed_queries.add(q.strip().lower())
                         if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("pause"):
                             ACTIVE_SEARCH_TASKS[task_id]["status"] = "paused"
                             with session_factory() as db:

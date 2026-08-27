@@ -590,6 +590,74 @@ def test_database_cleanup_endpoint():
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_dobor_query_generation_and_deduplication():
+    from app.outreach_search import generate_search_queries_matrix
+
+    prompt = "Поставщики кабельной продукции и электротехники"
+    executed = {"поставщики кабельной продукции и электротехники завод производитель оптом москва -\"банковская гарантия\" -\"обучение\""}
+
+    # Test wave 1 fallback
+    q_wave1, _ = await generate_search_queries_matrix(prompt, count=100, is_extend=False, wave_index=1)
+    assert len(q_wave1) > 0
+    assert any("москва" in q.lower() or "спб" in q.lower() or "россия" in q.lower() for q in q_wave1)
+
+    # Test dobor wave 2 with deduplication against executed
+    q_dobor, _ = await generate_search_queries_matrix(
+        prompt,
+        count=100,
+        is_extend=True,
+        wave_index=2,
+        existing_count=500,
+        executed_queries=executed,
+    )
+    assert len(q_dobor) > 0
+    # Make sure the already executed query was excluded
+    for q in q_dobor:
+        assert q.strip().lower() not in executed
+    # Make sure dobor queries contain regional / dealer distribution markers
+    assert any("дилер" in q.lower() or "склад" in q.lower() or "екатеринбург" in q.lower() or "казань" in q.lower() for q in q_dobor)
+
+
+@pytest.mark.asyncio
+async def test_dobor_query_generation_with_ai_mock(monkeypatch):
+    import json
+    from app.outreach_search import generate_search_queries_matrix
+    from app.models import SystemSettings
+
+    mock_queries = [
+        "поставщики кабеля ввгнг москва склад",
+        "дистрибьютор силовой кабель екатеринбург",
+        "трансформаторы и ктп казань оптом",
+        "старый запрос который уже выполнялся",
+    ]
+
+    async def mock_call_llm(settings, user_prompt, system_prompt="", tier="light", json_mode=True, timeout_seconds=40):
+        assert "ДОБОРА" in system_prompt or "Волна #3" in user_prompt
+        return json.dumps(mock_queries)
+
+    monkeypatch.setattr("app.outreach_search.call_llm", mock_call_llm)
+
+    executed = {"старый запрос который уже выполнялся"}
+    settings = SystemSettings(id=1, primary_provider="polza", primary_model="gpt-4o-mini")
+
+    queries, cost = await generate_search_queries_matrix(
+        "Кабель и электротехника 44-ФЗ",
+        count=100,
+        sys_settings=settings,
+        is_extend=True,
+        wave_index=3,
+        existing_count=1200,
+        executed_queries=executed,
+    )
+
+    assert len(queries) == 3
+    assert "старый запрос который уже выполнялся" not in queries
+    assert "дистрибьютор силовой кабель екатеринбург" in queries
+
+
+
+
 
 
 
