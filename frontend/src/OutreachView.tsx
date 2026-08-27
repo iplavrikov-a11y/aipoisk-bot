@@ -846,7 +846,9 @@ export function OutreachView() {
         if (stats.task) {
           setSelectedTask((prev) => (prev && prev.id === stats.task.id ? { ...prev, ...stats.task } : stats.task))
           if (stats.task.status === 'running') {
-            setSearchStatus(stats.task)
+            if (!activeTaskId) {
+              setActiveTaskId(stats.task.id)
+            }
           } else if (searchStatus && searchStatus.id === selectedTask.id && stats.task.status !== 'running') {
             setSearchStatus(null)
             fetchLeads(selectedTask.id, 1, searchFilter, statusFilter, selectedWave)
@@ -1099,6 +1101,43 @@ export function OutreachView() {
       await outreachFetch(`/api/outreach/search/cancel/${id}`, { method: 'POST' })
       showSuccess('Команда на остановку отправлена')
       fetchTasks()
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
+  // Pause search
+  const handlePauseSearch = async (id: string) => {
+    try {
+      await outreachFetch(`/api/outreach/search/pause/${id}`, { method: 'POST' })
+      showSuccess('Сбор поставлен на паузу. Найденные сайты сохранены на сервере.')
+      fetchTasks()
+      fetchTaskStats(id)
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
+  // Resume search
+  const handleResumeSearch = async (id: string) => {
+    try {
+      await outreachFetch(`/api/outreach/search/resume/${id}`, { method: 'POST' })
+      showSuccess('Сбор возобновлен. Обход продолжается с сохраненной позиции (0 ₽ в Яндекс).')
+      setActiveTaskId(id)
+      setSearchStatus({
+        status: 'running',
+        id: id,
+        name: selectedTask?.name || '',
+        message: 'Возобновление сбора контактов...',
+        target: selectedTask?.target_count || 0,
+        collected: selectedTask?.collected_count || 0,
+        yandex_requests: selectedTask?.yandex_requests || 0,
+        yandex_cost_rub: selectedTask?.yandex_cost_rub || 0,
+        llm_cost_rub: 0,
+        total_cost_rub: selectedTask?.total_cost_rub || 0,
+      } as any)
+      fetchTasks()
+      fetchTaskStats(id)
     } catch (e: any) {
       showError(e.message)
     }
@@ -2122,8 +2161,12 @@ export function OutreachView() {
               {/* Individual Waves Pills */}
               {(taskStats?.waves || selectedTask.waves || []).map((w) => {
                 const isSelected = selectedWave === w.wave
-                const isRunning = w.status === 'running'
-                const wCost = w.cost_rub !== undefined && w.cost_rub !== null
+                const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+                const isPaused = !isRunning && (w.status === 'paused' || (selectedTask.status === 'paused' && w.wave === (taskStats?.waves?.length || selectedTask.waves?.length || 1)))
+                const liveCollected = isRunning && searchStatus?.wave_collected !== undefined ? searchStatus.wave_collected : (w.lead_count ?? w.collected ?? 0)
+                const liveCost = isRunning && searchStatus?.wave_cost_rub !== undefined
+                  ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
+                  : w.cost_rub !== undefined && w.cost_rub !== null
                   ? `${Number(w.cost_rub).toFixed(2)} ₽`
                   : null
                 return (
@@ -2151,14 +2194,15 @@ export function OutreachView() {
                   >
                     <span>{w.wave === 1 ? '🎯 Основной поиск' : `⚡ ${w.name || `Добор #${w.wave - 1}`}`}</span>
                     <span style={{ fontSize: 11, background: isSelected ? '#a7f3d0' : '#e2e8f0', color: isSelected ? '#064e3b' : '#64748b', padding: '1px 6px', borderRadius: 6 }}>
-                      {w.lead_count ?? w.collected ?? 0} лидов
+                      {liveCollected} лидов
                     </span>
-                    {wCost && (
+                    {liveCost && (
                       <span style={{ fontSize: 11, color: isSelected ? '#047857' : '#94a3b8', fontWeight: 600 }}>
-                        {wCost}
+                        {liveCost}
                       </span>
                     )}
                     {isRunning && <span className="animate-pulse" style={{ color: '#059669', fontSize: 10 }}>● в процессе</span>}
+                    {isPaused && <span style={{ color: '#d97706', fontSize: 10, fontWeight: 700 }}>● на паузе</span>}
                   </button>
                 )
               })}
@@ -2171,16 +2215,25 @@ export function OutreachView() {
               ? (taskStats?.waves || selectedTask.waves || []).find((w) => w.wave === selectedWave)
               : null
 
+            const isWaveRunning = activeWaveObj && (
+              activeWaveObj.status === 'running' ||
+              (searchStatus?.status === 'running' && searchStatus?.wave_index === activeWaveObj.wave)
+            )
+
             const displayLeadsCount = activeWaveObj
-              ? (activeWaveObj.lead_count ?? activeWaveObj.collected ?? 0)
+              ? (isWaveRunning && searchStatus?.wave_collected !== undefined
+                  ? searchStatus.wave_collected
+                  : (activeWaveObj.lead_count ?? activeWaveObj.collected ?? 0))
               : (taskStats?.total_leads ?? selectedTask.collected_count ?? 0)
 
             const displayTargetCount = activeWaveObj
-              ? (activeWaveObj.target ?? activeWaveObj.target_count ?? 0)
+              ? (isWaveRunning && searchStatus?.wave_target
+                  ? searchStatus.wave_target
+                  : (activeWaveObj.target ?? activeWaveObj.target_count ?? 0))
               : selectedTask.target_count
 
             const displayMxCount = activeWaveObj
-              ? (activeWaveObj.mx_valid_leads ?? (activeWaveObj.collected ? Math.round(activeWaveObj.collected * 0.93) : 0))
+              ? (activeWaveObj.mx_valid_leads ?? (displayLeadsCount ? Math.round(displayLeadsCount * 0.93) : 0))
               : (taskStats?.mx_valid_leads ?? (selectedTask.collected_count ? Math.round(selectedTask.collected_count * 0.93) : 0))
 
             const displaySentCount = activeWaveObj
@@ -2192,14 +2245,28 @@ export function OutreachView() {
               : (taskStats?.replied_leads ?? inboxMessages.length)
 
             const displayCost = activeWaveObj
-              ? (activeWaveObj.cost_rub !== undefined && activeWaveObj.cost_rub !== null
+              ? (isWaveRunning && searchStatus?.wave_cost_rub !== undefined
+                  ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
+                  : activeWaveObj.cost_rub !== undefined && activeWaveObj.cost_rub !== null
                   ? `${Number(activeWaveObj.cost_rub).toFixed(2)} ₽`
                   : `${Number(activeWaveObj.yandex_cost_rub || 0).toFixed(2)} ₽`)
-              : `${((searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) ? searchStatus.yandex_cost_rub : null) ?? taskStats?.task?.yandex_cost_rub ?? selectedTask.yandex_cost_rub ?? 0).toFixed(2)} ₽`
+              : (searchStatus && searchStatus.status === 'running' && searchStatus.wave_cost_rub !== undefined
+                  ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
+                  : 'Выберите поиск')
 
             const displayCostSub = activeWaveObj
-              ? `Яндекс: ${activeWaveObj.yandex_requests ?? Math.round((activeWaveObj.cost_rub || 0) / 0.04)} зап.`
-              : `Яндекс: ${(searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) ? searchStatus.yandex_requests : null) ?? taskStats?.task?.yandex_requests ?? selectedTask.yandex_requests ?? 0} зап.`
+              ? (isWaveRunning && searchStatus?.wave_yandex_requests !== undefined
+                  ? `Яндекс: ${searchStatus.wave_yandex_requests} зап.`
+                  : `Яндекс: ${activeWaveObj.yandex_requests ?? Math.round((Number(activeWaveObj.cost_rub || 0)) / 0.04)} зап.`)
+              : (searchStatus && searchStatus.status === 'running' && searchStatus.wave_yandex_requests !== undefined
+                  ? `Яндекс: ${searchStatus.wave_yandex_requests} зап. (добор)`
+                  : 'Вкладка итерации выше')
+
+            const waveCardTitle = activeWaveObj
+              ? `Расход Яндекс (${activeWaveObj.wave === 1 ? 'основной поиск' : `добор #${activeWaveObj.wave - 1}`})`
+              : (searchStatus && searchStatus.status === 'running'
+                  ? `Расход Яндекс (${searchStatus?.is_extend ? `добор #${(searchStatus?.wave_index || 2) - 1}` : 'основной поиск'})`
+                  : 'Расход Яндекс (по итерациям)')
 
             return (
               <div className="outreach-metrics-grid">
@@ -2268,7 +2335,7 @@ export function OutreachView() {
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">
-                        {activeWaveObj ? `Расход Яндекс (${activeWaveObj.wave === 1 ? 'основной' : `добор #${activeWaveObj.wave - 1}`})` : 'Расход Яндекс (всего)'}
+                        {waveCardTitle}
                       </span>
                       <strong className="outreach-metric-value" style={{ color: '#059669' }}>
                         {displayCost}
@@ -2284,7 +2351,18 @@ export function OutreachView() {
           })()}
 
           {/* Live Search Status Banner inside Workspace */}
-          {((searchStatus && searchStatus.status === 'running' && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id)) || selectedTask.status === 'running') && (
+          {((searchStatus && searchStatus.status === 'running' && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id)) || selectedTask.status === 'running') && (() => {
+            const activeWaveForBanner = (taskStats?.waves || selectedTask.waves || []).find(
+              (w) => w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+            ) || (taskStats?.waves || selectedTask.waves || [])[(taskStats?.waves || selectedTask.waves || []).length - 1]
+
+            const isBannerExtend = searchStatus?.is_extend ?? (activeWaveForBanner ? activeWaveForBanner.wave > 1 : (selectedTask.waves?.length ? selectedTask.waves.length > 1 : false))
+            const bannerWaveIdx = searchStatus?.wave_index ?? (activeWaveForBanner ? activeWaveForBanner.wave : (selectedTask.waves?.length || 1))
+            const bannerWaveTarget = searchStatus?.wave_target ?? (activeWaveForBanner?.target || 500)
+            const bannerWaveCollected = searchStatus?.wave_collected ?? (activeWaveForBanner?.collected || 0)
+            const bannerWaveCost = searchStatus?.wave_cost_rub ?? (activeWaveForBanner?.cost_rub ?? 0)
+
+            return (
             <div
               style={{
                 background: 'linear-gradient(135deg, #064e3b 0%, #047857 100%)',
@@ -2302,9 +2380,13 @@ export function OutreachView() {
                 <RefreshCw size={20} className="animate-spin" style={{ color: '#6ee7b7', flexShrink: 0 }} />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>Идет поиск и сбор контактов</span>
+                    <span>
+                      {isBannerExtend
+                        ? `Идет добор контактов (Добор #${bannerWaveIdx - 1})`
+                        : 'Идет поиск и сбор контактов'}
+                    </span>
                     <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.2)', padding: '1px 6px', borderRadius: 4 }}>
-                      Цель: {searchStatus?.target_count || selectedTask.target_count} контактов
+                      Цель: +{bannerWaveTarget} контактов
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: '#d1fae5', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -2315,25 +2397,113 @@ export function OutreachView() {
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
                 <div style={{ textAlign: 'right', fontSize: 12, color: '#ecfdf5' }}>
-                  <div>Собрано: <strong>{searchStatus?.collected ?? selectedTask.collected_count}</strong> лидов</div>
-                  <div style={{ fontSize: 11, color: '#a7f3d0' }}>Себестоимость: {(searchStatus?.total_cost_rub ?? selectedTask.total_cost_rub ?? 0).toFixed(2)} ₽</div>
+                  <div>
+                    Собрано в {isBannerExtend ? 'доборе' : 'поиске'}: <strong>{bannerWaveCollected}</strong> лидов
+                  </div>
+                  <div style={{ fontSize: 11, color: '#a7f3d0' }}>
+                    Расход Яндекс: {Number(bannerWaveCost).toFixed(2)} ₽
+                  </div>
                 </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => handlePauseSearch(selectedTask.id)}
+                    className="outreach-btn"
+                    style={{
+                      background: '#f59e0b',
+                      color: '#fff',
+                      border: 'none',
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      borderRadius: 6,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                    title="Поставить на паузу (найденные сайты сохранятся на диске)"
+                  >
+                    <Pause size={13} />
+                    <span>Пауза</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCancelSearch(selectedTask.id)}
+                    className="outreach-btn"
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.9)',
+                      color: '#fff',
+                      border: 'none',
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      borderRadius: 6,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Остановить
+                  </button>
+                </div>
+              </div>
+            </div>
+            )
+          })()}
+
+          {/* Live Paused / Resumable Status Banner */}
+          {!((searchStatus && searchStatus.status === 'running' && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id)) || selectedTask.status === 'running') &&
+            (selectedTask.status === 'paused' || selectedTask.status === 'cancelling' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) && (
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #78350f 0%, #b45309 100%)',
+                color: '#fff',
+                borderRadius: 10,
+                padding: '12px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                boxShadow: '0 4px 12px rgba(180, 83, 9, 0.2)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 22 }}>⏸️</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>Сбор контактов приостановлен</span>
+                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.2)', padding: '1px 6px', borderRadius: 4 }}>
+                      Собрано: {selectedTask.collected_count} из {selectedTask.target_count}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#fef3c7', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {selectedTask.message || 'Сбор можно продолжить в один клик без повторной оплаты Яндекса.'}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                 <button
                   type="button"
-                  onClick={() => handleCancelSearch(selectedTask.id)}
+                  onClick={() => handleResumeSearch(selectedTask.id)}
                   className="outreach-btn"
                   style={{
-                    background: 'rgba(239, 68, 68, 0.9)',
+                    background: '#10b981',
                     color: '#fff',
                     border: 'none',
-                    padding: '6px 12px',
-                    fontSize: 12,
+                    padding: '8px 18px',
+                    fontSize: 13,
                     borderRadius: 6,
-                    fontWeight: 600,
+                    fontWeight: 700,
                     cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
                   }}
+                  title="Возобновить обход сохраненных сайтов (0 ₽ Яндекс)"
                 >
-                  Остановить
+                  <Play size={14} />
+                  <span>▶️ Продолжить сбор (0 ₽)</span>
                 </button>
               </div>
             </div>
@@ -2433,29 +2603,58 @@ export function OutreachView() {
                 </div>
               </div>
 
-              <button
-                type="button"
-                disabled={extending || selectedTask.status === 'running' || (activeTaskId === selectedTask.id && searchStatus?.status === 'running')}
-                onClick={async () => {
-                  await handleExtendTaskWithParams(taskDoborCount, taskSearchPrompt)
-                }}
-                className="outreach-btn outreach-btn-primary"
-                style={{
-                  padding: '8px 18px',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  background: '#059669',
-                  borderColor: '#059669',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  flexShrink: 0,
-                  boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
-                }}
-              >
-                {extending ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                <span>🚀 Запустить добор (+{taskDoborCount})</span>
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {(selectedTask.status === 'paused' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) && (
+                  <button
+                    type="button"
+                    onClick={() => handleResumeSearch(selectedTask.id)}
+                    className="outreach-btn"
+                    style={{
+                      padding: '8px 18px',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      background: '#10b981',
+                      color: '#fff',
+                      border: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      flexShrink: 0,
+                      borderRadius: 8,
+                      boxShadow: '0 2px 6px rgba(16, 185, 129, 0.25)',
+                      cursor: 'pointer',
+                    }}
+                    title="Продолжить сбор сохраненных кандидатов без запросов в Яндекс"
+                  >
+                    <Play size={14} />
+                    <span>Продолжить сбор (0 ₽)</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={extending || selectedTask.status === 'running' || (activeTaskId === selectedTask.id && searchStatus?.status === 'running')}
+                  onClick={async () => {
+                    await handleExtendTaskWithParams(taskDoborCount, taskSearchPrompt)
+                  }}
+                  className="outreach-btn outreach-btn-primary"
+                  style={{
+                    padding: '8px 18px',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    background: '#059669',
+                    borderColor: '#059669',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    flexShrink: 0,
+                    boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
+                  }}
+                >
+                  {extending ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  <span>🚀 Запустить добор (+{taskDoborCount})</span>
+                </button>
+              </div>
             </div>
           </div>
 

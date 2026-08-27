@@ -411,5 +411,65 @@ def test_mark_all_inbox_read():
         db.close()
 
 
+def test_outreach_search_pause_resume_and_queue():
+    import json
+    import uuid
+    from pathlib import Path
+    from app.outreach_api import pause_search_task, resume_search_task, get_queue_info
+    from app.outreach_models import OutreachSearchTask
+
+    db = SessionLocal()
+    task_id = f"test-pause-{uuid.uuid4().hex[:8]}"
+    queue_file = Path(f"data/outreach_queue_{task_id}.json")
+    try:
+        task = OutreachSearchTask(
+            id=task_id,
+            name="Тест паузы",
+            prompt="тест",
+            target_count=500,
+            collected_count=50,
+            status="running",
+            waves_json=json.dumps([{"wave": 1, "status": "running", "target": 500, "collected": 50}]),
+        )
+        db.add(task)
+        db.commit()
+
+        # 1. Create a mock queue file
+        queue_file.write_text(
+            json.dumps({
+                "task_id": task_id,
+                "wave_index": 1,
+                "processed_idx": 10,
+                "candidates": [{"title": f"Site {i}", "url": f"https://site{i}.ru", "domain": f"site{i}.ru"} for i in range(50)],
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # 2. Check get_queue_info
+        q_info = get_queue_info(task_id)
+        assert q_info["has_queue"] is True
+        assert q_info["total"] == 50
+        assert q_info["remaining"] == 40
+
+        # 3. Pause task
+        p_res = pause_search_task(task_id, db)
+        assert p_res["ok"] is True
+        assert p_res["status"] == "paused"
+        db.refresh(task)
+        assert task.status == "paused"
+
+        # 4. Check waves_json updated to paused
+        waves = json.loads(task.waves_json)
+        assert waves[0]["status"] == "paused"
+
+        # Clean up
+        db.delete(task)
+        db.commit()
+    finally:
+        queue_file.unlink(missing_ok=True)
+        db.close()
+
+
+
 
 

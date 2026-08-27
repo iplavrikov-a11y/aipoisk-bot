@@ -225,12 +225,27 @@ async def startup() -> None:
         recovered_job_ids = recover_interrupted_jobs(db)
         try:
             from .db import SessionLocal
-            from .outreach_models import OutreachCampaign
+            from .outreach_models import OutreachCampaign, OutreachSearchTask
             from .outreach_mail import run_campaign_worker, ACTIVE_CAMPAIGN_TASKS
             running_camps = db.query(OutreachCampaign).filter(OutreachCampaign.status == "running").all()
             for rc in running_camps:
                 task = asyncio.create_task(run_campaign_worker(rc.id, SessionLocal))
                 ACTIVE_CAMPAIGN_TASKS[rc.id] = task
+
+            # Recover interrupted search tasks into paused state so candidates are not lost
+            stale_searches = db.query(OutreachSearchTask).filter(OutreachSearchTask.status == "running").all()
+            for s_task in stale_searches:
+                s_task.status = "paused"
+                s_task.message = "Сбор приостановлен при перезапуске сервера. Сайты сохранены. Нажмите «Продолжить»."
+                try:
+                    waves = json.loads(s_task.waves_json) if s_task.waves_json else []
+                    for w in waves:
+                        if w.get("status") == "running":
+                            w["status"] = "paused"
+                    s_task.waves_json = json.dumps(waves, ensure_ascii=False)
+                except Exception:
+                    pass
+            db.commit()
         except Exception as e:
             logger.warning(f"Error resuming campaigns on startup: {e}")
     finally:
@@ -3945,6 +3960,8 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
 
 def admin_job_result_files(job: Job) -> list[dict]:
     result: list[dict] = []
+    if not getattr(job, "evidence_path", None) and getattr(job, "status", "") != "completed":
+        return result
     for item in package_job_output_items(job):
         path = Path(str(item.get("path") or ""))
         kind = str(item.get("kind") or path.stem).strip()

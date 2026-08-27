@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import uuid
 from typing import Any
 
@@ -473,8 +474,112 @@ def get_search_status(task_id: str, db: Session = Depends(get_db)) -> dict[str, 
         return ACTIVE_SEARCH_TASKS[task_id]
     task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
     if task:
-        return task.to_dict()
+        res = task.to_dict()
+        waves = json.loads(task.waves_json) if task.waves_json else []
+        if waves:
+            active_wave = next((w for w in reversed(waves) if w.get("status") == "running"), None)
+            if not active_wave and waves:
+                active_wave = waves[-1]
+            if active_wave:
+                res["is_extend"] = (active_wave.get("wave", 1) > 1)
+                res["wave_index"] = active_wave.get("wave", 1)
+                res["wave_target"] = active_wave.get("target", 500)
+                res["wave_collected"] = active_wave.get("collected", 0)
+                res["wave_cost_rub"] = active_wave.get("cost_rub", 0.0)
+                res["wave_yandex_requests"] = active_wave.get("yandex_requests", 0)
+        return res
     return {"status": "not_found", "message": "Задача не найдена"}
+
+
+@router.post("/search/pause/{task_id}")
+def pause_search_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    if task_id in ACTIVE_SEARCH_TASKS:
+        ACTIVE_SEARCH_TASKS[task_id]["pause"] = True
+        ACTIVE_SEARCH_TASKS[task_id]["status"] = "pausing"
+    task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+    if task:
+        task.status = "paused"
+        task.message = "Поиск приостановлен. Нажмите «Продолжить сбор» для возобновления."
+        try:
+            waves = json.loads(task.waves_json) if task.waves_json else []
+            if waves:
+                for w in reversed(waves):
+                    if w.get("status") in ("running", "pending"):
+                        w["status"] = "paused"
+                        break
+            task.waves_json = json.dumps(waves, ensure_ascii=False)
+        except Exception:
+            pass
+        db.commit()
+    return {"ok": True, "status": "paused"}
+
+
+@router.post("/search/resume/{task_id}")
+async def resume_search_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if task_id in ACTIVE_SEARCH_TASKS and ACTIVE_SEARCH_TASKS[task_id].get("status") == "running":
+        return {"ok": True, "message": "Задача уже выполняется"}
+
+    waves = json.loads(task.waves_json) if task.waves_json else []
+    wave_to_resume = len(waves) if waves else 1
+    for w in reversed(waves):
+        if w.get("status") in ("paused", "cancelled", "running"):
+            w["status"] = "running"
+            wave_to_resume = w.get("wave", wave_to_resume)
+            break
+    task.waves_json = json.dumps(waves, ensure_ascii=False)
+    task.status = "running"
+    task.started_at = now_utc()
+    task.completed_at = None
+    task.message = "Возобновление сбора контактов..."
+    db.commit()
+
+    ACTIVE_SEARCH_TASKS.pop(task_id, None)
+
+    sys_settings = db.query(SystemSettings).filter(SystemSettings.id == 1).first()
+    if not sys_settings:
+        sys_settings = SystemSettings(id=1)
+
+    asyncio.create_task(
+        run_outreach_search_task(
+            task_id=task.id,
+            name=task.name,
+            prompt=task.prompt,
+            target_count=task.target_count,
+            session_factory=SessionLocal,
+            settings=sys_settings,
+            is_extend=(wave_to_resume > 1),
+            extra_count=max(0, task.target_count - (task.collected_count or 0)),
+            additional_prompt="",
+            wave_index=wave_to_resume,
+            is_resume=True,
+        )
+    )
+    return {"ok": True, "status": "running"}
+
+
+@router.get("/search/queue-info/{task_id}")
+def get_queue_info(task_id: str) -> dict[str, Any]:
+    queue_file = Path(f"data/outreach_queue_{task_id}.json")
+    if queue_file.exists():
+        try:
+            with open(queue_file, "r", encoding="utf-8") as f:
+                q_data = json.load(f)
+            total = len(q_data.get("candidates", []))
+            processed = q_data.get("processed_idx", 0)
+            remaining = max(0, total - processed)
+            return {
+                "has_queue": remaining > 0,
+                "remaining": remaining,
+                "total": total,
+                "wave_index": q_data.get("wave_index"),
+            }
+        except Exception:
+            pass
+    return {"has_queue": False, "remaining": 0, "total": 0}
 
 
 @router.post("/search/cancel/{task_id}")

@@ -5,6 +5,7 @@ import base64
 from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import re
 import socket
 import xml.etree.ElementTree as ET
@@ -41,7 +42,7 @@ from .supplier_search import (
 
 logger = logging.getLogger(__name__)
 
-EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", re.I)
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.I)
 PHONE_RE = re.compile(r"(?:\+7|8)[\s\-(]?\d{3}[\s\-)]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
 INN_RE = re.compile(r"\b\d{10}\b|\b\d{12}\b")
 
@@ -169,13 +170,13 @@ def get_fresh_system_settings(session_factory: Any = None) -> SystemSettings | N
 async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_settings: SystemSettings | None = None) -> tuple[list[str], float]:
     """Generates an extensive matrix of targeted commercial B2B supplier search queries."""
     if count <= 120:
-        target_q_count = min(40, max(25, count // 3))
+        target_q_count = min(70, max(35, count // 2))
     elif count <= 500:
-        target_q_count = min(65, max(40, count // 8))
+        target_q_count = min(140, max(70, count // 4))
     elif count <= 1500:
-        target_q_count = min(100, max(65, count // 15))
+        target_q_count = min(220, max(120, count // 7))
     else:
-        target_q_count = min(150, max(100, count // 20))
+        target_q_count = min(280, max(180, count // 10))
     system_prompt = (
         "Ты ведущий эксперт по поиску реальных B2B поставщиков, заводов и коммерческих организаций. "
         "Твоя задача — составить глубокую и точную матрицу поисковых запросов для Яндекса и Google, "
@@ -214,7 +215,7 @@ async def generate_search_queries_matrix(prompt: str, count: int = 40, sys_setti
             if isinstance(data, list):
                 queries = [str(q).strip() for q in data if str(q).strip()]
                 if queries:
-                    return queries[:80], estimated_llm_cost
+                    return queries[:target_q_count], estimated_llm_cost
     except Exception as e:
         logger.warning(f"Error generating search queries with AI: {e}")
 
@@ -487,20 +488,20 @@ async def crawl_site_for_outreach_lead(
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"},
             )
             if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
-                return r.text
+                return (r.text or "")[:300000]
         except Exception:
             pass
         return ""
 
     main_html = await _fetch_http(base_origin)
     if main_html:
-        soup = BeautifulSoup(main_html, "html.parser")
+        soup = BeautifulSoup(main_html[:200000], "html.parser")
         if not page_title and soup.title and soup.title.string:
             page_title = soup.title.string.strip()
 
         for s in soup(["script", "style", "svg", "noscript"]):
             s.decompose()
-        main_text = soup.get_text(" ", strip=True)
+        main_text = soup.get_text(" ", strip=True)[:100000]
         collected_text_parts.append(main_text)
 
         # Extract contacts from homepage HTML & tags
@@ -515,7 +516,7 @@ async def crawl_site_for_outreach_lead(
                 if clean_p:
                     phones.add(clean_p)
 
-        for raw_e in EMAIL_RE.findall(main_html):
+        for raw_e in EMAIL_RE.findall(main_html[:250000]):
             clean_e = _clean_email(raw_e)
             if clean_e and not clean_e.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
                 emails.add(clean_e)
@@ -535,10 +536,10 @@ async def crawl_site_for_outreach_lead(
             subpage_htmls = await asyncio.gather(*[_fetch_http(l) for l in internal_links[:8]], return_exceptions=True)
             for sub_html in subpage_htmls:
                 if isinstance(sub_html, str) and sub_html:
-                    sub_soup = BeautifulSoup(sub_html, "html.parser")
+                    sub_soup = BeautifulSoup(sub_html[:200000], "html.parser")
                     for s in sub_soup(["script", "style", "svg", "noscript"]):
                         s.decompose()
-                    sub_text = sub_soup.get_text(" ", strip=True)
+                    sub_text = sub_soup.get_text(" ", strip=True)[:100000]
                     collected_text_parts.append(sub_text)
 
                     for a in sub_soup.find_all("a", href=True):
@@ -552,7 +553,7 @@ async def crawl_site_for_outreach_lead(
                             if clean_p:
                                 phones.add(clean_p)
 
-                    for raw_e in EMAIL_RE.findall(sub_html):
+                    for raw_e in EMAIL_RE.findall(sub_html[:250000]):
                         clean_e = _clean_email(raw_e)
                         if clean_e and not clean_e.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
                             emails.add(clean_e)
@@ -568,10 +569,13 @@ async def crawl_site_for_outreach_lead(
     # 2. If no emails found or site is SPA/JS-based, fallback to Playwright Headless Browser
     if not emails or len(" ".join(collected_text_parts)) < 200:
         try:
-            browser_page = await fetch_page_with_browser(base_origin, source="outreach_crawler")
+            browser_page = await asyncio.wait_for(
+                fetch_page_with_browser(base_origin, source="outreach_crawler"),
+                timeout=18.0,
+            )
             if browser_page and browser_page.get("html"):
-                b_html = browser_page["html"]
-                b_text = browser_page.get("text", "")
+                b_html = (browser_page.get("html") or "")[:250000]
+                b_text = (browser_page.get("text") or "")[:100000]
                 collected_text_parts.append(b_text)
 
                 for raw_e in EMAIL_RE.findall(b_html):
@@ -761,6 +765,7 @@ async def run_outreach_search_task(
     extra_count: int = 0,
     additional_prompt: str = "",
     wave_index: int = 1,
+    is_resume: bool = False,
 ) -> None:
     """Executes enterprise-grade B2B supplier search with Adaptive Multi-Pass loop, Playwright crawling & strict Yandex pricing."""
     sys_settings = get_fresh_system_settings(session_factory)
@@ -791,34 +796,67 @@ async def run_outreach_search_task(
             task_rec.status = "running"
             task_rec.started_at = now_utc()
             task_rec.completed_at = None
-            if is_extend:
+            current_task_collected = task_rec.collected_count or 0
+            if is_resume:
                 total_yandex_requests = task_rec.yandex_requests or 0
+                initial_scanned = task_rec.scanned_sites or 0
+                try:
+                    w_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                    matched_w = next((w for w in w_list if w.get("wave") == wave_index), None)
+                    if matched_w:
+                        w_reqs = matched_w.get("yandex_requests", 0)
+                        w_coll = matched_w.get("collected", 0)
+                        initial_yandex_requests = max(0, total_yandex_requests - w_reqs)
+                        initial_collected = max(0, current_task_collected - w_coll)
+                        wave_target = matched_w.get("target") or (extra_count if is_extend else target_count)
+                    else:
+                        initial_yandex_requests = total_yandex_requests if is_extend else 0
+                        initial_collected = current_task_collected
+                        wave_target = extra_count if is_extend else target_count
+                except Exception:
+                    initial_yandex_requests = total_yandex_requests if is_extend else 0
+                    initial_collected = current_task_collected
+                    wave_target = extra_count if is_extend else target_count
+                task_rec.message = f"Возобновление сбора контактов (цель: +{wave_target})..."
+            elif is_extend:
+                total_yandex_requests = task_rec.yandex_requests or 0
+                initial_yandex_requests = total_yandex_requests
                 total_llm_cost = 0.0
-                initial_collected = task_rec.collected_count or 0
+                initial_collected = current_task_collected
                 initial_scanned = task_rec.scanned_sites or 0
                 if target_count < initial_collected:
                     target_count = initial_collected + max(extra_count, 100)
                 task_rec.target_count = target_count
                 task_rec.message = f"Запуск добора (+{extra_count or (target_count - initial_collected)} контактов)..."
             else:
+                initial_yandex_requests = 0
                 task_rec.target_count = target_count
                 task_rec.message = "Анализирую задачу и составляю отраслевую матрицу запросов..."
             db.commit()
 
     initial_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+    wave_target = wave_target if is_resume else (extra_count if (is_extend and extra_count > 0) else target_count)
+    wave_init_coll = max(0, current_task_collected - initial_collected) if is_resume else 0
+    wave_init_reqs = max(0, total_yandex_requests - initial_yandex_requests) if is_resume else 0
 
     ACTIVE_SEARCH_TASKS[task_id] = {
         "status": "running",
         "name": name,
         "prompt": prompt,
         "target": target_count,
-        "collected": initial_collected,
+        "collected": current_task_collected,
         "scanned_sites": initial_scanned,
         "yandex_requests": total_yandex_requests,
         "yandex_cost_rub": initial_yandex_cost,
         "llm_cost_rub": 0.0,
         "total_cost_rub": initial_yandex_cost,
-        "message": f"Добор контактов: цель {target_count} (в базе: {initial_collected})..." if is_extend else "Анализирую задачу и составляю отраслевую матрицу запросов...",
+        "is_extend": is_extend,
+        "wave_index": wave_index,
+        "wave_target": wave_target,
+        "wave_collected": wave_init_coll,
+        "wave_yandex_requests": wave_init_reqs,
+        "wave_cost_rub": round(wave_init_reqs * yandex_unit_price, 2),
+        "message": f"Возобновление сбора контактов..." if is_resume else (f"Добор контактов: цель +{wave_target} контактов..." if is_extend else "Анализирую задачу и составляю отраслевую матрицу запросов..."),
     }
 
     async with _browser_pool_session():
@@ -846,113 +884,205 @@ async def run_outreach_search_task(
 
             collected_count = initial_collected
             scanned_so_far = initial_scanned
-            max_passes = 3
+            max_passes = 6
             current_pass = 1
 
             sem = asyncio.Semaphore(4)
+            queue_file = Path(f"data/outreach_queue_{task_id}.json")
 
             while collected_count < target_count and current_pass <= max_passes:
                 remaining_needed = target_count - collected_count
+                approved_candidates: list[OutreachCandidate] = []
 
-                # 1. Generate / Expand Query Matrix
-                if current_pass == 1:
-                    queries, _ = await generate_search_queries_matrix(active_prompt, count=queries_target_count, sys_settings=sys_settings)
-                else:
-                    regions_str = "Москва, Санкт-Петербург, Урал, Екатеринбург, Поволжье, Казань, Самара, Нижний Новгород, Сибирь, Новосибирск, Краснодар, Ростов-на-Дону, Владивосток, Хабаровск, Пермь, Воронеж, Уфа, Челябинск, Красноярск"
-                    pass_prompt = f"{active_prompt}. Региональный охват: {regions_str} (проход {current_pass})"
-                    queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 30), sys_settings=sys_settings)
-
-                ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}/{max_passes}: сгенерировано {len(queries)} B2B запросов (цель: +{remaining_needed} лидов)..."
-
-                with session_factory() as db:
-                    task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
-                    if task_rec:
-                        task_rec.queries_count = (task_rec.queries_count or 0) + len(queries)
-                        task_rec.llm_cost_rub = 0.0
-                        task_rec.yandex_cost_rub = round(total_yandex_requests * yandex_unit_price, 2)
-                        task_rec.total_cost_rub = task_rec.yandex_cost_rub
-                        task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
-                        db.commit()
-
-                # Dynamic parameters for this pass
-                if remaining_needed <= 120:
-                    dynamic_max_pages = 4
-                    dynamic_groups_on_page = 20
-                    candidates_multiplier = 3.5
-                elif remaining_needed <= 500:
-                    dynamic_max_pages = 5
-                    dynamic_groups_on_page = 20
-                    candidates_multiplier = 3.5
-                elif remaining_needed <= 1500:
-                    dynamic_max_pages = 8
-                    dynamic_groups_on_page = 20
-                    candidates_multiplier = 3.5
-                else:
-                    dynamic_max_pages = 10
-                    dynamic_groups_on_page = 20
-                    candidates_multiplier = 3.5
-
-                async def _fetch_q_candidates(q_text: str) -> tuple[list[OutreachCandidate], int]:
-                    async with sem:
-                        c_res = []
-                        req_c = 0
-                        if folder_id and api_key:
-                            c_res, req_c = await fetch_yandex_search_candidates(
-                                q_text,
-                                folder_id,
-                                api_key,
-                                max_pages=dynamic_max_pages,
-                                groups_on_page=dynamic_groups_on_page,
-                            )
-                        if not c_res:
-                            c_res = await fetch_ddgs_search_candidates(q_text, max_results=dynamic_groups_on_page * 2)
-                        return c_res, req_c
-
-                raw_candidates: list[OutreachCandidate] = []
-                q_chunk_size = 4
-
-                for q_i in range(0, len(queries), q_chunk_size):
-                    if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
-                        ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
-                        with session_factory() as db:
-                            task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
-                            if task_rec:
-                                task_rec.status = "cancelled"
-                                task_rec.completed_at = now_utc()
-                                task_rec.message = "Задача остановлена пользователем"
-                                db.commit()
-                        return
-
-                    if len(raw_candidates) >= max(int(remaining_needed * candidates_multiplier), 120):
-                        break
-
-                    chunk = queries[q_i : q_i + q_chunk_size]
-                    results_chunk = await asyncio.gather(*[_fetch_q_candidates(q) for q in chunk], return_exceptions=True)
-                    for item in results_chunk:
-                        if isinstance(item, tuple):
-                            res_cands, req_c = item
-                            total_yandex_requests += req_c
-                            for c in res_cands:
-                                if c.domain and c.domain not in seen_domains and c.domain not in EXTENDED_BLOCKED_DOMAINS:
-                                    seen_domains.add(c.domain)
-                                    raw_candidates.append(c)
-
-                    current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
-                    ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
-                    ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
-                    ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
-                    ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_yandex_cost
-                    ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}: найдено {len(raw_candidates)} сайтов (Яндекс: {current_yandex_cost:.2f} ₽)..."
-
-                # 2. AI Reranking
-                if raw_candidates:
-                    approved_candidates, _ = await ai_rerank_outreach_candidates(raw_candidates, active_prompt, sys_settings)
-                else:
-                    approved_candidates = []
+                # 0. Check if candidate queue is already preserved on disk from pause/crash
+                if is_resume and queue_file.exists():
+                    try:
+                        with open(queue_file, "r", encoding="utf-8") as f:
+                            q_data = json.load(f)
+                        saved_cands = q_data.get("candidates", [])
+                        saved_idx = q_data.get("processed_idx", 0)
+                        if saved_idx < len(saved_cands):
+                            approved_candidates = [
+                                OutreachCandidate(
+                                    title=c.get("title", ""),
+                                    url=c.get("url", ""),
+                                    domain=c.get("domain", ""),
+                                    snippet=c.get("snippet", ""),
+                                    score=float(c.get("score", 1.0) or 1.0),
+                                )
+                                for c in saved_cands[saved_idx:]
+                                if c.get("domain") and c.get("domain") not in seen_domains and c.get("domain") not in EXTENDED_BLOCKED_DOMAINS
+                            ]
+                            if approved_candidates:
+                                ACTIVE_SEARCH_TASKS[task_id]["message"] = (
+                                    f"Возобновление: обход {len(approved_candidates)} сохраненных сайтов (0 ₽ в Яндекс)..."
+                                )
+                    except Exception as e:
+                        logger.warning(f"Failed to read queue_file: {e}")
 
                 if not approved_candidates:
-                    current_pass += 1
-                    continue
+                    # 1. Generate / Expand Query Matrix with distinct strategy per pass
+                    if current_pass == 1:
+                        queries, _ = await generate_search_queries_matrix(active_prompt, count=queries_target_count, sys_settings=sys_settings)
+                    elif current_pass == 2:
+                        regions_str = "Москва, Санкт-Петербург, Урал, Екатеринбург, Поволжье, Казань, Самара, Нижний Новгород, Сибирь, Новосибирск, Краснодар, Ростов-на-Дону, Владивосток, Хабаровск, Пермь, Воронеж, Уфа, Челябинск, Красноярск"
+                        pass_prompt = f"{active_prompt}. Региональные коммерческие поставщики и дистрибьюторы: {regions_str}. Официальные дилеры, складские комплексы, оптовые отделы продаж и снабжения."
+                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 70), sys_settings=sys_settings)
+                    elif current_pass == 3:
+                        pass_prompt = f"{active_prompt}. Отраслевая номенклатура, комплексное снабжение предприятий, поставка оборудования и материалов по ТЗ, тендерный отдел поставщика, торговые дома, реестр контрактов."
+                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 3, 70), sys_settings=sys_settings)
+                    elif current_pass == 4:
+                        pass_prompt = f"{active_prompt}. Федеральные поставщики, оптовая дистрибуция со склада, оптовый прайс-лист, отдел сбыта, коммерческие контракты, поставки для бюджетных и коммерческих заказчиков."
+                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 2, 60), sys_settings=sys_settings)
+                    else:
+                        pass_prompt = f"{active_prompt}. Оптовые склады, торгово-производственные компании, операторы материально-технического снабжения, каталоги b2b продукции (проход {current_pass})."
+                        queries, _ = await generate_search_queries_matrix(pass_prompt, count=max(remaining_needed * 2, 50), sys_settings=sys_settings)
+
+                    ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Проход {current_pass}/{max_passes}: сгенерировано {len(queries)} B2B запросов (цель: +{remaining_needed} лидов)..."
+
+                    with session_factory() as db:
+                        task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                        if task_rec:
+                            task_rec.queries_count = (task_rec.queries_count or 0) + len(queries)
+                            task_rec.llm_cost_rub = 0.0
+                            task_rec.yandex_cost_rub = round(total_yandex_requests * yandex_unit_price, 2)
+                            task_rec.total_cost_rub = task_rec.yandex_cost_rub
+                            task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
+                            db.commit()
+
+                    # Dynamic parameters for this pass
+                    if remaining_needed <= 120:
+                        dynamic_max_pages = 4
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.5
+                    elif remaining_needed <= 500:
+                        dynamic_max_pages = 5
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.5
+                    elif remaining_needed <= 1500:
+                        dynamic_max_pages = 8
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.5
+                    else:
+                        dynamic_max_pages = 10
+                        dynamic_groups_on_page = 20
+                        candidates_multiplier = 3.5
+
+                    async def _fetch_q_candidates(q_text: str) -> tuple[list[OutreachCandidate], int]:
+                        async with sem:
+                            c_res = []
+                            req_c = 0
+                            if folder_id and api_key:
+                                c_res, req_c = await fetch_yandex_search_candidates(
+                                    q_text,
+                                    folder_id,
+                                    api_key,
+                                    max_pages=dynamic_max_pages,
+                                    groups_on_page=dynamic_groups_on_page,
+                                )
+                            if not c_res:
+                                c_res = await fetch_ddgs_search_candidates(q_text, max_results=dynamic_groups_on_page * 2)
+                            return c_res, req_c
+
+                    raw_candidates: list[OutreachCandidate] = []
+                    q_chunk_size = 4
+
+                    for q_i in range(0, len(queries), q_chunk_size):
+                        if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("pause"):
+                            ACTIVE_SEARCH_TASKS[task_id]["status"] = "paused"
+                            with session_factory() as db:
+                                task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                                if task_rec:
+                                    task_rec.status = "paused"
+                                    task_rec.message = f"На паузе (собрано {wave_collected} из +{wave_target} контактов). Нажмите «Продолжить»"
+                                    db.commit()
+                            return
+
+                        if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
+                            ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
+                            with session_factory() as db:
+                                task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                                if task_rec:
+                                    task_rec.status = "cancelled"
+                                    task_rec.completed_at = now_utc()
+                                    task_rec.message = "Задача остановлена пользователем"
+                                    db.commit()
+                            return
+
+                        if len(raw_candidates) >= max(int(remaining_needed * candidates_multiplier), 120):
+                            break
+
+                        chunk = queries[q_i : q_i + q_chunk_size]
+                        results_chunk = await asyncio.gather(*[_fetch_q_candidates(q) for q in chunk], return_exceptions=True)
+                        for item in results_chunk:
+                            if isinstance(item, tuple):
+                                res_cands, req_c = item
+                                total_yandex_requests += req_c
+                                for c in res_cands:
+                                    if c.domain and c.domain not in seen_domains and c.domain not in EXTENDED_BLOCKED_DOMAINS:
+                                        seen_domains.add(c.domain)
+                                        raw_candidates.append(c)
+
+                        current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+                        wave_yandex_requests = max(0, total_yandex_requests - initial_yandex_requests)
+                        wave_yandex_cost = round(wave_yandex_requests * yandex_unit_price, 2)
+
+                        ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
+                        ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
+                        ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_yandex_requests"] = wave_yandex_requests
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_cost_rub"] = wave_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["message"] = (
+                            f"Проход {current_pass}: найдено {len(raw_candidates)} сайтов (Яндекс: {wave_yandex_cost:.2f} ₽)..."
+                            if is_extend
+                            else f"Проход {current_pass}: найдено {len(raw_candidates)} сайтов (Яндекс: {current_yandex_cost:.2f} ₽)..."
+                        )
+
+                        with session_factory() as db:
+                            t_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                            if t_rec:
+                                t_rec.yandex_requests = total_yandex_requests
+                                t_rec.yandex_cost_rub = current_yandex_cost
+                                t_rec.total_cost_rub = current_yandex_cost
+                                t_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
+                                try:
+                                    w_list = json.loads(t_rec.waves_json) if t_rec.waves_json else []
+                                    for w in w_list:
+                                        if w.get("wave") == wave_index:
+                                            w["yandex_requests"] = wave_yandex_requests
+                                            w["yandex_cost_rub"] = wave_yandex_cost
+                                            w["cost_rub"] = wave_yandex_cost
+                                    t_rec.waves_json = json.dumps(w_list, ensure_ascii=False)
+                                except Exception:
+                                    pass
+                                db.commit()
+
+                    # 2. AI Reranking
+                    if raw_candidates:
+                        approved_candidates, _ = await ai_rerank_outreach_candidates(raw_candidates, active_prompt, sys_settings)
+                    else:
+                        approved_candidates = []
+
+                    if not approved_candidates:
+                        current_pass += 1
+                        continue
+
+                    # Persist found candidate sites immediately to disk
+                    try:
+                        with open(queue_file, "w", encoding="utf-8") as f:
+                            json.dump({
+                                "task_id": task_id,
+                                "wave_index": wave_index,
+                                "processed_idx": 0,
+                                "candidates": [
+                                    {"title": c.title, "url": c.url, "domain": c.domain, "snippet": c.snippet, "score": getattr(c, "score", 1.0)}
+                                    for c in approved_candidates
+                                ],
+                                "created_at": now_utc().isoformat(),
+                            }, f, ensure_ascii=False)
+                    except Exception as e:
+                        logger.warning(f"Failed to persist candidate queue: {e}")
 
                 # 3. Deep Crawling & Verification
                 batch_size = 10
@@ -962,12 +1092,73 @@ async def run_outreach_search_task(
                     limits=httpx.Limits(max_connections=100, max_keepalive_connections=30),
                 ) as http_client:
                     for i in range(0, len(approved_candidates), batch_size):
+                        if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("pause"):
+                            ACTIVE_SEARCH_TASKS[task_id]["status"] = "paused"
+                            try:
+                                if queue_file.exists():
+                                    with open(queue_file, "r", encoding="utf-8") as f:
+                                        q_data = json.load(f)
+                                    q_data["processed_idx"] = q_data.get("processed_idx", 0) + i
+                                    with open(queue_file, "w", encoding="utf-8") as f:
+                                        json.dump(q_data, f, ensure_ascii=False)
+                            except Exception:
+                                pass
+                            with session_factory() as db:
+                                task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                                if task_rec:
+                                    task_rec.status = "paused"
+                                    rem = max(0, len(approved_candidates) - i)
+                                    task_rec.message = f"На паузе (собрано {wave_collected} из +{wave_target} контактов, в очереди еще {rem} сайтов). Нажмите «Продолжить»"
+                                    try:
+                                        waves_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                                        for w in waves_list:
+                                            if w.get("wave") == wave_index:
+                                                w["status"] = "paused"
+                                                w["collected"] = wave_collected
+                                                w["cost_rub"] = wave_yandex_cost
+                                        task_rec.waves_json = json.dumps(waves_list, ensure_ascii=False)
+                                    except Exception:
+                                        pass
+                                    db.commit()
+                            return
+
                         if ACTIVE_SEARCH_TASKS.get(task_id, {}).get("cancel"):
                             ACTIVE_SEARCH_TASKS[task_id]["status"] = "cancelled"
+                            try:
+                                if queue_file.exists():
+                                    with open(queue_file, "r", encoding="utf-8") as f:
+                                        q_data = json.load(f)
+                                    q_data["processed_idx"] = q_data.get("processed_idx", 0) + i
+                                    with open(queue_file, "w", encoding="utf-8") as f:
+                                        json.dump(q_data, f, ensure_ascii=False)
+                            except Exception:
+                                pass
+                            with session_factory() as db:
+                                task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
+                                if task_rec:
+                                    task_rec.status = "cancelled"
+                                    task_rec.completed_at = now_utc()
+                                    task_rec.message = f"Остановлено (собрано {wave_collected} из +{wave_target} контактов). Можно продолжить."
+                                    try:
+                                        waves_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                                        for w in waves_list:
+                                            if w.get("wave") == wave_index:
+                                                w["status"] = "cancelled"
+                                                w["collected"] = wave_collected
+                                                w["cost_rub"] = wave_yandex_cost
+                                        task_rec.waves_json = json.dumps(waves_list, ensure_ascii=False)
+                                    except Exception:
+                                        pass
+                                    db.commit()
                             return
 
                         batch = approved_candidates[i : i + batch_size]
-                        crawl_tasks = [crawl_site_for_outreach_lead(cand, http_client) for cand in batch]
+                        async def _safe_crawl(cand):
+                            try:
+                                return await asyncio.wait_for(crawl_site_for_outreach_lead(cand, http_client), timeout=30.0)
+                            except Exception:
+                                return None
+                        crawl_tasks = [_safe_crawl(cand) for cand in batch]
                         crawled_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
 
                         async def _evaluate_and_enrich(crawled_item):
@@ -1016,13 +1207,30 @@ async def run_outreach_search_task(
 
                         current_scanned = scanned_so_far + min(i + batch_size, len(approved_candidates))
                         current_yandex_cost = round(total_yandex_requests * yandex_unit_price, 2)
+                        wave_yandex_requests = max(0, total_yandex_requests - initial_yandex_requests)
+                        wave_yandex_cost = round(wave_yandex_requests * yandex_unit_price, 2)
+                        wave_collected = max(0, collected_count - initial_collected)
+                        wave_target = extra_count if is_extend else target_count
+
                         ACTIVE_SEARCH_TASKS[task_id]["collected"] = collected_count
                         ACTIVE_SEARCH_TASKS[task_id]["scanned_sites"] = current_scanned
                         ACTIVE_SEARCH_TASKS[task_id]["yandex_requests"] = total_yandex_requests
                         ACTIVE_SEARCH_TASKS[task_id]["yandex_cost_rub"] = current_yandex_cost
                         ACTIVE_SEARCH_TASKS[task_id]["llm_cost_rub"] = 0.0
                         ACTIVE_SEARCH_TASKS[task_id]["total_cost_rub"] = current_yandex_cost
-                        ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Собрано {collected_count}/{target_count} целевых контактов (Яндекс: {current_yandex_cost:.2f} ₽)..."
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_yandex_requests"] = wave_yandex_requests
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_cost_rub"] = wave_yandex_cost
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_collected"] = wave_collected
+                        ACTIVE_SEARCH_TASKS[task_id]["wave_target"] = wave_target
+
+                        if is_extend:
+                            ACTIVE_SEARCH_TASKS[task_id]["message"] = (
+                                f"Собрано в доборе {wave_collected}/{wave_target} контактов (Яндекс: {wave_yandex_cost:.2f} ₽)..."
+                            )
+                        else:
+                            ACTIVE_SEARCH_TASKS[task_id]["message"] = (
+                                f"Собрано {collected_count}/{target_count} целевых контактов (Яндекс: {current_yandex_cost:.2f} ₽)..."
+                            )
 
                         with session_factory() as db:
                             task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
@@ -1034,9 +1242,35 @@ async def run_outreach_search_task(
                                 task_rec.llm_cost_rub = 0.0
                                 task_rec.total_cost_rub = current_yandex_cost
                                 task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
+                                try:
+                                    waves_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                                    for w in waves_list:
+                                        if w.get("wave") == wave_index:
+                                            w["collected"] = wave_collected
+                                            w["cost_rub"] = wave_yandex_cost
+                                            w["yandex_cost_rub"] = wave_yandex_cost
+                                            w["yandex_requests"] = wave_yandex_requests
+                                    task_rec.waves_json = json.dumps(waves_list, ensure_ascii=False)
+                                except Exception:
+                                    pass
                                 db.commit()
 
+                        # Update persistent queue progress on disk
+                        try:
+                            if queue_file.exists():
+                                with open(queue_file, "r", encoding="utf-8") as f:
+                                    q_data = json.load(f)
+                                q_data["processed_idx"] = min(q_data.get("processed_idx", 0) + batch_size, len(q_data.get("candidates", [])))
+                                with open(queue_file, "w", encoding="utf-8") as f:
+                                    json.dump(q_data, f, ensure_ascii=False)
+                        except Exception:
+                            pass
+
                         if collected_count >= target_count:
+                            try:
+                                queue_file.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                             break
 
                 scanned_so_far += len(approved_candidates)
@@ -1061,8 +1295,12 @@ async def run_outreach_search_task(
                     task_rec.yandex_cost_rub = final_yandex_cost
                     task_rec.llm_cost_rub = 0.0
                     task_rec.total_cost_rub = final_yandex_cost
-                    task_rec.completed_at = now_utc()
-                    task_rec.message = f"Готово! В задаче собрано {actual_count} проверенных контактов. Расход Яндекса: {final_yandex_cost:.2f} ₽ ({total_yandex_requests} зап.)."
+                    wave_added = actual_count - initial_collected
+                    is_full_target_reached = (wave_added >= wave_target) if is_extend else (actual_count >= target_count)
+                    if is_full_target_reached:
+                        task_rec.message = f"Готово! Цель выполнена на 100%: собрано +{wave_added} целевых контактов. Расход Яндекса: {final_yandex_cost:.2f} ₽ ({total_yandex_requests} зап.)."
+                    else:
+                        task_rec.message = f"Собрано +{wave_added} из +{wave_target} контактов. Расход Яндекса: {final_yandex_cost:.2f} ₽ ({total_yandex_requests} зап.)."
                     ACTIVE_SEARCH_TASKS[task_id]["message"] = task_rec.message
 
                     # Update wave records in waves_json
@@ -1087,12 +1325,19 @@ async def run_outreach_search_task(
 
         except Exception as e:
             logger.error(f"Search task {task_id} failed: {e}", exc_info=True)
-            ACTIVE_SEARCH_TASKS[task_id]["status"] = "error"
-            ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Ошибка: {str(e)}"
+            ACTIVE_SEARCH_TASKS[task_id]["status"] = "paused"
+            ACTIVE_SEARCH_TASKS[task_id]["message"] = f"Сбой сбора: {str(e)[:80]}. Сайты сохранены. Нажмите «Продолжить»."
             with session_factory() as db:
                 task_rec = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == task_id).first()
                 if task_rec:
-                    task_rec.status = "error"
-                    task_rec.message = f"Ошибка: {str(e)}"
-                    task_rec.completed_at = now_utc()
+                    task_rec.status = "paused"
+                    task_rec.message = ACTIVE_SEARCH_TASKS[task_id]["message"]
+                    try:
+                        waves_list = json.loads(task_rec.waves_json) if task_rec.waves_json else []
+                        for w in waves_list:
+                            if w.get("wave") == wave_index:
+                                w["status"] = "paused"
+                        task_rec.waves_json = json.dumps(waves_list, ensure_ascii=False)
+                    except Exception:
+                        pass
                     db.commit()

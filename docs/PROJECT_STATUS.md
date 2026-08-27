@@ -56,6 +56,17 @@ Date: 2026-07-08
   - Tab & Workspace State Persistence: Preserved selected search task ID and active subtab in `localStorage` across page reloads (F5) without losing context or resetting to general summary.
   - Inbound Reply Inbox Enhancements: Fixed viewport height containment to prevent reply form overflowing off-screen; added distinct visual indicators for unread emails (blue dot `●`, "Новое" badge, bold typography, 1-click read/unread toggle); added pagination with 50-item initial load and `[ Показать ещё 50 писем ]` load-more button; added silent background auto-synchronization every 30s; enlarged quick reply textarea (`min-height: 125px`, 6 rows) with 1-click AI reply generation.
   - Added test suite `backend/tests/test_outreach.py` with 100% pass rate.
+- Outreach Search Engine Resilience, Pause/Resume & 100% Target Delivery (2026-08):
+  - Candidate Queue Persistence & Zero-Loss Recovery: Discovered candidate sites are saved to `data/outreach_queue_{task_id}.json` immediately after Yandex XML search and AI reranking. Pausing or stopping the process preserves candidate sites on disk, and resuming crawls them directly at 0 ₽ additional Yandex spend.
+  - Interactive Pause & Resume Controls: Added `⏸️ Приостановить сбор` and `▶️ Продолжить сбор` controls in admin panel UI (`frontend/src/OutreachView.tsx`), supported by `/api/outreach/search/pause/{task_id}` and `/api/outreach/search/resume/{task_id}` endpoints.
+  - Startup Auto-Recovery: Searches interrupted by server reboot or backend restart safely recover to `paused` status with candidate queues intact.
+  - Strict Wave Cost & Metrics Isolation: Completely isolated per-wave target, collected count, and Yandex request costs (`wave_cost_rub`, `wave_yandex_requests`) in both frontend cards and the live running banner. Fixed UI metric jumping caused by overlapping stats polling intervals.
+  - Multi-Strategy Search Matrix & 100% Target Delivery:
+    - Removed hardcoded 80-query cap in `generate_search_queries_matrix`, scaling up to 140–280 targeted B2B commercial queries.
+    - Implemented multi-stage search strategy across up to 6 passes (Pass 1: commercial B2B matrix; Pass 2: regional wholesale distributors across all federal districts; Pass 3: specialized commodity nomenclature and tender departments; Pass 4+: federal suppliers and wholesale price lists).
+    - Loop adaptively searches and deep crawls until 100% of the target is reached.
+  - Truthful Status Auditing: Tasks report "Готово! Цель выполнена на 100%" strictly when quota is fully satisfied, or provide exact collection shortfall if search index is fully exhausted.
+  - Live Production Verification: Successfully completed Dobor #6 for `task-tender-unified`, collecting exactly +105/105 leads (100% target fulfillment) at 8.00 ₽ Yandex spend, bringing unified database to exactly 1 813 verified corporate leads.
 - Lead Generation & Outreach Search Engine Upgrade & Adaptive Multi-Pass Loop (2026-08):
   - Upgraded Outreach search pipeline in `backend/app/outreach_search.py` to match the exact quality, depth, and precision of TenderLex's core client procurement engine (`supplier_search.py`).
   - Adaptive Multi-Pass Auto-Refill Loop: Implemented self-healing search loop (up to 3 passes) that automatically generates extended regional and sectorial queries if the initial crawl yields fewer leads than the requested quota.
