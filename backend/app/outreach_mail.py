@@ -49,13 +49,37 @@ def _decode_mime_header(header_value: str | None) -> str:
     return " ".join(decoded)
 
 
+DISPOSABLE_DOMAINS = {
+    "tempmail.com", "mailinator.com", "10minutemail.com", "trashmail.com", "guerrillamail.com",
+    "yopmail.com", "sharklasers.com", "dispostable.com", "getairmail.com", "throwawaymail.com",
+    "temp-mail.org", "fakeinbox.com", "burnermail.io", "mytemp.email", "temp-mail.io"
+}
+
+
+def render_spintax(text: str) -> str:
+    """Recursively evaluates spintax syntax like {opt1|opt2|opt3} (only braces containing '|') to generate randomized text variations."""
+    if not text or "{" not in text or "|" not in text:
+        return text or ""
+    import random
+    pattern = re.compile(r"\{([^{}]+?\|[^{}]+?)\}")
+    res = text
+    for _ in range(6):
+        if not pattern.search(res):
+            break
+        res = pattern.sub(lambda m: random.choice(m.group(1).split("|")), res)
+    return res
+
+
 def render_template_text(template_str: str, lead: OutreachLead | None) -> str:
-    """Replaces variables in email template."""
+    """Evaluates spintax and replaces variables in email template."""
     if not template_str:
         return ""
+    
+    # 1. Evaluate spintax variations first
+    res = render_spintax(template_str)
+
     if not lead:
         # Fallback when lead is None: remove or simplify placeholders
-        res = template_str
         for tag in ["{company}", "{company_name}", "{компания}", "{организация}", "{name}", "{имя}", "{лпр}", "{телефон}", "{phone}", "{сайт}", "{website}", "{site}", "{город}", "{city}", "{email}", "{почта}", "{инн}", "{inn}"]:
             res = res.replace(tag, "")
         return res
@@ -89,7 +113,6 @@ def render_template_text(template_str: str, lead: OutreachLead | None) -> str:
         "{inn}": inn_val,
     }
 
-    res = template_str
     for tag, val in replacements.items():
         res = res.replace(tag, val)
     return res
@@ -156,6 +179,58 @@ def _send_smtp_sync(msg: EmailMessage, settings: OutreachSettings, to_email: str
         return False, f"SMTP: {str(e)}"
 
 
+async def verify_email_deliverability(email_str: str) -> tuple[bool, str]:
+    """Deep deliverability check: syntax, disposable domains, MX records, and safe mailbox ping."""
+    from .outreach_search import _clean_email
+    cleaned = _clean_email(email_str)
+    if not cleaned:
+        return False, "Некорректный синтаксис, плейсхолдер или адрес техподдержки"
+
+    user, domain = cleaned.split("@", 1)
+    if domain in DISPOSABLE_DOMAINS:
+        return False, "Одноразовый почтовый сервис"
+
+    # 1. Check MX records
+    try:
+        from .supplier_search import email_has_valid_mx
+        has_mx = await asyncio.wait_for(email_has_valid_mx(cleaned), timeout=2.5)
+        if not has_mx:
+            return False, "Отсутствуют валидные MX-записи почтового домена"
+    except Exception as e:
+        logger.debug(f"MX check error for {cleaned}: {e}")
+
+    # 2. Fast direct SMTP Handshake check (for domains with open port 25)
+    try:
+        def _ping_smtp(target_email: str, target_domain: str) -> tuple[bool, str]:
+            import dns.resolver
+            import smtplib
+
+            try:
+                records = dns.resolver.resolve(target_domain, "MX", lifetime=2.0)
+                mx_hosts = sorted([(r.preference, str(r.exchange).rstrip(".")) for r in records])
+                if not mx_hosts:
+                    return True, "MX OK"
+                primary_mx = mx_hosts[0][1]
+            except Exception:
+                return True, "MX OK"
+
+            try:
+                with smtplib.SMTP(primary_mx, 25, timeout=2.5) as server:
+                    server.helo("mail.tenderlex.ru")
+                    server.mail("check@tenderlex.ru")
+                    code, resp = server.rcpt(target_email)
+                    resp_str = resp.decode("utf-8", errors="ignore") if isinstance(resp, bytes) else str(resp)
+                    if code in (550, 551, 552, 553, 554):
+                        return False, f"Почтовый ящик отклонен (SMTP {code}: {resp_str[:80]})"
+                    return True, "Адрес подтвержден"
+            except Exception:
+                return True, "MX подтвержден"
+
+        return await asyncio.to_thread(_ping_smtp, cleaned, domain)
+    except Exception:
+        return True, "MX подтвержден"
+
+
 async def send_single_email(
     to_email: str,
     subject: str,
@@ -163,7 +238,7 @@ async def send_single_email(
     body_html: str,
     settings: OutreachSettings,
 ) -> tuple[bool, str]:
-    """Sends email via Relay VPS or direct SMTP."""
+    """Sends email via Relay VPS or direct SMTP with anti-spam deliverability headers."""
     from_name = settings.from_name or "TenderLex"
     from_email = settings.from_email or "info@tenderlex.ru"
 
@@ -179,6 +254,12 @@ async def send_single_email(
             "from_name": from_name,
             "from_email": from_email,
             "reply_to": settings.reply_to or from_email,
+            "headers": {
+                "List-Unsubscribe": f"<mailto:{from_email}?subject=Unsubscribe>, <https://tenderlex.ru/cabinet?unsubscribe={to_email}>",
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                "Precedence": "bulk",
+                "X-Auto-Response-Suppress": "OOF, AutoReply",
+            },
             "attachments": [],
         }
         try:
@@ -208,13 +289,17 @@ async def send_single_email(
         except Exception:
             pass
 
-    # 2. SMTP via threadpool
+    # 2. SMTP via threadpool with RFC anti-spam deliverability headers
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = formataddr((from_name, from_email))
     msg["To"] = normalized_to
     if settings.reply_to:
         msg["Reply-To"] = settings.reply_to
+    msg["List-Unsubscribe"] = f"<mailto:{from_email}?subject=Unsubscribe>, <https://tenderlex.ru/cabinet?unsubscribe={normalized_to}>"
+    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg["Precedence"] = "bulk"
+    msg["X-Auto-Response-Suppress"] = "OOF, AutoReply"
 
     if body_text:
         msg.set_content(body_text)
@@ -227,7 +312,9 @@ async def send_single_email(
 
 
 async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
-    """Processes campaign email queue in background."""
+    """Processes campaign email queue in background with pre-flight check, bounce suppression, and jitter."""
+    import random
+
     with session_factory() as db:
         campaign: OutreachCampaign | None = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()
         if not campaign:
@@ -245,9 +332,10 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
         delay_seconds = max(1.0, float(campaign.delay_seconds or settings.delay_seconds or 2.0))
         aud_type = getattr(campaign, "audience_type", "new") or "new"
 
-        # Eligible leads
+        # Eligible leads (strictly exclude bounced/invalid leads)
         q = db.query(OutreachLead).filter(
             OutreachLead.mx_valid == True,
+            OutreachLead.status.notin_(["bounced", "invalid", "irrelevant"]),
         )
 
         if getattr(campaign, "selected_lead_ids", None):
@@ -313,7 +401,24 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                 return
             current_settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first() or OutreachSettings(id=1)
 
-        # Render templates with lead mock object
+        # Pre-flight verify deliverability
+        is_deliverable, deliverable_reason = await verify_email_deliverability(lead_item["email"])
+        if not is_deliverable:
+            logger.warning(f"Skipping undeliverable lead {lead_item['email']}: {deliverable_reason}")
+            with session_factory() as db:
+                db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
+                if db_lead:
+                    db_lead.status = "invalid"
+                    db_lead.mx_valid = False
+                    db_lead.notes = f"Предстартовая валидация: {deliverable_reason}"[:150]
+                c = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()
+                if c:
+                    c.failed_count = (c.failed_count or 0) + 1
+                    c.current_index = idx + 1
+                db.commit()
+            continue
+
+        # Render templates with lead mock object (Spintax evaluated per-email)
         mock_lead = OutreachLead(
             id=lead_item["id"],
             email=lead_item["email"],
@@ -343,7 +448,14 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                     db_lead.sent_count = (db_lead.sent_count or 0) + 1
                     db_lead.last_sent_at = now_utc()
                 else:
-                    db_lead.notes = f"Ошибка: {err}"[:150]
+                    err_low = err.lower()
+                    # Auto-suppress bounce
+                    if any(k in err_low for k in ["550", "no such user", "mailbox unavailable", "user unknown", "invalid mailbox", "disabled", "does not exist"]):
+                        db_lead.status = "bounced"
+                        db_lead.mx_valid = False
+                        db_lead.notes = f"Авто-подавление (550): {err}"[:150]
+                    else:
+                        db_lead.notes = f"Ошибка: {err}"[:150]
 
             log = OutreachSendLog(
                 campaign_id=campaign_id,
@@ -366,7 +478,9 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                 c.current_index = idx + 1
             db.commit()
 
-        await asyncio.sleep(delay_seconds)
+        # Adaptive jitter delay (random ±25% to prevent robotic spam signatures)
+        jitter_delay = max(1.0, delay_seconds * random.uniform(0.85, 1.35))
+        await asyncio.sleep(jitter_delay)
 
     with session_factory() as db:
         c = db.query(OutreachCampaign).filter(OutreachCampaign.id == campaign_id).first()

@@ -470,6 +470,127 @@ def test_outreach_search_pause_resume_and_queue():
         db.close()
 
 
+def test_spintax_rendering():
+    from app.outreach_mail import render_spintax, render_template_text
+    
+    # Simple spintax
+    tpl = "{Здравствуйте|Добрый день|Приветствую}"
+    rendered = {render_spintax(tpl) for _ in range(30)}
+    assert len(rendered) > 1
+    assert all(r in {"Здравствуйте", "Добрый день", "Приветствую"} for r in rendered)
+
+    # Nested spintax with template variables
+    complex_tpl = "{Здравствуйте|Добрый день}, {company}! {Мы создали {сервис|платформу}|Предлагаем решение} TenderLex."
+    lead = OutreachLead(company_name="ООО Вектор")
+    results = [render_template_text(complex_tpl, lead) for _ in range(20)]
+    assert any("сервис" in r for r in results)
+    assert any("платформу" in r for r in results)
+    assert all("ООО Вектор" in r for r in results)
+
+
+def test_clean_email_filters():
+    from app.outreach_search import _clean_email
+
+    # Corrupted URL encodings
+    assert _clean_email("20info@profit-tender.com") == "info@profit-tender.com"
+    assert _clean_email("%20zakaz@zavod.ru") == "zakaz@zavod.ru"
+    assert _clean_email("3dinfo@metall.ru") == "info@metall.ru"
+
+    # Blocked placeholder emails
+    assert _clean_email("name@example.com") == ""
+    assert _clean_email("mail@example.com") == ""
+    assert _clean_email("your@email.com") == ""
+    assert _clean_email("rating@mail.ru") == ""
+    assert _clean_email("email@mail.ru") == ""
+    assert _clean_email("k.saf@vashsait.ru") == ""
+    assert _clean_email("test@sample.com") == ""
+    assert _clean_email("test1@site.ru") == ""
+
+    # Blocked support & ticket queues
+    assert _clean_email("support@kwork.ru") == ""
+    assert _clean_email("help@sravni.ru") == ""
+    assert _clean_email("claim@team.profi.ru") == ""
+    assert _clean_email("abuse@domain.ru") == ""
+    assert _clean_email("ticket@service.ru") == ""
+    assert _clean_email("ebs_support@znanium.ru") == ""
+
+    # Valid corporate & commercial emails
+    assert _clean_email("snab@zavod-kabel.ru") == "snab@zavod-kabel.ru"
+    assert _clean_email("sale@gts24.com") == "sale@gts24.com"
+    assert _clean_email("info@emiko.ru") == "info@emiko.ru"
+
+
+@pytest.mark.asyncio
+async def test_email_deliverability_verification():
+    from app.outreach_mail import verify_email_deliverability
+
+    # Invalid junk
+    ok1, reason1 = await verify_email_deliverability("name@example.com")
+    assert ok1 is False
+
+    ok2, reason2 = await verify_email_deliverability("help@sravni.ru")
+    assert ok2 is False
+
+    ok3, reason3 = await verify_email_deliverability("user@tempmail.com")
+    assert ok3 is False
+
+    # Valid domain
+    ok4, reason4 = await verify_email_deliverability("info@yandex.ru")
+    assert ok4 is True
+
+
+def test_database_cleanup_endpoint():
+    from app.outreach_api import cleanup_leads_database, DatabaseCleanupRequest
+    
+    db = SessionLocal()
+    try:
+        # Create test leads (1 corrupted prefix, 1 placeholder, 1 valid)
+        lead_corrupt = OutreachLead(
+            email="20info@test-cleanup-factory.ru",
+            company_name="ООО Тест Префикс",
+            status="new",
+            mx_valid=True,
+        )
+        lead_junk = OutreachLead(
+            email="name@example.com",
+            company_name="ООО Пример",
+            status="new",
+            mx_valid=True,
+        )
+        lead_valid = OutreachLead(
+            email="zakaz@test-cleanup-valid-factory.ru",
+            company_name="ООО Завод Валидный",
+            status="new",
+            mx_valid=True,
+        )
+        db.add_all([lead_corrupt, lead_junk, lead_valid])
+        db.commit()
+
+        # Run cleanup
+        res = cleanup_leads_database(DatabaseCleanupRequest(), db=db)
+        assert res["ok"] is True
+        assert res["fixed_prefixes"] >= 1
+        assert res["invalidated"] >= 1
+
+        db.refresh(lead_corrupt)
+        db.refresh(lead_junk)
+        db.refresh(lead_valid)
+
+        assert lead_corrupt.email == "info@test-cleanup-factory.ru"
+        assert lead_junk.status == "invalid"
+        assert lead_junk.mx_valid is False
+        assert lead_valid.status == "new"
+
+        # Cleanup
+        db.delete(lead_corrupt)
+        db.delete(lead_junk)
+        db.delete(lead_valid)
+        db.commit()
+    finally:
+        db.close()
+
+
+
 
 
 

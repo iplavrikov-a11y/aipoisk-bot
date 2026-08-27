@@ -110,11 +110,35 @@ FORBIDDEN_FILE_EXTENSIONS = (
     ".5", ".6", ".7", ".8", ".9", ".ts", ".jsx", ".tsx", ".scss", ".less", ".apk"
 )
 
+FORBIDDEN_PLACEHOLDER_DOMAINS = {
+    "example.com", "example.org", "example.net", "domain.com", "yoursite.com",
+    "mail.com", "email.com", "site.ru", "site.com", "vashsait.ru", "mysite.ru",
+    "test.ru", "sample.com", "tempmail.com", "sait.ru", "vash-sait.ru", "domain.ru",
+    "test.com", "localhost", "localdomain", "mycompany.ru", "company.ru", "somedomain.com"
+}
+
+FORBIDDEN_PLACEHOLDER_USERS = {
+    "name", "your", "test", "tests", "testing", "sample", "rating", "email",
+    "user", "username", "someone", "mail", "post", "frunze", "ivanov", "petrov",
+    "sidorov", "example", "demo", "test1", "test2", "no-reply", "noreply",
+    "donotreply", "null", "undefined", "none", "admin@harant.ru"
+}
+
+FORBIDDEN_SUPPORT_PREFIXES = (
+    "support@", "help@", "claim@", "abuse@", "postmaster@", "mailer-daemon@",
+    "hostmaster@", "root@", "security@", "ebs_support@", "ticket@", "tickets@",
+    "billing@", "compliance@", "otzyv@", "otzyvy@", "press@", "pressa@",
+    "hr@", "job@", "rabota@", "career@", "resume@", "kadry@"
+)
+
 
 def _clean_email(email_str: str) -> str:
     if not email_str:
         return ""
-    email_str = email_str.strip().lower().strip(".,;:/()[]{}<>\"'\\_+-#")
+    import urllib.parse
+    email_str = urllib.parse.unquote(str(email_str or "")).strip().lower()
+    email_str = email_str.strip(".,;:/()[]{}<>\"'\\_+-# \t\r\n")
+    email_str = re.sub(r"^(?:20|3d|25|2f)+", "", email_str).strip()
     if not (5 <= len(email_str) <= 100):
         return ""
     if "@" not in email_str or email_str.count("@") != 1:
@@ -133,7 +157,13 @@ def _clean_email(email_str: str) -> str:
         return ""
     if any(user.startswith(bad) for bad in ("--", "..", "__", "intro.", "jquery", "bootstrap", "react", "vue", "angular", "browser")):
         return ""
-    if domain in ("example.com", "domain.com", "yoursite.com", "mail.com", "email.com", "site.ru", "site.com"):
+    if domain in FORBIDDEN_PLACEHOLDER_DOMAINS:
+        return ""
+    if user in FORBIDDEN_PLACEHOLDER_USERS:
+        return ""
+    if user.startswith(("test-", "test.", "example", "sample")):
+        return ""
+    if any(email_str.startswith(pref) for pref in FORBIDDEN_SUPPORT_PREFIXES):
         return ""
     try:
         if any(ord(c) > 127 for c in domain):

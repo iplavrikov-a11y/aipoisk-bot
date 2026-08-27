@@ -16,10 +16,12 @@ from .db import SessionLocal
 from .models import SystemSettings
 from .outreach_mail import (
     ACTIVE_CAMPAIGN_TASKS,
+    render_spintax,
     render_template_text,
     run_campaign_worker,
     send_single_email,
     sync_imap_inbox,
+    verify_email_deliverability,
 )
 from .outreach_models import (
     OutreachCampaign,
@@ -32,6 +34,7 @@ from .outreach_models import (
 )
 from .outreach_search import (
     ACTIVE_SEARCH_TASKS,
+    _clean_email,
     run_outreach_search_task,
 )
 from .security import require_admin
@@ -85,6 +88,23 @@ class DeleteLeadsRequest(BaseModel):
     lead_ids: list[str] = []
     all_leads: bool = False
     status_filter: str = ""
+    task_id: str = ""
+
+
+class DatabaseCleanupRequest(BaseModel):
+    task_id: str = ""
+    fix_prefixes: bool = True
+    invalidate_junk: bool = True
+
+
+class SpintaxPreviewRequest(BaseModel):
+    subject: str = ""
+    body_text: str = ""
+    count: int = 3
+
+
+class BatchValidateRequest(BaseModel):
+    lead_ids: list[str] = []
     task_id: str = ""
 
 
@@ -721,6 +741,93 @@ def delete_leads(data: DeleteLeadsRequest, db: Session = Depends(get_db)) -> dic
         return {"ok": True, "deleted": deleted}
 
     return {"ok": True, "deleted": 0}
+
+
+@router.post("/leads/cleanup-database")
+def cleanup_leads_database(data: DatabaseCleanupRequest = DatabaseCleanupRequest(), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Scans existing leads, strips corrupted prefixes (e.g. 20info@), and marks placeholders/support as invalid."""
+    q = db.query(OutreachLead)
+    if data.task_id:
+        q = q.filter(OutreachLead.task_id == data.task_id)
+
+    leads = q.all()
+    scanned = len(leads)
+    fixed_prefixes = 0
+    invalidated = 0
+    already_invalid = 0
+    valid_count = 0
+
+    for lead in leads:
+        orig_email = str(lead.email or "").strip()
+        cleaned = _clean_email(orig_email)
+
+        # Check if email had broken prefix like 20info@
+        if cleaned and cleaned != orig_email.lower():
+            if data.fix_prefixes:
+                lead.email = cleaned
+                fixed_prefixes += 1
+
+        # Check if email is invalid junk / placeholder / support
+        if not cleaned:
+            if lead.status != "invalid":
+                if data.invalidate_junk:
+                    lead.status = "invalid"
+                    lead.mx_valid = False
+                    lead.notes = "Очищен фильтром качества (плейсхолдер/техподдержка/невалидный email)"
+                    invalidated += 1
+            else:
+                already_invalid += 1
+        else:
+            valid_count += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "scanned": scanned,
+        "fixed_prefixes": fixed_prefixes,
+        "invalidated": invalidated,
+        "already_invalid": already_invalid,
+        "valid_count": valid_count,
+    }
+
+
+@router.post("/leads/validate-batch")
+async def validate_leads_batch(data: BatchValidateRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Runs pre-flight deliverability verification on leads in batches."""
+    q = db.query(OutreachLead)
+    if data.lead_ids:
+        q = q.filter(OutreachLead.id.in_(data.lead_ids))
+    elif data.task_id:
+        q = q.filter(OutreachLead.task_id == data.task_id)
+    else:
+        q = q.filter(OutreachLead.status.notin_(["bounced", "invalid"]))
+
+    leads = q.limit(500).all()
+    results = []
+    for lead in leads:
+        is_val, reason = await verify_email_deliverability(lead.email)
+        if not is_val:
+            lead.status = "invalid"
+            lead.mx_valid = False
+            lead.notes = f"Валидация: {reason}"
+        else:
+            lead.mx_valid = True
+        results.append({"id": lead.id, "email": lead.email, "valid": is_val, "reason": reason})
+
+    db.commit()
+    return {"ok": True, "total": len(results), "items": results}
+
+
+@router.post("/spintax-preview")
+def preview_spintax(data: SpintaxPreviewRequest) -> dict[str, Any]:
+    """Generates preview variations of spintax subject and body."""
+    samples = []
+    for _ in range(max(1, min(10, data.count))):
+        samples.append({
+            "subject": render_spintax(data.subject),
+            "body_text": render_spintax(data.body_text),
+        })
+    return {"ok": True, "samples": samples}
 
 
 # ==================== CAMPAIGNS & SENDING ====================
