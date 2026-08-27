@@ -12,12 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Outreach Inbox Scroll & Background Sync Stabilization (2026-08):
-  - Fixed page and email list layout jumps/flickering during automatic 30s synchronization in the Outreach Inbox.
-  - Made background auto-sync (`triggerAutoSync`) 100% silent without toggling loading badges, altering header dimensions, or locking action buttons.
-  - Implemented smart shallow equality checks in `fetchInbox` for incoming items, unread counts, and active message selection (`setSelectedMsg`), preserving list scroll position and preventing unnecessary React re-renders when data has not changed.
-  - Memoized `EmailBodyFrame` with `React.memo`, keyed iframe lifecycles by message ID, removed height transition jitters, and added `overscroll-behavior: contain` and `overflow-anchor: auto` with `contain: layout` to `.outreach-inbox-split` and `.outreach-inbox-list`.
-  - Stabilized realtime campaign and task polling dependencies to prevent interval tearing and thrashing.
+- Outreach Seamless Inbox Synchronization & Jitter-Free UI Architecture (Aligned with EmailAgent, 2026-08):
+  - Completely eliminated visual jitter, layout jumping, and flickering in the Outreach Inbox by adopting `emailagent`'s seamless asynchronous sync architecture.
+  - Backend Background IMAP Worker (`_background_imap_loop` in `backend/app/main.py`): The backend continuously and quietly fetches incoming supplier replies from IMAP every 45 seconds in a separate non-blocking thread (`asyncio.to_thread`), saving new messages to SQLite independently of frontend requests.
+  - Frontend Silent DB Polling: The client periodically queries the local database endpoint `GET /api/outreach/inbox` every 20 seconds (ultra-fast 2ms query). Background fetches are 100% silent (`silent=true`) and never block UI interactions, reset scroll positions, or show loading skeletons.
+  - Selection Stability: During background refreshes, `setSelectedMsg` never forcibly resets or switches away from the currently viewed email (`items[0]`), allowing uninterrupted reading and reply composition.
+  - Clean Minimalist Toolbar: Removed bulky "Автосинхронизация каждые 30 сек" banner and blocking "Синхронизировать сейчас" button. Added compact 34x32px `<button onClick={handleRefreshInbox}><RefreshCw size={13} /></button>` icon button with brief spin feedback, matching `emailagent`'s exact UI design.
+  - Smart Equality Checking: Memoized `inboxMessages` and `inboxCounts` state updates in `fetchInbox` to prevent redundant DOM re-renders when data has not changed.
+  - Stabilized `EmailBodyFrame`: Sandboxed iframe with initial 300px minHeight, strict table formatting constraints, and isolated event bubbling.
 - Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
   - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
   - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").

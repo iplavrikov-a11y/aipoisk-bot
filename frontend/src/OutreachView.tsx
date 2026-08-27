@@ -621,7 +621,7 @@ export function OutreachView() {
   const [inboxLimit, setInboxLimit] = useState(50)
   const [inboxTotal, setInboxTotal] = useState(0)
   const [loadingMoreInbox, setLoadingMoreInbox] = useState(false)
-  const [syncingInbox, setSyncingInbox] = useState(false)
+  const [loadingInbox, setLoadingInbox] = useState(false)
   const [selectedMsg, setSelectedMsg] = useState<IncomingMessage | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
@@ -820,6 +820,10 @@ export function OutreachView() {
             }
             return matched
           }
+          // On silent background polling, NEVER deselect or jump away from current email!
+          if (silent) {
+            return prev
+          }
           if (!isLoadMore) {
             return items[0]
           }
@@ -843,26 +847,6 @@ export function OutreachView() {
       setLoadingMoreInbox(false)
     }
   }
-
-  // Silent auto-sync for inbox
-  const triggerAutoSync = useCallback(
-    async (taskId?: string) => {
-      const now = Date.now()
-      if (now - lastAutoSyncTimeRef.current < 15000) return
-      lastAutoSyncTimeRef.current = now
-      try {
-        await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
-        const targetTaskId = taskId !== undefined ? taskId : (inboxTaskFilterRef.current || null)
-        await fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
-        if (selectedTaskRef.current) {
-          fetchTaskStats(selectedTaskRef.current.id)
-        }
-      } catch {
-        // silent background failure
-      }
-    },
-    [fetchInbox, fetchTaskStats]
-  )
 
   // Fetch settings & spam rules
   const fetchSettings = useCallback(async () => {
@@ -1038,21 +1022,17 @@ export function OutreachView() {
     return () => clearInterval(interval)
   }, [selectedTask?.id, selectedTask?.status, taskSubTab, mainTab, searchStatus?.status, searchFilter, statusFilter, selectedWave, fetchLeads])
 
-  // Trigger auto-sync on entering Inbox tab
-  useEffect(() => {
-    if (mainTab === 'inbox') {
-      triggerAutoSync(inboxTaskFilter || undefined)
-    }
-  }, [mainTab, inboxTaskFilter, triggerAutoSync])
-
-  // Periodic background auto-sync every 30 seconds when in inbox tab
+  // Periodic background auto-fetch every 20 seconds when in inbox tab (ultra-fast DB query, 100% silent)
   useEffect(() => {
     if (mainTab !== 'inbox') return
+    const targetTaskId = inboxTaskFilter || undefined
+    void fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
     const interval = setInterval(() => {
-      triggerAutoSync(inboxTaskFilter || undefined)
-    }, 30000)
+      const currentTaskId = inboxTaskFilterRef.current || undefined
+      void fetchInbox(currentTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
+    }, 20000)
     return () => clearInterval(interval)
-  }, [mainTab, inboxTaskFilter, triggerAutoSync])
+  }, [mainTab, inboxTaskFilter, fetchInbox])
 
   // Template CRUD Handlers
   const saveTemplates = (newTpls: EmailTemplate[]) => {
@@ -1784,20 +1764,22 @@ export function OutreachView() {
     }
   }
 
-  // Sync Inbox
-  const handleSyncInbox = async () => {
-    setSyncingInbox(true)
+  // Refresh Inbox list (like emailagent)
+  const handleRefreshInbox = async () => {
+    setLoadingInbox(true)
     try {
-      const res = await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
-      showSuccess(`Синхронизация завершена (новых писем: ${res.new_messages || res.synced || 0})`)
-      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+      await fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       if (selectedTask) {
         fetchTaskStats(selectedTask.id)
       }
-    } catch (e: any) {
-      showError(`Ошибка синхронизации: ${e.message}`)
+      // Silently trigger background IMAP sync on server without blocking
+      outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
+        .then(() => {
+          void fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
+        })
+        .catch(() => {})
     } finally {
-      setSyncingInbox(false)
+      setTimeout(() => setLoadingInbox(false), 250)
     }
   }
 
@@ -4275,13 +4257,12 @@ export function OutreachView() {
 
             <button
               type="button"
-              onClick={handleSyncInbox}
-              disabled={syncingInbox}
+              onClick={handleRefreshInbox}
               className="outreach-btn outreach-btn-secondary"
-              style={{ padding: '4px 10px', fontSize: 11, minHeight: 30, minWidth: 160 }}
+              style={{ width: 34, height: 32, minHeight: 32, padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+              title="Обновить список писем"
             >
-              <RefreshCw size={12} className={syncingInbox ? 'animate-spin' : ''} />
-              <span>{syncingInbox ? 'Синхронизация...' : 'Синхронизировать сейчас'}</span>
+              <RefreshCw size={13} className={loadingInbox ? 'animate-spin' : ''} />
             </button>
           </div>
         </div>

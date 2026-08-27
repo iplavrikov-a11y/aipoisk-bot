@@ -245,13 +245,34 @@ async def startup() -> None:
                     s_task.waves_json = json.dumps(waves, ensure_ascii=False)
                 except Exception:
                     pass
-            db.commit()
+            # Launch background periodic IMAP poller (runs quietly every 45s)
+            asyncio.create_task(_background_imap_loop())
         except Exception as e:
             logger.warning(f"Error resuming campaigns on startup: {e}")
     finally:
         db.close()
     for job_id in recovered_job_ids:
         enqueue_job(job_id)
+
+
+async def _background_imap_loop() -> None:
+    """Quietly and continuously fetches new incoming supplier replies in the background every 45s."""
+    from .db import SessionLocal
+    from .outreach_models import OutreachSettings
+    from .outreach_mail import sync_imap_inbox
+
+    await asyncio.sleep(10)
+    while True:
+        try:
+            with SessionLocal() as db:
+                settings = db.query(OutreachSettings).first()
+                if settings and settings.imap_password and settings.imap_host:
+                    await asyncio.to_thread(sync_imap_inbox, settings=settings, db=db, limit=50)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Background IMAP worker exception: {e}")
+        await asyncio.sleep(45)
 
 
 @app.get("/api/health")

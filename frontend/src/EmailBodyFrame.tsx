@@ -149,7 +149,7 @@ const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
   html,
   text,
   className = '',
-  minHeight = 120,
+  minHeight = 300,
   maxHeight = 1600,
   showToggle = true,
 }) => {
