@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import desc, func, or_
+from sqlalchemy import asc, desc, func, or_
 from sqlalchemy.orm import Session
 
 from .ai import call_llm
@@ -1479,7 +1479,213 @@ async def reply_inbox_message(data: ReplyInboxRequest, db: Session = Depends(get
     return {"ok": True, "message": "Ответ успешно отправлен"}
 
 
-# ==================== LEAD HISTORY ====================
+# ==================== LEAD HISTORY & THREAD ====================
+
+
+@router.get("/inbox/{message_id}/thread")
+def get_inbox_message_thread(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Get full chronological correspondence thread for a specific incoming message / sender."""
+    msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+
+    contact_email = (msg.sender_email or "").strip().lower()
+    lead = None
+    if msg.lead_id:
+        lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+    if not lead and contact_email:
+        lead = db.query(OutreachLead).filter(func.lower(OutreachLead.email) == contact_email).first()
+
+    task = None
+    if lead and lead.task_id:
+        task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == lead.task_id).first()
+
+    if lead:
+        incoming_list = (
+            db.query(OutreachIncomingEmail)
+            .filter(
+                or_(
+                    func.lower(OutreachIncomingEmail.sender_email) == contact_email,
+                    OutreachIncomingEmail.lead_id == lead.id,
+                )
+            )
+            .order_by(OutreachIncomingEmail.date_received.asc())
+            .all()
+        )
+        sent_list = (
+            db.query(OutreachSendLog)
+            .filter(
+                or_(
+                    func.lower(OutreachSendLog.recipient_email) == contact_email,
+                    OutreachSendLog.lead_id == lead.id,
+                )
+            )
+            .order_by(OutreachSendLog.sent_at.asc())
+            .all()
+        )
+    else:
+        incoming_list = (
+            db.query(OutreachIncomingEmail)
+            .filter(func.lower(OutreachIncomingEmail.sender_email) == contact_email)
+            .order_by(OutreachIncomingEmail.date_received.asc())
+            .all()
+        )
+        sent_list = (
+            db.query(OutreachSendLog)
+            .filter(func.lower(OutreachSendLog.recipient_email) == contact_email)
+            .order_by(OutreachSendLog.sent_at.asc())
+            .all()
+        )
+
+    campaign_ids = {s.campaign_id for s in sent_list if s.campaign_id}
+    campaigns = {}
+    if campaign_ids:
+        for camp in db.query(OutreachCampaign).filter(OutreachCampaign.id.in_(campaign_ids)).all():
+            campaigns[camp.id] = camp
+
+    items = []
+    for inc in incoming_list:
+        items.append({
+            "id": f"inc-{inc.id}",
+            "message_id": inc.id,
+            "type": "incoming",
+            "date": inc.date_received.isoformat() if inc.date_received else None,
+            "sender_name": inc.sender_name or (lead.company_name if lead else inc.sender_email.split("@")[0]),
+            "sender_email": inc.sender_email,
+            "recipient_email": inc.recipient_email or "info@tenderlex.ru",
+            "subject": inc.subject or "(Без темы)",
+            "body_text": inc.body_text or "",
+            "body_html": inc.body_html or "",
+            "category": inc.category,
+            "is_spam": inc.is_spam,
+            "is_read": inc.is_read,
+            "replied_at": inc.replied_at.isoformat() if inc.replied_at else None,
+        })
+
+    for s in sent_list:
+        camp = campaigns.get(s.campaign_id) if s.campaign_id else None
+        body_text = camp.body_text if camp else ""
+        subject = s.subject or (camp.subject if camp else "(Без темы)")
+        items.append({
+            "id": f"sent-{s.id}",
+            "send_id": s.id,
+            "type": "outgoing",
+            "date": s.sent_at.isoformat() if s.sent_at else None,
+            "sender_name": "TenderLex (Команда снабжения)",
+            "sender_email": s.from_email or "info@tenderlex.ru",
+            "recipient_email": s.recipient_email,
+            "subject": subject,
+            "body_text": body_text,
+            "status": s.status,
+            "error_message": s.error_message,
+            "campaign_name": camp.name if camp else None,
+        })
+
+    items.sort(key=lambda x: x.get("date") or "")
+
+    return {
+        "ok": True,
+        "message_id": msg.id,
+        "contact_email": contact_email,
+        "lead": lead.to_dict() if lead else None,
+        "task_name": task.name if task else None,
+        "items": items,
+        "total_incoming": len(incoming_list),
+        "total_outgoing": len(sent_list),
+    }
+
+
+@router.get("/leads/{lead_id}/thread")
+def get_lead_thread(lead_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Get full chronological correspondence thread for a specific lead."""
+    lead = db.query(OutreachLead).filter(OutreachLead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Лид не найден")
+
+    contact_email = (lead.email or "").strip().lower()
+    task = None
+    if lead.task_id:
+        task = db.query(OutreachSearchTask).filter(OutreachSearchTask.id == lead.task_id).first()
+
+    incoming_list = (
+        db.query(OutreachIncomingEmail)
+        .filter(
+            or_(
+                func.lower(OutreachIncomingEmail.sender_email) == contact_email,
+                OutreachIncomingEmail.lead_id == lead.id,
+            )
+        )
+        .order_by(OutreachIncomingEmail.date_received.asc())
+        .all()
+    )
+
+    sent_list = (
+        db.query(OutreachSendLog)
+        .filter(
+            or_(
+                func.lower(OutreachSendLog.recipient_email) == contact_email,
+                OutreachSendLog.lead_id == lead.id,
+            )
+        )
+        .order_by(OutreachSendLog.sent_at.asc())
+        .all()
+    )
+
+    campaign_ids = {s.campaign_id for s in sent_list if s.campaign_id}
+    campaigns = {}
+    if campaign_ids:
+        for camp in db.query(OutreachCampaign).filter(OutreachCampaign.id.in_(campaign_ids)).all():
+            campaigns[camp.id] = camp
+
+    items = []
+    for inc in incoming_list:
+        items.append({
+            "id": f"inc-{inc.id}",
+            "message_id": inc.id,
+            "type": "incoming",
+            "date": inc.date_received.isoformat() if inc.date_received else None,
+            "sender_name": inc.sender_name or lead.company_name or inc.sender_email.split("@")[0],
+            "sender_email": inc.sender_email,
+            "recipient_email": inc.recipient_email or "info@tenderlex.ru",
+            "subject": inc.subject or "(Без темы)",
+            "body_text": inc.body_text or "",
+            "body_html": inc.body_html or "",
+            "category": inc.category,
+            "is_spam": inc.is_spam,
+            "is_read": inc.is_read,
+            "replied_at": inc.replied_at.isoformat() if inc.replied_at else None,
+        })
+
+    for s in sent_list:
+        camp = campaigns.get(s.campaign_id) if s.campaign_id else None
+        body_text = camp.body_text if camp else ""
+        subject = s.subject or (camp.subject if camp else "(Без темы)")
+        items.append({
+            "id": f"sent-{s.id}",
+            "send_id": s.id,
+            "type": "outgoing",
+            "date": s.sent_at.isoformat() if s.sent_at else None,
+            "sender_name": "TenderLex (Команда снабжения)",
+            "sender_email": s.from_email or "info@tenderlex.ru",
+            "recipient_email": s.recipient_email,
+            "subject": subject,
+            "body_text": body_text,
+            "status": s.status,
+            "error_message": s.error_message,
+            "campaign_name": camp.name if camp else None,
+        })
+
+    items.sort(key=lambda x: x.get("date") or "")
+
+    return {
+        "ok": True,
+        "contact_email": contact_email,
+        "lead": lead.to_dict(),
+        "task_name": task.name if task else None,
+        "items": items,
+        "total_incoming": len(incoming_list),
+        "total_outgoing": len(sent_list),
+    }
 
 
 @router.get("/leads/{lead_id}/history")

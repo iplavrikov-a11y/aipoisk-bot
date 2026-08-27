@@ -60,6 +60,8 @@ import {
   Sliders,
   MailCheck,
   LayoutTemplate,
+  Phone,
+  Check,
 } from 'lucide-react'
 
 export type MainTab = 'tasks' | 'inbox' | 'compose' | 'settings'
@@ -194,6 +196,37 @@ interface LeadHistory {
   lead: Lead
   sent: any[]
   incoming: IncomingMessage[]
+}
+
+export interface ThreadItem {
+  id: string
+  message_id?: string
+  send_id?: string
+  type: 'incoming' | 'outgoing'
+  date: string | null
+  sender_name: string
+  sender_email: string
+  recipient_email: string
+  subject: string
+  body_text: string
+  body_html?: string
+  category?: string
+  is_spam?: boolean
+  is_read?: boolean
+  status?: string
+  error_message?: string
+  campaign_name?: string
+  replied_at?: string | null
+}
+
+export interface ThreadData {
+  message_id?: string
+  contact_email: string
+  lead: Lead | null
+  task_name: string | null
+  items: ThreadItem[]
+  total_incoming: number
+  total_outgoing: number
 }
 
 export interface EmailTemplate {
@@ -439,8 +472,17 @@ export function OutreachView() {
   const [selectAllAcrossPages, setSelectAllAcrossPages] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
-  // History modal
+  // Correspondence Thread Modal state
   const [historyLead, setHistoryLead] = useState<LeadHistory | null>(null)
+  const [threadModalOpen, setThreadModalOpen] = useState(false)
+  const [threadLoading, setThreadLoading] = useState(false)
+  const [threadData, setThreadData] = useState<ThreadData | null>(null)
+  const [threadReplySubject, setThreadReplySubject] = useState('')
+  const [threadReplyBody, setThreadReplyBody] = useState('')
+  const [threadSendingReply, setThreadSendingReply] = useState(false)
+  const [threadCopiedField, setThreadCopiedField] = useState<string | null>(null)
+  const [threadReplyToMsgId, setThreadReplyToMsgId] = useState<string | null>(null)
+  const [threadAiGenerating, setThreadAiGenerating] = useState(false)
 
   // CRM Picker Modal for Compose tab
   const [showCrmPickerModal, setShowCrmPickerModal] = useState(false)
@@ -1361,13 +1403,144 @@ export function OutreachView() {
     }
   }
 
-  // Open Lead History
-  const handleOpenLeadHistory = async (lead: Lead) => {
+  // Open Thread History for an incoming inbox message
+  const handleOpenThreadHistory = async (msg: IncomingMessage) => {
+    setThreadModalOpen(true)
+    setThreadLoading(true)
+    setThreadReplyToMsgId(msg.id)
+    setThreadReplySubject(msg.subject?.toLowerCase().startsWith('re:') ? msg.subject : `Re: ${msg.subject || 'Запрос'}`)
+    setThreadReplyBody('')
     try {
-      const data = await outreachFetch<LeadHistory>(`/api/outreach/leads/${lead.id}/history`)
-      setHistoryLead(data)
+      const data = await outreachFetch<ThreadData>(`/api/outreach/inbox/${msg.id}/thread`)
+      setThreadData(data)
     } catch (e: any) {
       showError(`Ошибка загрузки истории: ${e.message}`)
+    } finally {
+      setThreadLoading(false)
+    }
+  }
+
+  // Open Thread History for a lead from the leads list
+  const handleOpenLeadThread = async (lead: Lead) => {
+    setThreadModalOpen(true)
+    setThreadLoading(true)
+    setThreadReplyToMsgId(null)
+    setThreadReplySubject(`По поводу сотрудничества с ${lead.company_name || lead.email}`)
+    setThreadReplyBody('')
+    try {
+      const data = await outreachFetch<ThreadData>(`/api/outreach/leads/${lead.id}/thread`)
+      setThreadData(data)
+      const lastIncoming = data.items.filter((i) => i.type === 'incoming').slice(-1)[0]
+      if (lastIncoming) {
+        setThreadReplyToMsgId(lastIncoming.message_id || null)
+        setThreadReplySubject(
+          lastIncoming.subject?.toLowerCase().startsWith('re:')
+            ? lastIncoming.subject
+            : `Re: ${lastIncoming.subject || 'Запрос'}`
+        )
+      }
+    } catch (e: any) {
+      showError(`Ошибка загрузки истории: ${e.message}`)
+    } finally {
+      setThreadLoading(false)
+    }
+  }
+
+  // Alias for backward compatibility
+  const handleOpenLeadHistory = async (lead: Lead) => {
+    await handleOpenLeadThread(lead)
+  }
+
+  // Copy text helper with micro-feedback
+  const handleCopyThreadText = async (text: string, fieldKey: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setThreadCopiedField(fieldKey)
+      window.setTimeout(() => {
+        setThreadCopiedField((curr) => (curr === fieldKey ? null : curr))
+      }, 1500)
+    } catch {
+      // ignore
+    }
+  }
+
+  // Quick AI generation inside Thread Modal
+  const handleThreadAiGenerate = async (tone: 'professional' | 'friendly' | 'selling' | 'concise', customAction?: string) => {
+    if (!threadData) return
+    setThreadAiGenerating(true)
+    try {
+      const lastIncoming = threadData.items.filter((i) => i.type === 'incoming').slice(-1)[0]
+      const prompt = customAction || 'Напиши вежливый профессиональный ответ на последнее письмо поставщика'
+      const res = await outreachFetch<{ ok: boolean; text: string }>('/api/outreach/ai/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'reply',
+          prompt,
+          tone,
+          company_name: threadData.lead?.company_name || threadData.contact_email,
+          incoming_message: lastIncoming?.body_text || '',
+        }),
+      })
+      if (res && res.text) {
+        setThreadReplyBody(res.text)
+      }
+    } catch (e: any) {
+      showError(`Ошибка генерации ИИ: ${e.message}`)
+    } finally {
+      setThreadAiGenerating(false)
+    }
+  }
+
+  // Send reply from inside Thread Modal
+  const handleSendThreadReply = async () => {
+    if (!threadReplyBody.trim()) {
+      showError('Введите текст ответа')
+      return
+    }
+    if (!threadData) return
+
+    setThreadSendingReply(true)
+    try {
+      if (threadReplyToMsgId) {
+        await outreachFetch('/api/outreach/inbox/reply', {
+          method: 'POST',
+          body: JSON.stringify({
+            message_id: threadReplyToMsgId,
+            reply_body: threadReplyBody.trim(),
+          }),
+        })
+      } else {
+        await outreachFetch('/api/outreach/send-direct', {
+          method: 'POST',
+          body: JSON.stringify({
+            recipient_email: threadData.contact_email,
+            subject: threadReplySubject.trim() || 'Ответ от TenderLex',
+            body_text: threadReplyBody.trim(),
+            lead_id: threadData.lead?.id || null,
+          }),
+        })
+      }
+
+      showSuccess('Ответ успешно отправлен!')
+      setThreadReplyBody('')
+
+      const newOutgoing: ThreadItem = {
+        id: `sent-${Date.now()}`,
+        type: 'outgoing',
+        date: new Date().toISOString(),
+        sender_name: 'TenderLex (Команда снабжения)',
+        sender_email: 'info@tenderlex.ru',
+        recipient_email: threadData.contact_email,
+        subject: threadReplySubject.trim() || 'Ответ от TenderLex',
+        body_text: threadReplyBody.trim(),
+        status: 'sent',
+      }
+      setThreadData((prev) => (prev ? { ...prev, items: [...prev.items, newOutgoing], total_outgoing: prev.total_outgoing + 1 } : null))
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+    } catch (e: any) {
+      showError(`Ошибка отправки: ${e.message}`)
+    } finally {
+      setThreadSendingReply(false)
     }
   }
 
@@ -4271,6 +4444,17 @@ export function OutreachView() {
 
                     <button
                       type="button"
+                      onClick={() => handleOpenThreadHistory(selectedMsg)}
+                      className="outreach-btn outreach-btn-ghost"
+                      style={{ padding: '4px 8px', fontSize: 11, color: '#4f46e5', fontWeight: 600, background: '#f5f3ff', borderColor: '#ddd6fe' }}
+                      title="Посмотреть всю историю переписки с этим контактом"
+                    >
+                      <History size={13} style={{ color: '#6366f1' }} />
+                      <span>История</span>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => handleToggleSpam(selectedMsg)}
                       className="outreach-btn outreach-btn-ghost"
                       style={{ padding: '4px 8px', fontSize: 11, color: selectedMsg.is_spam ? '#2563eb' : '#64748b' }}
@@ -4924,72 +5108,366 @@ export function OutreachView() {
   </div>
   )}
 
-      {/* ==================== LEAD HISTORY MODAL ==================== */}
-      {historyLead && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(15, 23, 42, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div style={{ background: '#fff', borderRadius: 10, width: '100%', maxWidth: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
-            <div style={{ padding: '14px 18px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <strong style={{ fontSize: 14, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <History size={16} style={{ color: '#0f766e' }} />
-                  История переписки: {historyLead.lead.company_name}
-                </strong>
-                <div style={{ fontSize: 12, color: '#64748b', fontFamily: 'monospace' }}>{historyLead.lead.email}</div>
+      {/* ==================== CORRESPONDENCE THREAD / HISTORY MODAL ==================== */}
+      {threadModalOpen && (
+        <div className="outreach-modal-overlay" onClick={() => setThreadModalOpen(false)}>
+          <div
+            className="outreach-modal-card"
+            style={{ maxWidth: 960, height: '90vh', maxHeight: 860 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="outreach-modal-header" style={{ padding: '14px 20px', background: '#f8fafc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                <div
+                  className="outreach-inbox-avatar"
+                  style={{
+                    width: 38,
+                    height: 38,
+                    fontSize: 15,
+                    background: threadData ? getAvatarColor(threadData.lead?.company_name || threadData.contact_email) : '#3b82f6',
+                  }}
+                >
+                  {(threadData?.lead?.company_name || threadData?.contact_email || 'U').charAt(0).toUpperCase()}
+                </div>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+                      {threadData?.lead?.company_name || threadData?.contact_email || 'История переписки'}
+                    </h3>
+                    {threadData?.task_name && (
+                      <span style={{ fontSize: 10.5, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', padding: '1px 6px', borderRadius: 4, fontWeight: 600 }}>
+                        🎯 {threadData.task_name}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Contact Info Chips */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap', fontSize: 11.5 }}>
+                    {threadData?.contact_email && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#475569', background: '#fff', border: '1px solid #e2e8f0', padding: '1px 6px', borderRadius: 4 }}>
+                        <Mail size={11} style={{ color: '#2563eb' }} />
+                        <span style={{ fontFamily: 'monospace' }}>{threadData.contact_email}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyThreadText(threadData.contact_email, 'email')}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: '0 2px', display: 'inline-flex', alignItems: 'center', color: '#64748b' }}
+                          title="Скопировать email"
+                        >
+                          {threadCopiedField === 'email' ? <Check size={11} style={{ color: '#10b981' }} /> : <Copy size={11} />}
+                        </button>
+                      </div>
+                    )}
+
+                    {threadData?.lead?.phone && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#475569', background: '#fff', border: '1px solid #e2e8f0', padding: '1px 6px', borderRadius: 4 }}>
+                        <Phone size={11} style={{ color: '#059669' }} />
+                        <a href={`tel:${threadData.lead.phone}`} style={{ color: '#059669', textDecoration: 'none', fontWeight: 600 }}>
+                          {threadData.lead.phone}
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyThreadText(threadData?.lead?.phone || '', 'phone')}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: '0 2px', display: 'inline-flex', alignItems: 'center', color: '#64748b' }}
+                          title="Скопировать телефон"
+                        >
+                          {threadCopiedField === 'phone' ? <Check size={11} style={{ color: '#10b981' }} /> : <Copy size={11} />}
+                        </button>
+                      </div>
+                    )}
+
+                    {threadData?.lead?.website && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#475569', background: '#fff', border: '1px solid #e2e8f0', padding: '1px 6px', borderRadius: 4 }}>
+                        <ExternalLink size={11} style={{ color: '#6366f1' }} />
+                        <a
+                          href={threadData.lead.website.startsWith('http') ? threadData.lead.website : `https://${threadData.lead.website}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: '#6366f1', textDecoration: 'none' }}
+                        >
+                          {threadData.lead.website.replace(/^https?:\/\//, '')}
+                        </a>
+                      </div>
+                    )}
+
+                    {threadData?.lead?.inn && (
+                      <span style={{ color: '#64748b', fontSize: 11 }}>
+                        ИНН: {threadData.lead.inn}
+                      </span>
+                    )}
+
+                    {threadData?.lead?.city && (
+                      <span style={{ color: '#64748b', fontSize: 11 }}>
+                        📍 {threadData.lead.city}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setHistoryLead(null)}
-                className="outreach-btn outreach-btn-ghost"
-                style={{ padding: 4 }}
-              >
-                ✕
-              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {threadData && (
+                  <div style={{ fontSize: 11, color: '#64748b', background: '#fff', padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                    ✉️ Сообщений: <strong>{threadData.items.length}</strong> (Вх: {threadData.total_incoming}, Исх: {threadData.total_outgoing})
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setThreadModalOpen(false)}
+                  className="outreach-btn outreach-btn-ghost"
+                  style={{ padding: 6, borderRadius: '50%' }}
+                  title="Закрыть"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
-            <div style={{ padding: 18, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12, flex: 1 }}>
-              {historyLead.sent.length === 0 && historyLead.incoming.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#94a3b8', padding: '30px 0', fontSize: 12 }}>
-                  История переписки с этим контактом пока пуста.
-                </p>
+            {/* Modal Body (Scrollable Thread Timeline) */}
+            <div
+              className="outreach-modal-body"
+              style={{
+                padding: '16px 20px',
+                background: '#f8fafc',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                overflowY: 'auto',
+                flex: 1,
+              }}
+            >
+              {threadLoading ? (
+                <div style={{ padding: '60px 20px', textAlign: 'center', color: '#64748b' }}>
+                  <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 10px', color: '#6366f1' }} />
+                  <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>Загрузка истории переписки...</p>
+                </div>
+              ) : !threadData || threadData.items.length === 0 ? (
+                <div style={{ padding: '60px 20px', textAlign: 'center', color: '#94a3b8' }}>
+                  <Inbox size={32} style={{ margin: '0 auto 8px', opacity: 0.5 }} />
+                  <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>История переписки с этим контактом пока пуста</p>
+                  <p style={{ margin: '4px 0 0', fontSize: 11.5 }}>
+                    Вы можете отправить первое письмо прямо в форме ниже.
+                  </p>
+                </div>
               ) : (
-                <>
-                  {historyLead.sent.map((s, idx) => (
-                    <div key={`sent-${idx}`} style={{ padding: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontWeight: 700, color: '#1e40af' }}>
-                        <span>Исходящее письмо</span>
-                        <span>{formatDate(s.sent_at)}</span>
-                      </div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>{s.subject}</div>
-                    </div>
-                  ))}
+                threadData.items.map((item, idx) => {
+                  const isIncoming = item.type === 'incoming'
+                  const itemKey = item.id || `item-${idx}`
+                  const categoryBadge =
+                    item.is_spam
+                      ? { text: '🚫 Спам', bg: '#fee2e2', color: '#b91c1c', border: '#fca5a5' }
+                      : item.category === 'bounce'
+                      ? { text: '🔴 Ошибка доставки', bg: '#fee2e2', color: '#b91c1c', border: '#fca5a5' }
+                      : item.category === 'auto_reply'
+                      ? { text: '🟡 Автоответ', bg: '#fef3c7', color: '#92400e', border: '#fde68a' }
+                      : isIncoming
+                      ? { text: '🟢 Входящий ответ', bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' }
+                      : { text: item.campaign_name ? `📤 Рассылка (${item.campaign_name})` : '📤 Исходящее письмо', bg: '#eff6ff', color: '#1e40af', border: '#bfdbfe' }
 
-                  {historyLead.incoming.map((m, idx) => (
-                    <div key={`inc-${idx}`} style={{ padding: 12, background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontWeight: 700, color: '#065f46' }}>
-                        <span>Входящий ответ</span>
-                        <span>{formatDate(m.date_received)}</span>
+                  return (
+                    <div
+                      key={itemKey}
+                      style={{
+                        padding: '12px 16px',
+                        background: isIncoming ? '#ffffff' : '#f8faff',
+                        border: isIncoming ? '1px solid #e2e8f0' : '1px solid #c7d2fe',
+                        borderLeft: isIncoming ? '3.5px solid #10b981' : '3.5px solid #6366f1',
+                        borderRadius: 8,
+                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      {/* Top Bar of message card */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              background: categoryBadge.bg,
+                              color: categoryBadge.color,
+                              border: `1px solid ${categoryBadge.border}`,
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                              fontSize: 10.5,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {categoryBadge.text}
+                          </span>
+
+                          <span style={{ fontSize: 11.5, fontWeight: 700, color: '#0f172a' }}>
+                            {isIncoming ? item.sender_name || item.sender_email : `Кому: ${item.recipient_email}`}
+                          </span>
+
+                          <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                            &lt;{isIncoming ? item.sender_email : item.sender_email}&gt;
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 11, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Clock size={11} />
+                            {formatDate(item.date)}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyThreadText(item.body_text || item.subject, itemKey)}
+                            className="outreach-btn outreach-btn-ghost"
+                            style={{ padding: '2px 6px', fontSize: 10.5 }}
+                            title="Скопировать текст"
+                          >
+                            {threadCopiedField === itemKey ? <Check size={11} style={{ color: '#10b981' }} /> : <Copy size={11} />}
+                            <span>{threadCopiedField === itemKey ? 'Скопировано' : 'Копировать'}</span>
+                          </button>
+
+                          {isIncoming && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (item.message_id) {
+                                  setThreadReplyToMsgId(item.message_id)
+                                }
+                                setThreadReplySubject(
+                                  item.subject?.toLowerCase().startsWith('re:')
+                                    ? item.subject
+                                    : `Re: ${item.subject || 'Запрос'}`
+                                )
+                              }}
+                              className="outreach-btn outreach-btn-ghost"
+                              style={{ padding: '2px 6px', fontSize: 10.5, color: '#4f46e5' }}
+                              title="Ответить на это письмо"
+                            >
+                              <Reply size={11} />
+                              <span>Ответить</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>{m.subject}</div>
-                      <div style={{ fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', marginTop: 4 }}>{m.body_text}</div>
+
+                      {/* Subject */}
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+                        {item.subject}
+                      </div>
+
+                      {/* Body */}
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: '#334155',
+                          lineHeight: 1.55,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          background: isIncoming ? '#f8fafc' : '#ffffff',
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          border: '1px solid #e2e8f0',
+                        }}
+                      >
+                        {item.body_text || '(Текст сообщения отсутствует)'}
+                      </div>
                     </div>
-                  ))}
-                </>
+                  )
+                })
               )}
             </div>
 
-            <div style={{ padding: '10px 18px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setComposeRecipients([historyLead.lead.email])
-                  setHistoryLead(null)
-                  changeMainTab('compose')
-                }}
-                className="outreach-btn outreach-btn-primary"
-              >
-                <PenTool size={14} />
-                <span>Написать письмо</span>
-              </button>
+            {/* Modal Footer (Inline Reply Composer) */}
+            <div
+              className="outreach-modal-footer"
+              style={{
+                padding: '12px 18px',
+                background: '#ffffff',
+                borderTop: '1px solid #e2e8f0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                alignItems: 'stretch',
+              }}
+            >
+              {/* Quick AI Response Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Sparkles size={12} style={{ color: '#8b5cf6' }} />
+                    Быстрый ответ с AI:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleThreadAiGenerate('professional', 'Согласись на предложение, запроси счёт и договор с реквизитами')}
+                    disabled={threadAiGenerating}
+                    className="outreach-btn outreach-btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 10.5, background: '#f5f3ff', color: '#6d28d9', borderColor: '#ddd6fe' }}
+                  >
+                    ✓ Согласиться
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleThreadAiGenerate('professional', 'Вежливо запроси официальное коммерческое предложение (КП) со сроками поставки и ценами по спецификации')}
+                    disabled={threadAiGenerating}
+                    className="outreach-btn outreach-btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 10.5, background: '#f0fdf4', color: '#15803d', borderColor: '#bbf7d0' }}
+                  >
+                    📋 Запросить КП
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleThreadAiGenerate('concise', 'Вежливо откажись от предложения, сохранив контакт на будущее')}
+                    disabled={threadAiGenerating}
+                    className="outreach-btn outreach-btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 10.5, background: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' }}
+                  >
+                    ✕ Вежливый отказ
+                  </button>
+                </div>
+
+                <div style={{ fontSize: 11, color: '#64748b' }}>
+                  Отправитель: <strong>info@tenderlex.ru</strong>
+                </div>
+              </div>
+
+              {/* Subject line input */}
+              <input
+                type="text"
+                value={threadReplySubject}
+                onChange={(e) => setThreadReplySubject(e.target.value)}
+                placeholder="Тема письма..."
+                className="outreach-input"
+                style={{ fontSize: 12, padding: '4px 8px', height: 28 }}
+              />
+
+              {/* Reply Body Textarea */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                <textarea
+                  value={threadReplyBody}
+                  onChange={(e) => setThreadReplyBody(e.target.value)}
+                  placeholder="Напишите ответ контакту или выберите быстрый шаблон ИИ выше..."
+                  rows={3}
+                  className="outreach-textarea"
+                  style={{ flex: 1, fontSize: 12, resize: 'vertical', minHeight: 60, padding: '6px 10px' }}
+                />
+                <button
+                  type="button"
+                  onClick={handleSendThreadReply}
+                  disabled={threadSendingReply || !threadReplyBody.trim()}
+                  className="outreach-btn outreach-btn-primary"
+                  style={{ height: 60, padding: '0 16px', fontSize: 12, fontWeight: 700, gap: 6, flexShrink: 0 }}
+                >
+                  {threadSendingReply ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Отправка...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send size={14} />
+                      <span>Отправить</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

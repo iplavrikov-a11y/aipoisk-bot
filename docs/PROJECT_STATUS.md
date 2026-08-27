@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Outreach Correspondence Thread History & Fast Reply (2026-08):
+  - Added dedicated "История" button in Outreach Inbox message detail view and Leads table, bringing the full conversation thread modal system from `emailagent` / `AITender`.
+  - Full Chronological Timeline: Displays all incoming responses and outgoing campaign/direct emails for the specific contact/company in unified timeline cards with green/emerald incoming highlights and indigo outgoing highlights, timestamps, subject lines, body text, category badges, and copy buttons.
+  - Contact Details Card: Header displays company name, contact avatar with hash-based color palette, 1-click copyable email and phone (`tel:`), website external link, INN, city, task name, and incoming/outgoing message counts.
+  - Inline Fast Reply with AI Assistance: Embedded reply composer directly within the history modal, prefilled with `Re: ...`, 1-click AI template buttons (✓ Согласиться, 📋 Запросить КП, ✕ Вежливый отказ), and direct email dispatch from `info@tenderlex.ru`.
+  - Backend Endpoints: Added `@router.get("/inbox/{message_id}/thread")` and `@router.get("/leads/{lead_id}/thread")` in `backend/app/outreach_api.py` with 100% pytest test coverage.
 - Outreach Inbox Read/Unread Indicator & Sender Avatars (2026-08):
   - Added interactive read/unread circle indicator (`outreach-inbox-read-toggle`) directly on the left of each incoming email in all tabs ("Все", "Живые ответы", "Автоответы", "Ошибки доставки", "Новые", "Спам"), aligned with `emailagent` / `AITender`.
   - Clickable Circle Indicator: Solid glowing amber dot (`●`) indicates unread messages; subtle outline circle (`○`) indicates read messages. Clicking the circle toggles read/unread status with optimistic UI updates and immediate count adjustments.

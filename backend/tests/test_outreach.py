@@ -703,6 +703,74 @@ async def test_complex_supply_and_manufacturer_filtering(monkeypatch):
     assert reviewed is None  # Must be rejected because site_type == manufacturer!
 
 
+def test_outreach_thread_endpoints():
+    from app.outreach_api import get_inbox_message_thread, get_lead_thread
+
+    db = SessionLocal()
+    try:
+        # Create a lead
+        lead = OutreachLead(
+            email="thread-supplier@example.com",
+            company_name="ООО Поставщик Тред",
+            phone="+7 999 555-44-33",
+            website="https://thread-supplier.com",
+            inn="7701234567",
+            status="replied",
+            mx_valid=True,
+        )
+        db.add(lead)
+        db.commit()
+        db.refresh(lead)
+
+        # Create incoming message
+        inc_msg = OutreachIncomingEmail(
+            message_id="msg-thread-1",
+            sender_email="thread-supplier@example.com",
+            sender_name="Менеджер Иван",
+            subject="Re: Запрос цен на инструмент",
+            body_text="Добрый день! Готовы поставить инструмент со скидкой 10%.",
+            category="reply",
+            is_read=False,
+            lead_id=lead.id,
+        )
+        db.add(inc_msg)
+
+        # Create sent log
+        sent_log = OutreachSendLog(
+            recipient_email="thread-supplier@example.com",
+            recipient_company="ООО Поставщик Тред",
+            subject="Запрос цен на инструмент",
+            status="sent",
+            lead_id=lead.id,
+        )
+        db.add(sent_log)
+        db.commit()
+        db.refresh(inc_msg)
+
+        # 1. Test get_inbox_message_thread
+        thread_res = get_inbox_message_thread(message_id=inc_msg.id, db=db)
+        assert thread_res["ok"] is True
+        assert thread_res["contact_email"] == "thread-supplier@example.com"
+        assert thread_res["lead"]["company_name"] == "ООО Поставщик Тред"
+        assert len(thread_res["items"]) == 2
+        assert thread_res["total_incoming"] == 1
+        assert thread_res["total_outgoing"] == 1
+
+        # 2. Test get_lead_thread
+        lead_thread_res = get_lead_thread(lead_id=lead.id, db=db)
+        assert lead_thread_res["ok"] is True
+        assert lead_thread_res["contact_email"] == "thread-supplier@example.com"
+        assert len(lead_thread_res["items"]) == 2
+
+        # Cleanup
+        db.delete(inc_msg)
+        db.delete(sent_log)
+        db.delete(lead)
+        db.commit()
+    finally:
+        db.close()
+
+
 
 
 
