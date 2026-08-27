@@ -12,6 +12,16 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Real-time Today SEO Progress & Daily Ranking Dynamics (2026-08):
+  - Added comprehensive daily ranking and search visibility analytics separately for Yandex and Google in the admin panel (`frontend/src/App.tsx`, `frontend/src/styles.css`, `backend/app/yandex_seo.py`, `backend/app/google_seo.py`).
+  - Google Search Console Integration: Extracted daily analytics over 30 days (`dimensions: ['date']` and `dimensions: ['date', 'query']`) with day-to-day clicks, impressions, avg position deltas, query counts, and daily ranking trend classification (`up` / `down` / `stable`).
+  - Yandex Webmaster API v4: Integrated POST `/query-analytics/list` for daily impressions, clicks, avg position, and active queries.
+  - Yandex Metrika Real-time API: Integrated live visits/search transitions for today (`date1=today&date2=today`, `dimensions=ym:s:lastSearchEngine`).
+  - Disk Persistence: Daily analytics history preserved in `data/seo_daily_history.json` and cached snapshot in `data/yandex_analytics_snapshot.json`.
+  - Admin Panel UI:
+    - **⚡ Прогресс на сегодняшний день**: 4 responsive cards showing today's real-time clicks, search impressions, avg position (with ▲/▼ position deltas), and queries in SERP with engine filter toggles (`[Все] [Яндекс] [Google]`).
+    - **📈 Динамика ранжирования и показов по дням**: Interactive period selector (`[7 дней] [14 дней] [30 дней]`), visual trend bar chart, and reverse-chronological timeline table with day-to-day deltas and day ranking status (🟢 Позиции растут / 🔴 Снижение позиций / ⚪ Стабильно).
+    - **🎯 Динамика ключевых фраз**: Dedicated table tracking individual query movements (who rose, who dropped in rankings).
 - Telegram Web Authentication & Unified Client Profile (2026-08):
   - Added seamless 1-click Telegram Login/Registration alongside Yandex ID and Email in the customer web cabinet (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/web_auth.py`, `backend/app/main.py`).
   - Unified Profiles & Balance Protection: Users who interacted with the Telegram bot are automatically linked to their existing `Client` profile upon logging into the website via Telegram without duplicate account creation or duplicate trial balance grants. Brand-new users receive a unified client account with initial trial access.

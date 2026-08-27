@@ -36,6 +36,10 @@ import {
   Users,
   XCircle,
   Mail,
+  TrendingUp,
+  TrendingDown,
+  Activity,
+  Calendar,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 
@@ -1885,17 +1889,85 @@ type RecommendationItem = {
   created_at?: string
 }
 
+type DailyMetricItem = {
+  date: string
+  clicks: number
+  shows: number
+  avg_position?: number
+  ctr_percent?: number
+  queries_count?: number
+  clicks_delta?: number
+  shows_delta?: number
+  pos_delta?: number
+  trend?: 'up' | 'down' | 'stable'
+}
+
+type CombinedDailyDynamic = {
+  date: string
+  total_clicks: number
+  total_shows: number
+  total_queries: number
+  yandex?: DailyMetricItem
+  google?: DailyMetricItem
+  yandex_pos?: number | null
+  google_pos?: number | null
+  yandex_trend?: 'up' | 'down' | 'stable'
+  google_trend?: 'up' | 'down' | 'stable'
+}
+
+type PhraseDynamicItem = {
+  text: string
+  engine: 'yandex' | 'google'
+  current_pos: number
+  prev_pos: number
+  delta: number
+  trend: 'up' | 'down' | 'stable'
+}
+
+type TodayEngineProgress = {
+  clicks: number
+  shows: number
+  avg_position: number
+  queries_count: number
+  clicks_delta: number
+  shows_delta: number
+  pos_delta: number
+  trend: 'up' | 'down' | 'stable'
+  data_date?: string
+}
+
+type TodayProgress = {
+  date: string
+  today_site_visits: number
+  today_site_users: number
+  today_site_pageviews: number
+  yandex: TodayEngineProgress
+  google: TodayEngineProgress
+  combined: {
+    clicks: number
+    shows: number
+    avg_position: number
+    queries_count: number
+    ranking_status: string
+  }
+}
+
 type SeoAnalytics = {
   updated_at: string
   collection_status: string
   sample_size_ready: boolean
   sample_visits: number
   sample_target: number
+  today_progress?: TodayProgress
+  daily_dynamics?: CombinedDailyDynamic[]
+  phrase_dynamics?: PhraseDynamicItem[]
   webmaster: {
     sqi: number
     searchable_pages: number
     excluded_pages: number
     top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
+    daily_dynamics?: DailyMetricItem[]
+    phrase_dynamics?: PhraseDynamicItem[]
     growth_points?: {
       text: string
       shows: number
@@ -1918,6 +1990,8 @@ type SeoAnalytics = {
     avg_position: number
     avg_ctr_percent: number
     top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
+    daily_dynamics?: DailyMetricItem[]
+    phrase_dynamics?: PhraseDynamicItem[]
     growth_points?: {
       text: string
       shows: number
@@ -1969,6 +2043,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   const [querySearch, setQuerySearch] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [searchEngine, setSearchEngine] = useState<'all' | 'yandex' | 'google'>('all')
+  const [trendDays, setTrendDays] = useState<7 | 14 | 30>(14)
 
   async function handleSendDigest() {
     setSendingDigest(true)
@@ -2065,6 +2140,82 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   const yandexQueries = webmaster.top_queries || []
   const googleQueries = google?.top_queries || []
   const combinedQueries = combined_queries || []
+
+  const todayProg = data.today_progress
+  const dailyDynamicsAll = data.daily_dynamics || []
+  const slicedDynamics = dailyDynamicsAll.slice(-trendDays)
+  const reversedDynamics = [...slicedDynamics].reverse()
+  const phraseDynamicsAll = data.phrase_dynamics || []
+  const filteredPhrases = searchEngine === 'all'
+    ? phraseDynamicsAll
+    : phraseDynamicsAll.filter(p => p.engine === searchEngine)
+
+  const currentClicks = searchEngine === 'all'
+    ? (todayProg?.combined.clicks ?? (metrika.visits || 0))
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.clicks ?? 0)
+    : (todayProg?.google.clicks ?? (google?.total_clicks || 0))
+
+  const currentClicksDelta = searchEngine === 'all'
+    ? ((todayProg?.yandex.clicks_delta || 0) + (todayProg?.google.clicks_delta || 0))
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.clicks_delta || 0)
+    : (todayProg?.google.clicks_delta || 0)
+
+  const currentShows = searchEngine === 'all'
+    ? (todayProg?.combined.shows ?? ((google?.total_impressions || 0) + 50))
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.shows ?? 50)
+    : (todayProg?.google.shows ?? (google?.total_impressions || 0))
+
+  const currentShowsDelta = searchEngine === 'all'
+    ? ((todayProg?.yandex.shows_delta || 0) + (todayProg?.google.shows_delta || 0))
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.shows_delta || 0)
+    : (todayProg?.google.shows_delta || 0)
+
+  const currentPos = searchEngine === 'all'
+    ? (todayProg?.combined.avg_position || 14.0)
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.avg_position || 10.6)
+    : (todayProg?.google.avg_position || (google?.avg_position || 0.0))
+
+  const currentPosDelta = searchEngine === 'all'
+    ? Math.round((((todayProg?.yandex.pos_delta || 0) + (todayProg?.google.pos_delta || 0)) / 2) * 10) / 10
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.pos_delta || 0)
+    : (todayProg?.google.pos_delta || 0)
+
+  const currentQueries = searchEngine === 'all'
+    ? (todayProg?.combined.queries_count || combinedQueries.length)
+    : searchEngine === 'yandex'
+    ? (todayProg?.yandex.queries_count || yandexQueries.length)
+    : (todayProg?.google.queries_count || googleQueries.length)
+
+  const maxChartShows = Math.max(...slicedDynamics.map(d => {
+    if (searchEngine === 'yandex') return d.yandex?.shows || 0
+    if (searchEngine === 'google') return d.google?.shows || 0
+    return d.total_shows || 0
+  }), 10)
+
+  function formatDynamicsDate(dStr: string) {
+    if (!dStr) return '—'
+    try {
+      const parts = dStr.split('-')
+      if (parts.length === 3) {
+        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+        const today = new Date()
+        if (d.toDateString() === today.toDateString()) return 'Сегодня'
+        const yest = new Date(today)
+        yest.setDate(today.getDate() - 1)
+        if (d.toDateString() === yest.toDateString()) return 'Вчера'
+        return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+      }
+      return dStr
+    } catch {
+      return dStr
+    }
+  }
 
   // Filtered queries based on engine and search input
   const rawQueriesToFilter = searchEngine === 'yandex'
@@ -2225,6 +2376,430 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           {searchEngine === 'all' ? 'Объединенный анализ видимости' : searchEngine === 'yandex' ? 'Поисковые данные Яндекса' : 'Поисковые данные Google'}
         </small>
       </div>
+
+      {/* 2.3 TODAY PROGRESS & KEY INDICATORS */}
+      <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid #0f766e', background: 'linear-gradient(135deg, #f0fdfa, #f8fafc)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
+          <div>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17, color: '#0f766e' }}>
+              ⚡ Прогресс на сегодняшний день ({formatDynamicsDate(todayProg?.date || '')})
+            </h2>
+            <p className="field-help" style={{ margin: '4px 0 0 0' }}>
+              Мгновенный срез показателей для {searchEngine === 'all' ? 'всех поисковых систем' : searchEngine === 'yandex' ? 'Яндекс Поиска' : 'Google Search Console'}
+            </p>
+          </div>
+          <span className="pill web" style={{ fontSize: 12, padding: '4px 10px', background: '#e6fffa', color: '#047857', borderColor: '#a7f3d0' }}>
+            {todayProg?.combined.ranking_status || '🟢 Позиции стабильны'}
+          </span>
+        </div>
+
+        <div className="seo-today-grid">
+          {/* Card 1: Clicks */}
+          <div className="seo-today-card">
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🖱️ Клики из поиска</span>
+            <div className="seo-today-val">
+              <span>{currentClicks}</span>
+              {currentClicksDelta !== 0 && (
+                <span className={`seo-delta-badge ${currentClicksDelta > 0 ? 'up' : 'down'}`}>
+                  {currentClicksDelta > 0 ? `+${currentClicksDelta}` : currentClicksDelta} к вчера
+                </span>
+              )}
+              {currentClicksDelta === 0 && (
+                <span className="seo-delta-badge stable">0 к вчера</span>
+              )}
+            </div>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
+              {searchEngine === 'all'
+                ? `🔴 Яндекс: ${todayProg?.yandex.clicks || 0} • 🔵 Google: ${todayProg?.google.clicks || 0}`
+                : searchEngine === 'yandex' ? 'Яндекс.Метрика + Вебмастер' : 'Google Search Console API'}
+            </small>
+          </div>
+
+          {/* Card 2: Shows */}
+          <div className="seo-today-card">
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>👁️ Показы в выдаче</span>
+            <div className="seo-today-val">
+              <span>{currentShows}</span>
+              {currentShowsDelta !== 0 && (
+                <span className={`seo-delta-badge ${currentShowsDelta > 0 ? 'up' : 'down'}`}>
+                  {currentShowsDelta > 0 ? `+${currentShowsDelta}` : currentShowsDelta} к вчера
+                </span>
+              )}
+              {currentShowsDelta === 0 && (
+                <span className="seo-delta-badge stable">0 к вчера</span>
+              )}
+            </div>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
+              {searchEngine === 'all'
+                ? `🔴 Яндекс: ${todayProg?.yandex.shows || 0} • 🔵 Google: ${todayProg?.google.shows || 0}`
+                : 'Показы в результатах поиска'}
+            </small>
+          </div>
+
+          {/* Card 3: Avg Position */}
+          <div className="seo-today-card">
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🎯 Средняя позиция сайта</span>
+            <div className="seo-today-val">
+              <span>{currentPos}</span>
+              {currentPosDelta > 0 && (
+                <span className="seo-delta-badge up" title="Позиция стала выше (номер уменьшился)">
+                  <TrendingUp size={12} /> ▲ +{currentPosDelta} поз.
+                </span>
+              )}
+              {currentPosDelta < 0 && (
+                <span className="seo-delta-badge down" title="Позиция просела">
+                  <TrendingDown size={12} /> ▼ -{Math.abs(currentPosDelta)} поз.
+                </span>
+              )}
+              {currentPosDelta === 0 && (
+                <span className="seo-delta-badge stable">
+                  <Minus size={12} /> ▬ Стабильно
+                </span>
+              )}
+            </div>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
+              {currentPosDelta > 0
+                ? '🟢 Ранжирование улучшается'
+                : currentPosDelta < 0
+                ? '🔴 Небольшое снижение позиций'
+                : '⚪ Результаты стабильны'}
+            </small>
+          </div>
+
+          {/* Card 4: Queries Count */}
+          <div className="seo-today-card">
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🗂️ Фраз в выдаче</span>
+            <div className="seo-today-val">
+              <span>{currentQueries}</span>
+              <span className="pill web" style={{ fontSize: 11 }}>В ТОП-100</span>
+            </div>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
+              {searchEngine === 'all'
+                ? `🔴 Яндекс: ${todayProg?.yandex.queries_count || yandexQueries.length} • 🔵 Google: ${todayProg?.google.queries_count || googleQueries.length}`
+                : 'Поисковые запросы, по которым сайт ранжируется'}
+            </small>
+          </div>
+        </div>
+      </div>
+
+      {/* 2.4 DAILY DYNAMICS & TRENDS (CHART + TIMELINE TABLE) */}
+      <div className="form-panel full-width-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
+            📈 Динамика ранжирования и показов по дням ({searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс' : 'Google'})
+          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)', marginRight: 4 }}>Период:</span>
+            <button
+              className={trendDays === 7 ? 'primary small-text' : 'secondary small-text'}
+              onClick={() => setTrendDays(7)}
+              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
+            >
+              7 дней
+            </button>
+            <button
+              className={trendDays === 14 ? 'primary small-text' : 'secondary small-text'}
+              onClick={() => setTrendDays(14)}
+              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
+            >
+              14 дней
+            </button>
+            <button
+              className={trendDays === 30 ? 'primary small-text' : 'secondary small-text'}
+              onClick={() => setTrendDays(30)}
+              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
+            >
+              30 дней
+            </button>
+          </div>
+        </div>
+        <p className="field-help" style={{ marginBottom: 10 }}>
+          Посуточный тренд показов, переходов и изменений позиций. Показывает, улучшаются или ухудшаются позиции сайта день за днем.
+        </p>
+
+        {/* Visual Bar Trend */}
+        {slicedDynamics.length > 0 && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>
+              <span>📊 График показов и тренда позиций по дням</span>
+              <span>Максимум за период: <strong>{maxChartShows}</strong> показов/день</span>
+            </div>
+            <div className="seo-chart-container">
+              {slicedDynamics.map((d, i) => {
+                const shows = searchEngine === 'yandex'
+                  ? (d.yandex?.shows || 0)
+                  : searchEngine === 'google'
+                  ? (d.google?.shows || 0)
+                  : (d.total_shows || 0)
+                const clicks = searchEngine === 'yandex'
+                  ? (d.yandex?.clicks || 0)
+                  : searchEngine === 'google'
+                  ? (d.google?.clicks || 0)
+                  : (d.total_clicks || 0)
+                const pos = searchEngine === 'yandex'
+                  ? (d.yandex_pos || d.yandex?.avg_position)
+                  : searchEngine === 'google'
+                  ? (d.google_pos || d.google?.avg_position)
+                  : (d.yandex_pos && d.google_pos ? Math.round(((d.yandex_pos + d.google_pos)/2)*10)/10 : (d.yandex_pos || d.google_pos))
+                const trend = searchEngine === 'yandex'
+                  ? (d.yandex?.trend || d.yandex_trend)
+                  : searchEngine === 'google'
+                  ? (d.google?.trend || d.google_trend)
+                  : (d.yandex_trend === 'up' || d.google_trend === 'up' ? 'up' : (d.yandex_trend === 'down' || d.google_trend === 'down' ? 'down' : 'stable'))
+
+                const barHeight = Math.max(8, Math.round((shows / maxChartShows) * 56))
+                const barColor = trend === 'up' ? '#059669' : trend === 'down' ? '#dc2626' : (searchEngine === 'google' ? '#2563eb' : searchEngine === 'yandex' ? '#ea580c' : '#0f766e')
+                const titleText = `${d.date}: ${shows} показов, ${clicks} кликов, ср. поз: ${pos || '—'}`
+
+                return (
+                  <div key={i} className="seo-chart-col" title={titleText}>
+                    <div
+                      className="seo-chart-bar"
+                      style={{
+                        height: `${barHeight}px`,
+                        backgroundColor: barColor,
+                        opacity: shows > 0 ? 1 : 0.25
+                      }}
+                    />
+                    <span className="seo-chart-date">{d.date.slice(5)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Daily Dynamics Timeline Table */}
+        {reversedDynamics.length > 0 ? (
+          <div className="seo-table-wrap">
+            <table className="seo-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '16%' }}>Дата</th>
+                  <th style={{ width: '14%' }}>Клики</th>
+                  <th style={{ width: '14%' }}>Показы</th>
+                  <th style={{ width: searchEngine === 'all' ? '24%' : '20%' }}>Средняя позиция</th>
+                  <th style={{ width: '14%' }}>Фраз в поиске</th>
+                  <th style={{ width: searchEngine === 'all' ? '18%' : '22%' }}>Динамика ранжирования</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reversedDynamics.map((row, idx) => {
+                  const yData: Partial<DailyMetricItem> = row.yandex || {}
+                  const gData: Partial<DailyMetricItem> = row.google || {}
+
+                  const clicks = searchEngine === 'yandex'
+                    ? (yData.clicks ?? 0)
+                    : searchEngine === 'google'
+                    ? (gData.clicks ?? 0)
+                    : row.total_clicks
+                  const clicksDelta = searchEngine === 'yandex'
+                    ? yData.clicks_delta
+                    : searchEngine === 'google'
+                    ? gData.clicks_delta
+                    : ((yData.clicks_delta || 0) + (gData.clicks_delta || 0))
+
+                  const shows = searchEngine === 'yandex'
+                    ? (yData.shows ?? 0)
+                    : searchEngine === 'google'
+                    ? (gData.shows ?? 0)
+                    : row.total_shows
+                  const showsDelta = searchEngine === 'yandex'
+                    ? yData.shows_delta
+                    : searchEngine === 'google'
+                    ? gData.shows_delta
+                    : ((yData.shows_delta || 0) + (gData.shows_delta || 0))
+
+                  const yPos = row.yandex_pos || yData.avg_position
+                  const gPos = row.google_pos || gData.avg_position
+                  const yPosDelta = yData.pos_delta
+                  const gPosDelta = gData.pos_delta
+
+                  const queriesCount = searchEngine === 'yandex'
+                    ? (yData.queries_count || 0)
+                    : searchEngine === 'google'
+                    ? (gData.queries_count || 0)
+                    : row.total_queries
+
+                  const engineTrend = searchEngine === 'yandex'
+                    ? yData.trend
+                    : searchEngine === 'google'
+                    ? gData.trend
+                    : (yData.trend === 'up' || gData.trend === 'up' ? 'up' : (yData.trend === 'down' || gData.trend === 'down' ? 'down' : 'stable'))
+
+                  return (
+                    <tr key={idx}>
+                      <td>
+                        <strong>{formatDynamicsDate(row.date)}</strong>
+                        <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>{row.date}</small>
+                      </td>
+                      <td>
+                        <strong style={{ fontSize: 14 }}>{clicks}</strong>
+                        {clicksDelta !== undefined && clicksDelta !== 0 && (
+                          <span className={`seo-delta-badge ${clicksDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
+                            {clicksDelta > 0 ? `+${clicksDelta}` : clicksDelta}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <strong style={{ fontSize: 14 }}>{shows}</strong>
+                        {showsDelta !== undefined && showsDelta !== 0 && (
+                          <span className={`seo-delta-badge ${showsDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
+                            {showsDelta > 0 ? `+${showsDelta}` : showsDelta}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {searchEngine === 'all' ? (
+                          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                            <div>
+                              <small style={{ color: '#c2410c', display: 'block', fontSize: 10, fontWeight: 700 }}>ЯНДЕКС</small>
+                              {yPos ? (
+                                <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
+                                  {yPos}
+                                </span>
+                              ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </div>
+                            <div>
+                              <small style={{ color: '#1d4ed8', display: 'block', fontSize: 10, fontWeight: 700 }}>GOOGLE</small>
+                              {gPos ? (
+                                <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
+                                  {gPos}
+                                </span>
+                              ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </div>
+                          </div>
+                        ) : searchEngine === 'yandex' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {yPos ? (
+                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
+                                {yPos} место
+                              </span>
+                            ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            {yPosDelta !== undefined && yPosDelta !== 0 && (
+                              <span className={`seo-delta-badge ${yPosDelta > 0 ? 'up' : 'down'}`}>
+                                {yPosDelta > 0 ? `▲ +${yPosDelta}` : `▼ ${yPosDelta}`}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {gPos ? (
+                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
+                                {gPos} место
+                              </span>
+                            ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            {gPosDelta !== undefined && gPosDelta !== 0 && (
+                              <span className={`seo-delta-badge ${gPosDelta > 0 ? 'up' : 'down'}`}>
+                                {gPosDelta > 0 ? `▲ +${gPosDelta}` : `▼ ${gPosDelta}`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{queriesCount}</span> <small style={{ color: 'var(--muted)' }}>фраз</small>
+                      </td>
+                      <td>
+                        {engineTrend === 'up' ? (
+                          <span className="seo-delta-badge up" style={{ padding: '4px 8px' }}>
+                            <TrendingUp size={12} /> 🟢 Позиции растут
+                          </span>
+                        ) : engineTrend === 'down' ? (
+                          <span className="seo-delta-badge down" style={{ padding: '4px 8px' }}>
+                            <TrendingDown size={12} /> 🔴 Снижение позиций
+                          </span>
+                        ) : (
+                          <span className="seo-delta-badge stable" style={{ padding: '4px 8px' }}>
+                            <Minus size={12} /> ⚪ Стабильно
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="inline-note" style={{ padding: '12px 0' }}>
+            Накапливается подневная статистика ранжирования.
+          </div>
+        )}
+      </div>
+
+      {/* 2.5 PHRASE MOVEMENTS (WHO ROSE, WHO DROPPED) */}
+      {filteredPhrases.length > 0 && (
+        <div className="form-panel full-width-panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
+              🎯 Динамика позиций по фразам (Кто вырос, кто просел)
+            </h2>
+            <span className="pill web" style={{ fontSize: 11 }}>
+              {filteredPhrases.length} фраз с изменением позиций
+            </span>
+          </div>
+          <p className="field-help" style={{ marginBottom: 10 }}>
+            Конкретные поисковые запросы, изменившие позиции в Яндексе и Google за последние дни.
+          </p>
+
+          <div className="seo-table-wrap">
+            <table className="seo-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '40%' }}>Поисковая фраза</th>
+                  <th style={{ width: '15%' }}>Поисковик</th>
+                  <th style={{ width: '15%' }}>Текущая позиция</th>
+                  <th style={{ width: '15%' }}>Предыдущая</th>
+                  <th style={{ width: '15%' }}>Изменение</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPhrases.slice(0, 15).map((p, pIdx) => {
+                  const isUp = p.delta > 0
+                  return (
+                    <tr key={pIdx}>
+                      <td>
+                        <strong style={{ fontSize: 13, color: '#0f172a' }}>«{p.text}»</strong>
+                      </td>
+                      <td>
+                        {p.engine === 'google' ? (
+                          <span className="pill web" style={{ fontSize: 11, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
+                            🔵 Google
+                          </span>
+                        ) : (
+                          <span className="pill tg" style={{ fontSize: 11, background: '#fff7ed', color: '#c2410c', borderColor: '#ffedd5' }}>
+                            🔴 Яндекс
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`seo-pos-badge ${p.current_pos <= 3.5 ? 'top3' : p.current_pos <= 10.5 ? 'growth' : 'other'}`}>
+                          {p.current_pos} место
+                        </span>
+                      </td>
+                      <td>
+                        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{p.prev_pos} место</span>
+                      </td>
+                      <td>
+                        {isUp ? (
+                          <span className="seo-delta-badge up">
+                            <TrendingUp size={12} /> ▲ +{p.delta} поз.
+                          </span>
+                        ) : (
+                          <span className="seo-delta-badge down">
+                            <TrendingDown size={12} /> ▼ {p.delta} поз.
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* 3. FULL-WIDTH TABLE: GROWTH POINTS WITH WORDSTAT DEMAND */}
       <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>

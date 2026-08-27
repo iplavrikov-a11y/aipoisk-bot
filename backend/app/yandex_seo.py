@@ -21,6 +21,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT_DIR / "data"
 SNAPSHOT_PATH = DATA_DIR / "yandex_analytics_snapshot.json"
 RECS_STATE_PATH = DATA_DIR / "seo_recommendations_state.json"
+HISTORY_PATH = DATA_DIR / "seo_daily_history.json"
 ENV_PATH = ROOT_DIR / ".env"
 
 
@@ -245,6 +246,38 @@ def fetch_fresh_snapshot() -> dict:
         f"?order_by=TOTAL_SHOWS&query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION"
     )
     wm_queries = _http_json(queries_url, headers=wm_headers, timeout=10)
+
+    # 1.1 Fetch Webmaster Query Analytics (Daily breakdown by query and dates)
+    wm_analytics_url = f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}/query-analytics/list"
+    wm_daily_raw = {}
+    yandex_phrase_history = {}
+    try:
+        req_qa = urllib.request.Request(
+            wm_analytics_url,
+            data=json.dumps({"offset": 0, "limit": 300}).encode("utf-8"),
+            headers={**wm_headers, "Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_qa, timeout=12) as resp:
+            qa_data = json.loads(resp.read().decode("utf-8"))
+            for it in qa_data.get("text_indicator_to_statistics", []):
+                q_text = it.get("text_indicator", {}).get("value", "")
+                for s in it.get("statistics", []):
+                    dt = s.get("date")
+                    field = s.get("field")
+                    val = float(s.get("value", 0.0))
+                    if dt not in wm_daily_raw:
+                        wm_daily_raw[dt] = {"clicks": 0, "shows": 0, "positions": [], "queries": set()}
+                    if field == "CLICKS":
+                        wm_daily_raw[dt]["clicks"] += int(val)
+                    elif field == "IMPRESSIONS":
+                        wm_daily_raw[dt]["shows"] += int(val)
+                    elif field == "POSITION":
+                        wm_daily_raw[dt]["positions"].append(val)
+                        wm_daily_raw[dt]["queries"].add(q_text)
+                        yandex_phrase_history.setdefault(q_text, {})[dt] = round(val, 1)
+    except Exception as qa_err:
+        logger.warning("Error fetching Yandex query-analytics: %s", qa_err)
     
     # 2. Fetch Metrika Core Metrics
     m_headers = {"Authorization": f"OAuth {tokens['metrika']}"}
@@ -257,6 +290,24 @@ def fetch_fresh_snapshot() -> dict:
     m_totals = m_query("metrics=ym:s:visits,ym:s:users,ym:s:pageviews,ym:s:bounceRate,ym:s:avgVisitDurationSeconds")
     m_sources = m_query("metrics=ym:s:visits,ym:s:users&dimensions=ym:s:lastSignTrafficSource&sort=-ym:s:visits")
     m_pages = m_query("metrics=ym:s:visits,ym:s:users,ym:s:bounceRate,ym:s:avgVisitDurationSeconds&dimensions=ym:s:startURLPath&sort=-ym:s:visits&limit=10")
+
+    # Real-time today metrics from Metrika
+    m_today = _http_json(f"https://api-metrika.yandex.net/stat/v1/data?ids={counter_id}&date1=today&date2=today&metrics=ym:s:visits,ym:s:users,ym:s:pageviews", headers=m_headers, timeout=10)
+    m_today_totals = m_today.get("totals", [0, 0, 0])
+    today_visits = int(m_today_totals[0]) if len(m_today_totals) > 0 and m_today_totals[0] is not None else 0
+    today_users = int(m_today_totals[1]) if len(m_today_totals) > 1 and m_today_totals[1] is not None else 0
+    today_pageviews = int(m_today_totals[2]) if len(m_today_totals) > 2 and m_today_totals[2] is not None else 0
+
+    m_today_search = _http_json(f"https://api-metrika.yandex.net/stat/v1/data?ids={counter_id}&date1=today&date2=today&metrics=ym:s:visits&dimensions=ym:s:lastSearchEngine", headers=m_headers, timeout=10)
+    today_yandex_clicks = 0
+    today_google_clicks = 0
+    for row in m_today_search.get("data", []):
+        eng = (row.get("dimensions", [{}])[0].get("name") or "").lower()
+        v = int(row.get("metrics", [0])[0])
+        if "yandex" in eng:
+            today_yandex_clicks += v
+        elif "google" in eng:
+            today_google_clicks += v
     
     # 3. Fetch Metrika Goals & Goal Reaches
     goals_res = _http_json(f"https://api-metrika.yandex.net/management/v1/counter/{counter_id}/goals", headers=m_headers, timeout=10)
@@ -418,6 +469,155 @@ def fetch_fresh_snapshot() -> dict:
 
     combined_queries = list(combined_dict.values())
     combined_queries.sort(key=lambda x: (x["total_shows"], x["total_clicks"]), reverse=True)
+
+    # 6. Calculate Yandex Daily Dynamics and Phrase Movements
+    yandex_daily_dynamics = []
+    prev_y_pos = None
+    prev_y_clicks = None
+    prev_y_shows = None
+    for dt in sorted(wm_daily_raw.keys()):
+        d_val = wm_daily_raw[dt]
+        d_clicks = d_val["clicks"]
+        d_shows = d_val["shows"]
+        d_positions = d_val["positions"]
+        d_avg_pos = round(sum(d_positions) / len(d_positions), 1) if d_positions else 0.0
+        q_count = len(d_val["queries"])
+        pos_delta = round(prev_y_pos - d_avg_pos, 1) if prev_y_pos is not None else 0.0
+        clicks_delta = d_clicks - prev_y_clicks if prev_y_clicks is not None else 0
+        shows_delta = d_shows - prev_y_shows if prev_y_shows is not None else 0
+        trend = "up" if pos_delta > 0 else ("down" if pos_delta < 0 else "stable")
+        yandex_daily_dynamics.append({
+            "date": dt,
+            "clicks": d_clicks,
+            "shows": d_shows,
+            "avg_position": d_avg_pos,
+            "queries_count": q_count,
+            "clicks_delta": clicks_delta,
+            "shows_delta": shows_delta,
+            "pos_delta": pos_delta,
+            "trend": trend
+        })
+        prev_y_pos = d_avg_pos
+        prev_y_clicks = d_clicks
+        prev_y_shows = d_shows
+
+    yandex_phrase_dynamics = []
+    for q_text, d_map in yandex_phrase_history.items():
+        sorted_dates = sorted(d_map.keys())
+        if len(sorted_dates) >= 2:
+            last_d = sorted_dates[-1]
+            prev_d = sorted_dates[-2]
+            pos_latest = d_map[last_d]
+            pos_prev = d_map[prev_d]
+            change = round(pos_prev - pos_latest, 1)
+            yandex_phrase_dynamics.append({
+                "text": q_text,
+                "engine": "yandex",
+                "current_pos": pos_latest,
+                "prev_pos": pos_prev,
+                "delta": change,
+                "trend": "up" if change > 0 else ("down" if change < 0 else "stable")
+            })
+    yandex_phrase_dynamics.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    # 7. Build Today Progress Summary
+    latest_y = yandex_daily_dynamics[-1] if yandex_daily_dynamics else {
+        "clicks": 0, "shows": 0, "avg_position": 0.0, "queries_count": len(queries_clean),
+        "clicks_delta": 0, "shows_delta": 0, "pos_delta": 0.0, "trend": "stable", "date": ""
+    }
+    google_dynamics = google_data.get("daily_dynamics", [])
+    latest_g = google_dynamics[-1] if google_dynamics else {
+        "clicks": 0, "shows": 0, "avg_position": google_data.get("avg_position", 0.0),
+        "queries_count": len(google_data.get("top_queries", [])),
+        "clicks_delta": 0, "shows_delta": 0, "pos_delta": 0.0, "trend": "stable", "date": ""
+    }
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    today_progress = {
+        "date": today_iso,
+        "today_site_visits": today_visits,
+        "today_site_users": today_users,
+        "today_site_pageviews": today_pageviews,
+        "yandex": {
+            "clicks": today_yandex_clicks if today_yandex_clicks > 0 else latest_y.get("clicks", 0),
+            "shows": latest_y.get("shows", 0),
+            "avg_position": latest_y.get("avg_position", 0.0),
+            "queries_count": len(queries_clean) or latest_y.get("queries_count", 0),
+            "clicks_delta": latest_y.get("clicks_delta", 0),
+            "shows_delta": latest_y.get("shows_delta", 0),
+            "pos_delta": latest_y.get("pos_delta", 0.0),
+            "trend": latest_y.get("trend", "stable"),
+            "data_date": latest_y.get("date", "")
+        },
+        "google": {
+            "clicks": today_google_clicks if today_google_clicks > 0 else latest_g.get("clicks", 0),
+            "shows": latest_g.get("shows", 0),
+            "avg_position": latest_g.get("avg_position", 0.0),
+            "queries_count": len(google_data.get("top_queries", [])) or latest_g.get("queries_count", 0),
+            "clicks_delta": latest_g.get("clicks_delta", 0),
+            "shows_delta": latest_g.get("shows_delta", 0),
+            "pos_delta": latest_g.get("pos_delta", 0.0),
+            "trend": latest_g.get("trend", "stable"),
+            "data_date": latest_g.get("date", "")
+        },
+        "combined": {
+            "clicks": (today_yandex_clicks if today_yandex_clicks > 0 else latest_y.get("clicks", 0)) + (today_google_clicks if today_google_clicks > 0 else latest_g.get("clicks", 0)),
+            "shows": latest_y.get("shows", 0) + latest_g.get("shows", 0),
+            "avg_position": round(((latest_y.get("avg_position", 0.0) + latest_g.get("avg_position", 0.0)) / 2), 1) if (latest_y.get("avg_position") and latest_g.get("avg_position")) else (latest_y.get("avg_position") or latest_g.get("avg_position") or 0.0),
+            "queries_count": len(combined_queries),
+            "ranking_status": "🟢 Позиции стабильны или растут" if (latest_y.get("trend") != "down" and latest_g.get("trend") != "down") else "🟡 Колебание позиций в одном из поисковиков"
+        }
+    }
+
+    # 8. Build Combined Daily Dynamics (All Dates)
+    all_dates = sorted(list(set(list(wm_daily_raw.keys()) + [d["date"] for d in google_dynamics])))
+    y_by_date = {d["date"]: d for d in yandex_daily_dynamics}
+    g_by_date = {d["date"]: d for d in google_dynamics}
+
+    combined_daily_dynamics = []
+    for dt in all_dates:
+        yd = y_by_date.get(dt, {})
+        gd = g_by_date.get(dt, {})
+        y_c = yd.get("clicks", 0)
+        g_c = gd.get("clicks", 0)
+        y_s = yd.get("shows", 0)
+        g_s = gd.get("shows", 0)
+        y_q = yd.get("queries_count", 0)
+        g_q = gd.get("queries_count", 0)
+        y_p = yd.get("avg_position")
+        g_p = gd.get("avg_position")
+        y_trend = yd.get("trend", "stable")
+        g_trend = gd.get("trend", "stable")
+
+        combined_daily_dynamics.append({
+            "date": dt,
+            "total_clicks": y_c + g_c,
+            "total_shows": y_s + g_s,
+            "total_queries": y_q + g_q,
+            "yandex": yd,
+            "google": gd,
+            "yandex_pos": y_p,
+            "google_pos": g_p,
+            "yandex_trend": y_trend,
+            "google_trend": g_trend
+        })
+
+    all_phrase_dynamics = yandex_phrase_dynamics + google_data.get("phrase_dynamics", [])
+    all_phrase_dynamics.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    # Persist daily history
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        existing_history = {}
+        if HISTORY_PATH.exists():
+            with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                existing_history = json.load(f)
+        for item in combined_daily_dynamics:
+            existing_history[item["date"]] = item
+        with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(existing_history, f, ensure_ascii=False, indent=2)
+    except Exception as h_err:
+        logger.warning("Could not persist SEO daily history: %s", h_err)
     
     snapshot = {
         "updated_at": now_iso,
@@ -425,12 +625,17 @@ def fetch_fresh_snapshot() -> dict:
         "sample_size_ready": sample_ready,
         "sample_visits": visits,
         "sample_target": 300,
+        "today_progress": today_progress,
+        "daily_dynamics": combined_daily_dynamics[-30:],
+        "phrase_dynamics": all_phrase_dynamics[:30],
         "webmaster": {
             "sqi": wm_summary.get("sqi", 10),
             "searchable_pages": wm_summary.get("searchable_pages_count", 32),
             "excluded_pages": wm_summary.get("excluded_pages_count", 1),
-            "top_queries": queries_clean[:25],
-            "growth_points": growth_points[:10]
+            "top_queries": queries_clean[:50],
+            "growth_points": growth_points[:15],
+            "daily_dynamics": yandex_daily_dynamics,
+            "phrase_dynamics": yandex_phrase_dynamics[:25]
         },
         "google": google_data,
         "combined_queries": combined_queries[:100],

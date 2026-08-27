@@ -138,7 +138,98 @@ def fetch_google_analytics(days: int = 30, site_url: str = DEFAULT_SITE_URL) -> 
         # Sort top queries by impressions descending
         queries_clean.sort(key=lambda x: (x["shows"], x["clicks"]), reverse=True)
 
-        # 2. Check Sitemaps status
+        # 2. Query Search Analytics by date for daily dynamics
+        daily_req = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "dimensions": ["date"],
+            "rowLimit": 100,
+            "dataState": "all"
+        }
+        daily_rows = []
+        try:
+            d_resp = service.searchanalytics().query(siteUrl=site_url, body=daily_req).execute()
+            daily_rows = d_resp.get("rows", [])
+        except Exception as d_err:
+            logger.warning("Could not fetch Google daily analytics: %s", d_err)
+
+        # 3. Query Search Analytics by date and query for unique queries count and phrase changes
+        q_daily_req = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "dimensions": ["date", "query"],
+            "rowLimit": 1000,
+            "dataState": "all"
+        }
+        date_to_queries = {}
+        query_date_positions = {}
+        try:
+            q_d_resp = service.searchanalytics().query(siteUrl=site_url, body=q_daily_req).execute()
+            for row in q_d_resp.get("rows", []):
+                d_key = row["keys"][0]
+                q_key = row["keys"][1]
+                q_pos = round(float(row.get("position", 0.0)), 1)
+                date_to_queries.setdefault(d_key, set()).add(q_key)
+                query_date_positions.setdefault(q_key, {})[d_key] = q_pos
+        except Exception as qd_err:
+            logger.warning("Could not fetch Google date+query analytics: %s", qd_err)
+
+        daily_dynamics = []
+        prev_pos = None
+        prev_clicks = None
+        prev_shows = None
+
+        daily_rows.sort(key=lambda x: x.get("keys", [""])[0])
+        for r in daily_rows:
+            d_str = r.get("keys", [""])[0]
+            d_clicks = int(r.get("clicks", 0))
+            d_shows = int(r.get("impressions", 0))
+            d_pos = round(float(r.get("position", 0.0)), 1)
+            d_ctr = round(float(r.get("ctr", 0.0)) * 100, 1)
+            q_count = len(date_to_queries.get(d_str, []))
+
+            # In SEO, smaller position number means higher/better ranking
+            pos_delta = round(prev_pos - d_pos, 1) if prev_pos is not None else 0.0
+            clicks_delta = d_clicks - prev_clicks if prev_clicks is not None else 0
+            shows_delta = d_shows - prev_shows if prev_shows is not None else 0
+            trend = "up" if pos_delta > 0 else ("down" if pos_delta < 0 else "stable")
+
+            daily_dynamics.append({
+                "date": d_str,
+                "clicks": d_clicks,
+                "shows": d_shows,
+                "avg_position": d_pos,
+                "ctr_percent": d_ctr,
+                "queries_count": q_count,
+                "clicks_delta": clicks_delta,
+                "shows_delta": shows_delta,
+                "pos_delta": pos_delta,
+                "trend": trend
+            })
+            prev_pos = d_pos
+            prev_clicks = d_clicks
+            prev_shows = d_shows
+
+        phrase_dynamics = []
+        for q_text, d_map in query_date_positions.items():
+            sorted_dates = sorted(d_map.keys())
+            if len(sorted_dates) >= 2:
+                last_d = sorted_dates[-1]
+                prev_d = sorted_dates[-2]
+                pos_latest = d_map[last_d]
+                pos_prev = d_map[prev_d]
+                change = round(pos_prev - pos_latest, 1)
+                phrase_dynamics.append({
+                    "text": q_text,
+                    "engine": "google",
+                    "current_pos": pos_latest,
+                    "prev_pos": pos_prev,
+                    "delta": change,
+                    "trend": "up" if change > 0 else ("down" if change < 0 else "stable")
+                })
+        phrase_dynamics.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+        # 4. Check Sitemaps status
         sitemaps_clean = []
         try:
             sitemaps_resp = service.sitemaps().list(siteUrl=site_url).execute()
@@ -162,7 +253,9 @@ def fetch_google_analytics(days: int = 30, site_url: str = DEFAULT_SITE_URL) -> 
             "avg_ctr_percent": avg_ctr_final,
             "top_queries": queries_clean,
             "growth_points": growth_points,
-            "sitemaps": sitemaps_clean
+            "sitemaps": sitemaps_clean,
+            "daily_dynamics": daily_dynamics,
+            "phrase_dynamics": phrase_dynamics[:25]
         })
 
     except Exception as e:
