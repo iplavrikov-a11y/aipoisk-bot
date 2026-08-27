@@ -953,6 +953,17 @@ Load-test boundary:
 - **Outreach Search Negative ICP & Domain Filtering (2026-08-26)**:
   - Expanded `EXTENDED_BLOCKED_DOMAINS` and added semantic negative keyword filters in `outreach_search.py` (`crawl_site_for_contact`) to exclude non-target entities (banks, OFD/EDS providers, tender aggregators/consultants, training centers, media holdings, and `.gov.ru`/`.edu.ru` state domains).
   - Automatically filters out irrelevant contacts from B2B supplier search tasks.
+- **Telegram Bot Trial Auto-Replacement & Queue Reset Resilience (2026-08-27)**:
+  - Fixed issue where trial users sending replacement documents or multiple technical assignments had files accumulate in `pending.files`, tripping the multi-spec limitation check (`В бесплатном доступе массовая обработка ТЗ недоступна`) and locking the user with stripped keyboards (`ReplyKeyboardRemove`).
+  - Implemented automatic replacement of previous files/text for trial users in supplier search mode with a clear notification (`🔄 Предыдущий файл заменён на: <file>`), preventing invalid batch accumulation.
+  - Added interactive inline recovery buttons (`🗑 Очистить и отправить 1 ТЗ` and `🏠 Главное меню`) whenever launch is blocked for any access/quota reason, ensuring users can never get trapped in an unrecoverable state.
+  - Enhanced `client_uses_trial_access` in `backend/app/billing.py` with `getattr(client, 'is_trial', False)` to safeguard against mock or partial client objects.
+- **Outreach & Lead Gen Admin UI Enhancements (2026-08-27)**:
+  - Added comprehensive Yandex search cost calculation across all iterations: selecting the `✨ Все итерации` badge now accurately sums total Yandex spend (`yandex_cost_rub`) and request counts across all search waves instead of prompting to select a single wave.
+  - Compacted statistics cards vertically (`.outreach-metric-card`), reducing padding and gaps for a high-density, screen-friendly overview.
+  - Reordered task workspace layout: moved "Поиск и добор контактов в задачу" above the search iterations row.
+  - Added collapsible state to the in-task search module with persistent `localStorage` toggle and fixed 28x28px chevron button with `flex-shrink: 0` styling to prevent SVG collapse.
+  - Added shared, editable volume presets (`leadCountPresets` with `localStorage` persistence, inline `+число` addition, and `✕` deletion) synchronized across in-task dobor and new search task modal.
 
 Detailed task evidence for an earlier admin UI / limits / provider-settings pass
 is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.

@@ -2217,7 +2217,11 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             if client:
                 record_journey_event(db, client.id, channel="telegram", event_name="launch_blocked", mode=pending.mode, reason_code="access")
             BATCH_RUNNING_CHATS.discard(chat_id)
-            await message.answer(error, reply_markup=main_menu())
+            blocked_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗑 Очистить и отправить 1 ТЗ", callback_data="batch:cancel")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ])
+            await message.answer(error, reply_markup=blocked_keyboard)
             return
         assert client is not None
         settings = get_or_create_settings(db)
@@ -3211,6 +3215,18 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
             )
             PENDING_UPLOADS[message.chat.id] = pending
+        if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH:
+            if pending.files:
+                pending.files = [(filename, content)]
+                added_sources = _add_pending_sources(pending, caption_sources)
+                record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="document")
+                note_text = (
+                    f"🔄 Предыдущий файл заменён на: <b>{filename}</b>\n"
+                    f"<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
+                    f"👇 Нажмите «▶️ Запустить поиск» под сообщением:"
+                )
+                await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+                return
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум файлов: {settings.max_files_per_batch}.", reply_markup=batch_menu())
             return
@@ -3262,6 +3278,17 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
                 supplier_search_policy=_supplier_policy_for_chat(message.chat.id),
             )
             PENDING_UPLOADS[message.chat.id] = pending
+        if client_uses_trial_access(db, client) and mode == MODE_SUPPLIER_SEARCH and pending.files:
+            filename, content, _title = _supplier_text_tz_payload(text, index=1)
+            pending.files = [(filename, content)]
+            record_journey_event(db, client.id, channel="telegram", event_name="input_added", mode=mode, outcome="text")
+            note_text = (
+                "🔄 Предыдущие материалы заменены на новое текстовое ТЗ\n"
+                "<i>(в бесплатном доступе обрабатывается 1 ТЗ за раз)</i>\n\n"
+                "👇 Нажмите «▶️ Запустить поиск» под сообщением:"
+            )
+            await message.answer(note_text, reply_markup=batch_inline_keyboard(pending))
+            return True
         if len(pending.files) >= settings.max_files_per_batch:
             await message.answer(f"В комплекте уже максимум ТЗ: {settings.max_files_per_batch}.", reply_markup=batch_inline_keyboard(pending))
             return True

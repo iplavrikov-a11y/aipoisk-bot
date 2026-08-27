@@ -14,6 +14,8 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Users,
   ShieldCheck,
   MessageSquare,
@@ -369,6 +371,63 @@ export function OutreachView() {
   const [taskDoborCount, setTaskDoborCount] = useState<number>(500)
   const [selectedWave, setSelectedWave] = useState<number | null>(null)
   const [extending, setExtending] = useState(false)
+  const [isDoborCollapsed, setIsDoborCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('tenderlex_dobor_collapsed') === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  const toggleDoborCollapsed = () => {
+    setIsDoborCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem('tenderlex_dobor_collapsed', String(next))
+      } catch {}
+      return next
+    })
+  }
+
+  // Lead Count Presets state (shared across new task creation and in-task dobor)
+  const [leadCountPresets, setLeadCountPresets] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_lead_count_presets')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const nums = parsed.map((n) => Number(n)).filter((n) => !isNaN(n) && n > 0).sort((a, b) => a - b)
+          if (nums.length > 0) return nums
+        }
+      }
+    } catch {}
+    return [500, 1000, 2000, 5000]
+  })
+  const [isEditingPresets, setIsEditingPresets] = useState(false)
+  const [newPresetInput, setNewPresetInput] = useState('')
+
+  const handleSavePresets = (presets: number[]) => {
+    const sorted = Array.from(new Set(presets)).filter((n) => n > 0).sort((a, b) => a - b)
+    setLeadCountPresets(sorted)
+    try {
+      localStorage.setItem('tenderlex_lead_count_presets', JSON.stringify(sorted))
+    } catch {}
+  }
+
+  const handleAddPreset = () => {
+    const val = parseInt(newPresetInput.trim(), 10)
+    if (!isNaN(val) && val > 0 && val <= 50000) {
+      if (!leadCountPresets.includes(val)) {
+        handleSavePresets([...leadCountPresets, val])
+      }
+      setNewPresetInput('')
+    }
+  }
+
+  const handleRemovePreset = (val: number) => {
+    const filtered = leadCountPresets.filter((p) => p !== val)
+    handleSavePresets(filtered.length > 0 ? filtered : [500])
+  }
 
   // Leads CRM state (inside selected task)
   const [leads, setLeads] = useState<Lead[]>([])
@@ -1831,27 +1890,157 @@ export function OutreachView() {
 
                 <div>
                   <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                    Количество контактов (от 1 до 10 000):
+                    Количество контактов:
                   </label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
                     <input
                       type="number"
                       min={1}
-                      max={10000}
-                      style={{ width: 110, fontWeight: 700 }}
+                      max={50000}
+                      style={{ width: 95, fontWeight: 700, textAlign: 'center' }}
                       value={targetCount}
-                      onChange={(e) => setTargetCount(Math.max(1, Math.min(10000, parseInt(e.target.value) || 1)))}
+                      onChange={(e) => setTargetCount(Math.max(1, Math.min(50000, parseInt(e.target.value) || 1)))}
+                      title="Точное число контактов"
                     />
-                    {[100, 500, 1000, 3000, 5000, 10000].map((cnt) => (
-                      <button
+                    <span style={{ fontSize: 11.5, color: '#94a3b8' }}>или шаблоны:</span>
+                    {leadCountPresets.map((cnt) => (
+                      <div
                         key={cnt}
-                        type="button"
-                        onClick={() => setTargetCount(cnt)}
-                        className={`outreach-btn ${targetCount === cnt ? 'outreach-btn-primary' : 'outreach-btn-secondary'}`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          borderRadius: 6,
+                          border: targetCount === cnt ? '1.5px solid #059669' : '1px solid #cbd5e1',
+                          background: targetCount === cnt ? '#ecfdf5' : '#fff',
+                          transition: 'all 0.15s',
+                          padding: isEditingPresets ? '2px 4px 2px 6px' : 0,
+                        }}
                       >
-                        {cnt >= 1000 ? `${cnt / 1000} тыс.` : cnt}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => setTargetCount(cnt)}
+                          style={{
+                            padding: isEditingPresets ? '3px 4px' : '5px 9px',
+                            background: 'transparent',
+                            border: 'none',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: targetCount === cnt ? '#065f46' : '#334155',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          +{cnt.toLocaleString('ru-RU')}
+                        </button>
+                        {isEditingPresets && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleRemovePreset(cnt)
+                            }}
+                            style={{
+                              background: '#fee2e2',
+                              border: 'none',
+                              borderRadius: 4,
+                              width: 17,
+                              height: 17,
+                              padding: 0,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#dc2626',
+                              cursor: 'pointer',
+                              marginLeft: 2,
+                            }}
+                            title={`Удалить шаблон +${cnt}`}
+                          >
+                            <X size={10} strokeWidth={2.5} />
+                          </button>
+                        )}
+                      </div>
                     ))}
+
+                    {isEditingPresets ? (
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f8fafc', border: '1px dashed #94a3b8', borderRadius: 6, padding: '2px 6px' }}>
+                        <input
+                          type="number"
+                          min="1"
+                          max="50000"
+                          placeholder="+число"
+                          value={newPresetInput}
+                          onChange={(e) => setNewPresetInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              handleAddPreset()
+                            }
+                          }}
+                          style={{
+                            width: 65,
+                            padding: '3px 4px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            border: '1px solid #cbd5e1',
+                            borderRadius: 4,
+                            textAlign: 'center',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddPreset}
+                          style={{
+                            background: '#059669',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: 4,
+                            padding: '3px 6px',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                          title="Добавить шаблон"
+                        >
+                          <Plus size={11} strokeWidth={2.5} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingPresets(false)}
+                          style={{
+                            background: '#e2e8f0',
+                            color: '#334155',
+                            border: 'none',
+                            borderRadius: 4,
+                            padding: '3px 6px',
+                            fontSize: 11,
+                            cursor: 'pointer',
+                          }}
+                          title="Готово"
+                        >
+                          <CheckCircle2 size={11} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingPresets(true)}
+                        style={{
+                          background: '#f8fafc',
+                          border: '1px dashed #cbd5e1',
+                          borderRadius: 6,
+                          padding: '4px 6px',
+                          fontSize: 11,
+                          color: '#64748b',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 3,
+                        }}
+                        title="Настроить шаблоны (+добавить / удалить)"
+                      >
+                        <Edit3 size={11} />
+                        <span style={{ fontSize: 10 }}>настроить</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -2110,7 +2299,289 @@ export function OutreachView() {
             </div>
           </div>
 
-          {/* Wave / Search Iterations Selector Bar (Placed TOP, above metrics) */}
+          {/* 1. In-Task Search and Dobor Module (Placed TOP above Iterations, Collapsible) */}
+          <div
+            className="outreach-panel"
+            style={{
+              padding: isDoborCollapsed ? '10px 16px' : '14px 16px',
+              border: '1px solid #cbd5e1',
+              background: '#ffffff',
+              borderRadius: 10,
+              boxShadow: '0 2px 6px rgba(0,0,0,0.03)',
+              transition: 'all 0.2s',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: isDoborCollapsed ? 0 : 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>
+                <Sparkles size={16} style={{ color: '#059669' }} />
+                <span>Поиск и добор контактов в задачу</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: '#475569', background: '#f1f5f9', border: '1px solid #e2e8f0', padding: '1px 8px', borderRadius: 6 }}>
+                  в базе: {taskStats?.total_leads ?? selectedTask.collected_count} лидов ({taskStats?.waves?.length || 1} {taskStats?.waves?.length === 1 ? 'итерация' : 'итерации'})
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                <span style={{ fontSize: 11.5, color: '#059669', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                  🛡️ Автоматическое исключение уже собранных компаний
+                </span>
+                <button
+                  type="button"
+                  onClick={toggleDoborCollapsed}
+                  className="dobor-collapse-btn"
+                  title={isDoborCollapsed ? 'Развернуть блок поиска и добора' : 'Свернуть блок поиска и добора'}
+                >
+                  {isDoborCollapsed ? <ChevronDown size={16} strokeWidth={2.5} /> : <ChevronUp size={16} strokeWidth={2.5} />}
+                </button>
+              </div>
+            </div>
+
+            {!isDoborCollapsed && (
+              <>
+                {/* Resizable Search Prompt Textarea */}
+                <div style={{ marginBottom: 10 }}>
+                  <textarea
+                    rows={3}
+                    value={taskSearchPrompt !== '' ? taskSearchPrompt : getTaskInitialPrompt(selectedTask)}
+                    onChange={(e) => setTaskSearchPrompt(e.target.value)}
+                    placeholder="Промпт поиска, критерии компаний, продукция, ниша, география..."
+                    style={{
+                      width: '100%',
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      padding: '9px 12px',
+                      borderRadius: 8,
+                      border: '1px solid #cbd5e1',
+                      background: '#f8fafc',
+                      resize: 'vertical',
+                      minHeight: 72,
+                    }}
+                  />
+                </div>
+
+                {/* Controls Row: Presets, Number Input, Action Button */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>Сколько добрать:</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                      {leadCountPresets.map((val) => (
+                        <div
+                          key={val}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            borderRadius: 6,
+                            border: taskDoborCount === val ? '1.5px solid #059669' : '1px solid #cbd5e1',
+                            background: taskDoborCount === val ? '#ecfdf5' : '#fff',
+                            transition: 'all 0.15s',
+                            padding: isEditingPresets ? '2px 4px 2px 6px' : 0,
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setTaskDoborCount(val)}
+                            style={{
+                              padding: isEditingPresets ? '3px 4px' : '6px 10px',
+                              background: 'transparent',
+                              border: 'none',
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: taskDoborCount === val ? '#065f46' : '#334155',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            +{val.toLocaleString('ru-RU')}
+                          </button>
+                          {isEditingPresets && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleRemovePreset(val)
+                              }}
+                              style={{
+                                background: '#fee2e2',
+                                border: 'none',
+                                borderRadius: 4,
+                                width: 17,
+                                height: 17,
+                                padding: 0,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: '#dc2626',
+                                cursor: 'pointer',
+                                marginLeft: 2,
+                              }}
+                              title={`Удалить шаблон +${val}`}
+                            >
+                              <X size={10} strokeWidth={2.5} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+
+                      {isEditingPresets ? (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f8fafc', border: '1px dashed #94a3b8', borderRadius: 6, padding: '2px 6px' }}>
+                          <input
+                            type="number"
+                            min="1"
+                            max="50000"
+                            placeholder="+число"
+                            value={newPresetInput}
+                            onChange={(e) => setNewPresetInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                handleAddPreset()
+                              }
+                            }}
+                            style={{
+                              width: 65,
+                              padding: '3px 4px',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              border: '1px solid #cbd5e1',
+                              borderRadius: 4,
+                              textAlign: 'center',
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddPreset}
+                            style={{
+                              background: '#059669',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: 4,
+                              padding: '3px 6px',
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                            title="Добавить шаблон"
+                          >
+                            <Plus size={11} strokeWidth={2.5} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingPresets(false)}
+                            style={{
+                              background: '#e2e8f0',
+                              color: '#334155',
+                              border: 'none',
+                              borderRadius: 4,
+                              padding: '3px 6px',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                            }}
+                            title="Готово"
+                          >
+                            <CheckCircle2 size={11} />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingPresets(true)}
+                          style={{
+                            background: '#f8fafc',
+                            border: '1px dashed #cbd5e1',
+                            borderRadius: 6,
+                            padding: '4px 6px',
+                            fontSize: 11,
+                            color: '#64748b',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                          }}
+                          title="Редактировать шаблоны (+добавить / удалить)"
+                        >
+                          <Edit3 size={11} />
+                          <span style={{ fontSize: 10 }}>настроить</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 11.5, color: '#94a3b8' }}>или:</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20000"
+                        value={taskDoborCount}
+                        onChange={(e) => setTaskDoborCount(Math.max(1, parseInt(e.target.value) || 1))}
+                        style={{
+                          width: 80,
+                          fontSize: 12.5,
+                          fontWeight: 600,
+                          padding: '5px 8px',
+                          borderRadius: 6,
+                          border: '1px solid #cbd5e1',
+                          textAlign: 'center',
+                        }}
+                        title="Точное число контактов"
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {(selectedTask.status === 'paused' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) && (
+                      <button
+                        type="button"
+                        onClick={() => handleResumeSearch(selectedTask.id)}
+                        className="outreach-btn"
+                        style={{
+                          padding: '8px 18px',
+                          fontSize: 13,
+                          fontWeight: 700,
+                          background: '#10b981',
+                          color: '#fff',
+                          border: 'none',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          flexShrink: 0,
+                          borderRadius: 8,
+                          boxShadow: '0 2px 6px rgba(16, 185, 129, 0.25)',
+                          cursor: 'pointer',
+                        }}
+                        title="Продолжить сбор сохраненных кандидатов без запросов в Яндекс"
+                      >
+                        <Play size={14} />
+                        <span>Продолжить сбор (0 ₽)</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={extending || selectedTask.status === 'running' || (activeTaskId === selectedTask.id && searchStatus?.status === 'running')}
+                      onClick={async () => {
+                        await handleExtendTaskWithParams(taskDoborCount, taskSearchPrompt)
+                      }}
+                      className="outreach-btn outreach-btn-primary"
+                      style={{
+                        padding: '8px 18px',
+                        fontSize: 13,
+                        fontWeight: 700,
+                        background: '#059669',
+                        borderColor: '#059669',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        flexShrink: 0,
+                        boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
+                      }}
+                    >
+                      {extending ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                      <span>🚀 Запустить добор (+{taskDoborCount})</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 2. Wave / Search Iterations Selector Bar */}
           {((taskStats?.waves && taskStats.waves.length > 1) || (selectedTask.waves && selectedTask.waves.length > 1)) && (
             <div
               style={{
@@ -2209,7 +2680,7 @@ export function OutreachView() {
             </div>
           )}
 
-          {/* Task-Specific 5 Metrics Cards (Dynamic per selected wave) */}
+          {/* 3. Task-Specific 5 Metrics Cards (Dynamic per selected wave, compact layout) */}
           {(() => {
             const activeWaveObj = selectedWave !== null
               ? (taskStats?.waves || selectedTask.waves || []).find((w) => w.wave === selectedWave)
@@ -2244,36 +2715,71 @@ export function OutreachView() {
               ? (activeWaveObj.replied_leads ?? 0)
               : (taskStats?.replied_leads ?? inboxMessages.length)
 
+            const allWaves = taskStats?.waves || selectedTask.waves || []
+            const wavesCostSum = allWaves.reduce((sum, w) => {
+              const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+              const wCost = isRunning && searchStatus?.wave_cost_rub !== undefined
+                ? Number(searchStatus.wave_cost_rub)
+                : (w.cost_rub !== undefined && w.cost_rub !== null
+                    ? Number(w.cost_rub)
+                    : Number(w.yandex_cost_rub || 0))
+              return sum + (isNaN(wCost) ? 0 : wCost)
+            }, 0)
+
+            const totalYandexCost = wavesCostSum > 0
+              ? wavesCostSum
+              : Number(
+                  (searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) ? searchStatus.yandex_cost_rub : null) ??
+                  taskStats?.task?.yandex_cost_rub ??
+                  selectedTask.yandex_cost_rub ??
+                  0
+                )
+
+            const wavesRequestsSum = allWaves.reduce((sum, w) => {
+              const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+              const wReq = isRunning && searchStatus?.wave_yandex_requests !== undefined
+                ? Number(searchStatus.wave_yandex_requests)
+                : (w.yandex_requests !== undefined && w.yandex_requests !== null
+                    ? Number(w.yandex_requests)
+                    : Math.round(Number(w.cost_rub || w.yandex_cost_rub || 0) / 0.04))
+              return sum + (isNaN(wReq) ? 0 : wReq)
+            }, 0)
+
+            const totalYandexRequests = wavesRequestsSum > 0
+              ? wavesRequestsSum
+              : Number(
+                  (searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) ? searchStatus.yandex_requests : null) ??
+                  taskStats?.task?.yandex_requests ??
+                  selectedTask.yandex_requests ??
+                  0
+                )
+
             const displayCost = activeWaveObj
               ? (isWaveRunning && searchStatus?.wave_cost_rub !== undefined
                   ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
                   : activeWaveObj.cost_rub !== undefined && activeWaveObj.cost_rub !== null
                   ? `${Number(activeWaveObj.cost_rub).toFixed(2)} ₽`
                   : `${Number(activeWaveObj.yandex_cost_rub || 0).toFixed(2)} ₽`)
-              : (searchStatus && searchStatus.status === 'running' && searchStatus.wave_cost_rub !== undefined
-                  ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
-                  : 'Выберите поиск')
+              : `${totalYandexCost.toFixed(2)} ₽`
 
             const displayCostSub = activeWaveObj
               ? (isWaveRunning && searchStatus?.wave_yandex_requests !== undefined
                   ? `Яндекс: ${searchStatus.wave_yandex_requests} зап.`
-                  : `Яндекс: ${activeWaveObj.yandex_requests ?? Math.round((Number(activeWaveObj.cost_rub || 0)) / 0.04)} зап.`)
-              : (searchStatus && searchStatus.status === 'running' && searchStatus.wave_yandex_requests !== undefined
-                  ? `Яндекс: ${searchStatus.wave_yandex_requests} зап. (добор)`
-                  : 'Вкладка итерации выше')
+                  : `Яндекс: ${activeWaveObj.yandex_requests ?? Math.round((Number(activeWaveObj.cost_rub || activeWaveObj.yandex_cost_rub || 0)) / 0.04)} зап.`)
+              : `Яндекс: ${totalYandexRequests.toLocaleString('ru-RU')} зап.`
 
             const waveCardTitle = activeWaveObj
               ? `Расход Яндекс (${activeWaveObj.wave === 1 ? 'основной поиск' : `добор #${activeWaveObj.wave - 1}`})`
               : (searchStatus && searchStatus.status === 'running'
-                  ? `Расход Яндекс (${searchStatus?.is_extend ? `добор #${(searchStatus?.wave_index || 2) - 1}` : 'основной поиск'})`
-                  : 'Расход Яндекс (по итерациям)')
+                  ? 'Расход Яндекс (все итерации • идет сбор)'
+                  : 'Расход Яндекс (все итерации)')
 
             return (
               <div className="outreach-metrics-grid">
                 <div className="outreach-metric-card">
                   <div className="outreach-metric-header">
                     <div className="outreach-metric-icon blue">
-                      <Users size={20} />
+                      <Users size={16} />
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">
@@ -2288,7 +2794,7 @@ export function OutreachView() {
                 <div className="outreach-metric-card">
                   <div className="outreach-metric-header">
                     <div className="outreach-metric-icon green">
-                      <ShieldCheck size={20} />
+                      <ShieldCheck size={16} />
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">MX проверен</span>
@@ -2303,7 +2809,7 @@ export function OutreachView() {
                 <div className="outreach-metric-card">
                   <div className="outreach-metric-header">
                     <div className="outreach-metric-icon indigo">
-                      <Send size={20} />
+                      <Send size={16} />
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">Отправлено писем</span>
@@ -2316,7 +2822,7 @@ export function OutreachView() {
                 <div className="outreach-metric-card">
                   <div className="outreach-metric-header">
                     <div className="outreach-metric-icon amber">
-                      <MessageSquare size={20} />
+                      <MessageSquare size={16} />
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">Получено ответов</span>
@@ -2331,7 +2837,7 @@ export function OutreachView() {
                 <div className="outreach-metric-card">
                   <div className="outreach-metric-header">
                     <div className="outreach-metric-icon amber" style={{ background: '#fef3c7', color: '#d97706' }}>
-                      <Coins size={20} />
+                      <Coins size={16} />
                     </div>
                     <div className="outreach-metric-info">
                       <span className="outreach-metric-label">
@@ -2508,155 +3014,6 @@ export function OutreachView() {
               </div>
             </div>
           )}
-
-          {/* In-Task Search and Dobor Bar with Resizable Prompt Textarea */}
-          <div
-            className="outreach-panel"
-            style={{
-              padding: '14px 16px',
-              border: '1px solid #cbd5e1',
-              background: '#ffffff',
-              borderRadius: 10,
-              boxShadow: '0 2px 6px rgba(0,0,0,0.03)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>
-                <Sparkles size={16} style={{ color: '#059669' }} />
-                <span>Поиск и добор контактов в задачу</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#475569', background: '#f1f5f9', border: '1px solid #e2e8f0', padding: '1px 8px', borderRadius: 6 }}>
-                  в базе: {taskStats?.total_leads ?? selectedTask.collected_count} лидов ({taskStats?.waves?.length || 1} {taskStats?.waves?.length === 1 ? 'итерация' : 'итерации'})
-                </span>
-              </div>
-              <span style={{ fontSize: 11.5, color: '#059669', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                🛡️ Автоматическое исключение уже собранных компаний
-              </span>
-            </div>
-
-            {/* Resizable Search Prompt Textarea */}
-            <div style={{ marginBottom: 10 }}>
-              <textarea
-                rows={3}
-                value={taskSearchPrompt !== '' ? taskSearchPrompt : getTaskInitialPrompt(selectedTask)}
-                onChange={(e) => setTaskSearchPrompt(e.target.value)}
-                placeholder="Промпт поиска, критерии компаний, продукция, ниша, география..."
-                style={{
-                  width: '100%',
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                  padding: '9px 12px',
-                  borderRadius: 8,
-                  border: '1px solid #cbd5e1',
-                  background: '#f8fafc',
-                  resize: 'vertical',
-                  minHeight: 72,
-                }}
-              />
-            </div>
-
-            {/* Controls Row: Presets, Number Input, Action Button */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>Сколько добрать:</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {[500, 1000, 2000, 5000].map((val) => (
-                    <button
-                      key={val}
-                      type="button"
-                      onClick={() => setTaskDoborCount(val)}
-                      style={{
-                        padding: '6px 10px',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        fontWeight: 700,
-                        border: taskDoborCount === val ? '1.5px solid #059669' : '1px solid #cbd5e1',
-                        background: taskDoborCount === val ? '#ecfdf5' : '#fff',
-                        color: taskDoborCount === val ? '#065f46' : '#334155',
-                        cursor: 'pointer',
-                        transition: 'all 0.15s',
-                      }}
-                    >
-                      +{val >= 1000 ? `${val / 1000} 000` : val}
-                    </button>
-                  ))}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <span style={{ fontSize: 11.5, color: '#94a3b8' }}>или:</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="20000"
-                    value={taskDoborCount}
-                    onChange={(e) => setTaskDoborCount(Math.max(1, parseInt(e.target.value) || 1))}
-                    style={{
-                      width: 80,
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      padding: '5px 8px',
-                      borderRadius: 6,
-                      border: '1px solid #cbd5e1',
-                      textAlign: 'center',
-                    }}
-                    title="Точное число контактов"
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {(selectedTask.status === 'paused' || (selectedTask.status === 'cancelled' && (selectedTask.collected_count || 0) < selectedTask.target_count)) && (
-                  <button
-                    type="button"
-                    onClick={() => handleResumeSearch(selectedTask.id)}
-                    className="outreach-btn"
-                    style={{
-                      padding: '8px 18px',
-                      fontSize: 13,
-                      fontWeight: 700,
-                      background: '#10b981',
-                      color: '#fff',
-                      border: 'none',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      flexShrink: 0,
-                      borderRadius: 8,
-                      boxShadow: '0 2px 6px rgba(16, 185, 129, 0.25)',
-                      cursor: 'pointer',
-                    }}
-                    title="Продолжить сбор сохраненных кандидатов без запросов в Яндекс"
-                  >
-                    <Play size={14} />
-                    <span>Продолжить сбор (0 ₽)</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  disabled={extending || selectedTask.status === 'running' || (activeTaskId === selectedTask.id && searchStatus?.status === 'running')}
-                  onClick={async () => {
-                    await handleExtendTaskWithParams(taskDoborCount, taskSearchPrompt)
-                  }}
-                  className="outreach-btn outreach-btn-primary"
-                  style={{
-                    padding: '8px 18px',
-                    fontSize: 13,
-                    fontWeight: 700,
-                    background: '#059669',
-                    borderColor: '#059669',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    flexShrink: 0,
-                    boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
-                  }}
-                >
-                  {extending ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  <span>🚀 Запустить добор (+{taskDoborCount})</span>
-                </button>
-              </div>
-            </div>
-          </div>
 
           {/* Sub-Navigation Tabs inside Selected Task */}
           <div className="outreach-tabs">

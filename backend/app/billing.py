@@ -481,7 +481,7 @@ def client_has_paid_grants(db: Session, client: Client | None) -> bool:
 
 
 def client_uses_trial_access(db: Session, client: Client | None) -> bool:
-    return bool(client and client.is_trial and not client_has_paid_grants(db, client))
+    return bool(client and getattr(client, "is_trial", False) and not client_has_paid_grants(db, client))
 
 
 def access_error_for_units(db: Session, client: Client, units: dict[str, int]) -> str:
