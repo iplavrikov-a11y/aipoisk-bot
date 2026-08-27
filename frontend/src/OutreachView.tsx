@@ -350,6 +350,8 @@ export function OutreachView() {
   // Global & Task selection state
   const [tasks, setTasks] = useState<SearchTask[]>([])
   const [selectedTask, setSelectedTask] = useState<SearchTask | null>(null)
+  const selectedTaskRef = useRef<SearchTask | null>(selectedTask)
+  selectedTaskRef.current = selectedTask
   const [taskStats, setTaskStats] = useState<TaskStats | null>(null)
   const [taskSubTab, setTaskSubTab] = useState<TaskSubTab>(() => {
     try {
@@ -734,7 +736,8 @@ export function OutreachView() {
       filter?: 'all' | 'replies' | 'auto_replies' | 'bounces' | 'unread' | 'spam',
       search?: string,
       limit?: number,
-      isLoadMore = false
+      isLoadMore = false,
+      silent = false
     ) => {
       const activeFilter = filter ?? inboxFilterRef.current
       const activeSearch = search ?? inboxSearchRef.current
@@ -761,21 +764,72 @@ export function OutreachView() {
           `/api/outreach/inbox?${params.toString()}`
         )
         const items = data.items || []
-        setInboxMessages(items)
-        setInboxTotal(typeof data.total === 'number' ? data.total : items.length)
-        if (data.counts) {
-          setInboxCounts(data.counts)
-        }
-        if (items.length && (!selectedMsg || (!isLoadMore && !items.some((m) => m.id === selectedMsg.id)))) {
-          if (!isLoadMore) {
-            setSelectedMsg(items[0])
+
+        setInboxMessages((prev) => {
+          if (
+            prev.length === items.length &&
+            prev.every((p, i) => {
+              const next = items[i]
+              return (
+                next &&
+                p.id === next.id &&
+                p.is_read === next.is_read &&
+                p.is_spam === next.is_spam &&
+                p.category === next.category &&
+                p.body_text === next.body_text &&
+                p.body_html === next.body_html
+              )
+            })
+          ) {
+            return prev
           }
+          return items
+        })
+
+        setInboxTotal(typeof data.total === 'number' ? data.total : items.length)
+
+        if (data.counts) {
+          setInboxCounts((prev) => {
+            if (
+              prev.all === data.counts?.all &&
+              prev.replies === data.counts?.replies &&
+              prev.auto_replies === data.counts?.auto_replies &&
+              prev.bounces === data.counts?.bounces &&
+              prev.unread === data.counts?.unread &&
+              prev.spam === data.counts?.spam
+            ) {
+              return prev
+            }
+            return data.counts!
+          })
         }
+
+        setSelectedMsg((prev) => {
+          if (!items.length) return null
+          if (!prev) return items[0]
+          const matched = items.find((m) => m.id === prev.id)
+          if (matched) {
+            if (
+              matched.is_read === prev.is_read &&
+              matched.is_spam === prev.is_spam &&
+              matched.category === prev.category &&
+              matched.body_text === prev.body_text &&
+              matched.body_html === prev.body_html
+            ) {
+              return prev
+            }
+            return matched
+          }
+          if (!isLoadMore) {
+            return items[0]
+          }
+          return prev
+        })
       } catch {
         // ignore
       }
     },
-    [selectedMsg]
+    []
   )
 
   // Load more inbox messages (increment limit by 50)
@@ -796,21 +850,18 @@ export function OutreachView() {
       const now = Date.now()
       if (now - lastAutoSyncTimeRef.current < 15000) return
       lastAutoSyncTimeRef.current = now
-      setSyncingInbox(true)
       try {
         await outreachFetch<any>('/api/outreach/inbox/sync', { method: 'POST' })
         const targetTaskId = taskId !== undefined ? taskId : (inboxTaskFilterRef.current || null)
-        fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
-        if (selectedTask) {
-          fetchTaskStats(selectedTask.id)
+        await fetchInbox(targetTaskId, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current, false, true)
+        if (selectedTaskRef.current) {
+          fetchTaskStats(selectedTaskRef.current.id)
         }
       } catch {
         // silent background failure
-      } finally {
-        setSyncingInbox(false)
       }
     },
-    [selectedTask, fetchInbox, fetchTaskStats]
+    [fetchInbox, fetchTaskStats]
   )
 
   // Fetch settings & spam rules
@@ -959,14 +1010,33 @@ export function OutreachView() {
 
         const campData = await outreachFetch<{ items: Campaign[] }>('/api/outreach/campaigns')
         const filtered = (campData.items || []).filter((c) => !c.task_id_filter || c.task_id_filter === selectedTask.id)
-        setCampaigns(filtered)
+        setCampaigns((prev) => {
+          if (
+            prev.length === filtered.length &&
+            prev.every((p, i) => {
+              const next = filtered[i]
+              return (
+                next &&
+                p.id === next.id &&
+                p.status === next.status &&
+                p.sent_count === next.sent_count &&
+                p.failed_count === next.failed_count &&
+                p.current_index === next.current_index &&
+                p.total_recipients === next.total_recipients
+              )
+            })
+          ) {
+            return prev
+          }
+          return filtered
+        })
       } catch {
         // ignore network error
       }
     }, intervalMs)
 
     return () => clearInterval(interval)
-  }, [selectedTask, campaigns, taskSubTab, mainTab, searchStatus, searchFilter, statusFilter, selectedWave, fetchLeads])
+  }, [selectedTask?.id, selectedTask?.status, taskSubTab, mainTab, searchStatus?.status, searchFilter, statusFilter, selectedWave, fetchLeads])
 
   // Trigger auto-sync on entering Inbox tab
   useEffect(() => {
@@ -4150,18 +4220,9 @@ export function OutreachView() {
             </div>
 
             {/* Auto-sync indicator */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-              {syncingInbox ? (
-                <>
-                  <RefreshCw size={11} className="animate-spin" style={{ color: '#2563eb' }} />
-                  <span style={{ color: '#2563eb', fontWeight: 600 }}>Синхронизация...</span>
-                </>
-              ) : (
-                <>
-                  <span className="outreach-live-dot" style={{ width: 6, height: 6 }} />
-                  <span style={{ color: '#059669', fontWeight: 600 }}>Автосинхронизация каждые 30 сек</span>
-                </>
-              )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', height: 26, boxSizing: 'border-box', whiteSpace: 'nowrap' }}>
+              <span className="outreach-live-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
+              <span style={{ color: '#059669', fontWeight: 600 }}>Автосинхронизация каждые 30 сек</span>
             </div>
           </div>
 
@@ -4217,10 +4278,10 @@ export function OutreachView() {
               onClick={handleSyncInbox}
               disabled={syncingInbox}
               className="outreach-btn outreach-btn-secondary"
-              style={{ padding: '4px 10px', fontSize: 11, minHeight: 30 }}
+              style={{ padding: '4px 10px', fontSize: 11, minHeight: 30, minWidth: 160 }}
             >
               <RefreshCw size={12} className={syncingInbox ? 'animate-spin' : ''} />
-              <span>Синхронизировать сейчас</span>
+              <span>{syncingInbox ? 'Синхронизация...' : 'Синхронизировать сейчас'}</span>
             </button>
           </div>
         </div>
@@ -4508,6 +4569,7 @@ export function OutreachView() {
                   </div>
                 )}
                 <EmailBodyFrame
+                  key={selectedMsg.id}
                   html={selectedMsg.body_html}
                   text={selectedMsg.body_text}
                   minHeight={200}
@@ -5358,6 +5420,7 @@ export function OutreachView() {
                       {/* Body */}
                       <div style={{ marginTop: 6 }}>
                         <EmailBodyFrame
+                          key={item.id}
                           html={item.body_html}
                           text={item.body_text}
                           minHeight={80}

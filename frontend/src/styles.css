@@ -2229,17 +2229,21 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   height: calc(100vh - 210px);
   min-height: 560px;
   overflow: hidden;
+  contain: layout;
 }
 @media (max-width: 900px) {
   .outreach-inbox-split {
     grid-template-columns: 1fr;
     height: auto;
     max-height: none;
+    contain: none;
   }
 }
 .outreach-inbox-list {
   border-right: 1px solid #e2e8f0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: auto;
   display: flex;
   flex-direction: column;
   background: #f8fafc;
@@ -2330,6 +2334,7 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   height: 100%;
   overflow: hidden;
   background: #fff;
+  contain: layout;
 }
 .outreach-inbox-detail-header {
   padding-bottom: 10px;
@@ -2342,6 +2347,8 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .outreach-inbox-detail-body {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: auto;
   padding: 12px 0;
   font-size: 13px;
   line-height: 1.6;

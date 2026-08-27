@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Outreach Inbox Scroll & Background Sync Stabilization (2026-08):
+  - Fixed page and email list layout jumps/flickering during automatic 30s synchronization in the Outreach Inbox.
+  - Made background auto-sync (`triggerAutoSync`) 100% silent without toggling loading badges, altering header dimensions, or locking action buttons.
+  - Implemented smart shallow equality checks in `fetchInbox` for incoming items, unread counts, and active message selection (`setSelectedMsg`), preserving list scroll position and preventing unnecessary React re-renders when data has not changed.
+  - Memoized `EmailBodyFrame` with `React.memo`, keyed iframe lifecycles by message ID, removed height transition jitters, and added `overscroll-behavior: contain` and `overflow-anchor: auto` with `contain: layout` to `.outreach-inbox-split` and `.outreach-inbox-list`.
+  - Stabilized realtime campaign and task polling dependencies to prevent interval tearing and thrashing.
 - Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
   - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
   - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").

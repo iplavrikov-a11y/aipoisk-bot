@@ -145,7 +145,7 @@ const buildEmailSrcDoc = (bodyHtml?: string, bodyText?: string): string => {
 </html>`;
 };
 
-export const EmailBodyFrame: React.FC<EmailBodyFrameProps> = ({
+const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
   html,
   text,
   className = '',
@@ -303,12 +303,23 @@ export const EmailBodyFrame: React.FC<EmailBodyFrameProps> = ({
           borderRadius: 8,
           background: '#ffffff',
           boxSizing: 'border-box',
-          transition: 'height 0.15s ease',
+          display: 'block',
         }}
         onLoad={(e) => adjustIframeHeight(e.currentTarget)}
       />
     </div>
   );
 };
+
+export const EmailBodyFrame = React.memo(EmailBodyFrameComponent, (prev, next) => {
+  return (
+    prev.html === next.html &&
+    prev.text === next.text &&
+    prev.className === next.className &&
+    prev.minHeight === next.minHeight &&
+    prev.maxHeight === next.maxHeight &&
+    prev.showToggle === next.showToggle
+  );
+});
 
 export default EmailBodyFrame;
