@@ -593,12 +593,14 @@ def test_database_cleanup_endpoint():
 @pytest.mark.asyncio
 async def test_dobor_query_generation_and_deduplication():
     from app.outreach_search import generate_search_queries_matrix
+    from app.models import SystemSettings
 
+    empty_settings = SystemSettings(id=1)
     prompt = "Поставщики кабельной продукции и электротехники"
-    executed = {"поставщики кабельной продукции и электротехники завод производитель оптом москва -\"банковская гарантия\" -\"обучение\""}
+    executed = {"поставщики кабельной продукции дистрибьютор оптовые поставки москва -\"банковская гарантия\" -\"обучение\""}
 
     # Test wave 1 fallback
-    q_wave1, _ = await generate_search_queries_matrix(prompt, count=100, is_extend=False, wave_index=1)
+    q_wave1, _ = await generate_search_queries_matrix(prompt, count=100, sys_settings=empty_settings, is_extend=False, wave_index=1)
     assert len(q_wave1) > 0
     assert any("москва" in q.lower() or "спб" in q.lower() or "россия" in q.lower() for q in q_wave1)
 
@@ -606,6 +608,7 @@ async def test_dobor_query_generation_and_deduplication():
     q_dobor, _ = await generate_search_queries_matrix(
         prompt,
         count=100,
+        sys_settings=empty_settings,
         is_extend=True,
         wave_index=2,
         existing_count=500,
@@ -615,8 +618,8 @@ async def test_dobor_query_generation_and_deduplication():
     # Make sure the already executed query was excluded
     for q in q_dobor:
         assert q.strip().lower() not in executed
-    # Make sure dobor queries contain regional / dealer distribution markers
-    assert any("дилер" in q.lower() or "склад" in q.lower() or "екатеринбург" in q.lower() or "казань" in q.lower() for q in q_dobor)
+    # Make sure dobor queries contain regional / supply distribution markers
+    assert any("снабжение" in q.lower() or "склад" in q.lower() or "екатеринбург" in q.lower() or "казань" in q.lower() for q in q_dobor)
 
 
 @pytest.mark.asyncio
@@ -642,7 +645,7 @@ async def test_dobor_query_generation_with_ai_mock(monkeypatch):
     settings = SystemSettings(id=1, primary_provider="polza", primary_model="gpt-4o-mini")
 
     queries, cost = await generate_search_queries_matrix(
-        "Кабель и электротехника 44-ФЗ",
+        "Кабель и электротехника оптом",
         count=100,
         sys_settings=settings,
         is_extend=True,
@@ -654,6 +657,50 @@ async def test_dobor_query_generation_with_ai_mock(monkeypatch):
     assert len(queries) == 3
     assert "старый запрос который уже выполнялся" not in queries
     assert "дистрибьютор силовой кабель екатеринбург" in queries
+
+
+@pytest.mark.asyncio
+async def test_complex_supply_and_manufacturer_filtering(monkeypatch):
+    import json
+    from app.outreach_search import generate_search_queries_matrix, ai_review_outreach_lead
+    from app.models import SystemSettings
+
+    # 1. Test query matrix system prompt for tender complex supply
+    async def mock_call_llm_supply(settings, user_prompt, system_prompt="", tier="light", json_mode=True, timeout_seconds=40):
+        sys_lower = system_prompt.lower()
+        assert "комплексного снабжения" in sys_lower or "торговых домов" in sys_lower
+        assert "запрещено" in sys_lower or "не ищи заводы" in sys_lower
+        return json.dumps(["комплексное снабжение предприятий ТМЦ екатеринбург -завод"])
+
+    monkeypatch.setattr("app.outreach_search.call_llm", mock_call_llm_supply)
+    custom_ai = json.dumps([{"id": "p1", "baseUrl": "https://api.polza.ai", "apiKey": "mock_key"}])
+    settings = SystemSettings(id=1, custom_ai_providers_json=custom_ai, primary_provider="polza", primary_model="gpt-4o-mini")
+
+    prompt = "Участники тендеров, поставщики, подрядчики по 44-ФЗ и 223-ФЗ, сопровождение закупок и снабжение. Комплексные поставщики промышленного оборудования"
+    queries, _ = await generate_search_queries_matrix(prompt, count=100, sys_settings=settings, is_extend=True, wave_index=2)
+    assert len(queries) == 1
+    assert "комплексное снабжение" in queries[0]
+
+    # 2. Test ai_review_outreach_lead rejects manufacturers when complex supply is requested
+    async def mock_call_llm_review_mfr(settings, user_prompt, system_prompt="", tier="light", json_mode=True, timeout_seconds=40):
+        return json.dumps({
+            "is_relevant": True,  # even if LLM said true, site_type=manufacturer must be rejected
+            "score": 85,
+            "site_type": "manufacturer",
+            "activity_profile": "Завод по производству насосов",
+            "reason": "Завод производитель",
+        })
+
+    monkeypatch.setattr("app.outreach_search.call_llm", mock_call_llm_review_mfr)
+    crawled_factory = {
+        "plain_text": "Завод производитель насосов КМ 80",
+        "page_title": "Завод насосов",
+        "company_name": "ООО Завод Насос",
+        "website": "https://zavod-nasos.ru",
+        "activity_profile": "Завод насосов",
+    }
+    reviewed, _ = await ai_review_outreach_lead(crawled_factory, prompt, sys_settings=settings)
+    assert reviewed is None  # Must be rejected because site_type == manufacturer!
 
 
 
