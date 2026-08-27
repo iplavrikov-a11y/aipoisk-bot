@@ -91,3 +91,41 @@ def test_smart_lead_matching():
     )
     assert matched == "lead-3"
 
+
+def test_makita_and_homoglyph_spam_detection():
+    from app.outreach_mail import is_spam_message, normalize_homoglyphs
+
+    # Homoglyphs normalization
+    assert normalize_homoglyphs("Mаkitа") == "makita"  # Russian Cyrillic 'а' normalized
+
+    # 1. Exact Makita spam with Cyrillic homoglyphs
+    is_sp, reason = is_spam_message(
+        subject="Аккумуляторная болгарка Makita",
+        body_text="Свобода движения. Мощь сети. Закажите сегодня и получите Makita со скидкой",
+        sender_name="Mаkitа",  # Cyrillic 'а'
+        sender_email="aqnocph@prorucane.pro",
+    )
+    assert is_sp is True
+    assert "Makita" in reason or "prorucane" in reason
+
+    # 2. Cyrillic subject and sender
+    is_sp, reason = is_spam_message(
+        subject="Дрель-шуруповерт Makita",
+        body_text="Закажите со склада",
+        sender_name="Склад Mаkitа",
+        sender_email="oyjiqjx@rulane.life",
+    )
+    assert is_sp is True
+
+    # 3. Custom rule blocking with Cyrillic keyword
+    custom_rules = [{"type": "keyword", "value": "макита"}, {"type": "domain", "value": "prorucane.pro"}]
+    is_sp, reason = is_spam_message(
+        subject="Спецпредложение",
+        body_text="Только сегодня инструмент makita",
+        sender_name="Инструмент",
+        sender_email="promo@somedomain.com",
+        custom_rules=custom_rules,
+    )
+    assert is_sp is True
+
+

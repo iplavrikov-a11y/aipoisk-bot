@@ -1638,6 +1638,24 @@ export function OutreachView() {
     }
   }
 
+  // Block Sender / Spammer Permanently
+  const handleBlockSender = async (msg: IncomingMessage) => {
+    const sender = msg.sender_email || msg.sender_name || 'этого отправителя'
+    if (!confirm(`Заблокировать все письма от ${sender} и навсегда внести в чёрный список?`)) return
+    try {
+      const res = await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/block-sender`, { method: 'POST' })
+      showSuccess(`Спамщик заблокирован! Удалено писем: ${res.deleted_count || 1}. Правило добавлено в чёрный список.`)
+      setSelectedMsg(null)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+      fetchSettings()
+      if (selectedTask) {
+        fetchTaskStats(selectedTask.id)
+      }
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
   // Mark all messages in current category/inbox as read
   const handleMarkAllRead = async (customCategory?: string) => {
     try {
@@ -3958,10 +3976,11 @@ export function OutreachView() {
               {inboxMessages.map((msg) => {
                 const isSelected = selectedMsg?.id === msg.id
                 const isBounce = msg.category === 'bounce'
+                const isSpam = msg.is_spam || msg.category === 'spam'
                 const displayName = isBounce
                   ? (msg.lead_company || msg.lead_email || msg.sender_name || msg.sender_email)
                   : (msg.sender_name || msg.sender_email.split('@')[0])
-                const initial = isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
+                const initial = isSpam ? '🚫' : isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
                 const isUnread = !msg.is_read
                 return (
                   <div
@@ -3977,16 +3996,16 @@ export function OutreachView() {
                       }
                     }}
                     className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
-                    style={isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
+                    style={isSpam ? { borderLeft: '3px solid #dc2626' } : isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
                   >
-                    <div className="outreach-inbox-avatar" style={isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
+                    <div className="outreach-inbox-avatar" style={isSpam ? { background: '#fee2e2', color: '#dc2626' } : isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
                           {isUnread && (
                             <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
                           )}
-                          <strong style={{ fontSize: 12, color: isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <strong style={{ fontSize: 12, color: isSpam ? '#b91c1c' : isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {displayName}
                           </strong>
                         </div>
@@ -4004,7 +4023,11 @@ export function OutreachView() {
                             Новое
                           </span>
                         )}
-                        {isBounce ? (
+                        {isSpam ? (
+                          <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                            🚫 Спам
+                          </span>
+                        ) : isBounce ? (
                           <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', padding: '1px 5px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
                             🔴 Не доставлено
                           </span>
@@ -4076,6 +4099,11 @@ export function OutreachView() {
                       <span style={{ fontSize: 11, color: '#94a3b8' }}>
                         {formatDate(selectedMsg.date_received)}
                       </span>
+                      {selectedMsg.is_spam && (
+                        <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fca5a5', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                          🚫 Спам
+                        </span>
+                      )}
                     </div>
                     {(selectedMsg.lead_company || selectedMsg.task_name) && (
                       <div style={{ fontSize: 11, color: '#047857', fontWeight: 600, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
@@ -4150,19 +4178,30 @@ export function OutreachView() {
               {/* Body Text */}
               <div className="outreach-inbox-detail-body">
                 {selectedMsg.is_spam && (
-                  <div style={{ margin: '0 0 14px 0', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, color: '#991b1b' }}>
+                  <div style={{ margin: '0 0 14px 0', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, color: '#991b1b', flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <ShieldAlert size={18} style={{ color: '#ef4444', flexShrink: 0 }} />
                       <span><strong>Спам-фильтр:</strong> Письмо изолировано от живых ответов и входящих.</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleSpam(selectedMsg)}
-                      className="outreach-btn"
-                      style={{ padding: '2px 8px', fontSize: 11, background: '#fff', border: '1px solid #fca5a5', color: '#b91c1c' }}
-                    >
-                      Восстановить (не спам)
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSpam(selectedMsg)}
+                        className="outreach-btn"
+                        style={{ padding: '2px 8px', fontSize: 11, background: '#fff', border: '1px solid #fca5a5', color: '#b91c1c' }}
+                      >
+                        Восстановить (не спам)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBlockSender(selectedMsg)}
+                        className="outreach-btn"
+                        style={{ padding: '2px 8px', fontSize: 11, background: '#b91c1c', border: '1px solid #991b1b', color: '#fff', fontWeight: 600 }}
+                        title="Навсегда заблокировать отправителя и его домен, удалить все письма"
+                      >
+                        🚫 Заблокировать спамщика
+                      </button>
+                    </div>
                   </div>
                 )}
                 <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 13, color: '#1e293b' }}>

@@ -1137,13 +1137,94 @@ def toggle_inbox_spam(message_id: str, db: Session = Depends(get_db)) -> dict[st
 
 @router.post("/inbox/purge-spam")
 def purge_inbox_spam(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Deletes all messages flagged as spam."""
+    """Deletes all messages flagged as spam and expunges spam from IMAP server."""
     spam_msgs = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.is_spam == True).all()
     count = len(spam_msgs)
     for m in spam_msgs:
         db.delete(m)
     db.commit()
+
+    # Expunge spam on IMAP server
+    try:
+        settings = _get_or_create_outreach_settings(db)
+        if settings.imap_password:
+            import imaplib
+            import ssl
+            imap_host = (settings.imap_host or "127.0.0.1").strip()
+            imap_port = settings.imap_port or 19993
+            imap_user = (settings.imap_user or settings.from_email or "info@tenderlex.ru").strip()
+            imap_pass = settings.imap_password.strip()
+            if settings.imap_use_ssl or imap_port in (993, 19993):
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                client = imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ctx)
+            else:
+                client = imaplib.IMAP4(imap_host, imap_port)
+            client.login(imap_user, imap_pass)
+            client.select("INBOX")
+            rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+            for r in rules:
+                val = r.get("value", "").strip()
+                if val:
+                    rtype = r.get("type")
+                    query = f'(FROM "{val}")' if rtype in ("domain", "sender") else f'(TEXT "{val}")'
+                    t, d = client.search(None, query)
+                    if d and d[0]:
+                        for mid in d[0].split():
+                            client.store(mid, "+FLAGS", "\\Deleted")
+            client.expunge()
+            client.logout()
+    except Exception as ie:
+        logger.debug(f"IMAP purge warning: {ie}")
+
     return {"ok": True, "deleted_count": count}
+
+
+@router.post("/inbox/{message_id}/block-sender")
+def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Permanently blocks the sender and domain of this message and purges matching spam."""
+    msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+
+    settings = _get_or_create_outreach_settings(db)
+    spam_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+
+    sender_email = (msg.sender_email or "").strip().lower()
+    sender_domain = sender_email.split("@")[-1] if "@" in sender_email else ""
+    generic_domains = {
+        "gmail.com", "yandex.ru", "mail.ru", "bk.ru", "inbox.ru", "list.ru",
+        "rambler.ru", "ya.ru", "internet.ru", "outlook.com", "hotmail.com",
+    }
+
+    added_rules = []
+    if sender_domain and sender_domain not in generic_domains and len(sender_domain) > 3:
+        if not any(r.get("type") == "domain" and r.get("value") == sender_domain for r in spam_rules):
+            spam_rules.append({"type": "domain", "value": sender_domain})
+            added_rules.append(f"@{sender_domain}")
+    if sender_email:
+        if not any(r.get("type") == "sender" and r.get("value") == sender_email for r in spam_rules):
+            spam_rules.append({"type": "sender", "value": sender_email})
+            added_rules.append(sender_email)
+
+    settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+
+    deleted_q = db.query(OutreachIncomingEmail).filter(
+        (OutreachIncomingEmail.sender_email == sender_email) |
+        (OutreachIncomingEmail.sender_email.ilike(f"%@{sender_domain}"))
+    )
+    deleted_count = deleted_q.count()
+    for m in deleted_q.all():
+        db.delete(m)
+
+    db.commit()
+    return {
+        "ok": True,
+        "blocked_rules": added_rules,
+        "deleted_count": deleted_count,
+        "rules": spam_rules,
+    }
 
 
 @router.get("/spam-rules")

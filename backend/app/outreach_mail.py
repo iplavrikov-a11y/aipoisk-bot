@@ -556,6 +556,18 @@ def is_auto_reply_message(subject: str, body_text: str, sender_name: str = "", s
     return False
 
 
+HOMOGLYPH_TABLE = str.maketrans({
+    "а": "a", "с": "c", "е": "e", "о": "o", "р": "p", "х": "x", "у": "y", "і": "i", "ј": "j",
+})
+
+
+def normalize_homoglyphs(text: str) -> str:
+    """Normalizes lookalike Cyrillic characters to Latin equivalents for spam matching."""
+    if not text:
+        return ""
+    return text.lower().translate(HOMOGLYPH_TABLE)
+
+
 KNOWN_SPAM_DOMAINS = {
     "rumixos.shop", "thespacebanana.com", "prorucane.pro", "rabbitandjohn.com",
     "rulane.life", "mojim.com", "doublewin.co.ke", "baza-email-rf.ru",
@@ -564,6 +576,9 @@ KNOWN_SPAM_DOMAINS = {
 }
 
 SPAM_KEYWORDS = [
+    r"m[aа]k[iі1l]t[aа]|макита",
+    r"аккумуляторн\w+\s+(болгарка|секатор|пила|дрель|шуруповерт|гайковерт|инструмент)",
+    r"дрель-шуруповерт",
     r"разошл[её]м ваше коммерческое предложение",
     r"база данных\s+кол-во адресов",
     r"базы данных компаний рф",
@@ -611,6 +626,10 @@ def is_spam_message(
     email_clean = (sender_email or "").lower().strip()
     domain = email_clean.split("@")[-1] if "@" in email_clean else ""
 
+    subj_norm = normalize_homoglyphs(subj_clean)
+    body_norm = normalize_homoglyphs(body_clean)
+    name_norm = normalize_homoglyphs(name_clean)
+
     # 1. Custom rules from DB/Settings
     if custom_rules:
         for rule in custom_rules:
@@ -618,14 +637,26 @@ def is_spam_message(
             rval = str(rule.get("value", "")).lower().strip()
             if not rval:
                 continue
+            rval_norm = normalize_homoglyphs(rval)
             if rtype == "domain":
                 if domain == rval or domain.endswith("." + rval) or rval == email_clean:
                     return True, f"Заблокированный домен: {rval}"
             elif rtype == "keyword":
-                if rval in subj_clean or rval in body_clean or rval in name_clean:
+                if (
+                    rval in subj_clean
+                    or rval in body_clean
+                    or rval in name_clean
+                    or rval_norm in subj_norm
+                    or rval_norm in body_norm
+                    or rval_norm in name_norm
+                ):
                     return True, f"Спам-ключ: {rval}"
             elif rtype == "sender":
-                if rval in email_clean or rval in name_clean:
+                if (
+                    rval in email_clean
+                    or rval in name_clean
+                    or rval_norm in name_norm
+                ):
                     return True, f"Заблокированный отправитель: {rval}"
 
     # 2. Known Spam Domains & TLDs
@@ -636,7 +667,16 @@ def is_spam_message(
         if not has_lead_match:
             return True, f"Подозрительный спам-домен: {domain}"
 
-    # 3. Sender Name Patterns
+    # 3. Makita Spammer / Tool Botnet Detection (High-priority exact match)
+    if (
+        re.search(r"m[aа]k[iі1l]t[aа]|макита", name_clean, re.IGNORECASE)
+        or re.search(r"m[aа]k[iі1l]t[aа]|макита", subj_clean, re.IGNORECASE)
+        or re.search(r"m[aа]k[iі1l]t[aа]|макита", name_norm, re.IGNORECASE)
+        or re.search(r"m[aа]k[iі1l]t[aа]|макита", subj_norm, re.IGNORECASE)
+    ):
+        return True, "Спам-рассылка инструментов Makita"
+
+    # 4. Sender Name Patterns
     if re.search(r"рассылк\w*\d{6,}", name_clean) or re.search(r"рассылка\s*\+?7", name_clean):
         return True, f"Спам в имени отправителя: {sender_name}"
 
@@ -644,15 +684,15 @@ def is_spam_message(
         "makita", "mаkitа", "садовый сезон", "водонагреватель", "женские секреты",
         "love-коуч", "карты таро", "тотальная распродажа", "заработок на ии",
     ]
-    if any(k in name_clean for k in name_personas):
+    if any(k in name_clean or k in name_norm for k in name_personas):
         return True, f"Спам-отправитель: {sender_name}"
 
-    # 4. Numeric mail.ru/bk.ru/inbox.ru free email accounts sending forms
+    # 5. Numeric mail.ru/bk.ru/inbox.ru free email accounts sending forms
     if re.match(r"^\d{6,}@(mail\.ru|bk\.ru|inbox\.ru|list\.ru)$", email_clean):
         if "docs.google.com/forms" in body_clean or "forms.gle" in body_clean or len(subj_clean.split()) <= 2:
             return True, "Массовый спам-бот с номерного ящика mail.ru"
 
-    # 5. Content Keywords
+    # 6. Content Keywords
     for kw_pattern in SPAM_KEYWORDS:
         if re.search(kw_pattern, subj_clean) or re.search(kw_pattern, body_clean):
             return True, f"Спам-паттерн в тексте: {kw_pattern}"
@@ -864,6 +904,10 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                 lead_id = None
                 category = "spam"
                 is_spam_val = True
+                try:
+                    client.store(m_id, "+FLAGS", "\\Deleted")
+                except Exception as de:
+                    logger.debug(f"Could not flag spam as \\Deleted in IMAP: {de}")
             elif is_bounce:
                 lead_id = matched_bounce_id
                 category = "bounce"
@@ -904,6 +948,10 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             new_count += 1
 
         db.commit()
+        try:
+            client.expunge()
+        except Exception:
+            pass
         client.logout()
         return {"success": True, "new_messages": new_count}
     except Exception as e:
