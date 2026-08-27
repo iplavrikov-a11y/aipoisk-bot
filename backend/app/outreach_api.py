@@ -386,6 +386,18 @@ async def extend_search_task(
             }
         ]
 
+    # Finalize any previous active waves so they are not left in running state
+    for prev_w in waves:
+        if prev_w.get("status") in ("running", "pending", "paused", "cancelling", "cancelled"):
+            prev_w["status"] = "completed"
+            w_num = prev_w.get("wave", 1)
+            prev_coll = db.query(func.count(OutreachLead.id)).filter(
+                OutreachLead.task_id == task_id,
+                OutreachLead.wave_index == w_num
+            ).scalar() or 0
+            if prev_coll > 0:
+                prev_w["collected"] = prev_coll
+
     next_wave_index = len(waves) + 1
     new_wave = {
         "wave": next_wave_index,
@@ -612,6 +624,21 @@ def cancel_search_task(task_id: str, db: Session = Depends(get_db)) -> dict[str,
         task.status = "cancelled"
         task.completed_at = now_utc()
         task.message = "Остановлено пользователем"
+        try:
+            waves = json.loads(task.waves_json) if task.waves_json else []
+            for w in waves:
+                if w.get("status") in ("running", "pending", "cancelling"):
+                    w["status"] = "completed"
+                    w_num = w.get("wave", 1)
+                    w_coll = db.query(func.count(OutreachLead.id)).filter(
+                        OutreachLead.task_id == task_id,
+                        OutreachLead.wave_index == w_num
+                    ).scalar() or 0
+                    if w_coll > 0:
+                        w["collected"] = w_coll
+            task.waves_json = json.dumps(waves, ensure_ascii=False)
+        except Exception:
+            pass
         db.commit()
     return {"ok": True}
 

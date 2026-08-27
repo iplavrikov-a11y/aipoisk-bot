@@ -2650,8 +2650,14 @@ export function OutreachView() {
               {/* Individual Waves Pills */}
               {(taskStats?.waves || selectedTask.waves || []).map((w) => {
                 const isSelected = selectedWave === w.wave
-                const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
-                const isPaused = !isRunning && (w.status === 'paused' || (selectedTask.status === 'paused' && w.wave === (taskStats?.waves?.length || selectedTask.waves?.length || 1)))
+                const isRunning = Boolean(
+                  (searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) && searchStatus.status === 'running' && searchStatus.wave_index === w.wave)
+                )
+                const isPaused = !isRunning && Boolean(
+                  w.status === 'paused' ||
+                  ((searchStatus && (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) && searchStatus.status === 'paused' && searchStatus.wave_index === w.wave) ||
+                   (selectedTask.status === 'paused' && w.wave === (taskStats?.waves?.length || selectedTask.waves?.length || 1)))
+                )
                 const liveCollected = isRunning && searchStatus?.wave_collected !== undefined ? searchStatus.wave_collected : (w.lead_count ?? w.collected ?? 0)
                 const liveCost = isRunning && searchStatus?.wave_cost_rub !== undefined
                   ? `${Number(searchStatus.wave_cost_rub).toFixed(2)} ₽`
@@ -2704,9 +2710,12 @@ export function OutreachView() {
               ? (taskStats?.waves || selectedTask.waves || []).find((w) => w.wave === selectedWave)
               : null
 
-            const isWaveRunning = activeWaveObj && (
-              activeWaveObj.status === 'running' ||
-              (searchStatus?.status === 'running' && searchStatus?.wave_index === activeWaveObj.wave)
+            const isWaveRunning = Boolean(
+              activeWaveObj &&
+              searchStatus &&
+              (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) &&
+              searchStatus.status === 'running' &&
+              searchStatus.wave_index === activeWaveObj.wave
             )
 
             const displayLeadsCount = activeWaveObj
@@ -2735,7 +2744,12 @@ export function OutreachView() {
 
             const allWaves = taskStats?.waves || selectedTask.waves || []
             const wavesCostSum = allWaves.reduce((sum, w) => {
-              const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+              const isRunning = Boolean(
+                searchStatus &&
+                (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) &&
+                searchStatus.status === 'running' &&
+                searchStatus.wave_index === w.wave
+              )
               const wCost = isRunning && searchStatus?.wave_cost_rub !== undefined
                 ? Number(searchStatus.wave_cost_rub)
                 : (w.cost_rub !== undefined && w.cost_rub !== null
@@ -2754,7 +2768,12 @@ export function OutreachView() {
                 )
 
             const wavesRequestsSum = allWaves.reduce((sum, w) => {
-              const isRunning = w.status === 'running' || (searchStatus?.status === 'running' && searchStatus?.wave_index === w.wave)
+              const isRunning = Boolean(
+                searchStatus &&
+                (searchStatus.id === selectedTask.id || activeTaskId === selectedTask.id) &&
+                searchStatus.status === 'running' &&
+                searchStatus.wave_index === w.wave
+              )
               const wReq = isRunning && searchStatus?.wave_yandex_requests !== undefined
                 ? Number(searchStatus.wave_yandex_requests)
                 : (w.yandex_requests !== undefined && w.yandex_requests !== null
