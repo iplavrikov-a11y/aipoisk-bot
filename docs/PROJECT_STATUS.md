@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Outreach Inbox Read/Unread Indicator & Sender Avatars (2026-08):
+  - Added interactive read/unread circle indicator (`outreach-inbox-read-toggle`) directly on the left of each incoming email in all tabs ("Все", "Живые ответы", "Автоответы", "Ошибки доставки", "Новые", "Спам"), aligned with `emailagent` / `AITender`.
+  - Clickable Circle Indicator: Solid glowing amber dot (`●`) indicates unread messages; subtle outline circle (`○`) indicates read messages. Clicking the circle toggles read/unread status with optimistic UI updates and immediate count adjustments.
+  - Sender Visual Hierarchy & Dynamic Avatars: Applied consistent hash-based color palette for senders (amber, blue, emerald, rose, indigo, violet, pink, cyan, teal), bold titles and subjects for unread messages, and normal weight for read messages.
+  - Backend API: Added `@router.patch("/inbox/{message_id}/unread")`, `@router.post("/inbox/{message_id}/unread")`, and `@router.post("/inbox/{message_id}/toggle-read")` alongside updated `mark_inbox_read` in `backend/app/outreach_api.py`.
+  - Built frontend assets and verified with live deployment.
 - Real-time Today SEO Progress & Daily Ranking Dynamics (2026-08):
   - Added comprehensive daily ranking and search visibility analytics separately for Yandex and Google in the admin panel (`frontend/src/App.tsx`, `frontend/src/styles.css`, `backend/app/yandex_seo.py`, `backend/app/google_seo.py`).
   - Google Search Console Integration: Extracted daily analytics over 30 days (`dimensions: ['date']` and `dimensions: ['date', 'query']`) with day-to-day clicks, impressions, avg position deltas, query counts, and daily ranking trend classification (`up` / `down` / `stable`).

@@ -2245,11 +2245,12 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   background: #f8fafc;
 }
 .outreach-inbox-item {
+  position: relative;
   padding: 10px 12px;
   border-bottom: 1px solid #e2e8f0;
   cursor: pointer;
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-start;
   transition: all 0.15s ease;
   background: #f8fafc;
@@ -2259,7 +2260,6 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 }
 .outreach-inbox-item.unread {
   background: #ffffff;
-  border-left: 3px solid #2563eb;
 }
 .outreach-inbox-item.unread:hover {
   background: #f8fafc;
@@ -2268,9 +2268,50 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   background: #eff6ff !important;
   border-left: 3px solid #2563eb;
 }
+.outreach-inbox-read-toggle {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin-top: 6px;
+  border-radius: 50%;
+  transition: all 0.15s ease;
+}
+.outreach-inbox-read-toggle:hover {
+  transform: scale(1.25);
+}
+.outreach-inbox-read-dot-unread {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.65);
+  transition: all 0.15s ease;
+}
+.outreach-inbox-read-toggle:hover .outreach-inbox-read-dot-unread {
+  background: #d97706;
+}
+.outreach-inbox-read-dot-read {
+  width: 8.5px;
+  height: 8.5px;
+  border-radius: 50%;
+  border: 1.5px solid #cbd5e1;
+  background: transparent;
+  transition: all 0.15s ease;
+}
+.outreach-inbox-item:hover .outreach-inbox-read-dot-read {
+  border-color: #94a3b8;
+}
+.outreach-inbox-read-toggle:hover .outreach-inbox-read-dot-read {
+  border-color: #f59e0b;
+  background: #fef3c7;
+}
 .outreach-inbox-avatar {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: #3b82f6;
   color: #fff;
@@ -2278,8 +2319,9 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .outreach-inbox-detail {
   padding: 14px 18px;

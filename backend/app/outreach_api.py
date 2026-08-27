@@ -1183,14 +1183,44 @@ def mark_all_inbox_read(
     return {"ok": True, "updated_count": updated_count}
 
 
+class UpdateInboxReadRequest(BaseModel):
+    is_read: bool = True
+
+
 @router.patch("/inbox/{message_id}/read")
-def mark_inbox_read(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+@router.post("/inbox/{message_id}/read")
+def mark_inbox_read(
+    message_id: str,
+    payload: UpdateInboxReadRequest | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
-    msg.is_read = True
+    msg.is_read = payload.is_read if payload is not None else True
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "is_read": msg.is_read}
+
+
+@router.patch("/inbox/{message_id}/unread")
+@router.post("/inbox/{message_id}/unread")
+def mark_inbox_unread(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+    msg.is_read = False
+    db.commit()
+    return {"ok": True, "is_read": False}
+
+
+@router.post("/inbox/{message_id}/toggle-read")
+def toggle_inbox_read(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+    msg.is_read = not bool(msg.is_read)
+    db.commit()
+    return {"ok": True, "is_read": msg.is_read}
 
 
 @router.post("/inbox/{message_id}/spam")

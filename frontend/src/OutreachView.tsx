@@ -1770,6 +1770,68 @@ export function OutreachView() {
     }
   }
 
+  // Consistent pleasant avatar color palette
+  const getAvatarColor = (str: string) => {
+    const colors = [
+      '#f59e0b', // amber
+      '#3b82f6', // blue
+      '#10b981', // emerald
+      '#ec4899', // pink
+      '#8b5cf6', // violet
+      '#06b6d4', // cyan
+      '#6366f1', // indigo
+      '#14b8a6', // teal
+      '#f43f5e', // rose
+      '#d97706', // dark amber
+    ]
+    let hash = 0
+    const text = str || '?'
+    for (let i = 0; i < text.length; i++) hash = text.charCodeAt(i) + ((hash << 5) - hash)
+    return colors[Math.abs(hash) % colors.length]
+  }
+
+  // Toggle individual message read / unread status with optimistic update
+  const handleToggleRead = async (e: React.MouseEvent, msg: IncomingMessage) => {
+    e.stopPropagation()
+    const targetId = msg.id
+    const nextIsRead = !msg.is_read
+
+    setInboxMessages((prev) =>
+      inboxFilterRef.current === 'unread' && nextIsRead
+        ? prev.filter((m) => m.id !== targetId)
+        : prev.map((m) => (m.id === targetId ? { ...m, is_read: nextIsRead } : m))
+    )
+    if (inboxFilterRef.current === 'unread' && nextIsRead) {
+      setInboxTotal((prev) => Math.max(0, prev - 1))
+    }
+    setInboxCounts((prev) => ({
+      ...prev,
+      unread: nextIsRead ? Math.max(0, prev.unread - 1) : prev.unread + 1,
+    }))
+    if (selectedMsg?.id === targetId) {
+      setSelectedMsg((prev) => (prev ? { ...prev, is_read: nextIsRead } : null))
+    }
+
+    try {
+      await outreachFetch(`/api/outreach/inbox/${targetId}/${nextIsRead ? 'read' : 'unread'}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_read: nextIsRead }),
+      })
+    } catch {
+      // Revert optimistic state on error
+      setInboxMessages((prev) =>
+        prev.map((m) => (m.id === targetId ? { ...m, is_read: !nextIsRead } : m))
+      )
+      setInboxCounts((prev) => ({
+        ...prev,
+        unread: nextIsRead ? prev.unread + 1 : Math.max(0, prev.unread - 1),
+      }))
+      if (selectedMsg?.id === targetId) {
+        setSelectedMsg((prev) => (prev ? { ...prev, is_read: !nextIsRead } : null))
+      }
+    }
+  }
+
   // Format date helper
   const formatDate = (iso: string | null) => {
     if (!iso) return '—'
@@ -4012,6 +4074,8 @@ export function OutreachView() {
                   ? (msg.lead_company || msg.lead_email || msg.sender_name || msg.sender_email)
                   : (msg.sender_name || msg.sender_email.split('@')[0])
                 const initial = isSpam ? '🚫' : isBounce ? '⚠️' : (displayName || 'U').charAt(0).toUpperCase()
+                const avatarBg = isSpam ? '#fee2e2' : isBounce ? '#fee2e2' : getAvatarColor(msg.sender_name || msg.sender_email)
+                const avatarColor = isSpam || isBounce ? '#dc2626' : '#ffffff'
                 const isUnread = !msg.is_read
                 return (
                   <div
@@ -4020,6 +4084,7 @@ export function OutreachView() {
                       setSelectedMsg(msg)
                       if (isUnread) {
                         setInboxMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m)))
+                        setInboxCounts((prev) => ({ ...prev, unread: Math.max(0, prev.unread - 1) }))
                         outreachFetch(`/api/outreach/inbox/${msg.id}/read`, {
                           method: 'PATCH',
                           body: JSON.stringify({ is_read: true }),
@@ -4029,18 +4094,28 @@ export function OutreachView() {
                     className={`outreach-inbox-item ${isUnread ? 'unread' : 'read'} ${isSelected ? 'selected' : ''}`}
                     style={isSpam ? { borderLeft: '3px solid #dc2626' } : isBounce ? { borderLeft: '3px solid #ef4444' } : undefined}
                   >
-                    <div className="outreach-inbox-avatar" style={isSpam ? { background: '#fee2e2', color: '#dc2626' } : isBounce ? { background: '#fee2e2', color: '#dc2626' } : undefined}>{initial}</div>
+                    {/* Read / Unread Circle Toggle Indicator */}
+                    <div
+                      onClick={(e) => handleToggleRead(e, msg)}
+                      className="outreach-inbox-read-toggle"
+                      title={isUnread ? "Пометить прочитанным" : "Пометить непрочитанным"}
+                    >
+                      {isUnread ? (
+                        <div className="outreach-inbox-read-dot-unread" />
+                      ) : (
+                        <div className="outreach-inbox-read-dot-read" />
+                      )}
+                    </div>
+
+                    <div className="outreach-inbox-avatar" style={{ background: avatarBg, color: avatarColor }}>{initial}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                          {isUnread && (
-                            <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#2563eb', flexShrink: 0 }} />
-                          )}
-                          <strong style={{ fontSize: 12, color: isSpam ? '#b91c1c' : isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 800 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <strong style={{ fontSize: 12, color: isSpam ? '#b91c1c' : isBounce ? '#b91c1c' : isUnread ? '#0f172a' : '#475569', fontWeight: isUnread ? 750 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {displayName}
                           </strong>
                         </div>
-                        <span style={{ fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
+                        <span style={{ fontSize: 10, color: isUnread ? '#2563eb' : '#94a3b8', fontWeight: isUnread ? 600 : 400, flexShrink: 0 }}>{formatDate(msg.date_received)}</span>
                       </div>
                       <div style={{ fontSize: 11.5, fontWeight: isUnread ? 700 : 400, color: isUnread ? '#0f172a' : '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
                         {msg.subject || '(Без темы)'}
@@ -4167,9 +4242,21 @@ export function OutreachView() {
                       type="button"
                       onClick={async () => {
                         const newStatus = !selectedMsg.is_read
+                        const targetId = selectedMsg.id
                         setSelectedMsg({ ...selectedMsg, is_read: newStatus })
-                        setInboxMessages((prev) => prev.map((m) => (m.id === selectedMsg.id ? { ...m, is_read: newStatus } : m)))
-                        await outreachFetch(`/api/outreach/inbox/${selectedMsg.id}/read`, {
+                        setInboxMessages((prev) =>
+                          inboxFilterRef.current === 'unread' && newStatus
+                            ? prev.filter((m) => m.id !== targetId)
+                            : prev.map((m) => (m.id === targetId ? { ...m, is_read: newStatus } : m))
+                        )
+                        if (inboxFilterRef.current === 'unread' && newStatus) {
+                          setInboxTotal((prev) => Math.max(0, prev - 1))
+                        }
+                        setInboxCounts((prev) => ({
+                          ...prev,
+                          unread: newStatus ? Math.max(0, prev.unread - 1) : prev.unread + 1,
+                        }))
+                        await outreachFetch(`/api/outreach/inbox/${targetId}/${newStatus ? 'read' : 'unread'}`, {
                           method: 'PATCH',
                           body: JSON.stringify({ is_read: newStatus }),
                         })
