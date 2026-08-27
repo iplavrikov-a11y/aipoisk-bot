@@ -1,4 +1,6 @@
-import { Phone, Mail, Send, MessageCircle, Sparkles, ShieldCheck } from "lucide-react";
+'use client';
+
+import { Mail, Send, MessageSquare, Sparkles, ShieldCheck } from "lucide-react";
 
 interface ContactSectionProps {
   title?: string;
@@ -13,9 +15,7 @@ export function ContactSection({
 }: ContactSectionProps) {
   const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
   const cabinetUrl = "/cabinet";
-  const whatsappUrl = "https://wa.me/79210629909";
   const telegramSupportUrl = "https://t.me/lexelence";
-  const maxMessengerUrl = "https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs";
 
   return (
     <section id="contacts" className="py-16 sm:py-24 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white border-b border-slate-200">
@@ -62,30 +62,6 @@ export function ContactSection({
             </span>
 
             <div className="flex flex-wrap items-center justify-center gap-3 max-w-5xl mx-auto">
-              {/* Phone */}
-              <a
-                href="tel:+79951460080"
-                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[195px]"
-              >
-                <Phone size={16} className="text-teal-700 shrink-0" />
-                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700 whitespace-nowrap">
-                  +7 (995) 146-00-80
-                </strong>
-              </a>
-
-              {/* WhatsApp */}
-              <a
-                href={whatsappUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-emerald-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px]"
-              >
-                <MessageCircle size={16} className="text-emerald-600 shrink-0" />
-                <strong className="text-sm font-bold text-slate-900 group-hover:text-emerald-700">
-                  WhatsApp
-                </strong>
-              </a>
-
               {/* Telegram */}
               <a
                 href={telegramSupportUrl}
@@ -99,19 +75,6 @@ export function ContactSection({
                 </strong>
               </a>
 
-              {/* Max */}
-              <a
-                href={maxMessengerUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-amber-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[120px]"
-              >
-                <MessageCircle size={16} className="text-amber-600 shrink-0" />
-                <strong className="text-sm font-bold text-slate-900 group-hover:text-amber-700">
-                  Max
-                </strong>
-              </a>
-
               {/* Email */}
               <a
                 href="mailto:info@tenderlex.ru"
@@ -122,6 +85,23 @@ export function ContactSection({
                   Email
                 </strong>
               </a>
+
+              {/* Chat */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+                    (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
+                  }
+                }}
+                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px] cursor-pointer"
+              >
+                <MessageSquare size={16} className="text-teal-600 shrink-0" />
+                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
+                  Чат на сайте
+                </strong>
+              </button>
             </div>
           </div>
         </div>

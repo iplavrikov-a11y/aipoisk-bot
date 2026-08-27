@@ -23,8 +23,8 @@ export type PublicSitePayload = {
     phone_url?: string;
     telegram: string;
     telegram_url: string;
-    max: string;
-    max_url: string;
+    max?: string;
+    max_url?: string;
     website: string;
     website_url: string;
   };
@@ -181,12 +181,8 @@ const fallbackData: PublicSitePayload = {
   },
   contacts: {
     email: "info@tenderlex.ru",
-    phone: "+7 (995) 146-00-80",
-    phone_url: "tel:+79951460080",
     telegram: "Telegram",
     telegram_url: "https://t.me/lexelence",
-    max: "+7 (921) 062-99-09",
-    max_url: "https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs",
     website: "tenderlex.ru",
     website_url: "https://tenderlex.ru",
   },

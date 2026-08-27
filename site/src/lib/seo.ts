@@ -180,12 +180,10 @@ export function buildOrganizationJsonLd() {
     ],
     contactPoint: {
       "@type": "ContactPoint",
-      telephone: "+7-995-146-00-80",
       contactType: "customer support",
       url: "https://t.me/tenderlex_bot",
       availableLanguage: ["Russian"],
     },
-    telephone: "+7-995-146-00-80",
     sameAs: ["https://t.me/tenderlex_bot", "https://productradar.ru/product/tenderlex"],
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
@@ -232,7 +230,6 @@ export function buildServiceJsonLd({
       "@id": `${siteUrl}/#organization`,
       name: "TenderLex",
       url: siteUrl,
-      telephone: "+7-995-146-00-80",
       address: {
         "@type": "PostalAddress",
         streetAddress: "Пресненская набережная, д. 12",
@@ -294,7 +291,6 @@ export function buildRegionalServiceJsonLd({
       "@id": `${siteUrl}/#organization`,
       name: "TenderLex",
       url: siteUrl,
-      telephone: "+7-995-146-00-80",
       address: {
         "@type": "PostalAddress",
         addressLocality: regionLocality,

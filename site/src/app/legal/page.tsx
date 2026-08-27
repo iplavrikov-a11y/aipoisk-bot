@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
-import { FileText, ShieldCheck, UserCheck, Phone, Mail, Send, MessageCircle } from "lucide-react";
+import { FileText, ShieldCheck, UserCheck } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Правовая информация и реквизиты",
-  description: "Официальные документы, условия оферты, политика конфиденциальности и юридические реквизиты платформы TenderLex.",
+  title: "Правовая информация и контакты",
+  description: "Официальные документы, условия оферты, политика конфиденциальности и каналы связи платформы TenderLex.",
   alternates: { canonical: "/legal" },
 };
 
@@ -22,10 +22,10 @@ export default function LegalPage() {
               ← На главную
             </Link>
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight">
-              Правовая информация и реквизиты
+              Правовая информация и контакты
             </h1>
             <p className="text-slate-500 text-sm mt-3">
-              Редакция от 17 июля 2026 года • Регламенты и юридические документы сервиса TenderLex
+              Редакция от 17 июля 2026 года • Регламенты, документы и каналы связи сервиса TenderLex
             </p>
           </div>
 
@@ -86,51 +86,28 @@ export default function LegalPage() {
             </Link>
           </div>
 
-          {/* Official Requisites */}
+          {/* Contacts */}
           <div className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-6 shadow-2xs">
-            <h2 className="text-2xl font-black text-slate-900">Владелец сервиса и официальные реквизиты</h2>
+            <h2 className="text-2xl font-black text-slate-900">Каналы связи и поддержка</h2>
 
-            <div className="grid sm:grid-cols-2 gap-6 text-xs text-slate-700">
-              <div className="space-y-3">
-                <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Наименование</span>
-                  <strong className="text-sm font-bold text-slate-900">Индивидуальный предприниматель Груздев Игорь Вячеславович</strong>
-                </div>
-                <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px]">ИНН</span>
-                  <strong className="text-slate-900 text-sm">352516048881</strong>
-                </div>
-                <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px]">ОГРНИП</span>
-                  <strong className="text-slate-900 text-sm">323352500038991</strong>
-                </div>
+            <div className="text-xs text-slate-700 space-y-4 max-w-md">
+              <div>
+                <span className="text-slate-400 block uppercase font-bold text-[10px]">Поддержка в Telegram</span>
+                <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
+                  @lexelence
+                </a>
               </div>
-
-              <div className="space-y-3">
-                <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Юридический адрес</span>
-                  <span className="text-slate-800">160541, Вологодская область, Вологодский район, деревня Тарасово, д. 3</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px]">Каналы связи</span>
-                  <div className="space-y-1 mt-1">
-                    <a href="tel:+79951460080" className="block text-teal-700 font-bold hover:underline">
-                      +7 (995) 146-00-80 (Телефон)
-                    </a>
-                    <a href="https://wa.me/79210629909" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
-                      WhatsApp: написать сообщение
-                    </a>
-                    <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
-                      Telegram: @lexelence
-                    </a>
-                    <a href="https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline">
-                      Max: написать сообщение
-                    </a>
-                    <a href="mailto:info@tenderlex.ru" className="block text-teal-700 font-bold hover:underline">
-                      info@tenderlex.ru
-                    </a>
-                  </div>
-                </div>
+              <div>
+                <span className="text-slate-400 block uppercase font-bold text-[10px]">Telegram-бот сервиса</span>
+                <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
+                  @tenderlex_bot
+                </a>
+              </div>
+              <div>
+                <span className="text-slate-400 block uppercase font-bold text-[10px]">Электронная почта</span>
+                <a href="mailto:info@tenderlex.ru" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
+                  info@tenderlex.ru
+                </a>
               </div>
             </div>
           </div>

@@ -67,18 +67,14 @@ export function SiteFooter() {
             <li><Link href="/terms" className="hover:text-teal-700 transition-colors font-medium">Публичная оферта</Link></li>
             <li><Link href="/privacy" className="hover:text-teal-700 transition-colors font-medium">Политика конфиденциальности</Link></li>
             <li><Link href="/personal-data" className="hover:text-teal-700 transition-colors font-medium">Согласие на обработку 152-ФЗ</Link></li>
-            <li><Link href="/legal" className="hover:text-teal-700 transition-colors font-medium">Реквизиты и контакты</Link></li>
+            <li><Link href="/legal" className="hover:text-teal-700 transition-colors font-medium">Правовая информация и контакты</Link></li>
           </ul>
         </div>
       </div>
 
-      {/* Requisites Bar */}
+      {/* Footer Copyright Bar */}
       <div className="border-t border-slate-200 bg-slate-50 py-6 px-4 sm:px-6 text-slate-500 text-[11px] leading-relaxed">
-        <div className="container max-w-6xl mx-auto flex flex-col md:flex-row justify-between gap-4">
-          <div>
-            <strong className="text-slate-700 block font-bold">ИП Груздев Игорь Вячеславович</strong>
-            <span>ИНН: 352516048881 • ОГРНИП: 323352500038991 • 160541, Вологодская обл., Вологодский р-н, дер. Тарасово, д. 3</span>
-          </div>
+        <div className="container max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="text-slate-600">
             <span>© {new Date().getFullYear()} TenderLex. Все права защищены. Работает по всей территории РФ.</span>
           </div>

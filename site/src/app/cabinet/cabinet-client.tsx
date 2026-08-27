@@ -1800,12 +1800,6 @@ export function CabinetClient() {
             </a>
           ) : null}
 
-          {session?.contacts?.max_url ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.max_url} target="_blank" rel="noreferrer">
-              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>MAX</span>
-            </a>
-          ) : null}
 
           {session?.contacts?.email ? (
             <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>

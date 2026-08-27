@@ -2,14 +2,12 @@
 
 import Link from "next/link";
 import { TenderLexLogo } from "@/components/logo";
-import { Phone, Send, Sparkles, MessageCircle, Mail, MessageSquare } from "lucide-react";
+import { Send, Sparkles, Mail, MessageSquare } from "lucide-react";
 
 export function SiteHeader() {
   const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
   const cabinetUrl = "/cabinet";
-  const whatsappUrl = "https://wa.me/79210629909";
   const telegramSupportUrl = "https://t.me/lexelence";
-  const maxMessengerUrl = "https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs";
 
   return (
     <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs">
@@ -27,24 +25,6 @@ export function SiteHeader() {
 
           <div className="flex items-center gap-4 text-xs">
             <a
-              href="tel:+79951460080"
-              className="text-slate-200 font-bold hover:text-teal-400 transition-colors flex items-center gap-1"
-            >
-              <Phone size={12} className="text-teal-400" />
-              +7 (995) 146-00-80
-            </a>
-            <span className="text-slate-700">|</span>
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-emerald-400 transition-colors flex items-center gap-1"
-            >
-              <MessageCircle size={12} className="text-emerald-400" />
-              WhatsApp
-            </a>
-            <span className="text-slate-700">|</span>
-            <a
               href={telegramSupportUrl}
               target="_blank"
               rel="noreferrer"
@@ -60,15 +40,6 @@ export function SiteHeader() {
             >
               <Mail size={12} className="text-teal-400" />
               info@tenderlex.ru
-            </a>
-            <span className="text-slate-700">|</span>
-            <a
-              href={maxMessengerUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-amber-400 transition-colors"
-            >
-              Max
             </a>
             <span className="text-slate-700">|</span>
             <button
@@ -131,12 +102,6 @@ export function SiteHeader() {
 
         {/* Action CTAs */}
         <div className="flex items-center gap-3 shrink-0">
-          <a
-            href="tel:+79951460080"
-            className="hidden sm:inline-flex lg:hidden text-xs font-bold text-slate-800 hover:text-teal-700"
-          >
-            +7 (995) 146-00-80
-          </a>
           <a
             href={botUrl}
             target="_blank"

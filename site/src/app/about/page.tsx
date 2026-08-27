@@ -82,24 +82,13 @@ export default function AboutPage() {
               </div>
             </div>
 
-            {/* Requisites Block */}
+            {/* Contacts Block */}
             <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200 space-y-6 shadow-2xs">
-              <h2 className="text-2xl font-black text-slate-900">Официальные юридические реквизиты</h2>
-              <div className="grid sm:grid-cols-2 gap-6 text-xs text-slate-700 font-medium">
-                <div className="space-y-2">
-                  <p><strong className="text-slate-900 font-bold">Оператор сервиса:</strong> ИП Груздев Игорь Вячеславович</p>
-                  <p><strong className="text-slate-900 font-bold">ИНН:</strong> 352516048881</p>
-                  <p><strong className="text-slate-900 font-bold">ОГРНИП:</strong> 323352500038991</p>
-                  <p><strong className="text-slate-900 font-bold">Адрес:</strong> 160541, Вологодская обл., Вологодский р-н, дер. Тарасово, д. 3</p>
-                </div>
-                <div className="space-y-2">
-                  <p><strong className="text-slate-900 font-bold">Телефон:</strong> <a href="tel:+79951460080" className="text-teal-700 font-bold hover:underline">+7 (995) 146-00-80</a></p>
-                  <p><strong className="text-slate-900 font-bold">WhatsApp:</strong> <a href="https://wa.me/79210629909" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">Написать в WhatsApp</a></p>
-                  <p><strong className="text-slate-900 font-bold">Telegram-бот:</strong> <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@tenderlex_bot</a></p>
-                  <p><strong className="text-slate-900 font-bold">Telegram поддержка:</strong> <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@lexelence</a></p>
-                  <p><strong className="text-slate-900 font-bold">Max:</strong> <a href="https://max.ru/u/f9LHodD0cOJBLDdTXMGDPUvHbbK_bKtz9e0GgYPWHvxUgk9rZvGGwCdYvqs" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">Написать в Max</a></p>
-                  <p><strong className="text-slate-900 font-bold">Email:</strong> <a href="mailto:support@tenderlex.ru" className="text-teal-700 font-bold hover:underline">support@tenderlex.ru</a> / <a href="mailto:info@tenderlex.ru" className="text-teal-700 font-bold hover:underline">info@tenderlex.ru</a></p>
-                </div>
+              <h2 className="text-2xl font-black text-slate-900">Контакты сервиса</h2>
+              <div className="text-xs text-slate-700 font-medium space-y-2.5 max-w-lg">
+                <p><strong className="text-slate-900 font-bold">Telegram-бот:</strong> <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@tenderlex_bot</a></p>
+                <p><strong className="text-slate-900 font-bold">Telegram поддержка:</strong> <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="text-teal-700 font-bold hover:underline">@lexelence</a></p>
+                <p><strong className="text-slate-900 font-bold">Email:</strong> <a href="mailto:support@tenderlex.ru" className="text-teal-700 font-bold hover:underline">support@tenderlex.ru</a> / <a href="mailto:info@tenderlex.ru" className="text-teal-700 font-bold hover:underline">info@tenderlex.ru</a></p>
               </div>
             </div>
           </div>

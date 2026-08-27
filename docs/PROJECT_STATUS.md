@@ -95,11 +95,11 @@ Date: 2026-07-08
   - Verification & Benchmarks: Created unit test suite `backend/tests/test_outreach_search_quality.py` (100% pass) and side-by-side comparative benchmarking tool `backend/scripts/compare_search_engines.py` proving 0% noise and 100% verified corporate leads on industrial procurement scenarios.
 - Contact Routing & UI Polish (2026-08):
   - Strictly separated voice phone calls from messaging channels:
-    - Voice calls: `+7 (995) 146-00-80` (`tel:+79951460080`).
-    - Messengers: WhatsApp (`https://wa.me/79210629909` for number `89210629909`), Max (`https://max.ru/...` for number `89210629909`), direct Telegram (`https://t.me/lexelence`), bot (`https://t.me/tenderlex_bot`).
-    - General contact email: `info@tenderlex.ru`.
-  - Simplified contact section buttons (`contact-section.tsx`) to clean single-label buttons (`+7 (995) 146-00-80`, `WhatsApp`, `Telegram`, `Max`, `Email`) with auto-wrapping flex layout and generous inner padding to prevent text overflow on all viewports.
-  - Top header microbar (`site-header.tsx`) updated to include direct links for phone, WhatsApp, Telegram, email, Max, and a dedicated "Чат" button.
+    - Contact channels streamlined by request: phone, WhatsApp, and Max removed; only Telegram, Email, and site chat are public.
+    - Support channels: direct Telegram (`https://t.me/lexelence`), bot (`https://t.me/tenderlex_bot`), general email `info@tenderlex.ru`, and interactive web chat.
+    - Firm legal requisites (IP Gruzdev, INN, OGRNIP, address) removed from public site pages.
+  - Simplified contact section buttons (`contact-section.tsx`) to clean single-label buttons (`Telegram`, `Email`, `Чат на сайте`) with auto-wrapping flex layout.
+  - Top header microbar (`site-header.tsx`) updated to include direct links for Telegram, Email, and a dedicated "Чат" button.
   - Floating online chat widget (`chat-widget.tsx`) refined into a compact dismissible pill with a close button and custom event `open_tenderlex_chat` wired to the header button.
 - Yandex ID OAuth & Google Search Console Automation (2026-08):
   - Added 1-click Yandex ID login/registration for the customer cabinet (`backend/app/web_auth.py`, `site/src/app/cabinet/cabinet-client.tsx`).
