@@ -4,6 +4,7 @@ import { FileText, Code, Copy, Check } from 'lucide-react';
 interface EmailBodyFrameProps {
   html?: string;
   text?: string;
+  subject?: string;
   className?: string;
   minHeight?: number;
   maxHeight?: number;
@@ -148,12 +149,20 @@ const buildEmailSrcDoc = (bodyHtml?: string, bodyText?: string): string => {
 const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
   html,
   text,
+  subject = '',
   className = '',
-  minHeight = 300,
+  minHeight = 250,
   maxHeight = 1600,
   showToggle = true,
 }) => {
   const hasHtml = Boolean(html && html.trim().length > 0);
+  const rawText = (text || '').trim();
+  const hasMeaningfulText = Boolean(rawText.length > 0 && rawText !== '(Текст сообщения отсутствует)');
+  const isUnsubscribe = Boolean(
+    /unsubscribe|отписк|отписат|удалите|не пишите/i.test(subject) ||
+    /unsubscribe|запрос на отписку|отписаться/i.test(rawText)
+  );
+
   const [viewMode, setViewMode] = useState<'html' | 'text'>(hasHtml ? 'html' : 'text');
   const [height, setHeight] = useState<number>(minHeight);
   const [copied, setCopied] = useState(false);
@@ -161,10 +170,10 @@ const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
 
   // Sync mode if html becomes available
   useEffect(() => {
-    if (hasHtml && viewMode === 'text' && !text) {
+    if (hasHtml && viewMode === 'text' && !hasMeaningfulText) {
       setViewMode('html');
     }
-  }, [hasHtml, text]);
+  }, [hasHtml, hasMeaningfulText]);
 
   const srcDoc = useMemo(() => {
     if (viewMode === 'html' && hasHtml) {
@@ -175,9 +184,11 @@ const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
 
   const handleCopy = () => {
     const contentToCopy = text || (html ? html.replace(/<[^>]+>/g, '') : '');
-    navigator.clipboard.writeText(contentToCopy);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (contentToCopy) {
+      navigator.clipboard.writeText(contentToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const adjustIframeHeight = (iframe: HTMLIFrameElement | null) => {
@@ -205,10 +216,61 @@ const EmailBodyFrameComponent: React.FC<EmailBodyFrameProps> = ({
     }
   };
 
+  // If email has completely empty body, render a clean, human-friendly state instead of an empty iframe
+  if (!hasHtml && !hasMeaningfulText) {
+    if (isUnsubscribe) {
+      return (
+        <div
+          className={`email-body-container ${className}`}
+          style={{
+            padding: '16px 20px',
+            background: '#fff1f2',
+            border: '1px solid #fecdd3',
+            borderRadius: 8,
+            color: '#9f1239',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 750, fontSize: 13 }}>
+            <span style={{ fontSize: 16 }}>📩</span>
+            <span>Запрос на отписку от рассылки (Unsubscribe)</span>
+          </div>
+          <p style={{ margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#881337' }}>
+            Поставщик отправил запрос на исключение из рассылки (тема письма: <strong>«{subject || 'Unsubscribe'}»</strong>).
+            Тело сообщения пустое. Почтовый адрес автоматически изолирован в автоответах.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className={`email-body-container ${className}`}
+        style={{
+          padding: '24px 20px',
+          textAlign: 'center',
+          background: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 8,
+          color: '#64748b',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div style={{ fontSize: 24, marginBottom: 6 }}>✉️</div>
+        <p style={{ margin: 0, fontWeight: 650, fontSize: 12.5, color: '#334155' }}>
+          Тело письма не содержит текста
+        </p>
+        <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#64748b' }}>
+          Отправитель прислал письмо без текстового сообщения (только тема: <strong>«{subject || 'Без темы'}»</strong>).
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className={`email-body-container ${className}`} style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
       {/* View Toggle Bar (if HTML is available) */}
-      {showToggle && (hasHtml || text) && (
+      {showToggle && (hasHtml || hasMeaningfulText) && (
         <div
           style={{
             display: 'flex',
@@ -315,6 +377,7 @@ export const EmailBodyFrame = React.memo(EmailBodyFrameComponent, (prev, next) =
   return (
     prev.html === next.html &&
     prev.text === next.text &&
+    prev.subject === next.subject &&
     prev.className === next.className &&
     prev.minHeight === next.minHeight &&
     prev.maxHeight === next.maxHeight &&

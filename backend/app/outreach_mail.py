@@ -658,7 +658,7 @@ def is_auto_reply_message(subject: str, body_text: str, sender_name: str = "", s
         "out of office", "в отпуске", "ваше обращение", "обращение принято", "обращение [",
         "обращение #", "заявка принята", "заявка [", "заявка №", "запрос получен",
         "мы получили ваше письмо", "получили запрос", "ваше письмо получено", "ticket-",
-        "[#", "[заявка"
+        "[#", "[заявка", "unsubscribe", "отписка", "отписаться", "отпишите"
     ]
     if any(p in subj_clean for p in subj_patterns):
         return True
@@ -677,7 +677,8 @@ def is_auto_reply_message(subject: str, body_text: str, sender_name: str = "", s
         "наш менеджер свяжется с вами в ближайшее время", "спасибо за обращение! оно будет рассмотрено",
         "все запросы обрабатываются в порядке очереди", "мы получили ваше письмо и уже спешим",
         "спасибо за обращение в компанию", "письмо получено и принято в обработку",
-        "спасибо что обратились к нашему сервису", "спасибо, что обратились к нашему сервису"
+        "спасибо что обратились к нашему сервису", "спасибо, что обратились к нашему сервису",
+        "unsubscribe", "отписаться от рассылки", "прошу отписать", "удалите из рассылки"
     ]
     if any(p in body_clean for p in body_patterns):
         return True
@@ -862,7 +863,7 @@ def html_to_plain_text(html_content: str | None) -> str:
     return text.strip()
 
 
-def extract_email_bodies(msg: email.message.Message) -> tuple[str, str]:
+def extract_email_bodies(msg: email.message.Message, subject: str = "") -> tuple[str, str]:
     """Extracts (clean_body_text, raw_body_html) from an email message.
     Guarantees body_text is always clean plain text without HTML tags.
     """
@@ -923,17 +924,27 @@ def extract_email_bodies(msg: email.message.Message) -> tuple[str, str]:
     if raw_html and (not clean_text or looks_like_html(clean_text)):
         clean_text = html_to_plain_text(raw_html)
 
+    if not clean_text and not raw_html:
+        clean_subj = (subject or "").strip()
+        if re.search(r"unsubscribe|отписк|отписат|отключит|не присыла", clean_subj, re.I):
+            clean_text = f"Запрос на отписку от рассылки (Тема: {clean_subj}). Тело сообщения не заполнено отправителем."
+        elif clean_subj and clean_subj != "Без темы":
+            clean_text = f"(Письмо получено без текста в теле сообщения, тема: «{clean_subj}»)"
+        else:
+            clean_text = ""
+
     return clean_text, raw_html
 
 
 def clean_existing_inbox_bodies(db: Session) -> int:
-    """Retroactively cleans raw HTML in body_text and preserves body_html across existing records."""
+    """Retroactively cleans raw HTML in body_text and fixes empty bodies across existing records."""
     updated_count = 0
     inbound_msgs = db.query(OutreachIncomingEmail).all()
     for msg in inbound_msgs:
         changed = False
         text_val = msg.body_text or ""
         html_val = msg.body_html or ""
+        subj_val = (msg.subject or "").strip()
 
         if looks_like_html(text_val):
             if not html_val.strip():
@@ -943,6 +954,19 @@ def clean_existing_inbox_bodies(db: Session) -> int:
             changed = True
         elif not text_val.strip() and html_val.strip():
             msg.body_text = html_to_plain_text(html_val)[:10000]
+            changed = True
+        elif not text_val.strip() and not html_val.strip():
+            if re.search(r"unsubscribe|отписк|отписат|отключит|не присыла", subj_val, re.I):
+                msg.body_text = f"Запрос на отписку от рассылки (Тема: {subj_val}). Тело сообщения не заполнено отправителем."
+                if msg.category == "reply" or not msg.category:
+                    msg.category = "auto_reply"
+                changed = True
+            elif subj_val and subj_val != "Без темы":
+                msg.body_text = f"(Письмо получено без текста в теле сообщения, тема: «{subj_val}»)"
+                changed = True
+
+        if re.search(r"^unsubscribe|^отписка|^отписаться", subj_val, re.I) and msg.category == "reply":
+            msg.category = "auto_reply"
             changed = True
 
         if changed:
@@ -1107,7 +1131,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             else:
                 dt_utc = now_utc()
 
-            body_text, body_html = extract_email_bodies(msg)
+            body_text, body_html = extract_email_bodies(msg, subject=subject)
 
             # 1. Lead Match & Spam Check
             matched_lead_id = find_matched_lead_id(

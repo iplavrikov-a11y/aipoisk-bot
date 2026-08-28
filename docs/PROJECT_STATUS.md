@@ -12,14 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Outreach Seamless Inbox Synchronization & Jitter-Free UI Architecture (Aligned with EmailAgent, 2026-08):
-  - Completely eliminated visual jitter, layout jumping, and flickering in the Outreach Inbox by adopting `emailagent`'s seamless asynchronous sync architecture.
-  - Backend Background IMAP Worker (`_background_imap_loop` in `backend/app/main.py`): The backend continuously and quietly fetches incoming supplier replies from IMAP every 45 seconds in a separate non-blocking thread (`asyncio.to_thread`), saving new messages to SQLite independently of frontend requests.
-  - Frontend Silent DB Polling: The client periodically queries the local database endpoint `GET /api/outreach/inbox` every 20 seconds (ultra-fast 2ms query). Background fetches are 100% silent (`silent=true`) and never block UI interactions, reset scroll positions, or show loading skeletons.
-  - Selection Stability: During background refreshes, `setSelectedMsg` never forcibly resets or switches away from the currently viewed email (`items[0]`), allowing uninterrupted reading and reply composition.
-  - Clean Minimalist Toolbar: Removed bulky "Автосинхронизация каждые 30 сек" banner and blocking "Синхронизировать сейчас" button. Added compact 34x32px `<button onClick={handleRefreshInbox}><RefreshCw size={13} /></button>` icon button with brief spin feedback, matching `emailagent`'s exact UI design.
-  - Smart Equality Checking: Memoized `inboxMessages` and `inboxCounts` state updates in `fetchInbox` to prevent redundant DOM re-renders when data has not changed.
-  - Stabilized `EmailBodyFrame`: Sandboxed iframe with initial 300px minHeight, strict table formatting constraints, and isolated event bubbling.
+- Outreach Seamless Inbox Synchronization & Empty Body / Unsubscribe Graceful Handling (2026-08):
+  - Fixed issue where opt-out / unsubscribe emails with no body text (such as `TECTOS <info@tectos.ru>` with Subject `Unsubscribe`) rendered a cold technical fallback `(Текст сообщения отсутствует)` in an empty iframe.
+  - Added intelligent empty-body detection in `frontend/src/EmailBodyFrame.tsx`: when an incoming email arrives without a body text or HTML, it displays an informative, formatted card explaining that the sender sent an empty body or an unsubscribe request (with subject and contextual action badge).
+  - Enhanced `extract_email_bodies` and `is_auto_reply_message` in `backend/app/outreach_mail.py`: auto-classifies unsubscribe emails into "Автоответы" (`auto_reply`), preventing empty opt-outs from cluttering "Живые ответы" as fake sales leads, and generates descriptive plain text fallback for search and AI indexing.
+  - Retroactively cleaned existing database records via `clean_existing_inbox_bodies` and `backfill_existing_bounces`.
+  - Backend Background IMAP Worker (`_background_imap_loop` in `backend/app/main.py`): continuously syncs IMAP every 45 seconds on the server.
+  - Frontend Silent DB Polling: client queries `GET /api/outreach/inbox` every 20 seconds seamlessly without resetting selections, locking UI, or jumping scroll positions.
+  - Compact 34x32px refresh button matching `emailagent` UX.
 - Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
   - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
   - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").

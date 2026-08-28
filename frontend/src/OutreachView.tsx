@@ -4553,6 +4553,7 @@ export function OutreachView() {
                   key={selectedMsg.id}
                   html={selectedMsg.body_html}
                   text={selectedMsg.body_text}
+                  subject={selectedMsg.subject}
                   minHeight={200}
                 />
               </div>
@@ -5404,6 +5405,7 @@ export function OutreachView() {
                           key={item.id}
                           html={item.body_html}
                           text={item.body_text}
+                          subject={item.subject}
                           minHeight={80}
                           maxHeight={800}
                           showToggle={Boolean(item.body_html)}
