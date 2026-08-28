@@ -12,14 +12,13 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Outreach Seamless Inbox Synchronization & Empty Body / Unsubscribe Graceful Handling (2026-08):
-  - Fixed issue where opt-out / unsubscribe emails with no body text (such as `TECTOS <info@tectos.ru>` with Subject `Unsubscribe`) rendered a cold technical fallback `(Текст сообщения отсутствует)` in an empty iframe.
-  - Added intelligent empty-body detection in `frontend/src/EmailBodyFrame.tsx`: when an incoming email arrives without a body text or HTML, it displays an informative, formatted card explaining that the sender sent an empty body or an unsubscribe request (with subject and contextual action badge).
-  - Enhanced `extract_email_bodies` and `is_auto_reply_message` in `backend/app/outreach_mail.py`: auto-classifies unsubscribe emails into "Автоответы" (`auto_reply`), preventing empty opt-outs from cluttering "Живые ответы" as fake sales leads, and generates descriptive plain text fallback for search and AI indexing.
-  - Retroactively cleaned existing database records via `clean_existing_inbox_bodies` and `backfill_existing_bounces`.
-  - Backend Background IMAP Worker (`_background_imap_loop` in `backend/app/main.py`): continuously syncs IMAP every 45 seconds on the server.
-  - Frontend Silent DB Polling: client queries `GET /api/outreach/inbox` every 20 seconds seamlessly without resetting selections, locking UI, or jumping scroll positions.
-  - Compact 34x32px refresh button matching `emailagent` UX.
+- Outreach Seamless Inbox Synchronization & Unread Tab Click Stability (Aligned with EmailAgent, 2026-08):
+  - Fixed issue where clicking on a message in the "Новые" (`unread`) tab immediately marked it as read on the backend, causing it to instantly vanish from the list and detail pane before the user could read it.
+  - Aligned with `emailagent` (`shouldMarkInboxEmailRead`): clicking an unread message inside the "Новые" tab only selects and opens it without auto-marking read, keeping the message stably in place in the list and detail view.
+  - Manual Read Toggle & State Persistence: Users can mark the message as read via the circle indicator, the "Прочитано" button, or "Отметить все прочитанными". Even if marked read, the detail pane retains `selectedMsg` until the user deliberately selects another email or changes tabs.
+  - Handled empty email bodies & opt-outs gracefully: `EmailBodyFrame` renders informative cards for empty bodies and unsubscribe requests instead of cold blank frames.
+  - Enhanced `extract_email_bodies` and `is_auto_reply_message` in `backend/app/outreach_mail.py` to classify unsubscribe requests into "Автоответы" and backfilled existing database records.
+  - Background IMAP worker (`_background_imap_loop` in `backend/app/main.py`) syncs silently every 45s; frontend polls local SQLite every 20s with 0 layout jitter.
 - Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
   - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
   - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").

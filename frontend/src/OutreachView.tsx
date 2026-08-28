@@ -805,7 +805,7 @@ export function OutreachView() {
         }
 
         setSelectedMsg((prev) => {
-          if (!items.length) return null
+          if (!items.length) return prev || null
           if (!prev) return items[0]
           const matched = items.find((m) => m.id === prev.id)
           if (matched) {
@@ -820,13 +820,7 @@ export function OutreachView() {
             }
             return matched
           }
-          // On silent background polling, NEVER deselect or jump away from current email!
-          if (silent) {
-            return prev
-          }
-          if (!isLoadMore) {
-            return items[0]
-          }
+          // Never drop the currently selected email if user is actively reading it!
           return prev
         })
       } catch {
@@ -4298,7 +4292,9 @@ export function OutreachView() {
                     key={msg.id}
                     onClick={() => {
                       setSelectedMsg(msg)
-                      if (isUnread) {
+                      // Only auto-mark as read if NOT in the "unread" tab!
+                      // In the "unread" tab, user wants to inspect new messages without them vanishing immediately.
+                      if (isUnread && inboxFilterRef.current !== 'unread') {
                         setInboxMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m)))
                         setInboxCounts((prev) => ({ ...prev, unread: Math.max(0, prev.unread - 1) }))
                         outreachFetch(`/api/outreach/inbox/${msg.id}/read`, {
