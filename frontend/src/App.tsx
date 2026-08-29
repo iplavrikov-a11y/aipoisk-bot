@@ -4537,12 +4537,22 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
                 {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
                 {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
-                <span className="badge-pill count">{job.mode === 'procurement_report' ? 'Анализ ТЗ' : `Поставщиков: ${supplierCountLabel(job)}`}</span>
-                {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) && (
+                <span className="badge-pill count">
+                  {job.mode === 'procurement_report'
+                    ? 'Анализ ТЗ'
+                    : job.mode === 'exact_product'
+                    ? `Товаров: ${job.verified_count || 1}`
+                    : `Поставщиков: ${supplierCountLabel(job)}`}
+                </span>
+                {job.mode === 'exact_product' ? (
+                  <span className="badge-pill yandex-cost" title="Подбор товара использует локальный анализ LLM без платных запросов к Яндекс Поиску">
+                    ⚡ Без Яндекс API (0.00 ₽)
+                  </span>
+                ) : Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                   <span className="badge-pill yandex-cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
                     🔍 {job.yandex_requests_count ? `${job.yandex_requests_count} запр. · ` : ''}{(job.yandex_cost_rub || 0).toFixed(2)} ₽
                   </span>
-                )}
+                ) : null}
               </div>
               <div className="job-inline-downloads">
                 {inputFiles.map(file => (

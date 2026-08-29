@@ -1426,6 +1426,9 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
     job.result_path = str(xlsx_path)
+    job.verified_count = report.total_positions
+    job.yandex_requests_count = 0
+    job.yandex_cost_rub = 0.0
     _set_customer_job_title_from_subject(job, subject)
     charge_job_reservation(db, job, note="Подбор товара и аналогов завершен")
     _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
