@@ -20,9 +20,9 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=aipoisk-worker
-MemoryHigh=1024M
-MemoryMax=1536M
-CPUQuota=150%
+MemoryHigh=3072M
+MemoryMax=4096M
+CPUQuota=400%
 
 [Install]
 WantedBy=multi-user.target

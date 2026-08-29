@@ -10,7 +10,7 @@ import socket
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, exists, or_
+from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from . import document_parser
@@ -337,14 +337,23 @@ def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNN
     return job_ids
 
 
-def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STALE_RUNNING_AFTER) -> str | None:
+def claim_next_job(
+    db: Session,
+    *,
+    worker_id: str,
+    stale_after: timedelta = STALE_RUNNING_AFTER,
+    max_running_jobs_per_client: int | None = None,
+) -> str | None:
     now = now_utc()
     stale_cutoff = now - stale_after
+    if max_running_jobs_per_client is None:
+        max_running_jobs_per_client = getattr(config, "max_running_jobs_per_client", 2)
+    max_per_client = _normalized_max_running_jobs_per_client(max_running_jobs_per_client)
     eligible_status_filter = or_(
         Job.status == "pending",
         and_(Job.status == "running", Job.updated_at < stale_cutoff),
     )
-    fair_client_filter = _client_has_no_active_running_job_filter(stale_cutoff)
+    fair_client_filter = _client_under_concurrency_limit_filter(stale_cutoff, max_per_client=max_per_client)
     jobs = (
         db.query(Job)
         .filter(eligible_status_filter)
@@ -376,6 +385,14 @@ def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STAL
     return None
 
 
+def _normalized_max_running_jobs_per_client(value: int | str | None) -> int:
+    try:
+        parsed = int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, parsed)
+
+
 def _active_client_job_exists(stale_cutoff: datetime):
     active_job = aliased(Job)
     return exists().where(
@@ -388,8 +405,33 @@ def _active_client_job_exists(stale_cutoff: datetime):
     )
 
 
+def _client_running_jobs_count_subquery(stale_cutoff: datetime):
+    active_job = aliased(Job)
+    return (
+        select(func.count(active_job.id))
+        .where(
+            and_(
+                active_job.client_id == Job.client_id,
+                active_job.id != Job.id,
+                active_job.status == "running",
+                or_(active_job.updated_at.is_(None), active_job.updated_at >= stale_cutoff),
+            )
+        )
+        .scalar_subquery()
+    )
+
+
+def _client_under_concurrency_limit_filter(stale_cutoff: datetime, max_per_client: int = 2):
+    if max_per_client <= 0:
+        return true()
+    if max_per_client == 1:
+        return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
+    running_count = _client_running_jobs_count_subquery(stale_cutoff)
+    return or_(Job.client_id.is_(None), running_count < max_per_client)
+
+
 def _client_has_no_active_running_job_filter(stale_cutoff: datetime):
-    return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
+    return _client_under_concurrency_limit_filter(stale_cutoff, max_per_client=1)
 
 
 async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 3.0) -> Job | None:

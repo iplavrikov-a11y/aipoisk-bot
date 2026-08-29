@@ -69,7 +69,8 @@ class AppConfig(BaseSettings):
     yandex_oauth_client_id: str = ""
     yandex_oauth_client_secret: str = ""
     yandex_oauth_redirect_url: str = ""
-    worker_concurrency: int = 1
+    worker_concurrency: int = 6
+    max_running_jobs_per_client: int = 2
     supplier_verification_concurrency: int = 8
     supplier_verification_timeout_seconds: float = 150.0
 

@@ -769,11 +769,9 @@ without polluting the customer's XLSX report.
 
 - API and Telegram bot only create durable DB-backed pending jobs.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
-- The worker supports in-process concurrency through
-  `AIPOISK_WORKER_CONCURRENCY`; production is intentionally set to `2` first,
-  not higher, until real AI/search and memory pressure are observed.
-- Claiming keeps one active non-stale job per customer at a time, while still
-  allowing different customers and anonymous/system jobs to be claimed.
+- The worker supports in-process concurrency through `AIPOISK_WORKER_CONCURRENCY` (set to `6` in production).
+- Per-customer concurrency is managed via `AIPOISK_MAX_RUNNING_JOBS_PER_CLIENT` (set to `2` in production), allowing a client to run 2 concurrent tasks simultaneously while preserving fairness.
+- Strict prohibition on caching: task execution, supplier searches, product checks, company verifications, and AI analysis NEVER use caching; every run performs fresh, real-time market discovery and validation.
 - Telegram has three customer-facing creation scenarios: `🔎 Поставщики по ТЗ`,
   `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Website cabinet mirrors those scenarios without Telegram-only emoji:

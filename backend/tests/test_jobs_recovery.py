@@ -997,7 +997,58 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_claim_next_job_skips_client_that_already_has_active_job(self) -> None:
+    def test_claim_next_job_skips_client_that_already_has_active_jobs_at_limit(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        now = now_utc()
+        try:
+            active_a1 = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="active-a-1",
+                created_at=now - timedelta(minutes=25),
+                updated_at=now,
+            )
+            active_a2 = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="active-a-2",
+                created_at=now - timedelta(minutes=20),
+                updated_at=now,
+            )
+            pending_a = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="pending",
+                title="pending-a",
+                created_at=now - timedelta(minutes=10),
+            )
+            pending_b = Job(
+                client_id="client-b",
+                mode="supplier_search",
+                status="pending",
+                title="pending-b",
+                created_at=now - timedelta(minutes=5),
+            )
+            db.add_all([active_a1, active_a2, pending_a, pending_b])
+            db.commit()
+            pending_b_id = pending_b.id
+
+            claimed = claim_next_job(db, worker_id="test-worker", max_running_jobs_per_client=2)
+            db.refresh(pending_a)
+            db.refresh(pending_b)
+
+            self.assertEqual(claimed, pending_b_id)
+            self.assertEqual(pending_a.status, "pending")
+            self.assertEqual(pending_b.status, "running")
+        finally:
+            db.close()
+
+    def test_claim_next_job_allows_second_job_for_client_when_limit_is_two(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -1028,15 +1079,15 @@ class JobRecoveryTests(unittest.TestCase):
             )
             db.add_all([active_a, pending_a, pending_b])
             db.commit()
-            pending_b_id = pending_b.id
+            pending_a_id = pending_a.id
 
-            claimed = claim_next_job(db, worker_id="test-worker")
+            claimed = claim_next_job(db, worker_id="test-worker", max_running_jobs_per_client=2)
             db.refresh(pending_a)
             db.refresh(pending_b)
 
-            self.assertEqual(claimed, pending_b_id)
-            self.assertEqual(pending_a.status, "pending")
-            self.assertEqual(pending_b.status, "running")
+            self.assertEqual(claimed, pending_a_id)
+            self.assertEqual(pending_a.status, "running")
+            self.assertEqual(pending_b.status, "pending")
         finally:
             db.close()
 
@@ -1047,11 +1098,19 @@ class JobRecoveryTests(unittest.TestCase):
         db = Session()
         now = now_utc()
         try:
-            active_a = Job(
+            active_a1 = Job(
                 client_id="client-a",
                 mode="supplier_search",
                 status="running",
-                title="active-a",
+                title="active-a-1",
+                created_at=now - timedelta(minutes=210),
+                updated_at=now,
+            )
+            active_a2 = Job(
+                client_id="client-a",
+                mode="supplier_search",
+                status="running",
+                title="active-a-2",
                 created_at=now - timedelta(minutes=200),
                 updated_at=now,
             )
@@ -1072,13 +1131,13 @@ class JobRecoveryTests(unittest.TestCase):
                 title="pending-b",
                 created_at=now,
             )
-            db.add(active_a)
+            db.add_all([active_a1, active_a2])
             db.add_all(blocked_a)
             db.add(pending_b)
             db.commit()
             pending_b_id = pending_b.id
 
-            claimed = claim_next_job(db, worker_id="test-worker")
+            claimed = claim_next_job(db, worker_id="test-worker", max_running_jobs_per_client=2)
             db.refresh(pending_b)
 
             self.assertEqual(claimed, pending_b_id)

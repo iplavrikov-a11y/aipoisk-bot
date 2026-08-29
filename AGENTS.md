@@ -10,6 +10,11 @@
 - Tenderplan/API procurement access is an internal data source. Do not expose the Tenderplan name in customer-facing Telegram messages, DOCX/XLSX titles, output filenames, report text, or customer-visible errors. Name output files and report headings by the procurement subject/product when it is available.
 - Public website and cabinet copy must speak in client-result language: what the user can do and what decision/result they get. Do not sell with file-format labels like DOCX/XLSX, technical account details like "web balance" or "protected session", or exact free-run counters. If examples are needed, use professional procurement scenarios close to real work, not random artificial company names.
 
+## Strict Prohibition on Caching for Client Tasks
+
+- **NEVER use caching for task execution, supplier searches, product checks, company verifications, market data, or AI reasoning.**
+- Every client task MUST be executed fresh in real-time. Client specifications, technical requirements, and market conditions change dynamically (companies open/close, product lines discontinue, websites change). Reusing cached results is strictly forbidden because it yields outdated information.
+
 ## Public Site Contract
 
 - Tariffs and contacts are managed from the existing admin panel and exposed to the site through a safe public backend endpoint.
