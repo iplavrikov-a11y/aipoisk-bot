@@ -13,6 +13,7 @@ from .models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, Cl
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
+MODE_EXACT_PRODUCT = "exact_product"
 DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
 INTERNAL_JOB_PATTERN = re.compile(
@@ -452,7 +453,7 @@ def client_access_error(
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
     if not client.is_active:
         return "Доступ отключён. Свяжитесь с администратором."
-    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT}:
         return "Неизвестный режим обработки."
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)

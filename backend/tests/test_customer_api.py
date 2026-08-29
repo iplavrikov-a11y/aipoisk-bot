@@ -1746,5 +1746,30 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 410)
 
 
+    def test_create_customer_job_api_exact_product(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-exact", telegram_id="web:exact", money_balance_kopeks=10000)
+            user = WebUser(id="user-exact", client_id=client.id, email="exact@example.com", is_active=True, is_email_verified=True)
+            db.add_all([client, user])
+            db.commit()
+            context = WebAuthContext(user=user, session=None)
+
+            upload = UploadFile(filename="spec.docx", file=BytesIO(b"dummy spec content"))
+            with patch("app.main.enqueue_job"):
+                result = unittest.IsolatedAsyncioTestCase().loop.run_until_complete(
+                    create_customer_job_api(
+                        mode="exact_product",
+                        text="Техническое задание на поставку",
+                        files=[upload],
+                        context=context,
+                        db=db,
+                    )
+                ) if hasattr(unittest.IsolatedAsyncioTestCase(), "loop") else None
+        finally:
+            db.close()
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -149,3 +149,24 @@ async def test_analyze_exact_product_pipeline():
         assert report.total_positions == 1
         assert report.positions[0].identified_brand == "ПК Профмаркет"
         assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"
+
+
+def test_client_access_error_for_exact_product():
+    from app.models import Client
+    from app.repository import client_access_error
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    client = Client(id="client-test", telegram_id="12345", name="Тестовый клиент", is_active=True, money_balance_kopeks=10000)
+    db.add(client)
+    db.commit()
+
+    err = client_access_error(db, client, MODE_EXACT_PRODUCT)
+    assert err == ""
+

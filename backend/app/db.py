@@ -363,6 +363,28 @@ def _ensure_default_tariffs() -> None:
                     )
                 )
                 db.commit()
+
+            exact_product_exists = db.query(TariffPackage).filter(TariffPackage.kind == "exact_product").first()
+            if not exact_product_exists:
+                exact_defaults = [
+                    ("1 подбор точного товара", 1, 9900, 1),
+                    ("5 подборов точного товара", 5, 49000, 2),
+                    ("10 подборов точного товара", 10, 89000, 3),
+                    ("25 подборов точного товара", 25, 199000, 4),
+                    ("50 подборов точного товара", 50, 379000, 5),
+                ]
+                for name, units, price, order in exact_defaults:
+                    db.add(
+                        TariffPackage(
+                            kind="exact_product",
+                            name=name,
+                            units=units,
+                            price_kopeks=price,
+                            sort_order=order,
+                            is_active=True,
+                        )
+                    )
+                db.commit()
     finally:
         db.close()
 
