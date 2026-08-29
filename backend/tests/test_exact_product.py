@@ -151,22 +151,48 @@ async def test_analyze_exact_product_pipeline():
         assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"
 
 
-def test_client_access_error_for_exact_product():
-    from app.models import Client
-    from app.repository import client_access_error
+def test_process_exact_product_worker():
+    from app.models import Client, Job, SystemSettings, Base
+    from app.jobs import _process_exact_product
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from app.models import Base
+    import tempfile
 
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    db = Session()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = create_engine(f"sqlite:///{tmpdir}/test.db")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        db = Session()
 
-    client = Client(id="client-test", telegram_id="12345", name="Тестовый клиент", is_active=True, money_balance_kopeks=10000)
-    db.add(client)
-    db.commit()
+        client = Client(id="client-worker", telegram_id="12345", name="Тест", is_active=True, money_balance_kopeks=10000)
+        job = Job(id="job-worker-exact", client_id=client.id, mode="exact_product", status="running", progress=10)
+        settings = SystemSettings()
+        db.add_all([client, job, settings])
+        db.commit()
 
-    err = client_access_error(db, client, MODE_EXACT_PRODUCT)
-    assert err == ""
+        mock_llm_response = json.dumps({
+            "total_positions": 1,
+            "summary": "Тест",
+            "positions": [
+                {
+                    "name_in_tz": "Диск 128",
+                    "identified_brand": "ПК Профмаркет",
+                    "identified_model": "Диск 128х550",
+                    "manufacturer": "ООО ПК Профмаркет",
+                    "confidence": 0.95,
+                    "reasoning": "ТУ",
+                    "specs_breakdown": [],
+                    "alternative_brands": []
+                }
+            ]
+        })
+
+        with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_llm_response)), \
+             patch("app.jobs.job_dir", return_value=Path(tmpdir)):
+            _process_exact_product(db, job, settings, "Тестовое ТЗ")
+            assert job.status == "completed"
+            assert job.progress == 100
+            assert Path(job.result_path).exists()
+            assert Path(job.evidence_path).exists()
+
 

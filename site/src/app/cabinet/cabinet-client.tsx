@@ -164,7 +164,7 @@ const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime()
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
     id: "exact_product",
-    label: "Подбор точного товара",
+    label: "Подбор товара и аналогов",
     description: "выявление конкретной модели по ТЗ, Форма 2 и аналоги",
     icon: CheckCircle2,
   },
@@ -210,7 +210,7 @@ const modeCopy: Record<Scenario, {
     textLabel: "Или вставьте характеристики объекта закупки текстом",
     textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. ИИ определит скрытого производителя, сверит параметры и подберет 2–4 аналога.",
     hint: "ИИ выявит конкретного производителя, сверит соответствие параметров ТЗ, проверит реестр Минпромторга (ГИСП) и сформирует готовую Форму 2 (DOCX/XLSX).",
-    submit: "Запустить подбор точного товара",
+    submit: "Запустить подбор товара и аналогов",
   },
   supplier_search: {
     mode: "supplier_search",
@@ -396,6 +396,7 @@ function modeDisplayName(job: CustomerJob) {
       ? "Реестр в приоритете (Минпромторг)"
       : "Обычный поиск";
 
+  if (job.mode === "exact_product") return "Подбор товара и аналогов";
   if (job.mode === "procurement_report") return "Анализ документации";
   if (job.mode === "analysis_and_suppliers") return `Анализ + поиск (${policyLabel})`;
   return `Поиск поставщиков (${policyLabel})`;
@@ -1865,11 +1866,11 @@ export function CabinetClient() {
           return (
             <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
               <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор точного товара</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор товара и аналогов</span>
                 <div className="space-y-1 mt-0.5">
                   {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
                     ? session.tariff_groups.exact_product
-                    : [{ id: 'exact-1', name: '1 подбор точного товара', price_kopeks: 9900 }]
+                    : [{ id: 'exact-1', name: '1 подбор товара и аналогов', price_kopeks: 9900 }]
                   ).slice(0, 3).map((tariff: any) => (
                     <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
                       <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
@@ -2291,7 +2292,7 @@ export function CabinetClient() {
                         disabled={busy}
                       >
                         <RotateCcw size={15} aria-hidden="true" />
-                        <span>{job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
+                        <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
                       </button>
                     ) : null}
 

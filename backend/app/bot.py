@@ -287,7 +287,7 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
-            [InlineKeyboardButton(text="🎯 Подбор точного товара", callback_data="scenario:exact_product")],
+            [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
             [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
             [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
             [

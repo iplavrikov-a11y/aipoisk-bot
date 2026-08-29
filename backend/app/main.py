@@ -3053,6 +3053,10 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
         return "Поставщики"
     if kind == "quote_request":
         return "Запрос КП"
+    if kind == "exact_product_spec":
+        return "Форма 2 (DOCX)"
+    if kind == "exact_product_table":
+        return "Таблица аналогов (XLSX)"
     return "Файл"
 
 
@@ -3721,7 +3725,7 @@ def mode_label(mode: str) -> str:
         MODE_SUPPLIER_SEARCH: "Поиск поставщиков",
         MODE_PROCUREMENT_REPORT: "Анализ документации",
         MODE_ANALYSIS_AND_SUPPLIERS: "Анализ + поставщики",
-        MODE_EXACT_PRODUCT: "Точный товар и аналоги",
+        MODE_EXACT_PRODUCT: "Подбор товара и аналогов",
     }
     return labels.get(mode, "Задача")
 
