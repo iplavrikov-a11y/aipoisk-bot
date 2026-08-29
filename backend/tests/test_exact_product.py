@@ -2,7 +2,9 @@ import json
 import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
+
+import httpx
 
 from app.billing import (
     KIND_EXACT_PRODUCT,
@@ -20,6 +22,7 @@ from app.exact_product import (
     write_exact_product_docx,
     write_exact_product_xlsx,
     analyze_exact_product,
+    fetch_web_or_pdf_document,
 )
 from app.models import SystemSettings
 
@@ -39,6 +42,65 @@ def test_gisp_registry_search_live_or_fallback():
         assert match.registry_number or match.product
 
 
+@pytest.mark.asyncio
+async def test_fetch_web_or_pdf_document_html():
+    html_content = """
+    <html>
+        <head><title>Паспорт насоса КМ 80-65-160 | Завод Энергомаш</title></head>
+        <body>
+            <h1>Технические характеристики консольного насоса КМ 80-65-160</h1>
+            <table>
+                <tr><th>Параметр</th><th>Значение</th></tr>
+                <tr><td>Подача</td><td>50 м3/ч</td></tr>
+                <tr><td>Напор</td><td>32 м</td></tr>
+                <tr><td>Мощность электродвигателя</td><td>7.5 кВт</td></tr>
+            </table>
+        </body>
+    </html>
+    """
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_resp.url = httpx.URL("https://energomash.ru/nasos-km-80-65-160")
+    mock_resp.text = html_content
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    res = await fetch_web_or_pdf_document(mock_client, "https://energomash.ru/nasos-km-80-65-160")
+    assert res is not None
+    assert res["type"] == "html"
+    assert "ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК" in res["text"]
+    assert "Подача | 50 м3/ч" in res["text"]
+    assert "7.5 кВт" in res["text"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_or_pdf_document_pdf():
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((50, 50), "PASSPORT: Control Valve KR-50. Pressure 1.6 MPa. Temp 150 C.")
+    pdf_bytes = doc.write()
+    doc.close()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/pdf"}
+    mock_resp.url = httpx.URL("https://zavod-armatury.ru/docs/pasport-kr-50.pdf")
+    mock_resp.content = pdf_bytes
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    res = await fetch_web_or_pdf_document(mock_client, "https://zavod-armatury.ru/docs/pasport-kr-50.pdf")
+    assert res is not None
+    assert res["type"] == "pdf"
+    assert "PASSPORT" in res["text"]
+    assert "Control Valve" in res["text"]
+
+
 def test_docx_and_xlsx_generation():
     with TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -51,6 +113,7 @@ def test_docx_and_xlsx_generation():
             product_fact="128 мм",
             status="match",
             comment="Полное соответствие ГОСТ",
+            source_url="https://profmarket.ru/disk-128",
         )
         param2 = SpecParameterMatch(
             param_name="Материал ворса",
@@ -58,6 +121,14 @@ def test_docx_and_xlsx_generation():
             product_fact="первичный блок-сополимер пропилена",
             status="match",
             comment="Соответствует ТУ завода",
+            source_url="https://profmarket.ru/disk-128",
+        )
+        param_unverified = SpecParameterMatch(
+            param_name="Температура эксплуатации",
+            tz_requirement="от -45 до +50 С",
+            product_fact="В открытой документации не указано (требуется официальный паспорт завода)",
+            status="clarify",
+            comment="Параметр не подтвержден открытым паспортом завода",
         )
 
         alt_param1 = SpecParameterMatch(
@@ -82,6 +153,7 @@ def test_docx_and_xlsx_generation():
             confidence=0.95,
             notes="В наличии на складе в РФ, дешевле оригинала на ~12%",
             specs_breakdown=[alt_param1, alt_param2],
+            source_url="https://kominvest.ru/catalog/diski",
         )
 
         gisp = GispRegistryMatch(
@@ -99,9 +171,10 @@ def test_docx_and_xlsx_generation():
             manufacturer="ООО «ПК Профмаркет»",
             confidence=0.98,
             reasoning="По геометрическим размерам посадочного кольца и типу замка «зигзаг» ТЗ скопировано с ТУ ПК Профмаркет.",
-            specs_breakdown=[param1, param2],
+            specs_breakdown=[param1, param2, param_unverified],
             gisp_match=gisp,
             alternative_brands=[alt1],
+            source_url="https://profmarket.ru/disk-128",
         )
 
         report = ExactProductReport(
@@ -109,6 +182,11 @@ def test_docx_and_xlsx_generation():
             total_positions=1,
             positions=[pos],
             summary="Выявлен 1 конкретный товар, ТЗ составлено под ПК Профмаркет с вероятностью 98%.",
+            web_sources=["profmarket.ru", "kominvest.ru"],
+            verified_documents=[
+                {"title": "Паспорт диска щеточного ПК Профмаркет", "url": "https://profmarket.ru/docs/pasport.pdf", "type": "pdf"},
+                {"title": "Каталог уборочных дисков Коминвест", "url": "https://kominvest.ru/catalog/diski", "type": "html"},
+            ],
         )
 
         assert report.total_positions == 1
@@ -125,7 +203,7 @@ def test_docx_and_xlsx_generation():
 
 
 @pytest.mark.asyncio
-async def test_analyze_exact_product_pipeline():
+async def test_analyze_exact_product_pipeline_strict_grounding():
     mock_llm_response = json.dumps({
         "summary": "ТЗ скопировано под модель ПК Профмаркет",
         "positions": [
@@ -137,14 +215,22 @@ async def test_analyze_exact_product_pipeline():
                 "manufacturer": "ООО «ПК Профмаркет»",
                 "confidence": 0.95,
                 "reasoning": "Совпадение по ТУ",
+                "source_url": "https://profmarket.ru/disk-128",
                 "specs_breakdown": [
                     {
                         "param_name": "Диаметр",
                         "tz_requirement": "128 мм",
                         "product_fact": "128 мм",
                         "status": "match",
-                        "comment": "Точное совпадение",
-                    }
+                        "comment": "Подтверждено паспортом",
+                    },
+                    {
+                        "param_name": "Масса одного диска",
+                        "tz_requirement": "не более 0.85 кг",
+                        "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)",
+                        "status": "clarify",
+                        "comment": "Параметр не найден в открытом паспорте",
+                    },
                 ],
                 "alternative_brands": [
                     {
@@ -161,7 +247,7 @@ async def test_analyze_exact_product_pipeline():
                                 "status": "match",
                                 "comment": "Аналог соответствует",
                             }
-                        ]
+                        ],
                     }
                 ],
             }
@@ -174,8 +260,10 @@ async def test_analyze_exact_product_pipeline():
         assert report.total_positions == 1
         assert report.positions[0].identified_brand == "ПК Профмаркет"
         assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"
+        assert report.positions[0].specs_breakdown[0].status == "match"
+        assert report.positions[0].specs_breakdown[1].status == "clarify"
+        assert "В открытой документации не указано" in report.positions[0].specs_breakdown[1].product_fact
         assert len(report.positions[0].alternative_brands[0].specs_breakdown) == 1
-        assert report.positions[0].alternative_brands[0].specs_breakdown[0].param_name == "Диаметр"
 
 
 def test_process_exact_product_worker():
@@ -221,5 +309,3 @@ def test_process_exact_product_worker():
             assert job.progress == 100
             assert Path(job.result_path).exists()
             assert Path(job.evidence_path).exists()
-
-

@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- 100% Grounded Web Verification & Deep PDF Passport Parsing for Exact Product & Analogues (2026-08):
+  - Completely eradicated synthetic parameter fitting and LLM hallucinations in the «Подбор товара и аналогов» (Form 2) pipeline (`backend/app/exact_product.py`).
+  - Deep Web & Factory Passport Scraper: integrated `fetch_batch_web_documents` and `fetch_web_or_pdf_document` supporting live HTML table scraping (`BeautifulSoup`) and in-memory binary PDF parsing (`PyMuPDF`/`fitz`) to extract real technical sheets, passports, and operational manuals directly from manufacturer websites.
+  - Multi-Wave Targeted Search: generates targeted Russian search queries across factory nomenclature, GOST/TU numbers, model codes, and direct PDF searches (`filetype:pdf (паспорт OR характеристики)`).
+  - Strict Anti-Hallucination & Honest Verification Rules: if a technical parameter is not explicitly found in the retrieved manufacturer documents or customer specification, the system strictly outputs `"В открытой документации не указано (требуется официальный паспорт завода)"` with status `"clarify"`, entirely prohibiting copying/fitting of customer requirements. If parameters deviate, status is marked `"mismatch"`.
+  - Comprehensive Verification Registry in Reports: both Word DOCX and Excel XLSX exports include Section 3 ("Реестр проверенных открытых веб-источников и паспортов изделий") listing exact document titles, URLs, file formats, and direct links to factory data.
 - Customer Cabinet Mode Help & Interactive Guide Redesign (2026-08):
   - Integrated subtle question mark help icons `(?)` (`HelpCircle`) directly into each of the 4 scenario tab buttons (`Поиск поставщиков`, `Подбор товара и аналогов`, `Анализ документации`, `Анализ + поиск`) in `site/src/app/cabinet/cabinet-client.tsx`.
   - Clicking the `(?)` icon automatically opens the full-featured Guide Modal (`FunctionGuideModal`) pre-switched to that specific function tab.

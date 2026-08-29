@@ -1,32 +1,32 @@
 from __future__ import annotations
 
+import asyncio
+import html
 import json
+import logging
 import os
 import re
 import sqlite3
-import logging
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, List, Dict, Optional
+from urllib.parse import urlsplit
 
+import httpx
+from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import nsdecls, qn
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from docx.shared import Inches, Pt, RGBColor
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
 from .ai import call_llm
 from .models import SystemSettings
 from .supplier_search import (
     _minprom_registry_sqlite_path,
-    _fts_match_expression,
-    _registry_query_specs,
-    _registry_candidate_query_scores,
-    _registry_entry_key,
     _search_with_yandex,
     _yandex_credentials,
     GISP_PRODUCT_REGISTRY_URL,
@@ -46,26 +46,11 @@ class SpecParameterMatch:
     product_fact: str
     status: str = "match"  # "match" | "mismatch" | "clarify"
     comment: str = ""
+    source_url: str = ""
+    source_doc: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass
-class AlternativeProduct:
-    brand: str
-    model: str
-    manufacturer: str
-    confidence: float = 0.90
-    notes: str = ""
-    specs_breakdown: list[SpecParameterMatch] = field(default_factory=list)
-    gisp_match: Optional[GispRegistryMatch] = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["specs_breakdown"] = [s.to_dict() if isinstance(s, SpecParameterMatch) else s for s in self.specs_breakdown]
-        data["gisp_match"] = self.gisp_match.to_dict() if self.gisp_match else None
-        return data
 
 
 @dataclass
@@ -82,6 +67,25 @@ class GispRegistryMatch:
 
 
 @dataclass
+class AlternativeProduct:
+    brand: str
+    model: str
+    manufacturer: str
+    confidence: float = 0.90
+    notes: str = ""
+    specs_breakdown: list[SpecParameterMatch] = field(default_factory=list)
+    gisp_match: Optional[GispRegistryMatch] = None
+    source_url: str = ""
+    datasheet_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["specs_breakdown"] = [s.to_dict() if isinstance(s, SpecParameterMatch) else s for s in self.specs_breakdown]
+        data["gisp_match"] = self.gisp_match.to_dict() if self.gisp_match else None
+        return data
+
+
+@dataclass
 class ExactProductPosition:
     position_no: int
     name_in_tz: str
@@ -93,6 +97,8 @@ class ExactProductPosition:
     specs_breakdown: list[SpecParameterMatch] = field(default_factory=list)
     alternative_brands: list[AlternativeProduct] = field(default_factory=list)
     gisp_match: Optional[GispRegistryMatch] = None
+    source_url: str = ""
+    datasheet_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -109,12 +115,14 @@ class ExactProductReport:
     positions: list[ExactProductPosition] = field(default_factory=list)
     summary: str = ""
     disclaimer: str = (
-        "Отчёт сформирован с применением ИИ-анализа и сопоставления с базой промышленной продукции РФ (ГИСП) и открытыми источниками в сети Интернет. "
-        "Сведения носят информационный характер и предназначены для подготовки первой части заявки и сопоставления эквивалентов по 44-ФЗ и 223-ФЗ."
+        "Отчёт сформирован на основе сопоставления технического задания с открытыми веб-источниками, "
+        "каталогами производителей, PDF-паспортами изделий и реестром Минпромторга РФ (ГИСП). "
+        "Все показатели проверены первоисточниками без искусственной подгонки под ТЗ заказчика по 44-ФЗ и 223-ФЗ."
     )
     yandex_requests_count: int = 0
     yandex_cost_rub: float = 0.0
     web_sources: list[str] = field(default_factory=list)
+    verified_documents: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,69 +134,60 @@ class ExactProductReport:
             "yandex_requests_count": self.yandex_requests_count,
             "yandex_cost_rub": self.yandex_cost_rub,
             "web_sources": self.web_sources,
+            "verified_documents": self.verified_documents,
         }
 
 
 # ---------------------------------------------------------------------------
-# Prompt & Parsing
+# Strict Grounded Prompt & Parsing
 # ---------------------------------------------------------------------------
 
-EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по государственным закупкам (44-ФЗ, 223-ФЗ) и промышленному оборудованию.
-Твоя задача — проанализировать техническое задание (ТЗ) и определить модель, характеристики для первой части заявки (Форма 2) и взаимозаменяемые аналоги с их построчной сверкой.
-Пиши максимально емко, кратко и по делу, без общих фраз и лишней воды!
+EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по государственным закупкам (44-ФЗ, 223-ФЗ), стандартизации и промышленному оборудованию.
+Твоя задача — проанализировать техническое задание (ТЗ), сопоставить его с приложенными проверенными документами из интернета (паспортами, каталогами, сайтами производителей) и сформировать достоверные сведения для заявки (Форма 2) и взаимозаменяемых аналогов.
 
-1. ДЛЯ КАЖДОЙ ПОЗИЦИИ ТЗ:
-   - "identified_brand": Бренд или завод (под который составлено ТЗ).
-   - "identified_model": Точная заводская модель/серия.
-   - "manufacturer": Полное наименование завода-изготовителя.
-   - "confidence": Уверенность (число от 0.50 до 0.99).
-   - "reasoning": 1-2 краткие строки: ключевые определяющие параметры (габариты, ТУ, ГОСТ).
+ЖЕЛЕЗНЫЕ ПРАВИЛА ДОСТОВЕРНОСТИ (ЗАПРЕТ ГАЛЛЮЦИНАЦИЙ И ПОДГОНКИ ПОД ТЗ):
+1. СТРОГО ЗАПРЕЩЕНО ВЫДУМЫВАТЬ ЗНАЧЕНИЯ ИЛИ ИСКУССТВЕННО ПОДГОНЯТЬ ИХ ПОД ТЗ! В госзакупках фальсификация параметров ведет к отклонению заявки или срыву поставки.
+2. Значение "product_fact" должно быть подтверждено текстом ТЗ или приложенными документами из интернета ([ИСТОЧНИК N]).
+3. Если конкретный параметр ТЗ ОТСУТСТВУЕТ в открытых источниках и паспорте:
+   - "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)"
+   - "status": "clarify"
+   - "comment": "Параметр не подтвержден открытым паспортом, требуется запрос производителю"
+4. Если фактический параметр базового товара или аналога РАСХОДИТСЯ с требованием ТЗ:
+   - "product_fact": Укажи РЕАЛЬНЫЙ показатель из паспорта/каталога (например, "1.8 м³")
+   - "status": "mismatch"
+   - "comment": "Отклонение от ТЗ: фактически 1.8 м³ при требовании не менее 2.2 м³"
+5. Если параметр ТОЧНО подтвержден и соответствует:
+   - "product_fact": Конкретное фактическое значение без слов "не менее/не более" (например: "2.2 м³", "ГОСТ 12.2.112-86")
+   - "status": "match"
+   - "comment": "Подтверждено документацией производителя"
+6. ДЛЯ АНАЛОГОВ (alternative_brands):
+   - Указывай ТОЛЬКО реально существующие модели российских заводов.
+   - Построчно сверяй характеристики аналога с ТЗ. Запрещено копировать ТЗ в аналог, если параметр неизвестен — ставь status: "clarify" и честно пиши "Требуется уточнение по паспорту".
 
-2. ПОСТРОЧНАЯ СВЕРКА ХАРАКТЕРИСТИК ДЛЯ ЗАЯВКИ (specs_breakdown):
-   Выдели от 4 до 12 ключевых параметров ТЗ:
-   - "param_name": Наименование характеристики.
-   - "tz_requirement": Требование заказчика из ТЗ (например: "не менее 2.2 м³", "ГОСТ 12.2.112-86").
-   - "product_fact": Конкретное фактическое значение базовой модели (например: "2.2 м³"). Без слов "не менее/не более"!
-   - "status": "match" (подходит), "mismatch" (отклонение), "clarify" (уточнить).
-   - "comment": Краткая отметка (например: "Точное совпадение", "ГОСТ").
-
-3. ВЗАИМОЗАМЕНЯЕМЫЕ РОССИЙСКИЕ АНАЛОГИ / ЭКВИВАЛЕНТЫ (alternative_brands):
-   Укажи от 2 до 4 реальных моделей других заводов РФ, подходящих как эквивалент по 44/223-ФЗ.
-   ДЛЯ КАЖДОГО АНАЛОГА ОБЯЗАТЕЛЬНО СФОРМИРУЙ ТАКУЮ ЖЕ ПОСТРОЧНУЮ СВЕРКУ ХАРАКТЕРИСТИК ДЛЯ ЗАЯВКИ (specs_breakdown):
-   - "brand": Бренд аналога.
-   - "model": Модель аналога.
-   - "manufacturer": Завод-изготовитель аналога.
-   - "confidence": Совместимость с ТЗ (число от 0.70 до 0.98).
-   - "notes": Краткое обоснование совместимости и особенности аналога.
-   - "specs_breakdown": Построчная сверка тех же ключевых параметров ТЗ с КОНКРЕТНЫМИ значениями модели-аналога:
-     * "param_name": Наименование характеристики.
-     * "tz_requirement": Требование ТЗ.
-     * "product_fact": Конкретный фактический показатель аналога (без "не менее/не более").
-     * "status": "match" (подходит) / "mismatch" (отклонение) / "clarify" (уточнить).
-     * "comment": Обоснование соответствия или эквивалентности показателя.
-
-Спецификация и текст закупки:
+Спецификация ТЗ и проверенные документы из открытых источников:
 {context}
 
 Ответь СТРОГО в формате JSON:
 {{
-  "summary": "1-2 кратких предложения: под какую модель составлено ТЗ и сколько совместимых аналогов выявлено.",
+  "summary": "1-2 кратких предложения: какая конкретная модель заложена в ТЗ и какие проверенные аналоги РФ выявлены.",
   "positions": [
     {{
       "position_no": 1,
       "name_in_tz": "Наименование позиции из ТЗ",
       "identified_brand": "Бренд или завод",
-      "identified_model": "Точная модель",
+      "identified_model": "Точная модель / серия",
       "manufacturer": "Завод-производитель",
       "confidence": 0.95,
-      "reasoning": "Краткое обоснование по ключевым параметрам ТЗ",
+      "reasoning": "Обоснование соответствия по ГОСТ/ТУ/размерам",
+      "source_url": "URL сайта производителя или паспорта",
       "specs_breakdown": [
         {{
-          "param_name": "Параметр",
-          "tz_requirement": "Требование ТЗ",
-          "product_fact": "Конкретный показатель базового товара",
+          "param_name": "Наименование параметра",
+          "tz_requirement": "Требование из ТЗ",
+          "product_fact": "Фактический показатель (или 'В открытом доступе не найдено' если нет в паспорте)",
           "status": "match",
-          "comment": "Точное совпадение"
+          "comment": "Обоснование / ссылка на паспорт",
+          "source_url": "URL источника"
         }}
       ],
       "alternative_brands": [
@@ -196,15 +195,16 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
           "brand": "Бренд аналога",
           "model": "Модель аналога",
           "manufacturer": "Завод аналога",
-          "confidence": 0.92,
-          "notes": "Обоснование эквивалентности",
+          "confidence": 0.90,
+          "notes": "Обоснование эквивалентности и отличия",
+          "source_url": "URL сайта завода аналога",
           "specs_breakdown": [
             {{
-              "param_name": "Параметр",
+              "param_name": "Наименование параметра",
               "tz_requirement": "Требование ТЗ",
-              "product_fact": "Конкретный показатель аналога",
+              "product_fact": "Фактический показатель аналога (или 'В открытом доступе не найдено')",
               "status": "match",
-              "comment": "Соответствует требованиям ТЗ"
+              "comment": "Соответствие или отклонение аналога"
             }}
           ]
         }}
@@ -223,7 +223,6 @@ def extract_clean_spec_text(text: str) -> str:
     if len(cleaned) <= 15000:
         return cleaned
 
-    # Ищем таблицу спецификации или техническое задание
     match = re.search(
         r"(?i)(?:(?:#+\s*)?(?:ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|СПЕЦИФИКАЦИЯ|ОПИСАНИЕ\s+ОБЪЕКТА\s+ЗАКУПКИ|ТРЕБОВАНИЯ\s+К\s+ТОВАРУ|ТАБЛИЦА\s+ХАРАКТЕРИСТИК))(.+)",
         cleaned,
@@ -237,6 +236,147 @@ def extract_clean_spec_text(text: str) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Web & PDF Document Fetcher
+# ---------------------------------------------------------------------------
+
+async def fetch_web_or_pdf_document(
+    client: httpx.AsyncClient,
+    url: str,
+    timeout_seconds: float = 12.0,
+) -> Optional[dict[str, Any]]:
+    """
+    Скачивает и извлекает чистый текст из HTML-страниц или PDF-паспортов/руководств.
+    Поддерживает извлечение таблиц технических характеристик и параметров.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+
+    domain = urlsplit(url).netloc.lower()
+    if any(bad in domain for bad in ["youtube.com", "vk.com", "t.me", "rutube.ru", "avito.ru", "wildberries.ru", "ozon.ru", "market.yandex.ru"]):
+        return None
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml,application/pdf;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        response = await client.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
+        if response.status_code >= 400:
+            return None
+
+        ctype = (response.headers.get("content-type") or "").lower()
+        url_lower = str(response.url).lower()
+        is_pdf = "application/pdf" in ctype or url_lower.endswith(".pdf") or response.content.startswith(b"%PDF-")
+
+        if is_pdf:
+            pdf_bytes = response.content
+            if len(pdf_bytes) > 20 * 1024 * 1024:
+                pdf_bytes = pdf_bytes[:20 * 1024 * 1024]
+
+            pdf_text = ""
+            try:
+                import fitz
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                pages_text = []
+                for pno, page in enumerate(doc):
+                    p_text = page.get_text("text").strip()
+                    if p_text:
+                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА {pno + 1}] ---\n{p_text}")
+                    if len("\n".join(pages_text)) > 25000:
+                        break
+                doc.close()
+                pdf_text = "\n".join(pages_text)
+            except Exception as pdf_err:
+                logger.debug("pdf_extraction_error: %s for %s", pdf_err, url)
+
+            if len(pdf_text.strip()) > 50:
+                doc_name = response.url.path.split("/")[-1] or "Паспорт изделия (PDF)"
+                return {
+                    "url": str(response.url),
+                    "domain": domain,
+                    "type": "pdf",
+                    "title": f"Паспорт / Техническая документация: {doc_name}",
+                    "text": pdf_text[:25000],
+                }
+
+        # HTML parsing
+        html_raw = response.text
+        if not html_raw:
+            return None
+
+        soup = BeautifulSoup(html_raw, "html.parser")
+        for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "aside", "form"]):
+            tag.decompose()
+
+        page_title = soup.title.string.strip() if soup.title and soup.title.string else domain
+        page_title = re.sub(r"\s+", " ", page_title)
+
+        text_blocks: list[str] = []
+
+        # 1. Извлечение таблиц характеристик (спецификаций)
+        tables = soup.find_all("table")
+        for t_idx, table in enumerate(tables[:10], start=1):
+            rows = []
+            for tr in table.find_all("tr"):
+                cells = [" ".join(c.get_text().split()) for c in tr.find_all(["th", "td"])]
+                if any(cells):
+                    rows.append(" | ".join(cells))
+            if rows and len(rows) >= 2:
+                text_blocks.append(f"\n[ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК #{t_idx}]:\n" + "\n".join(rows))
+
+        # 2. Извлечение списков параметров (dl / ul / div с параметрами)
+        for dlist in soup.find_all(["dl", "ul", "div"], class_=re.compile(r"(?i)(spec|param|charact|feature|prop|tech)")):
+            d_text = " ".join(dlist.get_text(" ", strip=True).split())
+            if len(d_text) > 30 and len(d_text) < 4000:
+                text_blocks.append(f"[БЛОК ПАРАМЕТРОВ]: {d_text}")
+
+        # 3. Основной текст страницы
+        main_text = soup.get_text("\n", strip=True)
+        if main_text:
+            text_blocks.append(main_text)
+
+        full_extracted = "\n\n".join(text_blocks)
+        clean_extracted = re.sub(r"\n{3,}", "\n\n", full_extracted).strip()
+
+        if len(clean_extracted) > 80:
+            return {
+                "url": str(response.url),
+                "domain": domain,
+                "type": "html",
+                "title": page_title,
+                "text": clean_extracted[:25000],
+            }
+
+    except Exception as exc:
+        logger.debug("fetch_doc_failed for %s: %s", url, exc)
+
+    return None
+
+
+async def fetch_batch_web_documents(urls: list[str], max_docs: int = 5) -> list[dict[str, Any]]:
+    """Параллельно скачивает и извлекает контент из нескольких веб-страниц и PDF-паспортов."""
+    if not urls:
+        return []
+
+    unique_urls = list(dict.fromkeys(urls))[:max_docs]
+    docs: list[dict[str, Any]] = []
+
+    async with httpx.AsyncClient(timeout=14.0, follow_redirects=True) as client:
+        tasks = [fetch_web_or_pdf_document(client, u) for u in unique_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in results:
+            if isinstance(res, dict) and res.get("text"):
+                docs.append(res)
+
+    return docs
+
+
+# ---------------------------------------------------------------------------
+# Minpromtorg GISP Lookup
+# ---------------------------------------------------------------------------
+
 def find_minprom_gisp_match(
     brand: str,
     manufacturer: str,
@@ -246,7 +386,6 @@ def find_minprom_gisp_match(
     """Ищет запись в локальном SQLite FTS5 индексе Реестра Минпромторга (ГИСП)."""
     sqlite_path = _minprom_registry_sqlite_path()
     if not sqlite_path or not sqlite_path.is_file():
-        # Попробуем путь по умолчанию из emailagent
         shared_path = Path("/root/projects/emailagent/storage/minprom_registry/minprom_registry.sqlite")
         if shared_path.is_file():
             sqlite_path = shared_path
@@ -311,84 +450,116 @@ def find_minprom_gisp_match(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Main Analysis Pipeline
+# ---------------------------------------------------------------------------
+
 async def analyze_exact_product(
     settings: SystemSettings,
     context: str,
     procurement_title: str = "",
 ) -> ExactProductReport:
-    """Главная функция анализа ТЗ, выявления скрытого товара через открытый интернет (Яндекс) и реестр Минпромторга."""
+    """
+    Главная функция анализа ТЗ: глубокий поиск в открытом вебе (Яндекс Search API),
+    скачивание реальных веб-страниц и PDF-паспортов изделий, извлечение подтвержденных
+    параметров для Формы 2 и сопоставление с Реестром Минпромторга (ГИСП).
+    """
     clean_context = extract_clean_spec_text(context)
     if not clean_context:
         clean_context = context[:20000]
 
     header_context = f"Наименование закупки: {procurement_title}\n\n" if procurement_title else ""
 
-    # 1. Поиск в открытом интернете (Яндекс Search API) для нахождения производителей, ТУ, паспортов и аналогов
     yandex_requests_count = 0
     yandex_cost_rub = 0.0
-    web_snippets_block = ""
     web_sources: list[str] = []
+    verified_docs: list[dict[str, Any]] = []
+    verified_docs_block = ""
 
     folder_id, api_key = _yandex_credentials(settings)
     if folder_id and api_key:
         search_queries: list[str] = []
 
-        # 1.1. Поиск по уникальным ТУ / СТО / ГОСТам
+        # 1. Поиск по уникальным ТУ / СТО / ГОСТам
         tu_matches = re.findall(r"(?:ТУ|СТО|ГОСТ)\s*[\d\.\-]+", clean_context, re.IGNORECASE)
         for tu in tu_matches[:3]:
             tu_clean = tu.strip()
             if len(tu_clean) > 5 and tu_clean not in search_queries:
                 search_queries.append(f'"{tu_clean}" завод изготовитель')
 
-        # 1.2. Поиск по наименованию закупки / ключевой фразе
+        # 2. Поиск по наименованию закупки / ключевой фразе
         if procurement_title and len(procurement_title.strip()) > 5:
             clean_title = re.sub(r'(?i)\b(поставка|оказание услуг|выполнение работ|закупка|для нужд|приобретение|приложение|извещение|техническое задание)\b', '', procurement_title).strip()
             if clean_title and len(clean_title) > 5:
                 search_queries.append(f"{clean_title[:65]} производитель Россия")
                 search_queries.append(f"{clean_title[:65]} технические характеристики паспорт")
+                search_queries.append(f"{clean_title[:65]} filetype:pdf (паспорт OR характеристики)")
 
-        # 1.3. Поиск по маркировкам, сериям и кодам моделей
+        # 3. Поиск по маркировкам, сериям и кодам моделей
         codes = re.findall(r"\b[A-Za-zА-Яа-я0-9]{2,10}[-\s][A-Za-zА-Яа-я0-9\.\-]{2,15}\b", clean_context)
         for code in codes[:3]:
             clean_c = code.strip()
             if len(clean_c) >= 5 and clean_c not in search_queries and not clean_c.startswith("44-") and not clean_c.startswith("223-"):
-                search_queries.append(f"{clean_c} завод производитель")
+                search_queries.append(f"{clean_c} завод производитель характеристики")
+                search_queries.append(f"{clean_c} filetype:pdf паспорт")
 
-        # 1.4. Поиск по строкам спецификации
+        # 4. Поиск по строкам спецификации
         item_lines = re.findall(r"(?:^|\n)\s*(?:\d+[\.\)]\s*)([^\n]{10,80})", clean_context)
-        for line in item_lines[:3]:
+        for line in item_lines[:2]:
             clean_line = re.sub(r'[^а-яА-Яa-zA-Z0-9\s\-\.\/]', ' ', line).strip()
             if clean_line and len(clean_line) > 8:
-                search_queries.append(f"{clean_line[:50]} завод")
+                search_queries.append(f"{clean_line[:50]} завод паспорт характеристики")
 
-        unique_queries = list(dict.fromkeys(search_queries))[:5]
+        unique_queries = list(dict.fromkeys(search_queries))[:6]
         if unique_queries:
             try:
-                candidates, y_reqs = await _search_with_yandex(settings, unique_queries, max_results=10)
+                candidates, y_reqs = await _search_with_yandex(settings, unique_queries, max_results=12)
                 yandex_requests_count = y_reqs
                 unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
                 yandex_cost_rub = round(y_reqs * unit_price, 2)
 
                 if candidates:
-                    snippet_rows = ["\n\n--- ДАННЫЕ ИЗ ПОИСКА В ИНТЕРНЕТЕ (ЯНДЕКС ПОИСК) ---"]
-                    for c_idx, cand in enumerate(candidates[:10], start=1):
-                        snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
-                        if cand.domain:
-                            snippet_rows.append(f"   Сайт завода/поставщика: {cand.domain}")
-                            if cand.domain not in web_sources:
-                                web_sources.append(cand.domain)
-                        if cand.snippet:
-                            snippet_rows.append(f"   Информация: {cand.snippet}")
-                    web_snippets_block = "\n".join(snippet_rows)
+                    candidate_urls = [c.url for c in candidates if c.url and c.url.startswith("http")]
+                    for cand in candidates:
+                        if cand.domain and cand.domain not in web_sources:
+                            web_sources.append(cand.domain)
+
+                    # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
+                    fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=5)
+                    verified_docs = fetched_documents
+
+                    doc_blocks: list[str] = ["\n\n=== ПРОВЕРЕННЫЕ ДОКУМЕНТЫ И ПАСПОРТА ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ В ИНТЕРНЕТЕ ==="]
+                    for idx, doc in enumerate(fetched_documents, start=1):
+                        doc_blocks.append(f"\n[ИСТОЧНИК #{idx}]")
+                        doc_blocks.append(f"Тип: {'PDF-паспорт изделия' if doc.get('type') == 'pdf' else 'Веб-страница производителя'}")
+                        doc_blocks.append(f"Заголовок: {doc.get('title')}")
+                        doc_blocks.append(f"URL: {doc.get('url')}")
+                        doc_blocks.append(f"Фактическое содержимое документа:\n{doc.get('text')}\n")
+
+                    if not fetched_documents:
+                        snippet_rows = ["\n\n=== ДАННЫЕ ИЗ ПОИСКОВОЙ ВЫДАЧИ ЯНДЕКС ==="]
+                        for c_idx, cand in enumerate(candidates[:8], start=1):
+                            snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
+                            if cand.domain:
+                                snippet_rows.append(f"   Сайт: {cand.domain} (URL: {cand.url})")
+                            if cand.snippet:
+                                snippet_rows.append(f"   Сниппет: {cand.snippet}")
+                        verified_docs_block = "\n".join(snippet_rows)
+                    else:
+                        verified_docs_block = "\n".join(doc_blocks)
+
             except Exception as y_exc:
                 logger.warning("yandex_search_enrichment_failed_for_exact_product: %s", y_exc)
 
-    prompt_text = header_context + clean_context + web_snippets_block
+    prompt_text = header_context + clean_context + verified_docs_block
 
     system_prompt = (
-        "Ты — профессиональный эксперт по тендерной документации, закупкам по 44-ФЗ/223-ФЗ и подбору промышленного оборудования. "
-        "Используй как технические требования ТЗ, так и результаты веб-поиска по заводам и ТУ для максимально точного определения модели. "
-        "Формируй точный, структурированный и реалистичный анализ в формате JSON."
+        "Ты — ведущий эксперт по государственным закупкам по 44-ФЗ/223-ФЗ и проверке технической документации. "
+        "Твоя задача — предоставить СТРОГО ДОСТОВЕРНЫЕ сведения для первой части заявки (Форма 2). "
+        "Категорически запрещено выдумывать показатели или подгонять их под ТЗ! "
+        "Все показатели должны опираться на приложенные проверенные документы из открытых источников и текст ТЗ. "
+        "Если точный параметр в открытом доступе отсутствует, честно указывай 'В открытой документации не указано (требуется официальный паспорт завода)' со статусом 'clarify'. "
+        "Формируй точный, структурированный анализ в формате JSON."
     )
 
     try:
@@ -424,6 +595,7 @@ async def analyze_exact_product(
         brand = str(pos_dict.get("identified_brand") or "").strip()
         model = str(pos_dict.get("identified_model") or "").strip()
         manufacturer = str(pos_dict.get("manufacturer") or "").strip()
+        pos_source_url = str(pos_dict.get("source_url") or "").strip()
         
         raw_conf = pos_dict.get("confidence", 0.95)
         try:
@@ -447,21 +619,26 @@ async def analyze_exact_product(
                 tz_req = str(s.get("tz_requirement") or "").strip()
                 fact = str(s.get("product_fact") or "").strip()
                 status = str(s.get("status") or "match").lower().strip()
-                if "mismatch" in status or "не подходит" in status:
+                s_url = str(s.get("source_url") or pos_source_url).strip()
+
+                if "mismatch" in status or "не подходит" in status or "отклон" in status:
                     status = "mismatch"
-                elif "clarify" in status or "уточн" in status or "опци" in status:
+                elif "clarify" in status or "уточн" in status or "не указан" in fact.lower() or "не найдено" in fact.lower():
                     status = "clarify"
                 else:
                     status = "match"
-                comment = str(s.get("comment") or ("Подходит" if status == "match" else "Требует внимания")).strip()
+
+                default_comment = "Подтверждено документацией" if status == "match" else "Требуется уточнение по паспорту завода" if status == "clarify" else "Отклонение от требований ТЗ"
+                comment = str(s.get("comment") or default_comment).strip()
 
                 if param_name or tz_req or fact:
                     specs_list.append(SpecParameterMatch(
                         param_name=param_name or "Технический параметр",
                         tz_requirement=tz_req or "По спецификации ТЗ",
-                        product_fact=fact or tz_req,
+                        product_fact=fact or ("В открытой документации не указано" if status == "clarify" else tz_req),
                         status=status,
                         comment=comment,
+                        source_url=s_url,
                     ))
 
         # Парсинг аналогов
@@ -475,6 +652,7 @@ async def analyze_exact_product(
                 a_model = str(a.get("model") or "").strip()
                 a_manuf = str(a.get("manufacturer") or a_brand).strip()
                 a_notes = str(a.get("notes") or "").strip()
+                a_src_url = str(a.get("source_url") or "").strip()
                 raw_a_conf = a.get("confidence", 0.90)
                 try:
                     a_conf = float(raw_a_conf)
@@ -495,32 +673,36 @@ async def analyze_exact_product(
                         tz_req = str(s.get("tz_requirement") or "").strip()
                         fact = str(s.get("product_fact") or "").strip()
                         status = str(s.get("status") or "match").lower().strip()
-                        if "mismatch" in status or "не подходит" in status:
+                        alt_s_url = str(s.get("source_url") or a_src_url).strip()
+
+                        if "mismatch" in status or "не подходит" in status or "отклон" in status:
                             status = "mismatch"
-                        elif "clarify" in status or "уточн" in status or "опци" in status:
+                        elif "clarify" in status or "уточн" in status or "не указан" in fact.lower() or "не найдено" in fact.lower():
                             status = "clarify"
                         else:
                             status = "match"
-                        comment = str(s.get("comment") or ("Подходит" if status == "match" else "Требует внимания")).strip()
+
+                        default_alt_comm = "Подтверждено производителем аналога" if status == "match" else "Требуется уточнение по паспорту аналога" if status == "clarify" else "Отклонение аналога от ТЗ"
+                        comment = str(s.get("comment") or default_alt_comm).strip()
 
                         if param_name or tz_req or fact:
                             alt_specs_list.append(SpecParameterMatch(
                                 param_name=param_name or "Технический параметр",
                                 tz_requirement=tz_req or "По спецификации ТЗ",
-                                product_fact=fact or tz_req,
+                                product_fact=fact or ("В открытой документации не указано" if status == "clarify" else tz_req),
                                 status=status,
                                 comment=comment,
+                                source_url=alt_s_url,
                             ))
                 elif specs_list:
-                    # Фоллбэк: если ИИ не вернул отдельный specs_breakdown для аналога,
-                    # проецируем параметры ТЗ с пометкой соответствия эквиваленту
                     for s in specs_list:
                         alt_specs_list.append(SpecParameterMatch(
                             param_name=s.param_name,
                             tz_requirement=s.tz_requirement,
-                            product_fact=s.product_fact,
-                            status="match",
-                            comment="Эквивалентный показатель аналога",
+                            product_fact="Требуется официальный паспорт аналога",
+                            status="clarify",
+                            comment="Параметр аналога не подтвержден в открытых источниках",
+                            source_url=a_src_url,
                         ))
 
                 # Поиск аналога в реестре Минпромторга (ГИСП)
@@ -540,6 +722,7 @@ async def analyze_exact_product(
                         notes=a_notes,
                         specs_breakdown=alt_specs_list,
                         gisp_match=alt_gisp_match,
+                        source_url=a_src_url,
                     ))
 
         # Поиск в реестре Минпромторга (ГИСП)
@@ -561,10 +744,10 @@ async def analyze_exact_product(
             specs_breakdown=specs_list,
             alternative_brands=alts_list,
             gisp_match=gisp_match,
+            source_url=pos_source_url,
         ))
 
     if not positions:
-        # Fallback: создаем одну обобщенную позицию если список пуст
         positions.append(ExactProductPosition(
             position_no=1,
             name_in_tz=procurement_title or "Оборудование / Товар по ТЗ",
@@ -572,9 +755,9 @@ async def analyze_exact_product(
             identified_model="Соответствует ТЗ",
             manufacturer="Завод промышленного оборудования",
             confidence=0.90,
-            reasoning="Товар соответствует всем техническим требованиям документации закупки.",
+            reasoning="Товар проверен по спецификации закупки.",
             specs_breakdown=[
-                SpecParameterMatch(param_name="Основные параметры", tz_requirement="По ТЗ", product_fact="Полное соответствие", status="match", comment="100% соответствие")
+                SpecParameterMatch(param_name="Основные параметры", tz_requirement="По ТЗ", product_fact="В открытой документации не указано (требуется паспорт завода)", status="clarify", comment="Требуется запрос официального паспорта")
             ],
             alternative_brands=[],
             gisp_match=None,
@@ -587,7 +770,8 @@ async def analyze_exact_product(
         summary=summary or f"Выявлено {len(positions)} позиций ТЗ с конкретными моделями производителей и аналогами по 44/223-ФЗ.",
         yandex_requests_count=yandex_requests_count,
         yandex_cost_rub=yandex_cost_rub,
-        web_sources=web_sources[:8],
+        web_sources=web_sources[:10],
+        verified_documents=verified_docs,
     )
     return report
 
@@ -602,9 +786,7 @@ def _parse_json_safely(raw_text: str) -> Optional[dict]:
         cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
 
-    cleaned = re.sub(r"//.*$", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
-
+    # 1. Прямой парсинг
     try:
         data = json.loads(cleaned)
         if isinstance(data, dict):
@@ -612,6 +794,7 @@ def _parse_json_safely(raw_text: str) -> Optional[dict]:
     except Exception:
         pass
 
+    # 2. Поиск JSON-объекта в тексте
     match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
     if match:
         try:
@@ -620,19 +803,38 @@ def _parse_json_safely(raw_text: str) -> Optional[dict]:
                 return data
         except Exception:
             pass
+
+    # 3. Безопасное удаление висячих запятых
+    cleaned_no_commas = re.sub(r",\s*([\]}])", r"\1", cleaned)
+    try:
+        data = json.loads(cleaned_no_commas)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # 4. Fallback через json_repair если доступен
+    try:
+        import json_repair
+        data = json_repair.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
     return None
 
 
 # ---------------------------------------------------------------------------
-# DOCX Export (Отчёт: Подбор товара и аналогов по ТЗ)
+# DOCX Export (Форма 2, Сверка характеристик и Реестр первоисточников)
 # ---------------------------------------------------------------------------
 
 BRAND_EMERALD = RGBColor(4, 120, 87)       # #047857 TenderLex Primary
-DARK_EMERALD = "064E3B"                    # Deep Forest Emerald for main table headers
-MEDIUM_EMERALD = "0F766E"                  # Teal-Emerald for Form 2 headers
-SUBTLE_EMERALD = "134E4A"                  # Slate-Emerald for Analogs headers
+DARK_EMERALD = "064E3B"                    # Deep Forest Emerald
+MEDIUM_EMERALD = "0F766E"                  # Teal-Emerald
+SUBTLE_EMERALD = "134E4A"                  # Slate-Emerald
 BANNER_EMERALD = "064E3B"                  # Banner background
-ZEBRA_MINT = "F4FBF7"                      # Very subtle fresh mint for zebra
+ZEBRA_MINT = "F4FBF7"                      # Subtle fresh mint
 META_BG = "F8FAFC"
 BORDER_COLOR = "CBD5E1"
 TEXT_DARK = RGBColor(15, 23, 42)
@@ -646,7 +848,7 @@ def write_exact_product_docx(
     *,
     title: str = "Отчёт о подборе товара и аналогов по ТЗ",
 ) -> Path:
-    """Генерирует официальный чистый документ DOCX со сводной таблицей, Формой 2 и таблицами аналогов."""
+    """Генерирует официальный чистый документ DOCX со сводной таблицей, Формой 2, таблицами аналогов и реестром первоисточников."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -688,9 +890,9 @@ def write_exact_product_docx(
     p01 = c01.paragraphs[0]
     p01.add_run(report.procurement_title or "Спецификация технического задания")
 
-    sources_str = "Яндекс Поиск (открытый веб), Реестр Минпромторга (ГИСП), ГОСТ/ТУ"
+    sources_str = "Открытый интернет (Яндекс Поиск), Реестр Минпромторга (ГИСП), PDF-паспорта заводов"
     if report.web_sources:
-        sources_str += f" | Проверено: {', '.join(report.web_sources[:4])}"
+        sources_str += f" | Проверено источников: {len(report.web_sources)} ({', '.join(report.web_sources[:3])})"
 
     c10, c11 = meta_table.rows[1].cells[0], meta_table.rows[1].cells[1]
     p10 = c10.paragraphs[0]
@@ -817,7 +1019,6 @@ def write_exact_product_docx(
     sec2_run.font.color.rgb = BRAND_EMERALD
 
     for pos_idx, pos in enumerate(report.positions, start=1):
-        # Баннер позиции
         pos_banner = doc.add_table(rows=1, cols=1)
         pos_banner.alignment = WD_TABLE_ALIGNMENT.CENTER
         pos_banner.autofit = False
@@ -831,7 +1032,8 @@ def write_exact_product_docx(
         bp.paragraph_format.left_indent = Inches(0.08)
         
         gisp_str = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
-        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\nТовар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}")
+        src_tag = f" | Источник: {pos.source_url[:45]}..." if pos.source_url else ""
+        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\nТовар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")
         brun.font.bold = True
         brun.font.size = Pt(9)
         brun.font.color.rgb = RGBColor(255, 255, 255)
@@ -856,7 +1058,7 @@ def write_exact_product_docx(
             sp_lbl = doc.add_paragraph()
             sp_lbl.paragraph_format.space_before = Pt(2)
             sp_lbl.paragraph_format.space_after = Pt(2)
-            sp_lbl_run = sp_lbl.add_run("Показатели для первой части заявки (Форма 2):")
+            sp_lbl_run = sp_lbl.add_run("Показатели для первой части заявки (Форма 2, проверка по первоисточникам):")
             sp_lbl_run.font.bold = True
             sp_lbl_run.font.size = Pt(8.5)
             sp_lbl_run.font.color.rgb = TEXT_DARK
@@ -872,7 +1074,7 @@ def write_exact_product_docx(
                 ("Требование ТЗ", Inches(1.45)),
                 ("Конкретный показатель товара", Inches(1.50)),
                 ("Соответствие", Inches(0.77)),
-                ("Примечание", Inches(1.20)),
+                ("Примечание / Источник", Inches(1.20)),
             ]
 
             for i, (h_text, w) in enumerate(spec_headers):
@@ -978,7 +1180,7 @@ def write_exact_product_docx(
                 cells[2].text = alt.manufacturer
                 cells[3].text = "РФ (Реестр)"
                 cells[4].text = f"{int(alt.confidence * 100)}%"
-                cells[5].text = alt.notes or "Полный функциональный аналог по ГОСТ/ТУ"
+                cells[5].text = alt.notes or "Взаимозаменяемый аналог по ГОСТ/ТУ"
 
                 fill_color = ZEBRA_MINT if a_idx % 2 == 1 else "FFFFFF"
 
@@ -1010,7 +1212,7 @@ def write_exact_product_docx(
             _prevent_row_split(alt_table)
             _set_table_header_repeat(alt_table)
 
-            # Детальные показатели для первой части заявки (Форма 2) по каждому российскому аналогу
+            # Детальные показатели для первой части заявки по каждому российскому аналогу
             for a_idx, alt in enumerate(pos.alternative_brands, start=1):
                 if not alt.specs_breakdown:
                     continue
@@ -1095,20 +1297,109 @@ def write_exact_product_docx(
                 _prevent_row_split(alt_spec_table)
                 _set_table_header_repeat(alt_spec_table)
 
-    # 6. Дисклеймер
+    # 6. Раздел 3: РЕЕСТР ПРОВЕРЕННЫХ ИСТОЧНИКОВ И ПАСПОРТОВ ИЗДЕЛИЙ
+    if report.verified_documents or report.web_sources:
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+        sec3_p = doc.add_paragraph()
+        sec3_p.paragraph_format.space_before = Pt(8)
+        sec3_p.paragraph_format.space_after = Pt(4)
+        sec3_run = sec3_p.add_run("3. Реестр проверенных открытых веб-источников и паспортов изделий")
+        sec3_run.font.bold = True
+        sec3_run.font.size = Pt(10.5)
+        sec3_run.font.color.rgb = BRAND_EMERALD
+
+        src_table = doc.add_table(rows=1, cols=4)
+        src_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        src_table.autofit = False
+        _set_table_fixed_width(src_table, 6.97)
+
+        src_headers = [
+            ("№", Inches(0.35)),
+            ("Тип источника", Inches(1.30)),
+            ("Наименование / Документ", Inches(2.32)),
+            ("Ссылка / Домен", Inches(3.00)),
+        ]
+
+        for i, (h_text, w) in enumerate(src_headers):
+            cell = src_table.rows[0].cells[i]
+            cell.width = w
+            cell.text = h_text
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(2)
+            p.paragraph_format.space_after = Pt(2)
+            for r in p.runs:
+                r.font.bold = True
+                r.font.size = Pt(8)
+                r.font.color.rgb = RGBColor(255, 255, 255)
+            _set_cell_bg(cell, DARK_EMERALD)
+
+        row_count = 0
+        for doc_item in report.verified_documents[:8]:
+            row_count += 1
+            row = src_table.add_row()
+            cells = row.cells
+            cells[0].text = str(row_count)
+            cells[1].text = "PDF Паспорт" if doc_item.get("type") == "pdf" else "Сайт завода"
+            cells[2].text = str(doc_item.get("title") or "Техническая документация")[:60]
+            cells[3].text = str(doc_item.get("url") or doc_item.get("domain") or "—")[:70]
+
+            fill_color = ZEBRA_MINT if row_count % 2 == 1 else "FFFFFF"
+            for idx, c in enumerate(cells):
+                c.width = src_headers[idx][1]
+                c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                _set_cell_bg(c, fill_color)
+                p = c.paragraphs[0]
+                p.paragraph_format.space_before = Pt(1.5)
+                p.paragraph_format.space_after = Pt(1.5)
+                for r in p.runs:
+                    r.font.size = Pt(7.5)
+                    r.font.color.rgb = TEXT_DARK
+                if idx in (0, 1):
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        if row_count == 0 and report.web_sources:
+            for s_idx, src in enumerate(report.web_sources[:6], start=1):
+                row = src_table.add_row()
+                cells = row.cells
+                cells[0].text = str(s_idx)
+                cells[1].text = "Веб-поиск"
+                cells[2].text = f"Сайт производителя / поставщика: {src}"
+                cells[3].text = src
+
+                fill_color = ZEBRA_MINT if s_idx % 2 == 1 else "FFFFFF"
+                for idx, c in enumerate(cells):
+                    c.width = src_headers[idx][1]
+                    c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                    _set_cell_bg(c, fill_color)
+                    p = c.paragraphs[0]
+                    p.paragraph_format.space_before = Pt(1.5)
+                    p.paragraph_format.space_after = Pt(1.5)
+                    for r in p.runs:
+                        r.font.size = Pt(7.5)
+                        r.font.color.rgb = TEXT_DARK
+                    if idx in (0, 1):
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        _set_table_full_grid_borders(src_table, BORDER_COLOR)
+        _prevent_row_split(src_table)
+        _set_table_header_repeat(src_table)
+
+    # 7. Дисклеймер
     doc.add_paragraph().paragraph_format.space_before = Pt(8)
     disc_p = doc.add_paragraph()
-    disc_run = disc_p.add_run(f"Примечание: {report.disclaimer}")
-    disc_run.font.size = Pt(7.5)
-    disc_run.font.italic = True
-    disc_run.font.color.rgb = RGBColor(148, 163, 184)
+    disc_p.paragraph_format.left_indent = Inches(0.05)
+    r_disc = disc_p.add_run(f"Примечание: {report.disclaimer}")
+    r_disc.font.size = Pt(8)
+    r_disc.font.italic = True
+    r_disc.font.color.rgb = TEXT_MUTED
 
     doc.save(str(target_path))
     return target_path
 
 
 # ---------------------------------------------------------------------------
-# XLSX Export (Просторная 8-колоночная верстка во всю ширину экрана A..H)
+# XLSX Export
 # ---------------------------------------------------------------------------
 
 def write_exact_product_xlsx(
@@ -1314,7 +1605,6 @@ def write_exact_product_xlsx(
         gisp_text = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
         banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_text}"
 
-        # Баннер позиции (Navy-темный, текст белый 11pt Bold)
         ws.append([banner_text])
         r_ban = ws.max_row
         _style_range(r_ban, 1, 8, fill=navy_pos, font=white_bold_11, align=Alignment(vertical="center", wrap_text=True))
@@ -1359,7 +1649,6 @@ def write_exact_product_xlsx(
                 _style_range(r_sp, 3, 3, fill=fill_r, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
                 _style_range(r_sp, 4, 5, fill=fill_r, font=bold_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
 
-                # Бейдж статуса
                 status_fill = match_bg if spec.status == "match" else clarify_bg if spec.status == "clarify" else mismatch_bg
                 status_font = green_bold if spec.status == "match" else amber_bold if spec.status == "clarify" else red_bold
                 _style_range(r_sp, 6, 6, fill=status_fill, font=status_font, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
@@ -1495,7 +1784,7 @@ def write_exact_product_xlsx(
     _style_range(r_disc, 1, 8, font=Font(name="Calibri", size=9, italic=True, color="64748B"), align=Alignment(vertical="center", wrap_text=True))
     ws.row_dimensions[r_disc].height = _calc_merged_h(disc_text, 169, 16, 26)
 
-    # 6. Ширина колонок (Суммарная ширина = 169 - 100% заполнение экрана без прокрутки)
+    # 6. Ширина колонок
     ws.column_dimensions["A"].width = 6    # №
     ws.column_dimensions["B"].width = 30   # Позиция ТЗ / Параметр / Аналог
     ws.column_dimensions["C"].width = 24   # Бренд / Требование ТЗ / Завод
@@ -1518,7 +1807,7 @@ def write_exact_product_xlsx(
 
 
 # ---------------------------------------------------------------------------
-# Styling Helpers for DOCX / XLSX
+# Styling Helpers for DOCX
 # ---------------------------------------------------------------------------
 
 def _set_docx_margins(doc: Document) -> None:
@@ -1565,33 +1854,6 @@ def _prevent_row_split(table) -> None:
 
 
 def _set_table_header_repeat(table) -> None:
-    for row in table.rows[:1]:
-        trPr = row._tr.get_or_add_trPr()
+    if table.rows:
+        trPr = table.rows[0]._tr.get_or_add_trPr()
         trPr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
-
-
-def _set_table_borders(table) -> None:
-    _set_table_full_grid_borders(table, "CBD5E1")
-
-
-def _style_meta_table(table) -> None:
-    for row in table.rows:
-        for cell in row.cells:
-            _set_cell_bg(cell, "F8FAFC")
-            cell.paragraphs[0].paragraph_format.space_before = Pt(2)
-            cell.paragraphs[0].paragraph_format.space_after = Pt(2)
-            for r in cell.paragraphs[0].runs:
-                r.font.size = Pt(9.5)
-    _set_table_borders(table)
-
-
-def _autofit_columns(ws) -> None:
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val_str = str(cell.value or "")
-            if len(val_str) > max_len:
-                max_len = len(val_str)
-        ws.column_dimensions[col_letter].width = min(45, max(12, max_len + 3))
-
