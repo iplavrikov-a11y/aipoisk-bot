@@ -113,7 +113,7 @@ def billing_kind_label(kind: str) -> str:
     if kind == KIND_SUPPLIER_SEARCH_EXTRA:
         return "Добор поставщиков"
     if kind == KIND_EXACT_PRODUCT:
-        return "Точный товар и аналоги"
+        return "Подбор товара и аналогов"
     return "Поставщики"
 
 

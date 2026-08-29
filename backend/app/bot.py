@@ -404,7 +404,7 @@ def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
     elif pending.mode == MODE_PROCUREMENT_REPORT:
         action_text = "▶️ Запустить анализ закупки"
     elif pending.mode == MODE_EXACT_PRODUCT:
-        action_text = "▶️ Найти точный товар и аналоги"
+        action_text = "▶️ Запустить подбор"
     else:
         action_text = "▶️ Запустить анализ и поиск"
     rows = [
@@ -448,10 +448,10 @@ def _report_scenario_text() -> str:
 
 def _exact_product_scenario_text() -> str:
     return (
-        "🎯 Подбор точного товара и аналогов\n\n"
-        "ИИ определит под какую конкретную модель и завод составлено ТЗ, "
-        "составит таблицу показателей (Форма 2 по 44-ФЗ), "
-        "проверит реестр Минпромторга (ГИСП) и подберет 2–4 эквивалента.\n\n"
+        "🎯 Подбор товара и аналогов\n\n"
+        "ИИ выявит конкретную модель и завод по требованиям ТЗ, "
+        "составит таблицу характеристик для первой части заявки, "
+        "проверит реестр Минпромторга (ГИСП) и подберет эквиваленты.\n\n"
         "📋 Что нужно сделать:\n"
         "1. Отправьте файл ТЗ / спецификации (.docx, .pdf, .xlsx, .txt)\n"
         "2. Либо вставьте фрагмент характеристик текстом в поле ввода\n\n"
@@ -1513,6 +1513,7 @@ def _cabinet_text(db, client: Client, settings) -> str:
         "",
         "Стоимость услуг:",
         _balance_line(balances["supplier_search"]),
+        _balance_line(balances["exact_product"]),
         _balance_line(balances["procurement_report"]),
         _balance_line(balances["supplier_search_extra"]),
     ]
@@ -1548,6 +1549,7 @@ def _money_text(amount_kopeks: int) -> str:
 def _tariffs_text(db, settings) -> str:
     packages = [tariff_to_dict(item) for item in list_tariffs(db, active_only=True)]
     supplier = [item for item in packages if item["kind"] == "supplier_search"]
+    exact_product = [item for item in packages if item["kind"] == "exact_product"]
     reports = [item for item in packages if item["kind"] == "procurement_report"]
     extra = [item for item in packages if item["kind"] == "supplier_search_extra"]
     lines = [
@@ -1558,6 +1560,10 @@ def _tariffs_text(db, settings) -> str:
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
         for item in supplier:
+            lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
+    if exact_product:
+        lines.extend(["", "🎯 Подбор товара и аналогов:"])
+        for item in exact_product:
             lines.append(f"• {html_escape(item['name'])} — {_price_text(item['price_kopeks'])}")
     if reports:
         lines.extend(["", "📄 Анализ документации:"])
@@ -1571,7 +1577,7 @@ def _tariffs_text(db, settings) -> str:
         unit_price = _default_extra_supplier_price_kopeks(supplier[0])
         lines.extend(["", "🔎 Добор поставщиков:"])
         lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (по тому же ТЗ)")
-    if not supplier and not reports and not extra:
+    if not supplier and not exact_product and not reports and not extra:
         lines.extend(["", "Тарифы пока не настроены в админ-панели."])
     lines.extend(["", _bot_payment_instructions(settings)])
     lines.extend(["", INDIVIDUAL_TERMS_NOTE])
@@ -2934,6 +2940,7 @@ async def help_button(message: Message) -> None:
         "Как начать работу:\n"
         "1. Нажмите нужный сценарий в меню:\n"
         "   • 🔎 Поставщики по ТЗ — поиск заводов и дилеров по файлу или тексту\n"
+        "   • 🎯 Подбор товара и аналогов — выявление конкретной модели по ТЗ, таблица характеристик и аналоги\n"
         "   • 📄 Анализ закупки — экспресс-аудит рисков по номеру извещения ЕИС или файлам\n"
         "   • 📄🔎 Анализ + поиск — совмещённый аудит закупки и подбор поставщиков\n\n"
         "2. Отправьте материалы прямо в чат и нажмите «▶️ Запустить».\n\n"
@@ -2955,6 +2962,7 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         "Как начать работу:\n"
         "1. Нажмите нужный сценарий в меню:\n"
         "   • 🔎 Поставщики по ТЗ — поиск заводов и дилеров по файлу или тексту\n"
+        "   • 🎯 Подбор товара и аналогов — выявление конкретной модели по ТЗ, таблица характеристик и аналоги\n"
         "   • 📄 Анализ закупки — экспресс-аудит рисков по номеру извещения ЕИС или файлам\n"
         "   • 📄🔎 Анализ + поиск — совмещённый аудит закупки и подбор поставщиков\n\n"
         "2. Отправьте материалы прямо в чат и нажмите «▶️ Запустить».\n\n"
