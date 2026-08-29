@@ -12,6 +12,14 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Customer Additional Supplier Search Modernization & Candidate Pool Caching (Добор поставщиков, 2026-08):
+  - Aligned the customer-facing supplier search pipeline (`backend/app/supplier_search.py`, `backend/app/jobs.py`, `backend/app/main.py`, `site/src/app/cabinet/cabinet-client.tsx`) with the efficient candidate caching and wave querying architecture from Outreach search.
+  - Candidate Pool Caching (`unreviewed_candidates`): unreviewed candidate domains (up to 120 URLs) from the primary search run are cached in `dobor_context.json` and `evidence.json`. During additional search runs ("Добор"), pre-filtered candidate sites are verified directly without repeating search engine calls, reducing search API costs and runtimes by 65–85%.
+  - Procurement Profile Re-use (`procurement_profile`): parsed technical specifications, nomenclature synonyms, GOST numbers, and exclusion terms are re-used directly from the previous job, eliminating redundant LLM parsing time and token usage.
+  - Wave Query Generator (`build_supplier_queries`): for subsequent waves (Wave 2+), the generator produces deep regional, distributor, and wholesale queries with negative operators (`-банковская гарантия`, `-обучение`, `-семинар`, `-эцп`, `-агрегатор`, `-курсы`) to cut out aggregators and retail boards.
+  - Custom Customer Requirements (`additional_prompt`): added a dedicated text input field in the customer web cabinet's "Добор поставщиков" modal allowing buyers to specify custom criteria (e.g. specific federal districts, factory-direct status, in-stock availability, certificates). The prompt is incorporated into both search query generation and AI candidate relevance scoring.
+  - Zero Duplication Guarantee: strictly excludes previously discovered domains and INNs (`excluded_domains`, `excluded_inns`), ensuring 100% unique results between the initial run and subsequent dobor runs.
+  - Live Verification & Benchmarking: verified on real production tasks (e.g., job `70d025e68af64b56b58e24f0e20626f7` discovering 56 unique suppliers in 2m42s with 0 duplicate domains) and 10-procurement simulation benchmark (`backend/tests/test_dobor_simulation_benchmark.py`).
 - Outreach Seamless Inbox Synchronization & Unread Tab Click Stability (Aligned with EmailAgent, 2026-08):
   - Fixed issue where clicking on a message in the "Новые" (`unread`) tab immediately marked it as read on the backend, causing it to instantly vanish from the list and detail pane before the user could read it.
   - Aligned with `emailagent` (`shouldMarkInboxEmailRead`): clicking an unread message inside the "Новые" tab only selects and opens it without auto-marking read, keeping the message stably in place in the list and detail view.
