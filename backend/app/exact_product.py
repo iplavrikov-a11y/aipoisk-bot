@@ -145,24 +145,27 @@ class ExactProductReport:
 EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по государственным закупкам (44-ФЗ, 223-ФЗ), стандартизации и промышленному оборудованию.
 Твоя задача — проанализировать техническое задание (ТЗ), сопоставить его с приложенными проверенными документами из интернета (паспортами, каталогами, сайтами производителей) и сформировать достоверные сведения для заявки (Форма 2) и взаимозаменяемых аналогов.
 
-ЖЕЛЕЗНЫЕ ПРАВИЛА ДОСТОВЕРНОСТИ (ЗАПРЕТ ГАЛЛЮЦИНАЦИЙ И ПОДГОНКИ ПОД ТЗ):
-1. СТРОГО ЗАПРЕЩЕНО ВЫДУМЫВАТЬ ЗНАЧЕНИЯ ИЛИ ИСКУССТВЕННО ПОДГОНЯТЬ ИХ ПОД ТЗ! В госзакупках фальсификация параметров ведет к отклонению заявки или срыву поставки.
-2. Значение "product_fact" должно быть подтверждено текстом ТЗ или приложенными документами из интернета ([ИСТОЧНИК N]).
-3. Если конкретный параметр ТЗ ОТСУТСТВУЕТ в открытых источниках и паспорте:
+ЖЕЛЕЗНЫЕ ПРАВИЛА ДОСТОВЕРНОСТИ И ИНЖЕНЕРНОГО АНАЛИЗА:
+1. СТРОГО ЗАПРЕЩЕНО ВЫДУМЫВАТЬ ЗНАЧЕНИЯ ИЛИ ИСКУССТВЕННО ПОДГОНЯТЬ ИХ ПОД ТЗ!
+2. ИСПОЛЬЗУЙ ПАСПОРТА, ТАБЛИЦЫ КАТАЛОГОВ И ГОСТ/ТУ:
+   - Внимательно читай приложенные таблицы характеристик ([ИСТОЧНИК N]), опросные листы и модельные ряды заводов.
+   - Если в ТЗ задан диапазон (например: 'глубина >=4 <=4.5 м', 'масса не более 12100 кг', 'мощность 2x0.55 кВт'), а в каталоге/паспорте приведено номинальное заводское значение или типовой ряд завода (например: глубина 4.2 м, масса 11800 кг, привод 2x0.55 кВт) — укажи конкретный заводской номинал, статус "match" и сошлись на [ИСТОЧНИК N].
+   - Для стандартной продукции (металлопрокат, кабели, запорная арматура, КИПиА, электродвигатели) опирайся на официальные ГОСТ/ТУ (например ГОСТ 31996-2012, ГОСТ 57837-2017, ГОСТ 33259-2015).
+3. ЕСЛИ ПАРАМЕТР ТОЧНО ПОДТВЕРЖДЕН И СООТВЕТСТВУЕТ ТЗ:
+   - "product_fact": Конкретное подтвержденное значение производителя (без слов 'не менее/не более', например: "4.2 м", "11 800 кг", "AISI 304", "периферийный двухколесный")
+   - "status": "match"
+   - "comment": "Подтверждено каталогом производителя [ИСТОЧНИК N] / ГОСТ"
+4. ЕСЛИ ФАКТИЧЕСКИЙ ПАРАМЕТР РАСХОДИТСЯ С ТЗ:
+   - "product_fact": Реальный показатель из документа (например: "14 500 кг")
+   - "status": "mismatch"
+   - "comment": "Отклонение от ТЗ: фактически 14500 кг при требовании не более 12100 кг [ИСТОЧНИК N]"
+5. ЕСЛИ ПАРАМЕТР ЯВЛЯЕТСЯ ЗАКАЗНОЙ ОПЦИЕЙ И ОТСУТСТВУЕТ В ОТКРЫТЫХ КАТАЛОГАХ:
    - "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)"
    - "status": "clarify"
-   - "comment": "Параметр не подтвержден открытым паспортом, требуется запрос производителю"
-4. Если фактический параметр базового товара или аналога РАСХОДИТСЯ с требованием ТЗ:
-   - "product_fact": Укажи РЕАЛЬНЫЙ показатель из паспорта/каталога (например, "1.8 м³")
-   - "status": "mismatch"
-   - "comment": "Отклонение от ТЗ: фактически 1.8 м³ при требовании не менее 2.2 м³"
-5. Если параметр ТОЧНО подтвержден и соответствует:
-   - "product_fact": Конкретное фактическое значение без слов "не менее/не более" (например: "2.2 м³", "ГОСТ 12.2.112-86")
-   - "status": "match"
-   - "comment": "Подтверждено документацией производителя"
+   - "comment": "Параметр согласуется по опросным листам / рабочему проекту [ИСТОЧНИК N]"
 6. ДЛЯ АНАЛОГОВ (alternative_brands):
-   - Указывай ТОЛЬКО реально существующие модели российских заводов.
-   - Построчно сверяй характеристики аналога с ТЗ. Запрещено копировать ТЗ в аналог, если параметр неизвестен — ставь status: "clarify" и честно пиши "Требуется уточнение по паспорту".
+   - Указывай ТОЛЬКО реально существующие модели российских заводов из приложенных источников.
+   - Построчно заполни характеристики аналога на основе его каталога/паспорта. Если параметр соответствует ТЗ — ставь "match", если отличается — "mismatch", если неизвестен — "clarify".
 
 Спецификация ТЗ и проверенные документы из открытых источников:
 {context}
@@ -451,6 +454,94 @@ def find_minprom_gisp_match(
 
 
 # ---------------------------------------------------------------------------
+# Intelligent Search Query Planner
+# ---------------------------------------------------------------------------
+
+async def plan_exact_product_search(
+    settings: SystemSettings,
+    context: str,
+    procurement_title: str = "",
+) -> dict[str, Any]:
+    """
+    Интеллектуальный генератор поисковой стратегии:
+    выделяет реальный предмет закупки, отраслевую категорию, ведущих производителей РФ,
+    серии оборудования и формирует точные целевые поисковые запросы для каталогов и PDF-паспортов.
+    """
+    default_queries: list[str] = []
+    if procurement_title and len(procurement_title.strip()) > 5:
+        clean_title = re.sub(
+            r'(?i)\b(поставка|оказание услуг|выполнение работ|закупка|для нужд|приобретение|приложение|извещение|техническое задание)\b',
+            '',
+            procurement_title,
+        ).strip()
+        if clean_title:
+            default_queries.append(f"{clean_title[:65]} производитель Россия")
+            default_queries.append(f"{clean_title[:65]} технические характеристики паспорт")
+            default_queries.append(f"{clean_title[:65]} filetype:pdf (паспорт OR характеристики)")
+
+    tu_matches = re.findall(r"(?:ТУ|СТО|ГОСТ)\s*[\d\.\-]+", context, re.IGNORECASE)
+    for tu in tu_matches[:2]:
+        default_queries.append(f'"{tu.strip()}" завод производитель')
+
+    default_plan = {
+        "identified_item_name": procurement_title or "Оборудование по ТЗ",
+        "category": "Промышленная продукция",
+        "primary_manufacturers": [],
+        "model_series": [],
+        "search_queries": default_queries[:5],
+    }
+
+    if not settings.has_active_ai_provider:
+        return default_plan
+
+    prompt = f"""Ты — главный инженер и ведущий эксперт по промышленному оборудованию и госзакупкам по 44-ФЗ/223-ФЗ.
+Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов и PDF-паспортов:
+1. Выдели точный предмет закупки / вид оборудования (очисти от названий документов типа "Приложение №...", "Извещение...").
+2. Определи отраслевую категорию и технические серии/типоразмеры оборудования в РФ.
+3. Назови 2-4 ведущих российских завода-производителя и их модельные ряды.
+4. Сформируй 4-6 высокоточных поисковых запросов для Яндекса для поиска официальных сайтов заводов, каталогов, технических описаний и PDF-паспортов.
+
+Наименование/контекст закупки: {procurement_title}
+Фрагмент ТЗ:
+{context[:4500]}
+
+Ответь СТРОГО в формате JSON:
+{{
+  "identified_item_name": "Точное наименование оборудования",
+  "category": "Отраслевая категория",
+  "primary_manufacturers": ["Завод 1", "Завод 2", "Завод 3"],
+  "model_series": ["Серия 1", "Серия 2"],
+  "search_queries": [
+    "запрос 1 каталог производителя РФ",
+    "запрос 2 технические характеристики таблица",
+    "запрос 3 filetype:pdf (паспорт OR руководство OR опросный лист)",
+    "запрос 4 конкретная модель завод аналог"
+  ]
+}}"""
+
+    try:
+        raw = await call_llm(
+            settings,
+            prompt,
+            system_prompt="Ты эксперт по закупкам и промышленному оборудованию. Отвечай только JSON.",
+            tier="light",
+            routing_key="procurement_brand_detection",
+            json_mode=True,
+            timeout_seconds=45.0,
+        )
+        parsed = _parse_json_safely(raw)
+        if isinstance(parsed, dict) and parsed.get("search_queries"):
+            ai_queries = [str(q).strip() for q in parsed.get("search_queries", []) if str(q).strip()]
+            if ai_queries:
+                parsed["search_queries"] = ai_queries[:6]
+                return parsed
+    except Exception as exc:
+        logger.warning("plan_exact_product_search_llm_failed: %s", exc)
+
+    return default_plan
+
+
+# ---------------------------------------------------------------------------
 # Main Analysis Pipeline
 # ---------------------------------------------------------------------------
 
@@ -460,9 +551,12 @@ async def analyze_exact_product(
     procurement_title: str = "",
 ) -> ExactProductReport:
     """
-    Главная функция анализа ТЗ: глубокий поиск в открытом вебе (Яндекс Search API),
-    скачивание реальных веб-страниц и PDF-паспортов изделий, извлечение подтвержденных
-    параметров для Формы 2 и сопоставление с Реестром Минпромторга (ГИСП).
+    Главная функция анализа ТЗ:
+    1. Интеллектуальное планирование поиска через LLM.
+    2. Двухэтапный глубокий поиск в Яндексе (по базовому товару и аналогам).
+    3. Скачивание реальных веб-страниц заводов и PDF-паспортов изделий.
+    4. Строгая сверка характеристик Формы 2 без подгонки.
+    5. Сопоставление с Реестром Минпромторга (ГИСП).
     """
     clean_context = extract_clean_spec_text(context)
     if not clean_context:
@@ -478,75 +572,68 @@ async def analyze_exact_product(
 
     folder_id, api_key = _yandex_credentials(settings)
     if folder_id and api_key:
-        search_queries: list[str] = []
+        # ЭТАП 1: Интеллектуальное планирование поисковых запросов
+        search_plan = await plan_exact_product_search(settings, clean_context, procurement_title)
+        primary_queries = search_plan.get("search_queries", [])
 
-        # 1. Поиск по уникальным ТУ / СТО / ГОСТам
-        tu_matches = re.findall(r"(?:ТУ|СТО|ГОСТ)\s*[\d\.\-]+", clean_context, re.IGNORECASE)
-        for tu in tu_matches[:3]:
-            tu_clean = tu.strip()
-            if len(tu_clean) > 5 and tu_clean not in search_queries:
-                search_queries.append(f'"{tu_clean}" завод изготовитель')
-
-        # 2. Поиск по наименованию закупки / ключевой фразе
-        if procurement_title and len(procurement_title.strip()) > 5:
-            clean_title = re.sub(r'(?i)\b(поставка|оказание услуг|выполнение работ|закупка|для нужд|приобретение|приложение|извещение|техническое задание)\b', '', procurement_title).strip()
-            if clean_title and len(clean_title) > 5:
-                search_queries.append(f"{clean_title[:65]} производитель Россия")
-                search_queries.append(f"{clean_title[:65]} технические характеристики паспорт")
-                search_queries.append(f"{clean_title[:65]} filetype:pdf (паспорт OR характеристики)")
-
-        # 3. Поиск по маркировкам, сериям и кодам моделей
-        codes = re.findall(r"\b[A-Za-zА-Яа-я0-9]{2,10}[-\s][A-Za-zА-Яа-я0-9\.\-]{2,15}\b", clean_context)
-        for code in codes[:3]:
-            clean_c = code.strip()
-            if len(clean_c) >= 5 and clean_c not in search_queries and not clean_c.startswith("44-") and not clean_c.startswith("223-"):
-                search_queries.append(f"{clean_c} завод производитель характеристики")
-                search_queries.append(f"{clean_c} filetype:pdf паспорт")
-
-        # 4. Поиск по строкам спецификации
-        item_lines = re.findall(r"(?:^|\n)\s*(?:\d+[\.\)]\s*)([^\n]{10,80})", clean_context)
-        for line in item_lines[:2]:
-            clean_line = re.sub(r'[^а-яА-Яa-zA-Z0-9\s\-\.\/]', ' ', line).strip()
-            if clean_line and len(clean_line) > 8:
-                search_queries.append(f"{clean_line[:50]} завод паспорт характеристики")
-
-        unique_queries = list(dict.fromkeys(search_queries))[:6]
-        if unique_queries:
+        if primary_queries:
             try:
-                candidates, y_reqs = await _search_with_yandex(settings, unique_queries, max_results=12)
-                yandex_requests_count = y_reqs
+                candidates, y_reqs = await _search_with_yandex(settings, primary_queries, max_results=12)
+                yandex_requests_count += y_reqs
+
+                candidate_urls = [c.url for c in candidates if c.url and c.url.startswith("http")]
+                for cand in candidates:
+                    if cand.domain and cand.domain not in web_sources:
+                        web_sources.append(cand.domain)
+
+                # ЭТАП 2: Добор документации по ключевым заводам-аналогам
+                manufacturers = search_plan.get("primary_manufacturers", [])
+                model_series = search_plan.get("model_series", [])
+                secondary_queries: list[str] = []
+                for m in manufacturers[:2]:
+                    clean_m = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|ГК|НПК|НПО|ТД|«|»|")', '', str(m)).strip()
+                    if clean_m and len(clean_m) > 2:
+                        secondary_queries.append(f'"{clean_m}" {search_plan.get("identified_item_name", "")[:40]} характеристики паспорт')
+                for s in model_series[:2]:
+                    clean_s = str(s).strip()
+                    if clean_s and len(clean_s) > 2:
+                        secondary_queries.append(f'"{clean_s}" технические характеристики filetype:pdf')
+
+                if secondary_queries:
+                    sec_candidates, sec_reqs = await _search_with_yandex(settings, secondary_queries[:3], max_results=6)
+                    yandex_requests_count += sec_reqs
+                    for sc in sec_candidates:
+                        if sc.url and sc.url not in candidate_urls:
+                            candidate_urls.append(sc.url)
+                        if sc.domain and sc.domain not in web_sources:
+                            web_sources.append(sc.domain)
+
                 unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
-                yandex_cost_rub = round(y_reqs * unit_price, 2)
+                yandex_cost_rub = round(yandex_requests_count * unit_price, 2)
 
-                if candidates:
-                    candidate_urls = [c.url for c in candidates if c.url and c.url.startswith("http")]
-                    for cand in candidates:
-                        if cand.domain and cand.domain not in web_sources:
-                            web_sources.append(cand.domain)
+                # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
+                fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=6)
+                verified_docs = fetched_documents
 
-                    # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
-                    fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=5)
-                    verified_docs = fetched_documents
+                doc_blocks: list[str] = ["\n\n=== ПРОВЕРЕННЫЕ ДОКУМЕНТЫ И ПАСПОРТА ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ В ИНТЕРНЕТЕ ==="]
+                for idx, doc in enumerate(fetched_documents, start=1):
+                    doc_blocks.append(f"\n[ИСТОЧНИК #{idx}]")
+                    doc_blocks.append(f"Тип: {'PDF-паспорт изделия' if doc.get('type') == 'pdf' else 'Веб-страница производителя'}")
+                    doc_blocks.append(f"Заголовок: {doc.get('title')}")
+                    doc_blocks.append(f"URL: {doc.get('url')}")
+                    doc_blocks.append(f"Фактическое содержимое документа:\n{doc.get('text')}\n")
 
-                    doc_blocks: list[str] = ["\n\n=== ПРОВЕРЕННЫЕ ДОКУМЕНТЫ И ПАСПОРТА ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ В ИНТЕРНЕТЕ ==="]
-                    for idx, doc in enumerate(fetched_documents, start=1):
-                        doc_blocks.append(f"\n[ИСТОЧНИК #{idx}]")
-                        doc_blocks.append(f"Тип: {'PDF-паспорт изделия' if doc.get('type') == 'pdf' else 'Веб-страница производителя'}")
-                        doc_blocks.append(f"Заголовок: {doc.get('title')}")
-                        doc_blocks.append(f"URL: {doc.get('url')}")
-                        doc_blocks.append(f"Фактическое содержимое документа:\n{doc.get('text')}\n")
-
-                    if not fetched_documents:
-                        snippet_rows = ["\n\n=== ДАННЫЕ ИЗ ПОИСКОВОЙ ВЫДАЧИ ЯНДЕКС ==="]
-                        for c_idx, cand in enumerate(candidates[:8], start=1):
-                            snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
-                            if cand.domain:
-                                snippet_rows.append(f"   Сайт: {cand.domain} (URL: {cand.url})")
-                            if cand.snippet:
-                                snippet_rows.append(f"   Сниппет: {cand.snippet}")
-                        verified_docs_block = "\n".join(snippet_rows)
-                    else:
-                        verified_docs_block = "\n".join(doc_blocks)
+                if not fetched_documents:
+                    snippet_rows = ["\n\n=== ДАННЫЕ ИЗ ПОИСКОВОЙ ВЫДАЧИ ЯНДЕКС ==="]
+                    for c_idx, cand in enumerate(candidates[:8], start=1):
+                        snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
+                        if cand.domain:
+                            snippet_rows.append(f"   Сайт: {cand.domain} (URL: {cand.url})")
+                        if cand.snippet:
+                            snippet_rows.append(f"   Сниппет: {cand.snippet}")
+                    verified_docs_block = "\n".join(snippet_rows)
+                else:
+                    verified_docs_block = "\n".join(doc_blocks)
 
             except Exception as y_exc:
                 logger.warning("yandex_search_enrichment_failed_for_exact_product: %s", y_exc)
