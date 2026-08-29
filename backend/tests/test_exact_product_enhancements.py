@@ -215,3 +215,76 @@ async def test_resolve_clarify_pre_doc_resolution():
         # Since it was resolved from verified_docs, external search was NOT called!
         assert mock_yandex.call_count == 0
 
+
+def test_is_grounded_in_text():
+    from app.exact_product import _is_grounded_in_text
+
+    doc_text = "Светильник светодиодный ДКУ 100 Вт, световой поток 14000 лм, степень защиты IP66, УХЛ1."
+    
+    # Positive grounding
+    assert _is_grounded_in_text("14 000 лм", doc_text) is True
+    assert _is_grounded_in_text("IP66", doc_text) is True
+    assert _is_grounded_in_text("УХЛ1", doc_text) is True
+    assert _is_grounded_in_text("100 Вт", doc_text) is True
+
+    # Negative ungrounded hallucination
+    assert _is_grounded_in_text("22 500 лм", doc_text) is False
+    assert _is_grounded_in_text("IP68", doc_text) is False
+    assert _is_grounded_in_text("УХЛ4", doc_text) is False
+
+
+@pytest.mark.asyncio
+async def test_grounded_rejection_of_hallucination():
+    from app.exact_product import resolve_clarify_parameters
+
+    settings = SystemSettings()
+    settings.yandex_search_api_key = "key"
+    settings.yandex_search_folder_id = "folder"
+    settings.custom_ai_providers_json = '[{"id": "p1", "baseUrl": "http://mock", "apiKey": "t"}]'
+
+    spec = SpecParameterMatch(
+        param_name="Световой поток",
+        tz_requirement="не менее 14000 лм",
+        product_fact="В открытой документации не указано",
+        status="clarify",
+        comment="Требуется паспорт",
+    )
+    pos = ExactProductPosition(
+        position_no=1,
+        name_in_tz="Светильник уличный",
+        identified_brand="Нововек",
+        identified_model="ДКУ 100",
+        manufacturer="ООО Нововек",
+        confidence=0.95,
+        reasoning="Тест",
+        specs_breakdown=[spec],
+    )
+
+    verified_docs = [
+        {
+            "url": "https://novovek.ru/doc.pdf",
+            "title": "Паспорт ДКУ",
+            "text": "Светильник ДКУ 100: Мощность 100 Вт. Напряжение 220 В.",
+        }
+    ]
+
+    # LLM hallucinates 14500 lm which is NOT in verified_docs!
+    mock_hallucinated_json = '{"found": true, "product_fact": "14 500 лм", "status": "match", "comment": "Выдумано"}'
+
+    with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_hallucinated_json)), \
+         patch("app.exact_product._search_with_yandex", AsyncMock(return_value=([], 0))):
+        
+        resolved, cost = await resolve_clarify_parameters(
+            settings=settings,
+            positions=[pos],
+            existing_urls=set(),
+            web_sources=[],
+            verified_docs=verified_docs,
+        )
+
+        # Must be rejected because 14500 is NOT in verified_docs!
+        assert resolved == 0
+        assert spec.status == "clarify"
+        assert spec.product_fact == "В открытой документации не указано"
+
+

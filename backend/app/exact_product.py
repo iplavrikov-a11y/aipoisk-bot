@@ -313,10 +313,25 @@ async def fetch_web_or_pdf_document(
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 pages_text = []
                 for pno, page in enumerate(doc):
+                    page_parts = []
+                    # 1. Извлечение структурированных таблиц (Табличный парсинг по методологии Docling)
+                    try:
+                        tables = page.find_tables()
+                        for t_idx, tab in enumerate(tables):
+                            tab_md = tab.to_markdown()
+                            if tab_md and tab.row_count >= 2:
+                                page_parts.append(f"\n[ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n")
+                    except Exception as tab_err:
+                        logger.debug("fitz_find_tables_error: %s", tab_err)
+
+                    # 2. Текст страницы
                     p_text = page.get_text("text").strip()
                     if p_text:
-                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА {pno + 1}] ---\n{p_text}")
-                    if len("\n".join(pages_text)) > 25000:
+                        page_parts.append(p_text)
+
+                    if page_parts:
+                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА {pno + 1}] ---\n" + "\n".join(page_parts))
+                    if len("\n".join(pages_text)) > 30000:
                         break
                 doc.close()
                 pdf_text = "\n".join(pages_text)
@@ -330,7 +345,7 @@ async def fetch_web_or_pdf_document(
                     "domain": domain,
                     "type": "pdf",
                     "title": f"Паспорт / Техническая документация: {doc_name}",
-                    "text": pdf_text[:25000],
+                    "text": pdf_text[:30000],
                 }
 
         # HTML parsing
@@ -675,6 +690,29 @@ def _extract_relevant_spec_excerpts(doc_text: str, param_name: str, max_total_ch
     return "\n".join(chunks)[:max_total_chars]
 
 
+def _is_grounded_in_text(fact: str, source_text: str) -> bool:
+    """
+    Проверяет, что ключевые числовые и маркировочные факты действительно присутствуют
+    в тексте первоисточника (защита от галлюцинаций по методологии Google LangExtract).
+    """
+    if not fact or not source_text:
+        return True
+    norm_fact = re.sub(r"(\d)\s+(\d)", r"\1\2", fact)
+    norm_source = re.sub(r"(\d)\s+(\d)", r"\1\2", source_text).lower()
+    tokens = re.findall(r"\b\d+(?:[\.,]\d+)?\b|[A-Za-zА-Яа-я]+[-_]?\d+[A-Za-zА-Яа-я\d]*|\bIP\d{2}\b|\bУХЛ\d(?:\.\d)?\b", norm_fact)
+    if not tokens:
+        words = [w for w in re.findall(r"[\w]{4,}", norm_fact.lower()) if w not in ("соответствует", "согласно", "паспорту", "значение", "требованию", "фактическое", "данным")]
+        if words:
+            return any(w in norm_source for w in words)
+        return True
+    for tok in tokens:
+        c1 = tok.lower().replace(",", ".")
+        c2 = c1.replace(".", ",")
+        if c1 in norm_source or c2 in norm_source:
+            return True
+    return False
+
+
 async def resolve_clarify_parameters(
     settings: SystemSettings,
     positions: list[ExactProductPosition],
@@ -687,7 +725,7 @@ async def resolve_clarify_parameters(
     1. Сначала сканирует уже скачанные проверенные документы (verified_docs) через умный контекстный экстрактор.
     2. Для оставшихся ненайденных параметров формирует адресные поисковые микро-запросы
        по официальным каталогам, дистрибьюторам (ЭТМ, ВсеИнструменты, Восток, ЧипДип) и паспортам.
-    3. Переводит статус в 'match' или 'mismatch' без потери данных.
+    3. Переводит статус в 'match' или 'mismatch' со строгой сверкой фактов (Grounded Verification).
     """
     total_resolved = 0
     added_cost = 0.0
@@ -720,13 +758,14 @@ async def resolve_clarify_parameters(
                     combined_excerpt_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('title')})]:\n{excerpt}")
 
             if combined_excerpt_parts:
+                pre_doc_context = "\n\n".join(combined_excerpt_parts)[:20000]
                 prompt = RESOLVE_CLARIFY_PROMPT.format(
                     brand=pos.identified_brand,
                     model=pos.identified_model,
                     manufacturer=pos.manufacturer,
                     param_name=spec.param_name,
                     tz_requirement=spec.tz_requirement,
-                    doc_text="\n\n".join(combined_excerpt_parts)[:20000],
+                    doc_text=pre_doc_context,
                 )
                 try:
                     raw_res = await call_llm(
@@ -744,10 +783,11 @@ async def resolve_clarify_parameters(
                         new_status = str(parsed.get("status") or "match").strip().lower()
                         new_comment = str(parsed.get("comment") or "").strip()
                         if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
-                            spec.product_fact = new_fact
-                            spec.status = "mismatch" if "mismatch" in new_status else "match"
-                            spec.comment = new_comment or "Подтверждено технической документацией"
-                            total_resolved += 1
+                            if _is_grounded_in_text(new_fact, pre_doc_context):
+                                spec.product_fact = new_fact
+                                spec.status = "mismatch" if "mismatch" in new_status else "match"
+                                spec.comment = new_comment or "Подтверждено технической документацией"
+                                total_resolved += 1
                 except Exception as ex_err:
                     logger.debug("pre_doc_clarify_check_error for %s: %s", spec.param_name, ex_err)
 
@@ -827,13 +867,16 @@ async def resolve_clarify_parameters(
                 new_comment = str(parsed.get("comment") or "").strip()
 
                 if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
-                    spec.product_fact = new_fact
-                    spec.status = "mismatch" if "mismatch" in new_status else "match"
-                    if new_comment:
-                        spec.comment = new_comment
-                    if new_docs:
-                        spec.source_url = new_docs[0].get("url") or spec.source_url
-                    total_resolved += 1
+                    if _is_grounded_in_text(new_fact, combined_doc_text):
+                        spec.product_fact = new_fact
+                        spec.status = "mismatch" if "mismatch" in new_status else "match"
+                        if new_comment:
+                            spec.comment = new_comment
+                        if new_docs:
+                            spec.source_url = new_docs[0].get("url") or spec.source_url
+                        total_resolved += 1
+                    else:
+                        logger.debug("ungrounded_hallucination_skipped for %s: %s", spec.param_name, new_fact)
         except Exception as res_err:
             logger.debug("resolve_clarify_error for %s: %s", spec.param_name, res_err)
 
