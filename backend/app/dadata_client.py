@@ -8,8 +8,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_DADATA_CACHE: dict[str, dict[str, Any]] = {}
-_MAX_CACHE_ENTRIES = 2000
 _DADATA_API_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party"
 
 
@@ -24,14 +22,12 @@ def _get_dadata_api_key() -> str:
 async def enrich_company_by_inn(inn: str, *, api_key: str | None = None) -> dict[str, Any]:
     """
     Enrich organization data by INN via DaData Suggestions API.
+    Always executed fresh in real-time without caching.
     Returns normalized company profile dictionary.
     """
     cleaned_inn = re.sub(r"\D+", "", str(inn or "")).strip()
     if not cleaned_inn or len(cleaned_inn) not in (10, 12):
         return {}
-
-    if cleaned_inn in _DADATA_CACHE:
-        return dict(_DADATA_CACHE[cleaned_inn])
 
     token = (api_key or _get_dadata_api_key()).strip()
     if not token:
@@ -112,10 +108,7 @@ async def enrich_company_by_inn(inn: str, *, api_key: str | None = None) -> dict
                 "sites": [s for s in sites if s],
             }
 
-            if len(_DADATA_CACHE) >= _MAX_CACHE_ENTRIES:
-                _DADATA_CACHE.clear()
-            _DADATA_CACHE[cleaned_inn] = result
-            return dict(result)
+            return result
 
     except Exception as exc:
         logger.warning("DaData request failed for INN %s: %s", cleaned_inn, exc)
