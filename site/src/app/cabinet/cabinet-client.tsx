@@ -2017,95 +2017,42 @@ export function CabinetClient() {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer border ${
+                  onClick={() => selectScenario(item.id)}
+                  className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-between gap-1.5 cursor-pointer border select-none ${
                     isSelected
                       ? "bg-teal-600 border-teal-700 text-white shadow-sm ring-1 ring-teal-500/30"
                       : "bg-white border-slate-200/90 text-slate-700 hover:text-teal-800 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
-                  onClick={() => selectScenario(item.id)}
+                  role="tab"
+                  aria-selected={isSelected}
                 >
-                  <ItemIcon size={14} className={isSelected ? "text-teal-100" : "text-teal-600"} aria-hidden="true" />
-                  <span>{item.label}</span>
-                </button>
+                  <div className="flex items-center gap-1.5 truncate">
+                    <ItemIcon size={14} className={isSelected ? "text-teal-100" : "text-teal-600"} aria-hidden="true" />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  <button
+                    type="button"
+                    title={`Справка: как работает «${item.label}»`}
+                    aria-label={`Справка: как работает «${item.label}»`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setHelpModalTab(item.id);
+                      setShowHelpModal(true);
+                    }}
+                    className={`p-0.5 rounded-md transition-colors cursor-pointer shrink-0 ${
+                      isSelected
+                        ? "text-teal-100 hover:text-white hover:bg-white/20"
+                        : "text-slate-400 hover:text-teal-700 hover:bg-teal-50"
+                    }`}
+                  >
+                    <HelpCircle size={13} aria-hidden="true" />
+                  </button>
+                </div>
               );
             })}
           </div>
-
-          {/* Collapsible Mode Hint Accordion (Compact, Neat, Clear Delineation) */}
-          {(() => {
-            const currentThesis = SCENARIO_THESES[scenario];
-            if (!currentThesis) return null;
-            return (
-              <div className="space-y-2 font-sans pt-0.5">
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={() => setShowScenarioHint(!showScenarioHint)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer border ${
-                      showScenarioHint
-                        ? "bg-teal-700 text-white border-teal-800 shadow-2xs"
-                        : "bg-teal-50/80 hover:bg-teal-100/90 text-teal-900 border-teal-200/80 shadow-2xs"
-                    }`}
-                    aria-expanded={showScenarioHint}
-                  >
-                    <HelpCircle size={13} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} aria-hidden="true" />
-                    <span>Как работает «{currentThesis.title}»</span>
-                    {showScenarioHint ? (
-                      <ChevronUp size={13} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} />
-                    ) : (
-                      <ChevronDown size={13} className="text-teal-700" />
-                    )}
-                  </button>
-                </div>
-
-                {showScenarioHint ? (
-                  <div className="p-3 bg-slate-50/90 border border-slate-200/90 rounded-xl space-y-2.5 text-xs text-slate-700 shadow-2xs animate-in fade-in duration-150">
-                    <div className="grid sm:grid-cols-2 gap-2.5">
-                      {/* Sub-card 1: Что делает */}
-                      <div className="bg-white border border-slate-200/80 rounded-lg p-2.5 space-y-1 shadow-2xs">
-                        <div className="flex items-center gap-1.5">
-                          <span className="p-0.5 rounded bg-teal-50 text-teal-700 border border-teal-100">
-                            <Sparkles size={11} />
-                          </span>
-                          <strong className="text-[11px] font-bold text-slate-900">Что делает функция</strong>
-                        </div>
-                        <p className="text-[11px] text-slate-600 leading-snug font-normal">
-                          {currentThesis.whatItDoes}
-                        </p>
-                      </div>
-
-                      {/* Sub-card 2: Когда применять */}
-                      <div className="bg-white border border-slate-200/80 rounded-lg p-2.5 space-y-1 shadow-2xs">
-                        <div className="flex items-center gap-1.5">
-                          <span className="p-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">
-                            <CheckCircle2 size={11} />
-                          </span>
-                          <strong className="text-[11px] font-bold text-slate-900">Когда применять</strong>
-                        </div>
-                        <p className="text-[11px] text-slate-600 leading-snug font-normal">
-                          {currentThesis.whenToUse}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Sub-card 3: Результат и совет */}
-                    <div className="p-2.5 bg-emerald-50/70 border border-emerald-200/80 rounded-lg flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                      <div className="flex items-center gap-1 text-slate-800 flex-wrap">
-                        <span className="font-extrabold text-emerald-950">📦 Результат:</span>
-                        <span className="text-slate-700 font-medium">{currentThesis.outputs}</span>
-                      </div>
-                      <div className="text-emerald-900 font-semibold text-[11px]">
-                        <span className="font-bold">💡 Совет:</span> {currentThesis.nextStep}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })()}
 
           {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
