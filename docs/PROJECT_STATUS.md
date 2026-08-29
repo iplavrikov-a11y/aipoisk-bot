@@ -12,7 +12,20 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Customer Additional Supplier Search Modernization & Candidate Pool Caching (Добор поставщиков, 2026-08):
+- Customer Cabinet Mode Help & Interactive Guide Redesign (2026-08):
+  - Integrated subtle question mark help icons `(?)` (`HelpCircle`) directly into each of the 4 scenario tab buttons (`Поиск поставщиков`, `Подбор товара и аналогов`, `Анализ документации`, `Анализ + поиск`) in `site/src/app/cabinet/cabinet-client.tsx`.
+  - Clicking the `(?)` icon automatically opens the full-featured Guide Modal (`FunctionGuideModal`) pre-switched to that specific function tab.
+  - Eliminated the separate bulky accordion block below the scenario selector, keeping the launch form clean and distraction-free.
+  - Spacious Modal Layout (`max-w-5xl`): Expanded modal dimensions with comfortable padding and larger typography (`text-xs sm:text-[13px]`), preventing cramped popup rendering on high-resolution screens.
+  - Zero External Blue/Indigo Accents: Re-themed entire modal palette and all action buttons to TenderLex brand emerald/teal colors (`bg-teal-600`, `bg-emerald-600`, `bg-teal-50`, `bg-emerald-50`), eliminating generic blue buttons.
+  - No-Scroll Multi-Tab Grid: 5-column tab bar fits naturally across desktop without horizontal scrollbars, and card content fits comfortably without nested vertical scroll containers.
+  - 3-Column Workflow Compilation: Step-by-step 3-step tender route (Step 1: Risk audit → Step 2: Form 2 & equivalent matching → Step 3: Direct factory outreach for quotes) + 1-click complex express launch.
+  - 100% Verified Function Capability Mapping: Corrected output artifact copy to accurately reflect real backend deliverables (for `exact_product` mode, output is documented strictly as Word DOCX with Form 2 table, parameter comparison, and GISP registry numbers, eliminating non-existent XLSX claims).
+- Document & Spreadsheet Report Design Perfection (2026-08):
+  - Fixed Word table width in `backend/app/exact_product.py` and `backend/app/report_builder.py` to uniform `6.97 in` across all tables, ensuring consistent margins and eliminating ragged column widths.
+  - Added dedicated parameter-by-parameter comparison column for equivalent models in the exact product Word report.
+  - Styled all DOCX headers and tables with TenderLex brand emerald palette (`#0F766E`, `#064E3B`, `#F4FBF7`), replacing harsh dark headers.
+  - Optimized Excel spreadsheet column widths (`backend/app/report_builder.py`, `backend/app/supplier_search.py`) for clean visibility on standard 135% zoom screens.
   - Aligned the customer-facing supplier search pipeline (`backend/app/supplier_search.py`, `backend/app/jobs.py`, `backend/app/main.py`, `site/src/app/cabinet/cabinet-client.tsx`) with the efficient candidate caching and wave querying architecture from Outreach search.
   - Candidate Pool Caching (`unreviewed_candidates`): unreviewed candidate domains (up to 120 URLs) from the primary search run are cached in `dobor_context.json` and `evidence.json`. During additional search runs ("Добор"), pre-filtered candidate sites are verified directly without repeating search engine calls, reducing search API costs and runtimes by 65–85%.
   - Procurement Profile Re-use (`procurement_profile`): parsed technical specifications, nomenclature synonyms, GOST numbers, and exclusion terms are re-used directly from the previous job, eliminating redundant LLM parsing time and token usage.

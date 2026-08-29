@@ -16,7 +16,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
 - Contact Routing & Channels: Support channels: Telegram direct (`https://t.me/lexelence`), Telegram bot (`https://t.me/tenderlex_bot`), email `info@tenderlex.ru`, and on-site interactive chat.
-- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (real-time Web Audio task completion chime, header notification switch, bottom floating toast pill, pulsing badges for new jobs, dismissible live chat with header trigger, and clean decluttered button styling).
+- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (integrated help question mark icons `(?)` on scenario tabs triggering the spacious `max-w-5xl` guide modal, real-time Web Audio task completion chime, header notification switch, bottom floating toast pill, pulsing badges for new jobs, dismissible live chat with header trigger, and clean decluttered button styling).
 - Trial Balance & Email Verification: New registrations receive 396 ₽ trial balance (4 tasks @ 99 ₽); web cabinet displays compact test banner guiding users to direct contact channels for quota top-ups; transactional email confirmation uses a bulletproof responsive HTML template with single-account-per-email uniqueness enforcement.
 - Automated Nurturing Sequence & 1-Click Unsubscribe: Behavioral 3-step sequence (24h post-registration reminder, 48h post-first-task feature showcase, and trial completion summary) across Telegram and Email within work hours (09:00–20:00 MSK). Provides universal 1-click unsubscribe via Telegram button (`🔕 Отписаться от подсказок`) and HMAC-signed email link (`/api/customer/auth/unsubscribe`) that permanently disables marketing messages.
 - Admin panel & Telegram client display: Real-time background polling loop for the Clients tab (instant updates without manual reload), optimized loading for clients and Minprom registry cache (FTS count and N+1 query elimination), and improved Telegram account formatting to display client name and ID when `@username` is absent.
@@ -51,7 +51,8 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   Exact product detection (`exact_product` / 99 ₽) reveals hidden manufacturers/brands masked
   in the technical specification, performs line-by-line parameter verification, finds 2–4 verified
   equivalent models by 44/223-FZ with matching %, checks Minpromtorg/GISP industrial registry
-  inclusion, and generates downloadable Form 2 (DOCX) and comparison spreadsheets (XLSX).
+  inclusion, and generates official downloadable Form 2 reports in Word format (DOCX) with
+  parameter-by-parameter equivalent comparison tables and GISP registry verification numbers.
   Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
   tariff package in the admin panel) with automatic fallback, and per-customer
   `Добор` prices remain editable in the admin client card. Additional supplier search
