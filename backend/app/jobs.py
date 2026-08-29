@@ -1402,18 +1402,16 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     docx_path = write_exact_product_docx(
         out_dir / _result_filename("exact_product_spec", stem, ".docx"),
         report,
-        title=job.title or "Форма 2 и сопоставление эквивалентов",
+        title=job.title or "Отчёт о подборе товара и аналогов",
     )
     xlsx_path = write_exact_product_xlsx(
-        out_dir / _result_filename("exact_product_table", stem, ".xlsx"),
+        out_dir / _result_filename("exact_product", stem, ".xlsx"),
         report,
-        title=job.title or "Конкретные показатели и аналоги",
+        title=job.title or "Подбор товара и аналоги",
     )
     output_files = [
-        _output_artifact("exact_product_spec", "Отчёт (DOCX)", docx_path, KIND_EXACT_PRODUCT),
-        _output_artifact("exact_product_table", "Таблица (XLSX)", xlsx_path, KIND_EXACT_PRODUCT),
+        _output_artifact("exact_product", "Подбор товара и аналоги", xlsx_path, KIND_EXACT_PRODUCT),
     ]
-    zip_path = zip_paths(out_dir / _result_filename("archive", stem, ".zip"), [docx_path, xlsx_path])
     evidence_payload = {
         "mode": job.mode,
         "subject": subject,
@@ -1427,9 +1425,9 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     }
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
-    job.result_path = str(docx_path)
+    job.result_path = str(xlsx_path)
     _set_customer_job_title_from_subject(job, subject)
-    charge_job_reservation(db, job, note="Выявление точного товара и подбор аналогов завершены")
+    charge_job_reservation(db, job, note="Подбор товара и аналогов завершен")
     _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
     job.completed_at = now_utc()
     db.commit()

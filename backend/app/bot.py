@@ -2725,10 +2725,8 @@ async def _send_find_more_suppliers_offer(message: Message, job_id: str) -> None
 
 
 def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
-    if kind in {"exact_product_spec", "spec"}:
-        return "Спецификация конкретных показателей (Форма 2) во вложении."
-    if kind in {"exact_product_table", "table"}:
-        return "Таблица сопоставления и аналоги во вложении."
+    if kind in {"exact_product", "exact_product_table", "exact_product_spec", "spec", "table"}:
+        return "Подбор товара, характеристики и аналоги во вложении."
     if kind == "quote_request":
         return "Запрос КП во вложении."
     if kind == "analysis":

@@ -3053,10 +3053,8 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
         return "Поставщики"
     if kind == "quote_request":
         return "Запрос КП"
-    if kind == "exact_product_spec":
-        return "Отчёт (DOCX)"
-    if kind == "exact_product_table":
-        return "Таблица (XLSX)"
+    if kind in {"exact_product", "exact_product_table", "exact_product_spec"}:
+        return "Подбор товара и аналоги"
     return "Файл"
 
 
