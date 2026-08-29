@@ -271,7 +271,7 @@ const SCENARIO_THESES: Record<Scenario, {
     whatItDoes: "ИИ расшифровывает спецификацию ТЗ, выявляет скрытого производителя и точную модель, формирует конкретные показатели для 1-й части заявки (Форма 2) и подбирает 2–4 эквивалента РФ.",
     whenToUse: "Когда в ТЗ указаны только характеристики без бренда или нужно предложить эквивалент дешевле / из реестра Минпромторга (ГИСП).",
     inputs: "Файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.",
-    outputs: "Официальный DOCX-отчет с Формой 2, таблица эквивалентов со сравнением характеристик, XLSX-ведомость, проверка ГИСП.",
+    outputs: "Отчет Word (DOCX): расшифрованная модель, таблица Формы 2 без неопределенных слов, 2–4 аналога с попараметрическим сопоставлением и номерами ГИСП.",
     nextStep: "После выявления модели запустите «Поиск поставщиков» для сбора коммерческих предложений у заводов РФ под эту позицию.",
     tagColor: "bg-emerald-100 text-emerald-900 border-emerald-300",
   },
@@ -281,7 +281,7 @@ const SCENARIO_THESES: Record<Scenario, {
     whatItDoes: "Находит прямых производителей, официальных дилеров и оптовых дистрибьюторов по всей России с прямыми контактами для запроса КП.",
     whenToUse: "Когда есть ТЗ или номенклатура и нужно быстро собрать коммерческие предложения от поставщиков для расчета себестоимости.",
     inputs: "Файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст со списком товаров/параметров.",
-    outputs: "Сводная ведомость поставщиков: прямые телефоны, email для КП, сайты, ИНН, статус производителя, XLSX-реестр.",
+    outputs: "1) Ведомость поставщиков в Excel (XLSX) с прямыми контактами; 2) Готовый файл запроса КП в Word (DOCX); 3) Копирование КП в один клик.",
     nextStep: "Разошлите запросы КП по готовой базе контактов и сформируйте ценовое предложение для победы в закупке.",
     tagColor: "bg-teal-100 text-teal-900 border-teal-300",
   },
@@ -291,9 +291,9 @@ const SCENARIO_THESES: Record<Scenario, {
     whatItDoes: "Проверяет закупку (44-ФЗ / 223-ФЗ) на скрытые риски, нереальные сроки, кабальные штрафы, ограничения нацрежима (ПП 616/617/878) и обеспечение.",
     whenToUse: "Перед принятием решения об участии в тендере для защиты от попадания в РНП и оценки юридической чистоты контракта.",
     inputs: "Номер извещения ЕИС (19 цифр), ссылка на zakupki.gov.ru или файлы документации/проекта контракта.",
-    outputs: "Аналитический отчет с оценкой рисков, чек-листом требований к участнику и рекомендациями экспертов.",
+    outputs: "1) Аналитический отчет Word (DOCX) с оценкой рисков и чек-листом требований; 2) Готовый файл запроса КП в Word (DOCX).",
     nextStep: "Если закупка безопасна, перейдите к «Подбору товара и аналогов» для подготовки первой части заявки.",
-    tagColor: "bg-sky-100 text-sky-900 border-sky-300",
+    tagColor: "bg-teal-100 text-teal-900 border-teal-300",
   },
   analysis_and_suppliers: {
     title: "Анализ + поиск (Комплекс)",
@@ -301,9 +301,9 @@ const SCENARIO_THESES: Record<Scenario, {
     whatItDoes: "Совмещенный экспресс-запуск: полный аудит рисков документации закупки плюс автоматический подбор базы поставщиков по позициям ТЗ.",
     whenToUse: "Когда нужно в один клик получить полную картину по новой закупке: оценить целесообразность участия и сразу увидеть поставщиков.",
     inputs: "Номер извещения ЕИС (19 цифр), ссылка на zakupki.gov.ru или архив документации закупки.",
-    outputs: "Комплексный отчет: факторы риска + сводная спецификация + ведомость контактов поставщиков для запроса КП.",
+    outputs: "1) Аналитический отчет Word (DOCX) по рискам; 2) Ведомость поставщиков в Excel (XLSX) с контактами; 3) Готовый файл запроса КП (DOCX).",
     nextStep: "По сложным/зашитым позициям спецификации запустите «Подбор товара и аналогов» для формирования Формы 2.",
-    tagColor: "bg-indigo-100 text-indigo-900 border-indigo-300",
+    tagColor: "bg-teal-100 text-teal-900 border-teal-300",
   },
 };
 
@@ -2034,7 +2034,7 @@ export function CabinetClient() {
             })}
           </div>
 
-          {/* Collapsible Mode Hint Accordion with clear visual delineation */}
+          {/* Collapsible Mode Hint Accordion (Compact, Neat, Clear Delineation) */}
           {(() => {
             const currentThesis = SCENARIO_THESES[scenario];
             if (!currentThesis) return null;
@@ -2044,60 +2044,60 @@ export function CabinetClient() {
                   <button
                     type="button"
                     onClick={() => setShowScenarioHint(!showScenarioHint)}
-                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer border ${
                       showScenarioHint
-                        ? "bg-teal-700 text-white border-teal-800 shadow-sm"
-                        : "bg-teal-50/90 hover:bg-teal-100/90 text-teal-900 border-teal-200/90 shadow-2xs"
+                        ? "bg-teal-700 text-white border-teal-800 shadow-2xs"
+                        : "bg-teal-50/80 hover:bg-teal-100/90 text-teal-900 border-teal-200/80 shadow-2xs"
                     }`}
                     aria-expanded={showScenarioHint}
                   >
-                    <HelpCircle size={14} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} aria-hidden="true" />
-                    <span>Справка: как работает «{currentThesis.title}»</span>
+                    <HelpCircle size={13} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} aria-hidden="true" />
+                    <span>Как работает «{currentThesis.title}»</span>
                     {showScenarioHint ? (
-                      <ChevronUp size={14} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} />
+                      <ChevronUp size={13} className={showScenarioHint ? "text-teal-100" : "text-teal-700"} />
                     ) : (
-                      <ChevronDown size={14} className="text-teal-700" />
+                      <ChevronDown size={13} className="text-teal-700" />
                     )}
                   </button>
                 </div>
 
                 {showScenarioHint ? (
-                  <div className="p-3.5 sm:p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs text-slate-700 shadow-xs animate-in fade-in duration-150">
-                    <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="p-3 bg-slate-50/90 border border-slate-200/90 rounded-xl space-y-2.5 text-xs text-slate-700 shadow-2xs animate-in fade-in duration-150">
+                    <div className="grid sm:grid-cols-2 gap-2.5">
                       {/* Sub-card 1: Что делает */}
-                      <div className="bg-white border border-slate-200/90 rounded-xl p-3 space-y-1.5 shadow-2xs">
+                      <div className="bg-white border border-slate-200/80 rounded-lg p-2.5 space-y-1 shadow-2xs">
                         <div className="flex items-center gap-1.5">
-                          <span className="p-1 rounded-md bg-teal-50 text-teal-700 border border-teal-100">
-                            <Sparkles size={12} />
+                          <span className="p-0.5 rounded bg-teal-50 text-teal-700 border border-teal-100">
+                            <Sparkles size={11} />
                           </span>
-                          <strong className="text-xs font-extrabold text-slate-900">Что делает функция</strong>
+                          <strong className="text-[11px] font-bold text-slate-900">Что делает функция</strong>
                         </div>
-                        <p className="text-[12px] text-slate-600 leading-relaxed font-normal">
+                        <p className="text-[11px] text-slate-600 leading-snug font-normal">
                           {currentThesis.whatItDoes}
                         </p>
                       </div>
 
                       {/* Sub-card 2: Когда применять */}
-                      <div className="bg-white border border-slate-200/90 rounded-xl p-3 space-y-1.5 shadow-2xs">
+                      <div className="bg-white border border-slate-200/80 rounded-lg p-2.5 space-y-1 shadow-2xs">
                         <div className="flex items-center gap-1.5">
-                          <span className="p-1 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100">
-                            <CheckCircle2 size={12} />
+                          <span className="p-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">
+                            <CheckCircle2 size={11} />
                           </span>
-                          <strong className="text-xs font-extrabold text-slate-900">Когда применять</strong>
+                          <strong className="text-[11px] font-bold text-slate-900">Когда применять</strong>
                         </div>
-                        <p className="text-[12px] text-slate-600 leading-relaxed font-normal">
+                        <p className="text-[11px] text-slate-600 leading-snug font-normal">
                           {currentThesis.whenToUse}
                         </p>
                       </div>
                     </div>
 
                     {/* Sub-card 3: Результат и совет */}
-                    <div className="p-3 bg-emerald-50/80 border border-emerald-200/90 rounded-xl flex flex-wrap items-center justify-between gap-2.5 text-[12px]">
-                      <div className="flex items-center gap-1.5 text-slate-800 flex-wrap">
-                        <span className="font-extrabold text-emerald-950">📦 Формат результата:</span>
+                    <div className="p-2.5 bg-emerald-50/70 border border-emerald-200/80 rounded-lg flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div className="flex items-center gap-1 text-slate-800 flex-wrap">
+                        <span className="font-extrabold text-emerald-950">📦 Результат:</span>
                         <span className="text-slate-700 font-medium">{currentThesis.outputs}</span>
                       </div>
-                      <div className="text-emerald-900 font-semibold text-[11px] sm:text-[12px]">
+                      <div className="text-emerald-900 font-semibold text-[11px]">
                         <span className="font-bold">💡 Совет:</span> {currentThesis.nextStep}
                       </div>
                     </div>
@@ -2999,9 +2999,9 @@ export function CabinetClient() {
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Официальный отчет Word (DOCX) с Формой 2 и таблицей аналогов.<br />
-                          2) Таблица Excel (XLSX) с попараметрическим сравнением.<br />
-                          3) Номера реестровых записей Минпромторга (ГИСП).
+                          1) Официальный отчет Word (DOCX) с расшифровкой модели по ТЗ.<br />
+                          2) Готовая таблица конкретных показателей (Форма 2) для 1-й части заявки.<br />
+                          3) 2–4 аналога РФ с попараметрическим сравнением и номерами ГИСП.
                         </p>
                       </div>
                     </div>
