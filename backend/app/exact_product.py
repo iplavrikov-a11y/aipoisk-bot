@@ -480,157 +480,232 @@ def _parse_json_safely(raw_text: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# DOCX Export (Форма 2 / Спецификация конкретных показателей)
+# DOCX Export (Отчёт: Подбор товара и аналогов)
 # ---------------------------------------------------------------------------
 
 def write_exact_product_docx(
     path: str | Path,
     report: ExactProductReport,
     *,
-    title: str = "Спецификация конкретных показателей и сопоставление эквивалентов",
+    title: str = "Отчёт о подборе товара и аналогов по ТЗ",
 ) -> Path:
-    """Генерирует официальный документ DOCX с конкретными показателями (Форма 2) и сопоставлением аналогов."""
+    """Генерирует официальный чистый документ DOCX со сводной таблицей, карточками товаров и таблицей характеристик."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     doc = Document()
     _set_docx_margins(doc)
 
-    # Заголовок документа
+    # 1. Заголовок документа
     title_p = doc.add_paragraph()
-    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title_p.add_run("СВЕДЕНИЯ О КАЧЕСТВЕ, ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИКАХ ТОВАРА\nИ СОПОСТАВЛЕНИЕ ЭКВИВАЛЕНТОВ ПО ТЗ")
-    title_run.font.size = Pt(14)
+    title_p.paragraph_format.space_before = Pt(0)
+    title_p.paragraph_format.space_after = Pt(4)
+    title_run = title_p.add_run("ОТЧЁТ: ПОДБОР ТОВАРА И АНАЛОГОВ ПО ТЗ")
+    title_run.font.name = "Calibri"
+    title_run.font.size = Pt(15)
     title_run.font.bold = True
     title_run.font.color.rgb = RGBColor(15, 23, 42)
 
     sub_p = doc.add_paragraph()
-    sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sub_run = sub_p.add_run(f"(Форма конкретных показателей для первой части заявки по 44-ФЗ / 223-ФЗ)")
-    sub_run.font.size = Pt(10)
+    sub_p.paragraph_format.space_before = Pt(0)
+    sub_p.paragraph_format.space_after = Pt(12)
+    sub_run = sub_p.add_run("Сводные результаты выявления моделей, реестр Минпромторга (ГИСП) и характеристики для заявки")
+    sub_run.font.name = "Calibri"
+    sub_run.font.size = Pt(9.5)
     sub_run.font.italic = True
     sub_run.font.color.rgb = RGBColor(100, 116, 139)
 
-    # Блок метаданных закупки
+    # 2. Карточка закупки
     meta_table = doc.add_table(rows=2, cols=2)
     meta_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     _style_meta_table(meta_table)
-    
-    meta_table.rows[0].cells[0].paragraphs[0].add_run("Наименование закупки:").font.bold = True
+
+    meta_table.rows[0].cells[0].paragraphs[0].add_run("Объект закупки / ТЗ:").font.bold = True
     meta_table.rows[0].cells[1].paragraphs[0].add_run(report.procurement_title or "Закупка оборудования и материалов")
-    meta_table.rows[1].cells[0].paragraphs[0].add_run("Количество позиций в ТЗ:").font.bold = True
+    meta_table.rows[1].cells[0].paragraphs[0].add_run("Количество позиций:").font.bold = True
     meta_table.rows[1].cells[1].paragraphs[0].add_run(f"{report.total_positions} поз.")
 
-    doc.add_paragraph()
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
-    # Общее резюме
+    # 3. Краткое экспертное резюме (лаконичный нейтральный блок)
     if report.summary:
         summary_box = doc.add_paragraph()
-        summary_box.paragraph_format.left_indent = Inches(0.2)
-        summary_box.paragraph_format.right_indent = Inches(0.2)
-        s_run = summary_box.add_run(f"Экспертное резюме: {report.summary}")
-        s_run.font.size = Pt(10.5)
-        s_run.font.bold = True
-        s_run.font.color.rgb = RGBColor(15, 118, 110)
+        summary_box.paragraph_format.space_before = Pt(4)
+        summary_box.paragraph_format.space_after = Pt(12)
+        summary_box.paragraph_format.left_indent = Inches(0.15)
+        summary_box.paragraph_format.right_indent = Inches(0.15)
+        s_title = summary_box.add_run("Экспертное резюме: ")
+        s_title.font.bold = True
+        s_title.font.size = Pt(10)
+        s_title.font.color.rgb = RGBColor(15, 23, 42)
 
-    # Перебор позиций ТЗ
+        s_run = summary_box.add_run(report.summary)
+        s_run.font.size = Pt(9.5)
+        s_run.font.color.rgb = RGBColor(51, 65, 85)
+
+    # 4. ТАБЛИЦА 1: Сводная ведомость результатов по всем позициям ТЗ (НА ПЕРВОЙ СТРАНИЦЕ)
+    h_summary = doc.add_paragraph()
+    h_summary.paragraph_format.space_before = Pt(8)
+    h_summary.paragraph_format.space_after = Pt(4)
+    h_summary_run = h_summary.add_run("1. Сводная ведомость подбора по позициям ТЗ")
+    h_summary_run.font.bold = True
+    h_summary_run.font.size = Pt(11)
+    h_summary_run.font.color.rgb = RGBColor(15, 23, 42)
+
+    sum_table = doc.add_table(rows=1, cols=6)
+    sum_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    sum_headers = ["№", "Позиция в ТЗ", "Выявленная модель / марка", "Завод-изготовитель", "Реестр ГИСП", "Основной аналог (РФ)"]
+    for i, h_text in enumerate(sum_headers):
+        cell = sum_table.rows[0].cells[i]
+        cell.text = h_text
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for r in p.runs:
+            r.font.bold = True
+            r.font.size = Pt(9)
+            r.font.color.rgb = RGBColor(255, 255, 255)
+        _set_cell_bg(cell, "1E293B")
+
+    for pos_idx, pos in enumerate(report.positions, start=1):
+        row = sum_table.add_row()
+        cells = row.cells
+        cells[0].text = str(pos.position_no or pos_idx)
+        cells[1].text = pos.name_in_tz
+        cells[2].text = f"{pos.identified_brand} {pos.identified_model}".strip()
+        cells[3].text = pos.manufacturer
+        cells[4].text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
+        main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
+        cells[5].text = f"{main_alt.brand} {main_alt.model} ({main_alt.manufacturer})" if main_alt else "—"
+
+        for idx, c in enumerate(cells):
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            p = c.paragraphs[0]
+            p.paragraph_format.line_spacing = 1.05
+            p.paragraph_format.space_before = Pt(2)
+            p.paragraph_format.space_after = Pt(2)
+            for r in p.runs:
+                r.font.size = Pt(8.5)
+            if idx in (0, 4):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_cell_bg(c, "F8FAFC" if pos_idx % 2 == 1 else "FFFFFF")
+
+    _set_table_borders(sum_table)
+
+    # 5. РАЗДЕЛ 2: Подробные сведения и характеристики по каждой позиции
+    doc.add_paragraph().paragraph_format.space_after = Pt(8)
+    h_details = doc.add_paragraph()
+    h_details.paragraph_format.space_before = Pt(12)
+    h_details.paragraph_format.space_after = Pt(4)
+    h_details_run = h_details.add_run("2. Сведения о товарах, конкретные показатели и аналоги")
+    h_details_run.font.bold = True
+    h_details_run.font.size = Pt(11)
+    h_details_run.font.color.rgb = RGBColor(15, 23, 42)
+
     for pos in report.positions:
-        doc.add_paragraph()
-        h2 = doc.add_paragraph()
-        h2_run = h2.add_run(f"Позиция №{pos.position_no}: {pos.name_in_tz}")
-        h2_run.font.size = Pt(12)
-        h2_run.font.bold = True
-        h2_run.font.color.rgb = RGBColor(15, 23, 42)
+        pos_head = doc.add_paragraph()
+        pos_head.paragraph_format.space_before = Pt(10)
+        pos_head.paragraph_format.space_after = Pt(3)
+        pos_head_run = pos_head.add_run(f"Позиция №{pos.position_no}: {pos.name_in_tz}")
+        pos_head_run.font.bold = True
+        pos_head_run.font.size = Pt(10.5)
+        pos_head_run.font.color.rgb = RGBColor(30, 41, 59)
 
-        # Карточка выявленного товара
-        card_p = doc.add_paragraph()
-        card_p.paragraph_format.left_indent = Inches(0.15)
-        
-        c1 = card_p.add_run("• Выявленный бренд: ")
-        c1.font.bold = True
-        card_p.add_run(f"{pos.identified_brand}\n")
+        # Компактный блок сведений о выявленном товаре
+        info_p = doc.add_paragraph()
+        info_p.paragraph_format.left_indent = Inches(0.15)
+        info_p.paragraph_format.space_before = Pt(0)
+        info_p.paragraph_format.space_after = Pt(4)
 
-        c2 = card_p.add_run("• Модель / Маркировка: ")
-        c2.font.bold = True
-        card_p.add_run(f"{pos.identified_model}\n")
+        r1 = info_p.add_run("• Товар / Модель: ")
+        r1.font.bold = True
+        info_p.add_run(f"{pos.identified_brand} {pos.identified_model}\n")
 
-        c3 = card_p.add_run("• Производитель / Завод: ")
-        c3.font.bold = True
-        card_p.add_run(f"{pos.manufacturer}\n")
+        r2 = info_p.add_run("• Производитель: ")
+        r2.font.bold = True
+        info_p.add_run(f"{pos.manufacturer}\n")
 
+        r3 = info_p.add_run("• Реестр Минпромторга (ГИСП): ")
+        r3.font.bold = True
         if pos.gisp_match and pos.gisp_match.registry_number:
-            c4 = card_p.add_run("• Реестровая запись Минпромторга (ГИСП): ")
-            c4.font.bold = True
-            c4_val = card_p.add_run(f"№ {pos.gisp_match.registry_number} ({pos.gisp_match.manufacturer})\n")
-            c4_val.font.color.rgb = RGBColor(5, 150, 105)
+            r3_val = info_p.add_run(f"№ {pos.gisp_match.registry_number} ({pos.gisp_match.manufacturer})\n")
+            r3_val.font.color.rgb = RGBColor(22, 101, 52)
+        else:
+            info_p.add_run("Не включен в реестр\n")
 
         if pos.reasoning:
-            c5 = card_p.add_run("• Обоснование соответствия ТЗ: ")
-            c5.font.bold = True
-            c5_val = card_p.add_run(f"{pos.reasoning}\n")
-            c5_val.font.italic = True
+            r4 = info_p.add_run("• Обоснование соответствия ТЗ: ")
+            r4.font.bold = True
+            r4_val = info_p.add_run(f"{pos.reasoning}\n")
+            r4_val.font.italic = True
+            r4_val.font.color.rgb = RGBColor(71, 85, 105)
 
-        # Таблица построчной сверки параметров (Форма 2)
-        doc.add_paragraph().add_run("Построчная таблица конкретных показателей (для заявки):").font.bold = True
+        # Таблица характеристик (конкретные показатели)
+        if pos.specs_breakdown:
+            doc.add_paragraph().paragraph_format.space_after = Pt(2)
+            lbl = doc.add_paragraph()
+            lbl.paragraph_format.space_before = Pt(2)
+            lbl.paragraph_format.space_after = Pt(2)
+            lbl.add_run("Конкретные показатели товара:").font.bold = True
 
-        table = doc.add_table(rows=1, cols=5)
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        headers = ["№", "Наименование параметра", "Требование ТЗ заказчика", "Конкретные показатели товара", "Соответствие"]
-        
-        hdr_cells = table.rows[0].cells
-        for i, head_text in enumerate(headers):
-            hdr_cells[i].text = head_text
-            p = hdr_cells[i].paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            for r in p.runs:
-                r.font.bold = True
-                r.font.size = Pt(9.5)
-                r.font.color.rgb = RGBColor(255, 255, 255)
-            _set_cell_bg(hdr_cells[i], "1E293B")
-
-        for s_idx, spec in enumerate(pos.specs_breakdown, start=1):
-            row = table.add_row()
-            cells = row.cells
-            cells[0].text = str(s_idx)
-            cells[1].text = spec.param_name
-            cells[2].text = spec.tz_requirement
-            cells[3].text = spec.product_fact
-            status_symbol = "✓ Подходит" if spec.status == "match" else "⚠️ Уточнить" if spec.status == "clarify" else "✗ Отклонение"
-            cells[4].text = f"{status_symbol}\n{spec.comment}".strip()
-
-            for idx, c in enumerate(cells):
-                c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-                p = c.paragraphs[0]
-                p.paragraph_format.line_spacing = 1.05
-                p.paragraph_format.space_before = Pt(2)
-                p.paragraph_format.space_after = Pt(2)
-                for r in p.runs:
-                    r.font.size = Pt(9)
-                if idx in (0, 4):
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                _set_cell_bg(c, "F8FAFC" if s_idx % 2 == 1 else "FFFFFF")
-
-        _set_table_borders(table)
-
-        # Таблица аналогов-эквивалентов
-        if pos.alternative_brands:
-            doc.add_paragraph()
-            doc.add_paragraph().add_run("Взаимозаменяемые аналоги-эквиваленты других заводов (по 44/223-ФЗ):").font.bold = True
-            
-            alt_table = doc.add_table(rows=1, cols=5)
-            alt_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            alt_headers = ["№", "Бренд аналога", "Модель / Серия", "Завод-изготовитель", "Совместимость"]
-            
-            alt_hdr_cells = alt_table.rows[0].cells
-            for i, head_text in enumerate(alt_headers):
-                alt_hdr_cells[i].text = head_text
-                p = alt_hdr_cells[i].paragraphs[0]
+            spec_table = doc.add_table(rows=1, cols=5)
+            spec_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            spec_headers = ["№", "Наименование параметра", "Требование ТЗ", "Конкретный показатель", "Соответствие"]
+            for i, h_text in enumerate(spec_headers):
+                cell = spec_table.rows[0].cells[i]
+                cell.text = h_text
+                p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for r in p.runs:
                     r.font.bold = True
-                    r.font.size = Pt(9.5)
+                    r.font.size = Pt(8.5)
                     r.font.color.rgb = RGBColor(255, 255, 255)
-                _set_cell_bg(alt_hdr_cells[i], "0F766E")
+                _set_cell_bg(cell, "334155")
+
+            for s_idx, spec in enumerate(pos.specs_breakdown, start=1):
+                row = spec_table.add_row()
+                cells = row.cells
+                cells[0].text = str(s_idx)
+                cells[1].text = spec.param_name
+                cells[2].text = spec.tz_requirement
+                cells[3].text = spec.product_fact
+                status_text = "Подходит" if spec.status == "match" else "Требует уточнения" if spec.status == "clarify" else "Отклонение"
+                cells[4].text = status_text
+
+                for idx, c in enumerate(cells):
+                    c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                    p = c.paragraphs[0]
+                    p.paragraph_format.line_spacing = 1.05
+                    p.paragraph_format.space_before = Pt(1.5)
+                    p.paragraph_format.space_after = Pt(1.5)
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+                    if idx in (0, 4):
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    _set_cell_bg(c, "F8FAFC" if s_idx % 2 == 1 else "FFFFFF")
+
+            _set_table_borders(spec_table)
+
+        # Таблица аналогов
+        if pos.alternative_brands:
+            doc.add_paragraph().paragraph_format.space_after = Pt(2)
+            alt_lbl = doc.add_paragraph()
+            alt_lbl.paragraph_format.space_before = Pt(3)
+            alt_lbl.paragraph_format.space_after = Pt(2)
+            alt_lbl.add_run("Эквиваленты и аналоги других производителей:").font.bold = True
+
+            alt_table = doc.add_table(rows=1, cols=5)
+            alt_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            alt_headers = ["№", "Бренд аналога", "Модель / Серия", "Завод-изготовитель", "Совместимость"]
+            for i, h_text in enumerate(alt_headers):
+                cell = alt_table.rows[0].cells[i]
+                cell.text = h_text
+                p = cell.paragraphs[0]
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for r in p.runs:
+                    r.font.bold = True
+                    r.font.size = Pt(8.5)
+                    r.font.color.rgb = RGBColor(255, 255, 255)
+                _set_cell_bg(cell, "475569")
 
             for a_idx, alt in enumerate(pos.alternative_brands, start=1):
                 row = alt_table.add_row()
@@ -646,18 +721,18 @@ def write_exact_product_docx(
                     p = c.paragraphs[0]
                     p.paragraph_format.line_spacing = 1.05
                     for r in p.runs:
-                        r.font.size = Pt(9)
+                        r.font.size = Pt(8.5)
                     if idx in (0, 4):
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    _set_cell_bg(c, "F0FDFA" if a_idx % 2 == 1 else "FFFFFF")
+                    _set_cell_bg(c, "F8FAFC" if a_idx % 2 == 1 else "FFFFFF")
 
             _set_table_borders(alt_table)
 
-    # Дисклеймер
-    doc.add_paragraph()
+    # Примечание / дисклеймер
+    doc.add_paragraph().paragraph_format.space_before = Pt(12)
     disc_p = doc.add_paragraph()
     disc_run = disc_p.add_run(f"Примечание: {report.disclaimer}")
-    disc_run.font.size = Pt(8.5)
+    disc_run.font.size = Pt(8)
     disc_run.font.italic = True
     disc_run.font.color.rgb = RGBColor(148, 163, 184)
 
@@ -666,28 +741,34 @@ def write_exact_product_docx(
 
 
 # ---------------------------------------------------------------------------
-# XLSX Export
+# XLSX Export (Сводная таблица + Конкретные показатели)
 # ---------------------------------------------------------------------------
 
 def write_exact_product_xlsx(
     path: str | Path,
     report: ExactProductReport,
     *,
-    title: str = "Спецификация конкретных показателей",
+    title: str = "Таблица подбора товара и аналогов",
 ) -> Path:
-    """Генерирует файл Excel со спецификацией конкретных показателей и аналогами."""
+    """Генерирует чистый структурированный файл Excel со сводкой, показателями и аналогами."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
 
-    # Лист 1: Конкретные показатели (Форма 2)
-    ws1 = wb.active
-    ws1.title = "Форма 2 (Показатели)"
-
-    # Header style
+    # Стили
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    sub_header_fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
+    banner_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+    zebra_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    banner_font = Font(name="Calibri", size=10.5, bold=True, color="0F172A")
+    title_font = Font(name="Calibri", size=13, bold=True, color="0F172A")
+    regular_font = Font(name="Calibri", size=9.5)
+    bold_regular_font = Font(name="Calibri", size=9.5, bold=True)
+
     thin_border = Border(
         left=Side(style="thin", color="CBD5E1"),
         right=Side(style="thin", color="CBD5E1"),
@@ -695,20 +776,29 @@ def write_exact_product_xlsx(
         bottom=Side(style="thin", color="CBD5E1"),
     )
 
-    ws1.append(["СВЕДЕНИЯ О КОНКРЕТНЫХ ПОКАЗАТЕЛЯХ ТОВАРА (ДЛЯ ЗАЯВКИ)"])
-    ws1.append([f"Закупка: {report.procurement_title}"])
+    # -----------------------------------------------------------------------
+    # ЛИСТ 1: Сводная таблица по закупке
+    # -----------------------------------------------------------------------
+    ws1 = wb.active
+    ws1.title = "Сводка"
+
+    ws1.append(["СВОДНАЯ ТАБЛИЦА: ПОДБОР ТОВАРА И АНАЛОГОВ ПО ТЗ"])
+    ws1.cell(row=1, column=1).font = title_font
+    ws1.append([f"Закупка: {report.procurement_title} | Всего позиций: {report.total_positions}"])
+    ws1.cell(row=2, column=1).font = Font(name="Calibri", size=10, italic=True, color="64748B")
     ws1.append([])
 
     headers1 = [
-        "Позиция ТЗ",
+        "№",
+        "Позиция из ТЗ",
         "Выявленный бренд",
-        "Точная модель",
+        "Точная модель / артикул",
         "Завод-изготовитель",
-        "Реестр ГИСП",
-        "Параметр",
-        "Требование ТЗ",
-        "Конкретный показатель",
-        "Статус",
+        "Реестр Минпромторга (ГИСП)",
+        "Обоснование соответствия",
+        "Основной аналог (РФ)",
+        "Завод аналога",
+        "Совместимость %",
     ]
     ws1.append(headers1)
     for col_idx in range(1, len(headers1) + 1):
@@ -717,80 +807,151 @@ def write_exact_product_xlsx(
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    current_row = 5
-    for pos in report.positions:
+    row_num = 5
+    for pos_idx, pos in enumerate(report.positions, start=1):
         gisp_text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
-        for spec in pos.specs_breakdown:
-            ws1.append([
-                pos.name_in_tz,
-                pos.identified_brand,
-                pos.identified_model,
-                pos.manufacturer,
-                gisp_text,
-                spec.param_name,
-                spec.tz_requirement,
-                spec.product_fact,
-                "Подходит" if spec.status == "match" else "Требует внимания",
-            ])
-            for col_idx in range(1, len(headers1) + 1):
-                c = ws1.cell(row=current_row, column=col_idx)
-                c.border = thin_border
-                c.font = Font(name="Calibri", size=10)
-                if col_idx in (5, 9):
-                    c.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    c.alignment = Alignment(vertical="center")
-            current_row += 1
+        main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
+
+        ws1.append([
+            pos.position_no or pos_idx,
+            pos.name_in_tz,
+            pos.identified_brand,
+            pos.identified_model,
+            pos.manufacturer,
+            gisp_text,
+            pos.reasoning,
+            f"{main_alt.brand} {main_alt.model}" if main_alt else "—",
+            main_alt.manufacturer if main_alt else "—",
+            f"{int(main_alt.confidence * 100)}%" if main_alt else "—",
+        ])
+
+        fill_to_use = zebra_fill if pos_idx % 2 == 1 else white_fill
+        for col_idx in range(1, len(headers1) + 1):
+            c = ws1.cell(row=row_num, column=col_idx)
+            c.border = thin_border
+            c.font = regular_font
+            c.fill = fill_to_use
+            if col_idx in (1, 6, 10):
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                c.alignment = Alignment(vertical="center", wrap_text=True)
+        row_num += 1
 
     _autofit_columns(ws1)
 
-    # Лист 2: Аналоги и эквиваленты
-    ws2 = wb.create_sheet(title="Аналоги и эквиваленты")
-    ws2.append(["ТАБЛИЦА ВЗАИМОЗАМЕНЯЕМЫХ ЭКВИВАЛЕНТОВ ПО 44/223-ФЗ"])
+    # -----------------------------------------------------------------------
+    # ЛИСТ 2: Характеристики для заявки (С четкой группировкой по позициям)
+    # -----------------------------------------------------------------------
+    ws2 = wb.create_sheet(title="Характеристики (Заявка)")
+
+    ws2.append(["ТАБЛИЦА КОНКРЕТНЫХ ПОКАЗАТЕЛЕЙ ДЛЯ ЗАЯВКИ (ПО ПОЗИЦИЯМ ТЗ)"])
+    ws2.cell(row=1, column=1).font = title_font
     ws2.append([f"Закупка: {report.procurement_title}"])
+    ws2.cell(row=2, column=1).font = Font(name="Calibri", size=10, italic=True, color="64748B")
     ws2.append([])
 
-    alt_fill = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
-    headers2 = [
-        "Позиция ТЗ",
-        "Основной товар (Оригинал)",
+    current_r = 4
+    for pos in report.positions:
+        gisp_text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
+        banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   ГИСП: {gisp_text}"
+
+        # Баннер позиции
+        ws2.merge_cells(start_row=current_r, start_column=1, end_row=current_r, end_column=5)
+        banner_cell = ws2.cell(row=current_r, column=1, value=banner_text)
+        banner_cell.fill = banner_fill
+        banner_cell.font = banner_font
+        banner_cell.alignment = Alignment(vertical="center")
+        current_r += 1
+
+        # Заголовки таблицы параметров
+        p_headers = ["№", "Наименование параметра", "Требование заказчика (ТЗ)", "Конкретный показатель товара", "Соответствие"]
+        for c_idx, h_text in enumerate(p_headers, start=1):
+            c = ws2.cell(row=current_r, column=c_idx, value=h_text)
+            c.fill = sub_header_fill
+            c.font = header_font
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        current_r += 1
+
+        for s_idx, spec in enumerate(pos.specs_breakdown, start=1):
+            status_str = "Подходит" if spec.status == "match" else "Уточнить" if spec.status == "clarify" else "Отклонение"
+            ws2.append([
+                s_idx,
+                spec.param_name,
+                spec.tz_requirement,
+                spec.product_fact,
+                status_str,
+            ])
+            fill_row = zebra_fill if s_idx % 2 == 1 else white_fill
+            for col_idx in range(1, 6):
+                cell = ws2.cell(row=current_r, column=col_idx)
+                cell.border = thin_border
+                cell.font = regular_font
+                cell.fill = fill_row
+                if col_idx in (1, 5):
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                else:
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+            current_r += 1
+
+        # Пустая строка-разделитель между позициями
+        ws2.append([])
+        current_r += 1
+
+    _autofit_columns(ws2)
+
+    # -----------------------------------------------------------------------
+    # ЛИСТ 3: Аналоги и эквиваленты
+    # -----------------------------------------------------------------------
+    ws3 = wb.create_sheet(title="Аналоги и эквиваленты")
+
+    ws3.append(["ТАБЛИЦА ВЗАИМОЗАМЕНЯЕМЫХ ЭКВИВАЛЕНТОВ ПО 44/223-ФЗ"])
+    ws3.cell(row=1, column=1).font = title_font
+    ws3.append([f"Закупка: {report.procurement_title}"])
+    ws3.cell(row=2, column=1).font = Font(name="Calibri", size=10, italic=True, color="64748B")
+    ws3.append([])
+
+    headers3 = [
+        "№ поз.",
+        "Позиция в ТЗ",
+        "Основной товар",
         "Бренд аналога",
-        "Модель аналога",
-        "Завод аналога",
+        "Модель / Серия",
+        "Завод-изготовитель",
         "Совместимость",
-        "Особенности / Преимущества",
+        "Преимущества / Особенности",
     ]
-    ws2.append(headers2)
-    for col_idx in range(1, len(headers2) + 1):
-        cell = ws2.cell(row=4, column=col_idx)
-        cell.fill = alt_fill
+    ws3.append(headers3)
+    for col_idx in range(1, len(headers3) + 1):
+        cell = ws3.cell(row=4, column=col_idx)
+        cell.fill = sub_header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    current_row = 5
+    r_num = 5
     for pos in report.positions:
-        main_prod_text = f"{pos.identified_brand} {pos.identified_model} ({pos.manufacturer})"
+        main_text = f"{pos.identified_brand} {pos.identified_model}"
         for alt in pos.alternative_brands:
-            ws2.append([
+            ws3.append([
+                pos.position_no,
                 pos.name_in_tz,
-                main_prod_text,
+                main_text,
                 alt.brand,
                 alt.model,
                 alt.manufacturer,
                 f"{int(alt.confidence * 100)}%",
                 alt.notes,
             ])
-            for col_idx in range(1, len(headers2) + 1):
-                c = ws2.cell(row=current_row, column=col_idx)
+            for col_idx in range(1, len(headers3) + 1):
+                c = ws3.cell(row=r_num, column=col_idx)
                 c.border = thin_border
-                c.font = Font(name="Calibri", size=10)
-                if col_idx == 6:
+                c.font = regular_font
+                if col_idx in (1, 7):
                     c.alignment = Alignment(horizontal="center", vertical="center")
                 else:
-                    c.alignment = Alignment(vertical="center")
-            current_row += 1
+                    c.alignment = Alignment(vertical="center", wrap_text=True)
+            r_num += 1
 
-    _autofit_columns(ws2)
+    _autofit_columns(ws3)
 
     wb.save(str(target_path))
     return target_path
@@ -848,3 +1009,4 @@ def _autofit_columns(ws) -> None:
             if len(val_str) > max_len:
                 max_len = len(val_str)
         ws.column_dimensions[col_letter].width = min(45, max(12, max_len + 3))
+

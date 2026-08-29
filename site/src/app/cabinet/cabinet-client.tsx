@@ -163,16 +163,16 @@ const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime()
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
-    id: "exact_product",
-    label: "Подбор товара и аналогов",
-    description: "выявление конкретной модели по ТЗ, Форма 2 и аналоги",
-    icon: CheckCircle2,
-  },
-  {
     id: "supplier_search",
     label: "Поиск поставщиков",
     description: "техническое задание файлом, текстом или архивом",
     icon: Search,
+  },
+  {
+    id: "exact_product",
+    label: "Подбор товара и аналогов",
+    description: "выявление конкретной модели по ТЗ, таблица характеристик и аналоги",
+    icon: CheckCircle2,
   },
   {
     id: "procurement_report",

@@ -1410,8 +1410,8 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         title=job.title or "Конкретные показатели и аналоги",
     )
     output_files = [
-        _output_artifact("exact_product_spec", "Спецификация и Форма 2 (DOCX)", docx_path, KIND_EXACT_PRODUCT),
-        _output_artifact("exact_product_table", "Таблица конкретных показателей и аналоги (XLSX)", xlsx_path, KIND_EXACT_PRODUCT),
+        _output_artifact("exact_product_spec", "Отчёт (DOCX)", docx_path, KIND_EXACT_PRODUCT),
+        _output_artifact("exact_product_table", "Таблица (XLSX)", xlsx_path, KIND_EXACT_PRODUCT),
     ]
     zip_path = zip_paths(out_dir / _result_filename("archive", stem, ".zip"), [docx_path, xlsx_path])
     evidence_payload = {

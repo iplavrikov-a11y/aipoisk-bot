@@ -3054,9 +3054,9 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
     if kind == "quote_request":
         return "Запрос КП"
     if kind == "exact_product_spec":
-        return "Форма 2 (DOCX)"
+        return "Отчёт (DOCX)"
     if kind == "exact_product_table":
-        return "Таблица аналогов (XLSX)"
+        return "Таблица (XLSX)"
     return "Файл"
 
 
