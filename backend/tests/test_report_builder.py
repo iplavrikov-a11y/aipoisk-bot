@@ -34,8 +34,30 @@ class ReportBuilderTests(unittest.TestCase):
             doc = Document(path)
             text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
 
-        self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
-        self.assertIn("Критичные юридические, финансовые и технические условия", text)
+            self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
+            self.assertIn("Критичные юридические, финансовые и технические условия", text)
+
+    def test_procurement_docx_heading_and_body_font_sizes(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "analysis.docx"
+            write_procurement_docx(
+                path,
+                "#### Общая информация\n- Заказчик: Тестовый заказчик\n- ИНН: 7701234567",
+                title="Анализ документации",
+            )
+
+            doc = Document(path)
+            heading_p = [p for p in doc.paragraphs if p.text == "Общая информация"][0]
+            body_p = [p for p in doc.paragraphs if "Тестовый заказчик" in p.text][0]
+
+            heading_size = heading_p.runs[0].font.size.pt
+            body_size = body_p.runs[0].font.size.pt
+
+            self.assertEqual(heading_size, 11.0)
+            self.assertEqual(body_size, 9.5)
+            self.assertGreater(heading_size, body_size)
 
     def test_procurement_docx_removes_okpd_and_formats_tz_columns(self) -> None:
         from docx import Document

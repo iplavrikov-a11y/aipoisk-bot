@@ -58,9 +58,14 @@ class AlternativeProduct:
     manufacturer: str
     confidence: float = 0.90
     notes: str = ""
+    specs_breakdown: list[SpecParameterMatch] = field(default_factory=list)
+    gisp_match: Optional[GispRegistryMatch] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["specs_breakdown"] = [s.to_dict() if isinstance(s, SpecParameterMatch) else s for s in self.specs_breakdown]
+        data["gisp_match"] = self.gisp_match.to_dict() if self.gisp_match else None
+        return data
 
 
 @dataclass
@@ -129,7 +134,7 @@ class ExactProductReport:
 # ---------------------------------------------------------------------------
 
 EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по государственным закупкам (44-ФЗ, 223-ФЗ) и промышленному оборудованию.
-Твоя задача — проанализировать техническое задание (ТЗ) и определить модель, характеристики для заявки и взаимозаменяемые аналоги.
+Твоя задача — проанализировать техническое задание (ТЗ) и определить модель, характеристики для первой части заявки (Форма 2) и взаимозаменяемые аналоги с их построчной сверкой.
 Пиши максимально емко, кратко и по делу, без общих фраз и лишней воды!
 
 1. ДЛЯ КАЖДОЙ ПОЗИЦИИ ТЗ:
@@ -148,12 +153,19 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
    - "comment": Краткая отметка (например: "Точное совпадение", "ГОСТ").
 
 3. ВЗАИМОЗАМЕНЯЕМЫЕ РОССИЙСКИЕ АНАЛОГИ / ЭКВИВАЛЕНТЫ (alternative_brands):
-   Укажи от 2 до 4 реальных моделей других заводов РФ, подходящих как эквивалент по 44/223-ФЗ:
+   Укажи от 2 до 4 реальных моделей других заводов РФ, подходящих как эквивалент по 44/223-ФЗ.
+   ДЛЯ КАЖДОГО АНАЛОГА ОБЯЗАТЕЛЬНО СФОРМИРУЙ ТАКУЮ ЖЕ ПОСТРОЧНУЮ СВЕРКУ ХАРАКТЕРИСТИК ДЛЯ ЗАЯВКИ (specs_breakdown):
    - "brand": Бренд аналога.
    - "model": Модель аналога.
    - "manufacturer": Завод-изготовитель аналога.
    - "confidence": Совместимость с ТЗ (число от 0.70 до 0.98).
-   - "notes": Краткое сравнение ключевых характеристик (например: "Объем: 2.2 м³ (совпадает), Сцепка: А7, Колея: 900 мм — полный эквивалент").
+   - "notes": Краткое обоснование совместимости и особенности аналога.
+   - "specs_breakdown": Построчная сверка тех же ключевых параметров ТЗ с КОНКРЕТНЫМИ значениями модели-аналога:
+     * "param_name": Наименование характеристики.
+     * "tz_requirement": Требование ТЗ.
+     * "product_fact": Конкретный фактический показатель аналога (без "не менее/не более").
+     * "status": "match" (подходит) / "mismatch" (отклонение) / "clarify" (уточнить).
+     * "comment": Обоснование соответствия или эквивалентности показателя.
 
 Спецификация и текст закупки:
 {context}
@@ -174,9 +186,9 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
         {{
           "param_name": "Параметр",
           "tz_requirement": "Требование ТЗ",
-          "product_fact": "Конкретный показатель",
+          "product_fact": "Конкретный показатель базового товара",
           "status": "match",
-          "comment": "Отметка"
+          "comment": "Точное совпадение"
         }}
       ],
       "alternative_brands": [
@@ -185,7 +197,16 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
           "model": "Модель аналога",
           "manufacturer": "Завод аналога",
           "confidence": 0.92,
-          "notes": "Сравнение параметров с ТЗ"
+          "notes": "Обоснование эквивалентности",
+          "specs_breakdown": [
+            {{
+              "param_name": "Параметр",
+              "tz_requirement": "Требование ТЗ",
+              "product_fact": "Конкретный показатель аналога",
+              "status": "match",
+              "comment": "Соответствует требованиям ТЗ"
+            }}
+          ]
         }}
       ]
     }}
@@ -463,6 +484,53 @@ async def analyze_exact_product(
                 except Exception:
                     a_conf = 0.90
 
+                # Построчная сверка параметров аналога для Формы-2
+                alt_specs_list: list[SpecParameterMatch] = []
+                raw_alt_specs = a.get("specs_breakdown") or []
+                if isinstance(raw_alt_specs, list) and raw_alt_specs:
+                    for s in raw_alt_specs:
+                        if not isinstance(s, dict):
+                            continue
+                        param_name = str(s.get("param_name") or "").strip()
+                        tz_req = str(s.get("tz_requirement") or "").strip()
+                        fact = str(s.get("product_fact") or "").strip()
+                        status = str(s.get("status") or "match").lower().strip()
+                        if "mismatch" in status or "не подходит" in status:
+                            status = "mismatch"
+                        elif "clarify" in status or "уточн" in status or "опци" in status:
+                            status = "clarify"
+                        else:
+                            status = "match"
+                        comment = str(s.get("comment") or ("Подходит" if status == "match" else "Требует внимания")).strip()
+
+                        if param_name or tz_req or fact:
+                            alt_specs_list.append(SpecParameterMatch(
+                                param_name=param_name or "Технический параметр",
+                                tz_requirement=tz_req or "По спецификации ТЗ",
+                                product_fact=fact or tz_req,
+                                status=status,
+                                comment=comment,
+                            ))
+                elif specs_list:
+                    # Фоллбэк: если ИИ не вернул отдельный specs_breakdown для аналога,
+                    # проецируем параметры ТЗ с пометкой соответствия эквиваленту
+                    for s in specs_list:
+                        alt_specs_list.append(SpecParameterMatch(
+                            param_name=s.param_name,
+                            tz_requirement=s.tz_requirement,
+                            product_fact=s.product_fact,
+                            status="match",
+                            comment="Эквивалентный показатель аналога",
+                        ))
+
+                # Поиск аналога в реестре Минпромторга (ГИСП)
+                alt_gisp_match = find_minprom_gisp_match(
+                    brand=a_brand,
+                    manufacturer=a_manuf,
+                    model=a_model,
+                    name_in_tz=name_in_tz,
+                )
+
                 if a_brand or a_model:
                     alts_list.append(AlternativeProduct(
                         brand=a_brand or "Аналог",
@@ -470,6 +538,8 @@ async def analyze_exact_product(
                         manufacturer=a_manuf,
                         confidence=a_conf,
                         notes=a_notes,
+                        specs_breakdown=alt_specs_list,
+                        gisp_match=alt_gisp_match,
                     ))
 
         # Поиск в реестре Минпромторга (ГИСП)
@@ -940,6 +1010,91 @@ def write_exact_product_docx(
             _prevent_row_split(alt_table)
             _set_table_header_repeat(alt_table)
 
+            # Детальные показатели для первой части заявки (Форма 2) по каждому российскому аналогу
+            for a_idx, alt in enumerate(pos.alternative_brands, start=1):
+                if not alt.specs_breakdown:
+                    continue
+
+                alt_form2_p = doc.add_paragraph()
+                alt_form2_p.paragraph_format.space_before = Pt(6)
+                alt_form2_p.paragraph_format.space_after = Pt(2)
+                gisp_alt_tag = f"ГИСП № {alt.gisp_match.registry_number}" if (alt.gisp_match and alt.gisp_match.registry_number) else "ГИСП: Реестр РФ"
+                r_a_hdr = alt_form2_p.add_run(f"Показатели аналога №{a_idx} для первой части заявки (Форма 2) — {alt.brand} {alt.model} ({alt.manufacturer})   |   {gisp_alt_tag}   |   Совместимость: {int(alt.confidence * 100)}%:")
+                r_a_hdr.font.bold = True
+                r_a_hdr.font.size = Pt(8.5)
+                r_a_hdr.font.color.rgb = BRAND_EMERALD
+
+                alt_spec_table = doc.add_table(rows=1, cols=6)
+                alt_spec_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                alt_spec_table.autofit = False
+                _set_table_fixed_width(alt_spec_table, 6.97)
+
+                alt_spec_headers = [
+                    ("№", Inches(0.35)),
+                    ("Наименование параметра", Inches(1.70)),
+                    ("Требование ТЗ", Inches(1.45)),
+                    (f"Конкретный показатель ({alt.brand})", Inches(1.50)),
+                    ("Соответствие", Inches(0.77)),
+                    ("Примечание", Inches(1.20)),
+                ]
+
+                for i, (h_text, w) in enumerate(alt_spec_headers):
+                    cell = alt_spec_table.rows[0].cells[i]
+                    cell.width = w
+                    cell.text = h_text
+                    p = cell.paragraphs[0]
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p.paragraph_format.space_before = Pt(2)
+                    p.paragraph_format.space_after = Pt(2)
+                    for r in p.runs:
+                        r.font.bold = True
+                        r.font.size = Pt(8)
+                        r.font.color.rgb = RGBColor(255, 255, 255)
+                    _set_cell_bg(cell, SUBTLE_EMERALD)
+
+                for s_idx, spec in enumerate(alt.specs_breakdown, start=1):
+                    row = alt_spec_table.add_row()
+                    cells = row.cells
+                    cells[0].text = str(s_idx)
+                    cells[1].text = spec.param_name
+                    cells[2].text = spec.tz_requirement
+                    cells[3].text = spec.product_fact
+                    status_text = "Подходит" if spec.status == "match" else "Уточнить" if spec.status == "clarify" else "Отклонение"
+                    cells[4].text = status_text
+                    cells[5].text = spec.comment
+
+                    fill_color = ZEBRA_MINT if s_idx % 2 == 1 else "FFFFFF"
+
+                    for idx, c in enumerate(cells):
+                        c.width = alt_spec_headers[idx][1]
+                        c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                        _set_cell_bg(c, fill_color)
+                        p = c.paragraphs[0]
+                        p.paragraph_format.line_spacing = 1.05
+                        p.paragraph_format.space_before = Pt(1.5)
+                        p.paragraph_format.space_after = Pt(1.5)
+                        for r in p.runs:
+                            r.font.size = Pt(7.5)
+                            r.font.color.rgb = TEXT_DARK
+                        if idx in (0, 4):
+                            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        if idx == 3:
+                            for r in p.runs:
+                                r.font.bold = True
+                        if idx == 4:
+                            for r in p.runs:
+                                r.font.bold = True
+                                if spec.status == "match":
+                                    r.font.color.rgb = TEXT_GREEN
+                                elif spec.status == "clarify":
+                                    r.font.color.rgb = RGBColor(180, 83, 9)
+                                else:
+                                    r.font.color.rgb = RGBColor(185, 28, 28)
+
+                _set_table_full_grid_borders(alt_spec_table, BORDER_COLOR)
+                _prevent_row_split(alt_spec_table)
+                _set_table_header_repeat(alt_spec_table)
+
     # 6. Дисклеймер
     doc.add_paragraph().paragraph_format.space_before = Pt(8)
     disc_p = doc.add_paragraph()
@@ -1267,6 +1422,67 @@ def write_exact_product_xlsx(
                     (notes_text, 43),
                 ]
                 ws.row_dimensions[r_alt].height = _calc_row_h(alt_cells, line_h=16, min_h=24)
+
+            # Детальные показатели для Формы 2 по каждому аналогу в Excel
+            for a_idx, alt in enumerate(pos.alternative_brands, start=1):
+                if not alt.specs_breakdown:
+                    continue
+                ws.append([None] * 8)
+                r_alt_sp_sep = ws.max_row
+                ws.row_dimensions[r_alt_sp_sep].height = 8
+
+                gisp_alt_tag = f"ГИСП № {alt.gisp_match.registry_number}" if (alt.gisp_match and alt.gisp_match.registry_number) else "ГИСП: Реестр РФ"
+                alt_hdr_text = f"Показатели аналога №{a_idx} для заявки (Форма 2) — {alt.brand} {alt.model} ({alt.manufacturer}) | {gisp_alt_tag} | Совместимость: {int(alt.confidence * 100)}%"
+                ws.append([alt_hdr_text])
+                r_alt_ban = ws.max_row
+                _style_range(r_alt_ban, 1, 8, fill=card_bg, font=bold_10, align=Alignment(vertical="center", wrap_text=True), border=thin_border)
+                ws.row_dimensions[r_alt_ban].height = _calc_merged_h(alt_hdr_text, 169, 18, 26)
+
+                ws.append(["№", "Наименование параметра", "Требование заказчика (ТЗ)", f"Конкретный показатель ({alt.brand})", "", "Соответствие", "Примечание и обоснование показателя", ""])
+                r_asp_h = ws.max_row
+                ws.row_dimensions[r_asp_h].height = 24
+                _style_range(r_asp_h, 1, 1, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+                _style_range(r_asp_h, 2, 2, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+                _style_range(r_asp_h, 3, 3, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+                _style_range(r_asp_h, 4, 5, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+                _style_range(r_asp_h, 6, 6, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+                _style_range(r_asp_h, 7, 8, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
+
+                for s_idx, spec in enumerate(alt.specs_breakdown, start=1):
+                    status_str = "Подходит" if spec.status == "match" else "Уточнить" if spec.status == "clarify" else "Отклонение"
+                    ws.append([
+                        s_idx,
+                        spec.param_name,
+                        spec.tz_requirement,
+                        spec.product_fact,
+                        "",
+                        status_str,
+                        spec.comment,
+                        "",
+                    ])
+                    r_asp = ws.max_row
+                    fill_r = zebra_bg if s_idx % 2 == 1 else white_bg
+
+                    _style_range(r_asp, 1, 1, fill=fill_r, font=bold_10, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
+                    _style_range(r_asp, 2, 2, fill=fill_r, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
+                    _style_range(r_asp, 3, 3, fill=fill_r, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
+                    _style_range(r_asp, 4, 5, fill=fill_r, font=bold_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
+
+                    status_fill = match_bg if spec.status == "match" else clarify_bg if spec.status == "clarify" else mismatch_bg
+                    status_font = green_bold if spec.status == "match" else amber_bold if spec.status == "clarify" else red_bold
+                    _style_range(r_asp, 6, 6, fill=status_fill, font=status_font, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
+
+                    _style_range(r_asp, 7, 8, fill=fill_r, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
+
+                    sp_cells = [
+                        (str(s_idx), 6),
+                        (spec.param_name, 30),
+                        (spec.tz_requirement, 24),
+                        (spec.product_fact, 44),
+                        (status_str, 15),
+                        (spec.comment, 43),
+                    ]
+                    ws.row_dimensions[r_asp].height = _calc_row_h(sp_cells, line_h=16, min_h=24)
 
     # 5. Дисклеймер
     ws.append([None] * 8)

@@ -60,12 +60,28 @@ def test_docx_and_xlsx_generation():
             comment="Соответствует ТУ завода",
         )
 
+        alt_param1 = SpecParameterMatch(
+            param_name="Внутренний диаметр",
+            tz_requirement="не менее 128 мм",
+            product_fact="128 мм",
+            status="match",
+            comment="Соответствует ТЗ",
+        )
+        alt_param2 = SpecParameterMatch(
+            param_name="Материал ворса",
+            tz_requirement="полипропилен морозостойкий",
+            product_fact="полипропилен первичный",
+            status="match",
+            comment="Эквивалентный материал",
+        )
+
         alt1 = AlternativeProduct(
             brand="Коминвест-АКМТ",
             model="Диск 128х550",
             manufacturer="АО Коминвест-АКМТ",
             confidence=0.95,
             notes="В наличии на складе в РФ, дешевле оригинала на ~12%",
+            specs_breakdown=[alt_param1, alt_param2],
         )
 
         gisp = GispRegistryMatch(
@@ -137,6 +153,15 @@ async def test_analyze_exact_product_pipeline():
                         "manufacturer": "Коминвест",
                         "confidence": 0.90,
                         "notes": "В наличии",
+                        "specs_breakdown": [
+                            {
+                                "param_name": "Диаметр",
+                                "tz_requirement": "128 мм",
+                                "product_fact": "128 мм",
+                                "status": "match",
+                                "comment": "Аналог соответствует",
+                            }
+                        ]
                     }
                 ],
             }
@@ -149,6 +174,8 @@ async def test_analyze_exact_product_pipeline():
         assert report.total_positions == 1
         assert report.positions[0].identified_brand == "ПК Профмаркет"
         assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"
+        assert len(report.positions[0].alternative_brands[0].specs_breakdown) == 1
+        assert report.positions[0].alternative_brands[0].specs_breakdown[0].param_name == "Диаметр"
 
 
 def test_process_exact_product_worker():

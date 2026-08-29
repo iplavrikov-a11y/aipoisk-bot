@@ -458,47 +458,49 @@ def _write_markdown_docx(
             continue
         if line.startswith("# "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(8)
-            p.paragraph_format.space_after = Pt(3)
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(4)
             r = p.add_run(line[2:])
             r.font.bold = True
-            r.font.size = Pt(11.5)
+            r.font.size = Pt(13.5)
             r.font.color.rgb = brand_emerald
         elif line.startswith("## "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.space_before = Pt(10)
+            p.paragraph_format.space_after = Pt(3)
             r = p.add_run(line[3:])
             r.font.bold = True
-            r.font.size = Pt(10.5)
+            r.font.size = Pt(12.5)
             r.font.color.rgb = dark_emerald
         elif line.startswith("### "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
-            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after = Pt(3)
             r = p.add_run(line[4:])
             r.font.bold = True
-            r.font.size = Pt(9.5)
-            r.font.color.rgb = teal_emerald
+            r.font.size = Pt(11.5)
+            r.font.color.rgb = dark_emerald
         elif line.startswith("#### "):
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(3)
+            p.paragraph_format.space_before = Pt(7)
             p.paragraph_format.space_after = Pt(2)
             r = p.add_run(line[5:])
             r.font.bold = True
-            r.font.size = Pt(9)
+            r.font.size = Pt(11)
             r.font.color.rgb = dark_emerald
         elif line.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ")):
             paragraph = doc.add_paragraph()
             paragraph.paragraph_format.left_indent = Inches(0.15)
+            paragraph.paragraph_format.line_spacing = 1.1
             paragraph.paragraph_format.space_before = Pt(1)
             paragraph.paragraph_format.space_after = Pt(2)
-            _add_markdown_runs(paragraph, line)
+            _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
         else:
             paragraph = doc.add_paragraph()
+            paragraph.paragraph_format.line_spacing = 1.1
             paragraph.paragraph_format.space_before = Pt(1)
             paragraph.paragraph_format.space_after = Pt(2)
-            _add_markdown_runs(paragraph, line)
+            _add_markdown_runs(paragraph, line, font_size=Pt(9.5), font_color=text_dark)
         index += 1
     doc.save(out)
     return out
@@ -634,7 +636,13 @@ def _apply_table_column_widths(table, widths: list[int] | None) -> None:
                 paragraph.paragraph_format.space_after = 0
 
 
-def _add_markdown_runs(paragraph, text: str) -> None:
+def _add_markdown_runs(
+    paragraph,
+    text: str,
+    *,
+    font_size=None,
+    font_color=None,
+) -> None:
     parts = re.split(r"(\*\*[^*]+\*\*)", str(text or ""))
     for part in parts:
         if not part:
@@ -646,6 +654,10 @@ def _add_markdown_runs(paragraph, text: str) -> None:
                 paragraph.add_run().add_break()
             run = paragraph.add_run(segment)
             run.bold = bold
+            if font_size is not None:
+                run.font.size = font_size
+            if font_color is not None:
+                run.font.color.rgb = font_color
 
 
 def _remove_okpd_codes(text: str) -> str:
