@@ -800,7 +800,7 @@ def write_exact_product_docx(
 
 
 # ---------------------------------------------------------------------------
-# XLSX Export (Единый сводный Excel-отчет)
+# XLSX Export (Идеальная адаптивная верстка в видимой области экрана)
 # ---------------------------------------------------------------------------
 
 def write_exact_product_xlsx(
@@ -809,7 +809,7 @@ def write_exact_product_xlsx(
     *,
     title: str = "Подбор товара и аналоги",
 ) -> Path:
-    """Генерирует единый понятный файл Excel со сводкой и детальными показателями на одном листе."""
+    """Генерирует чистый, высококонтрастный и легко читаемый файл Excel, укладывающийся в 1 экран."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -817,23 +817,32 @@ def write_exact_product_xlsx(
     ws = wb.active
     ws.title = "Подбор товара и аналоги"
 
-    # Стили
-    navy_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-    slate_fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
-    alt_header_fill = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+    # Цветовая палитра Slate & Navy (высокий контраст, никакой бледности)
+    navy_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    slate_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    alt_header_fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
     banner_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
-    hint_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    card_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     zebra_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
-    title_font = Font(name="Calibri", size=13, bold=True, color="0F172A")
-    section_font = Font(name="Calibri", size=11, bold=True, color="0F172A")
-    banner_font = Font(name="Calibri", size=10.5, bold=True, color="0F172A")
-    header_font = Font(name="Calibri", size=9.5, bold=True, color="FFFFFF")
-    hint_font = Font(name="Calibri", size=9.5, italic=True, color="475569")
-    regular_font = Font(name="Calibri", size=9.5)
-    bold_font = Font(name="Calibri", size=9.5, bold=True)
-    small_gray_font = Font(name="Calibri", size=8.5, italic=True, color="64748B")
+    match_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")  # light green
+    clarify_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")  # light yellow
+    mismatch_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")  # light red
+
+    # Типографика (крупные четкие шрифты 10-14pt)
+    title_font = Font(name="Calibri", size=14, bold=True, color="0F172A")
+    subtitle_font = Font(name="Calibri", size=11, bold=True, color="334155")
+    section_font = Font(name="Calibri", size=12, bold=True, color="0F172A")
+    banner_font = Font(name="Calibri", size=11, bold=True, color="0F172A")
+    header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    text_bold_font = Font(name="Calibri", size=10, bold=True, color="0F172A")
+    text_regular_font = Font(name="Calibri", size=10, color="1E293B")
+    hint_font = Font(name="Calibri", size=10, color="334155")
+
+    green_bold_font = Font(name="Calibri", size=10, bold=True, color="15803D")
+    amber_bold_font = Font(name="Calibri", size=10, bold=True, color="B45309")
+    red_bold_font = Font(name="Calibri", size=10, bold=True, color="B91C1C")
 
     thin_border = Border(
         left=Side(style="thin", color="CBD5E1"),
@@ -842,44 +851,66 @@ def write_exact_product_xlsx(
         bottom=Side(style="thin", color="CBD5E1"),
     )
 
-    # 1. Шапка документа
+    # 1. Шапка документа (Строго 6 колонок A..F)
     ws.append(["TenderLex | ПОДБОР ТОВАРА, ХАРАКТЕРИСТИКИ И АНАЛОГИ ПО ТЗ"])
+    ws.merge_cells("A1:F1")
     ws.cell(row=1, column=1).font = title_font
+    ws.row_dimensions[1].height = 24
 
-    ws.append([f"Закупка: {report.procurement_title} | Всего позиций в спецификации: {report.total_positions}"])
-    ws.cell(row=2, column=1).font = Font(name="Calibri", size=10, bold=True, color="334155")
+    ws.append([f"Закупка: {report.procurement_title} | Всего позиций в ТЗ: {report.total_positions}"])
+    ws.merge_cells("A2:F2")
+    ws.cell(row=2, column=1).font = subtitle_font
+    ws.row_dimensions[2].height = 20
 
-    # Подсказка по структуре отчета
-    ws.append(["💡 СТРУКТУРА ОТЧЕТА: Вверху — сводная таблица по всем позициям. Ниже — построчные характеристики для заявки и аналоги по каждому товару."])
-    hint_cell = ws.cell(row=3, column=1)
-    hint_cell.font = hint_font
-    hint_cell.fill = hint_fill
+    def _calc_row_height(text: str, chars_per_line: int = 90, line_height: int = 18, min_h: int = 24) -> int:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return min_h
+        lines = sum(max(1, (len(part) // chars_per_line) + 1) for part in cleaned.split("\n"))
+        return max(min_h, lines * line_height)
+
+    # 2. Блок навигации и резюме (Объединен на всю ширину A..F с переносом строк)
+    hint_msg = "💡 КАК РАБОТАТЬ С ОТЧЁТОМ: Вверху — сводная таблица по всей закупке. Ниже — подробные параметры для первой части заявки и заводы-аналоги по каждой позиции."
+    ws.append([hint_msg])
+    ws.merge_cells("A3:F3")
+    c3 = ws.cell(row=3, column=1)
+    c3.font = hint_font
+    c3.fill = card_fill
+    c3.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[3].height = _calc_row_height(hint_msg, chars_per_line=95, line_height=18, min_h=24)
 
     if report.summary:
         ws.append([f"Экспертное резюме: {report.summary}"])
-        ws.cell(row=4, column=1).font = Font(name="Calibri", size=9.5, color="334155")
+        r4 = ws.max_row
+        ws.merge_cells(start_row=r4, start_column=1, end_row=r4, end_column=6)
+        c4 = ws.cell(row=r4, column=1)
+        c4.font = text_regular_font
+        c4.fill = card_fill
+        c4.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[r4].height = _calc_row_height(report.summary, chars_per_line=95, line_height=18, min_h=28)
 
-    ws.append([])  # строка 5
+    ws.append([])  # пустая строка
+    ws.row_dimensions[ws.max_row].height = 10
 
-    # 2. Раздел 1: СВОДНАЯ ВЕДОМОСТЬ ПО ВСЕМ ПОЗИЦИЯМ ТЗ
+    # 3. Раздел 1: СВОДНАЯ ВЕДОМОСТЬ ПО ВСЕМ ПОЗИЦИЯМ ТЗ
     sec1_row = ws.max_row + 1
-    ws.append(["1. СВОДНАЯ ВЕДОМОСТЬ ПО ВСЕМ ПОЗИЦИЯМ ТЗ (ИТОГОВЫЙ ПОДБОР)"])
+    ws.append(["1. СВОДНАЯ ВЕДОМОСТЬ ПО ВСЕМ ПОЗИЦИЯМ СПЕЦИФИКАЦИИ"])
+    ws.merge_cells(start_row=sec1_row, start_column=1, end_row=sec1_row, end_column=6)
     ws.cell(row=sec1_row, column=1).font = section_font
+    ws.row_dimensions[sec1_row].height = 22
 
     headers1 = [
         "№",
         "Позиция из ТЗ",
         "Выявленный бренд",
         "Точная модель / артикул",
-        "Завод-изготовитель",
-        "Реестр Минпромторга (ГИСП)",
-        "Основной аналог (РФ)",
-        "Завод аналога",
-        "Соответствие %",
+        "Реестр ГИСП",
+        "Производитель и основной аналог",
     ]
     ws.append(headers1)
     hdr1_row = ws.max_row
-    for col_idx in range(1, len(headers1) + 1):
+    ws.row_dimensions[hdr1_row].height = 24
+    for col_idx in range(1, 7):
         cell = ws.cell(row=hdr1_row, column=col_idx)
         cell.fill = navy_fill
         cell.font = header_font
@@ -888,43 +919,57 @@ def write_exact_product_xlsx(
     for pos_idx, pos in enumerate(report.positions, start=1):
         gisp_text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
         main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
+        
+        mfg_and_alt_text = f"Завод: {pos.manufacturer}"
+        if main_alt:
+            mfg_and_alt_text += f"\nАналог ({int(main_alt.confidence * 100)}%): {main_alt.brand} {main_alt.model} ({main_alt.manufacturer})"
 
         ws.append([
             pos.position_no or pos_idx,
             pos.name_in_tz,
             pos.identified_brand,
             pos.identified_model,
-            pos.manufacturer,
             gisp_text,
-            f"{main_alt.brand} {main_alt.model}" if main_alt else "—",
-            main_alt.manufacturer if main_alt else "—",
-            f"{int(main_alt.confidence * 100)}%" if main_alt else "—",
+            mfg_and_alt_text,
         ])
 
         curr_r = ws.max_row
         fill_row = zebra_fill if pos_idx % 2 == 1 else white_fill
-        for col_idx in range(1, len(headers1) + 1):
+        for col_idx in range(1, 7):
             c = ws.cell(row=curr_r, column=col_idx)
             c.border = thin_border
-            c.font = regular_font
             c.fill = fill_row
-            if col_idx in (1, 6, 9):
+            if col_idx == 1:
+                c.font = text_bold_font
                 c.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_idx == 5:
+                c.font = green_bold_font if (pos.gisp_match and pos.gisp_match.registry_number) else text_regular_font
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_idx in (3, 4):
+                c.font = text_bold_font
+                c.alignment = Alignment(vertical="center", wrap_text=True)
             else:
+                c.font = text_regular_font
                 c.alignment = Alignment(vertical="center", wrap_text=True)
 
     ws.append([])  # пустая строка
-    ws.append([])  # пустая строка
+    ws.row_dimensions[ws.max_row].height = 14
 
-    # 3. Раздел 2: ПОДРОБНЫЕ ХАРАКТЕРИСТИКИ ДЛЯ ЗАЯВКИ И АНАЛОГИ ПО КАЖДОЙ ПОЗИЦИИ
+    # 4. Раздел 2: ПОДРОБНЫЕ ХАРАКТЕРИСТИКИ ДЛЯ ЗАЯВКИ И АНАЛОГИ ПО КАЖДОЙ ПОЗИЦИИ
     sec2_row = ws.max_row + 1
     ws.append(["2. ПОДРОБНЫЕ ХАРАКТЕРИСТИКИ ДЛЯ ЗАЯВКИ И АНАЛОГИ ПО КАЖДОЙ ПОЗИЦИИ"])
-    ws.cell(row=sec2_row, column=1).font = section_font
+    ws.merge_cells(start_row=sec2_row, start_column=1, end_row=sec2_row, end_column=6)
+    c_sec2 = ws.cell(row=sec2_row, column=1)
+    c_sec2.font = section_font
+    c_sec2.alignment = Alignment(vertical="center")
+    ws.row_dimensions[sec2_row].height = 28
 
-    for pos in report.positions:
+    for pos_idx, pos in enumerate(report.positions, start=1):
         ws.append([])
-        gisp_text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
-        banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   ГИСП: {gisp_text}"
+        ws.row_dimensions[ws.max_row].height = 12 if pos_idx > 1 else 8
+
+        gisp_text = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
+        banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_text}"
 
         # Баннер позиции
         banner_r = ws.max_row + 1
@@ -933,19 +978,25 @@ def write_exact_product_xlsx(
         b_cell = ws.cell(row=banner_r, column=1)
         b_cell.fill = banner_fill
         b_cell.font = banner_font
-        b_cell.alignment = Alignment(vertical="center")
+        b_cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[banner_r].height = _calc_row_height(banner_text, chars_per_line=90, line_height=20, min_h=24)
 
         if pos.reasoning:
             r_row = ws.max_row + 1
             ws.append([f"Обоснование соответствия ТЗ: {pos.reasoning}"])
             ws.merge_cells(start_row=r_row, start_column=1, end_row=r_row, end_column=6)
-            ws.cell(row=r_row, column=1).font = small_gray_font
+            rc = ws.cell(row=r_row, column=1)
+            rc.font = text_regular_font
+            rc.fill = card_fill
+            rc.alignment = Alignment(vertical="center", wrap_text=True)
+            ws.row_dimensions[r_row].height = _calc_row_height(pos.reasoning, chars_per_line=95, line_height=18, min_h=24)
 
         # Таблица параметров (конкретные показатели)
         if pos.specs_breakdown:
             p_headers = ["№", "Наименование параметра", "Требование заказчика (ТЗ)", "Конкретный показатель товара", "Соответствие", "Примечание"]
             ws.append(p_headers)
             p_hdr_r = ws.max_row
+            ws.row_dimensions[p_hdr_r].height = 22
             for col_idx, h_text in enumerate(p_headers, start=1):
                 c = ws.cell(row=p_hdr_r, column=col_idx)
                 c.fill = slate_fill
@@ -967,18 +1018,34 @@ def write_exact_product_xlsx(
                 for col_idx in range(1, 7):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.border = thin_border
-                    cell.font = regular_font
-                    cell.fill = fill_r
-                    if col_idx in (1, 5):
+                    cell.fill = fill_row
+                    if col_idx == 1:
+                        cell.font = text_bold_font
                         cell.alignment = Alignment(horizontal="center", vertical="center")
+                    elif col_idx == 4:
+                        cell.font = text_bold_font
+                        cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    elif col_idx == 5:
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        if spec.status == "match":
+                            cell.fill = match_fill
+                            cell.font = green_bold_font
+                        elif spec.status == "clarify":
+                            cell.fill = clarify_fill
+                            cell.font = amber_bold_font
+                        else:
+                            cell.fill = mismatch_fill
+                            cell.font = red_bold_font
                     else:
+                        cell.font = text_regular_font
                         cell.alignment = Alignment(vertical="center", wrap_text=True)
 
         # Таблица аналогов позиции
         if pos.alternative_brands:
-            alt_headers = ["№", "Аналог (Бренд / Модель)", "Завод-изготовитель", "Совместимость %", "Особенности и примечания"]
+            alt_headers = ["№", "Аналог (Бренд / Модель)", "Завод-изготовитель", "Особенности и преимущества", "Совместимость", "Статус реестра ГИСП"]
             ws.append(alt_headers)
             alt_hdr_r = ws.max_row
+            ws.row_dimensions[alt_hdr_r].height = 22
             for col_idx, h_text in enumerate(alt_headers, start=1):
                 c = ws.cell(row=alt_hdr_r, column=col_idx)
                 c.fill = alt_header_fill
@@ -990,29 +1057,55 @@ def write_exact_product_xlsx(
                     a_idx,
                     f"{alt.brand} {alt.model}",
                     alt.manufacturer,
+                    alt.notes or "Взаимозаменяемый промышленный аналог",
                     f"{int(alt.confidence * 100)}%",
-                    alt.notes,
+                    "Отечественное производство",
                 ])
                 row_idx = ws.max_row
                 fill_a = zebra_fill if a_idx % 2 == 1 else white_fill
-                for col_idx in range(1, 6):
+                for col_idx in range(1, 7):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.border = thin_border
-                    cell.font = regular_font
                     cell.fill = fill_a
-                    if col_idx in (1, 4):
+                    if col_idx == 1:
+                        cell.font = text_bold_font
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                    elif col_idx == 2:
+                        cell.font = text_bold_font
+                        cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    elif col_idx in (5, 6):
+                        cell.font = text_regular_font
                         cell.alignment = Alignment(horizontal="center", vertical="center")
                     else:
+                        cell.font = text_regular_font
                         cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    # Дисклеймер в самом низу
+    # 5. Дисклеймер в самом низу
     ws.append([])
     ws.append([f"Примечание: {report.disclaimer}"])
     disc_row = ws.max_row
     ws.merge_cells(start_row=disc_row, start_column=1, end_row=disc_row, end_column=6)
-    ws.cell(row=disc_row, column=1).font = small_gray_font
+    dc = ws.cell(row=disc_row, column=1)
+    dc.font = Font(name="Calibri", size=9, italic=True, color="64748B")
+    dc.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[disc_row].height = 26
 
-    _autofit_columns(ws)
+    # 6. Компактная ширина колонок (Total = 110, идеально для любых мониторов и ноутбуков без скролла)
+    ws.column_dimensions["A"].width = 5    # №
+    ws.column_dimensions["B"].width = 24   # Позиция ТЗ / Наименование параметра / Аналог
+    ws.column_dimensions["C"].width = 22   # Требование ТЗ / Выявленный бренд / Завод
+    ws.column_dimensions["D"].width = 20   # Конкретный показатель / Модель / Особенности
+    ws.column_dimensions["E"].width = 14   # Соответствие / Реестр ГИСП / Совместимость
+    ws.column_dimensions["F"].width = 25   # Производитель и аналог / Примечание
+
+    # Настройки страницы (Альбомная ориентация, автоподгонка по ширине листа)
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
     wb.save(str(target_path))
     return target_path
 
