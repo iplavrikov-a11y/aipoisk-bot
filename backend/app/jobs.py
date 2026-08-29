@@ -1419,6 +1419,8 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         "sources": _job_sources_evidence(job),
         "files": _job_files_evidence(job),
         "exact_product_report": report.to_dict(),
+        "yandex_requests_count": report.yandex_requests_count,
+        "yandex_cost_rub": report.yandex_cost_rub,
         "output_files": output_files,
         "ai_required": True,
         "ai_used": True,
@@ -1427,8 +1429,8 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     job.evidence_path = str(evidence_path)
     job.result_path = str(xlsx_path)
     job.verified_count = report.total_positions
-    job.yandex_requests_count = 0
-    job.yandex_cost_rub = 0.0
+    job.yandex_requests_count = report.yandex_requests_count
+    job.yandex_cost_rub = report.yandex_cost_rub
     _set_customer_job_title_from_subject(job, subject)
     charge_job_reservation(db, job, note="Подбор товара и аналогов завершен")
     _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")

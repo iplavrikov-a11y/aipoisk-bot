@@ -27,6 +27,8 @@ from .supplier_search import (
     _registry_query_specs,
     _registry_candidate_query_scores,
     _registry_entry_key,
+    _search_with_yandex,
+    _yandex_credentials,
     GISP_PRODUCT_REGISTRY_URL,
 )
 
@@ -102,9 +104,11 @@ class ExactProductReport:
     positions: list[ExactProductPosition] = field(default_factory=list)
     summary: str = ""
     disclaimer: str = (
-        "Отчёт сформирован с применением ИИ-анализа и сопоставления с базой промышленной продукции РФ (ГИСП). "
+        "Отчёт сформирован с применением ИИ-анализа и сопоставления с базой промышленной продукции РФ (ГИСП) и открытыми источниками в сети Интернет. "
         "Сведения носят информационный характер и предназначены для подготовки первой части заявки и сопоставления эквивалентов по 44-ФЗ и 223-ФЗ."
     )
+    yandex_requests_count: int = 0
+    yandex_cost_rub: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +117,8 @@ class ExactProductReport:
             "positions": [p.to_dict() for p in self.positions],
             "summary": self.summary,
             "disclaimer": self.disclaimer,
+            "yandex_requests_count": self.yandex_requests_count,
+            "yandex_cost_rub": self.yandex_cost_rub,
         }
 
 
@@ -286,16 +292,67 @@ async def analyze_exact_product(
     context: str,
     procurement_title: str = "",
 ) -> ExactProductReport:
-    """Главная функция анализа ТЗ, выявления скрытого товара, сверки параметров и подбора аналогов."""
+    """Главная функция анализа ТЗ, выявления скрытого товара через открытый интернет (Яндекс) и реестр Минпромторга."""
     clean_context = extract_clean_spec_text(context)
     if not clean_context:
         clean_context = context[:20000]
 
     header_context = f"Наименование закупки: {procurement_title}\n\n" if procurement_title else ""
-    prompt_text = header_context + clean_context
+
+    # 1. Поиск в открытом интернете (Яндекс Search API) для нахождения скрытых производителей, ТУ и каталогов
+    yandex_requests_count = 0
+    yandex_cost_rub = 0.0
+    web_snippets_block = ""
+
+    folder_id, api_key = _yandex_credentials(settings)
+    if folder_id and api_key:
+        search_queries: list[str] = []
+
+        # Поиск по уникальным ТУ / СТО / ГОСТам
+        tu_matches = re.findall(r"(?:ТУ|СТО|ГОСТ)\s*[\d\.\-]+", clean_context, re.IGNORECASE)
+        for tu in tu_matches[:2]:
+            tu_clean = tu.strip()
+            if len(tu_clean) > 5 and tu_clean not in search_queries:
+                search_queries.append(f'"{tu_clean}" завод изготовитель')
+
+        # Поиск по наименованию закупки / ключевой фразе
+        if procurement_title and len(procurement_title.strip()) > 5:
+            clean_title = re.sub(r'(?i)\b(поставка|оказание услуг|выполнение работ|закупка|для нужд|приобретение)\b', '', procurement_title).strip()
+            if clean_title and len(clean_title) > 5:
+                search_queries.append(f"{clean_title[:70]} производитель")
+
+        # Поиск по строкам спецификации
+        item_lines = re.findall(r"(?:^|\n)\s*(?:\d+[\.\)]\s*)([^\n]{10,80})", clean_context)
+        for line in item_lines[:2]:
+            clean_line = re.sub(r'[^а-яА-Яa-zA-Z0-9\s\-\.\/]', ' ', line).strip()
+            if clean_line and len(clean_line) > 8:
+                search_queries.append(f"{clean_line[:50]} завод")
+
+        unique_queries = list(dict.fromkeys(search_queries))[:3]
+        if unique_queries:
+            try:
+                candidates, y_reqs = await _search_with_yandex(settings, unique_queries, max_results=8)
+                yandex_requests_count = y_reqs
+                unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+                yandex_cost_rub = round(y_reqs * unit_price, 2)
+
+                if candidates:
+                    snippet_rows = ["\n\n--- ДАННЫЕ ИЗ ПОИСКА В ИНТЕРНЕТЕ (ЯНДЕКС ПОИСК) ---"]
+                    for c_idx, cand in enumerate(candidates[:6], start=1):
+                        snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
+                        if cand.domain:
+                            snippet_rows.append(f"   Сайт завода/поставщика: {cand.domain}")
+                        if cand.snippet:
+                            snippet_rows.append(f"   Информация: {cand.snippet}")
+                    web_snippets_block = "\n".join(snippet_rows)
+            except Exception as y_exc:
+                logger.warning("yandex_search_enrichment_failed_for_exact_product: %s", y_exc)
+
+    prompt_text = header_context + clean_context + web_snippets_block
 
     system_prompt = (
         "Ты — профессиональный эксперт по тендерной документации, закупкам по 44-ФЗ/223-ФЗ и подбору промышленного оборудования. "
+        "Используй как технические требования ТЗ, так и результаты веб-поиска по заводам и ТУ для максимально точного определения модели. "
         "Формируй точный, структурированный и реалистичный анализ в формате JSON."
     )
 
@@ -444,6 +501,8 @@ async def analyze_exact_product(
         total_positions=len(positions),
         positions=positions,
         summary=summary or f"Выявлено {len(positions)} позиций ТЗ с конкретными моделями производителей и аналогами по 44/223-ФЗ.",
+        yandex_requests_count=yandex_requests_count,
+        yandex_cost_rub=yandex_cost_rub,
     )
     return report
 
