@@ -12,7 +12,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Backend: `aipoisk-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `aipoisk-bot.service`.
 - Durable queue worker: `aipoisk-worker.service`; current production
-  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
+  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
 - Contact Routing & Channels: Support channels: Telegram direct (`https://t.me/lexelence`), Telegram bot (`https://t.me/tenderlex_bot`), email `info@tenderlex.ru`, and on-site interactive chat.
