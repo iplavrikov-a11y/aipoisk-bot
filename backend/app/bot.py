@@ -2744,10 +2744,8 @@ def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
 
 def _output_caption(mode: str, output: Path) -> str:
     suffix = output.suffix.lower()
-    if mode == MODE_EXACT_PRODUCT and suffix == ".docx":
-        return "Спецификация конкретных показателей (Форма 2) во вложении."
-    if mode == MODE_EXACT_PRODUCT and suffix == ".xlsx":
-        return "Таблица сопоставления и аналоги во вложении."
+    if mode == MODE_EXACT_PRODUCT:
+        return "Отчёт о подборе товара, Форма 2 и аналоги во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".docx":
         return "Анализ документации во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".xlsx":

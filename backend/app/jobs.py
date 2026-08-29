@@ -1390,27 +1390,22 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
-    _set_job(db, job, progress=25, message="ИИ выявляет точный товар и сопоставляет характеристики")
+    _set_job(db, job, progress=25, message="Поиск производителей в интернете (Яндекс) и реестре Минпромторга")
     subject = job.title or "Спецификация ТЗ"
     report = asyncio.run(
         analyze_exact_product(settings, context, procurement_title=job.title)
     )
     _check_cancelled(job.id)
-    _set_job(db, job, progress=75, message="Формирую Форму 2 и таблицы аналогов")
+    _set_job(db, job, progress=75, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
     out_dir = job_dir(job.id) / "output"
     stem = _result_stem(job, subject)
     docx_path = write_exact_product_docx(
-        out_dir / _result_filename("exact_product_spec", stem, ".docx"),
+        out_dir / _result_filename("exact_product", stem, ".docx"),
         report,
-        title=job.title or "Отчёт о подборе товара и аналогов",
-    )
-    xlsx_path = write_exact_product_xlsx(
-        out_dir / _result_filename("exact_product", stem, ".xlsx"),
-        report,
-        title=job.title or "Подбор товара и аналоги",
+        title=job.title or "Подбор товара, характеристики и аналоги",
     )
     output_files = [
-        _output_artifact("exact_product", "Подбор товара и аналоги", xlsx_path, KIND_EXACT_PRODUCT),
+        _output_artifact("exact_product", "Подбор товара и аналоги", docx_path, KIND_EXACT_PRODUCT),
     ]
     evidence_payload = {
         "mode": job.mode,
@@ -1427,7 +1422,7 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     }
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
-    job.result_path = str(xlsx_path)
+    job.result_path = str(docx_path)
     job.verified_count = report.total_positions
     job.yandex_requests_count = report.yandex_requests_count
     job.yandex_cost_rub = report.yandex_cost_rub
