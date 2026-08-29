@@ -146,3 +146,72 @@ async def test_fetch_web_or_pdf_document_antibot_browser_fallback():
         assert doc is not None
         assert doc["type"] == "html_browser"
         assert "14200 лм" in doc["text"]
+
+
+def test_extract_relevant_spec_excerpts():
+    from app.exact_product import _extract_relevant_spec_excerpts
+
+    # Create dummy long doc (30,000 chars) where target parameter is at char 20,000
+    padding = "Раздел описания оборудования и истории завода. " * 300
+    target_section = "Таблица 5. Световой поток светильника ДКУ составляет 14200 лм при коэффициенте мощности 0.98. Пульсация 0.8%."
+    long_doc = padding[:20000] + target_section + padding[:10000]
+
+    excerpt = _extract_relevant_spec_excerpts(long_doc, "Световой поток", max_total_chars=12000)
+    assert "14200 лм" in excerpt
+    assert "коэффициенте мощности" in excerpt
+
+
+@pytest.mark.asyncio
+async def test_resolve_clarify_pre_doc_resolution():
+    from app.exact_product import resolve_clarify_parameters
+
+    settings = SystemSettings()
+    settings.yandex_search_api_key = "key"
+    settings.yandex_search_folder_id = "folder"
+    settings.custom_ai_providers_json = '[{"id": "p1", "baseUrl": "http://mock", "apiKey": "t"}]'
+
+    spec = SpecParameterMatch(
+        param_name="Степень защиты",
+        tz_requirement="не менее IP66",
+        product_fact="В открытой документации не указано",
+        status="clarify",
+        comment="Требуется паспорт",
+    )
+    pos = ExactProductPosition(
+        position_no=1,
+        name_in_tz="Светильник уличный",
+        identified_brand="Нововек",
+        identified_model="ДКУ 100",
+        manufacturer="ООО Нововек",
+        confidence=0.95,
+        reasoning="Тест",
+        specs_breakdown=[spec],
+    )
+
+    verified_docs = [
+        {
+            "url": "https://novovek.ru/doc.pdf",
+            "title": "Паспорт ДКУ",
+            "text": "Технические характеристики светильника ДКУ 100: Мощность 100 Вт, Степень защиты корпуса IP66 по ГОСТ 14254.",
+        }
+    ]
+
+    mock_llm_json = '{"found": true, "product_fact": "IP66", "status": "match", "comment": "Подтверждено паспортом ДКУ"}'
+
+    with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_llm_json)), \
+         patch("app.exact_product._search_with_yandex") as mock_yandex:
+        
+        resolved, cost = await resolve_clarify_parameters(
+            settings=settings,
+            positions=[pos],
+            existing_urls=set(),
+            web_sources=[],
+            verified_docs=verified_docs,
+        )
+
+        assert resolved == 1
+        assert spec.status == "match"
+        assert spec.product_fact == "IP66"
+        # Since it was resolved from verified_docs, external search was NOT called!
+        assert mock_yandex.call_count == 0
+

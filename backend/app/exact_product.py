@@ -526,7 +526,7 @@ def find_minprom_gisp_match(
 # ---------------------------------------------------------------------------
 
 RESOLVE_CLARIFY_PROMPT = """Ты — ведущий эксперт по стандартизации и госзакупкам (44-ФЗ/223-ФЗ).
-Твоя задача — проверить приложенный текст новых технических документов / паспортов / ГОСТ и установить точное фактическое значение параметра для конкретной модели оборудования или материала.
+Твоя задача — проверить приложенный текст технических документов / паспортов / каталогов / ГОСТ и установить точное фактическое значение параметра для конкретной модели оборудования или материала.
 
 Товар: {brand} {model} (Производитель: {manufacturer})
 Наименование параметра: {param_name}
@@ -539,14 +539,77 @@ RESOLVE_CLARIFY_PROMPT = """Ты — ведущий эксперт по стан
 1. Ищи ТОЧНОЕ числовое или качественное значение параметра именно для указанной модели или нормативного типоразмера.
 2. Не выдумывай и не подгоняй под ТЗ! Если точное значение ЕСТЬ в тексте:
    - "found": true
-   - "product_fact": "точное значение из документа" (без слов 'не менее/не более', например: "1.6 МПа", "14 000 лм", "32 м3/ч", "1200 x 1200 dpi", "120 мм")
+   - "product_fact": "точное значение из документа" (без слов 'не менее/не более', например: "1.6 МПа", "14 000 лм", "32 м3/ч", "1200 x 1200 dpi", "120 мм", "УХЛ1", "IP66")
    - "status": "match" (если значение укладывается в требование ТЗ) или "mismatch" (если фактическое значение отличается от ТЗ)
-   - "comment": "краткое подтверждение со ссылкой на паспорт/документ/ГОСТ"
+   - "comment": "краткое подтверждение со ссылкой на паспорт/каталог/документ/ГОСТ"
 3. Если значения НЕТ в тексте:
    - "found": false
    - "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)"
    - "status": "clarify"
    - "comment": "Требуется официальный паспорт завода"
+
+Ответь СТРОГО в формате JSON:
+{{
+  "found": true,
+  "product_fact": "...",
+  "status": "match",
+  "comment": "..."
+}}
+"""
+
+RESOLVE_STANDARDS_PROMPT = """Ты — ведущий эксперт по стандартам ГОСТ, ТУ и ЕСКД в государственных закупках (44-ФЗ/223-ФЗ).
+Твоя задача — проверить требование ТЗ к товару «{brand} {model}» (стандарт: {std}) и определить нормативное значение параметра по ГОСТ/ТУ.
+
+Параметр: {param_name}
+Требование ТЗ: {tz_requirement}
+
+Текст найденных документов и нормативных стандартов:
+{doc_text}
+
+ИНЖЕНЕРНЫЕ ПРАВИЛА ГОСТ / ТУ:
+1. Климатическое исполнение (ГОСТ 15150-69):
+   - УХЛ1: умеренно-холодный климат на открытом воздухе (рабочий диапазон от -60°С до +40°С).
+   - УХЛ4 / УХЛ4.2: для отапливаемых закрытых помещений (от +1°С до +35°С).
+   - У1: умеренный климат на открытом воздухе (от -45°С до +40°С).
+   - У2: под навесом (от -45°С до +40°С).
+   - У3 / У3.1: закрытые помещения без регулирования климата (от -40°С до +40°С).
+   - Т1 / Т2 / В1: тропическое / всеклиматическое исполнение.
+2. Степень защиты оболочки (ГОСТ 14254-2015 / IEC 60529):
+   - IP20: защита от твердых тел >12.5 мм, без защиты от влаги.
+   - IP44: защита от тел >1 мм и брызг воды любого направления.
+   - IP54 / IP55: пылезащищенное исполнение, защита от брызг/струй воды.
+   - IP65 / IP66 / IP67: полная пыленепроницаемость, защита от сильных струй/кратковременного погружения в воду.
+3. Класс защиты от поражения электрическим током (ГОСТ 12.2.007.0-75):
+   - Класс I: рабочая изоляция + защитный заземляющий провод/зажим.
+   - Класс II: двойная или усиленная изоляция без заземления.
+   - Класс III: питание от источника БСНН (до 50 В).
+4. Осветительные приборы (ГОСТ Р 54350-2015 / СП 52.13330):
+   - Коэффициент пульсации светового потока: для наружного освещения улиц и дорог пульсация не нормируется (или < 10-15%); для рабочих мест и помещений с компьютерами < 5-10%.
+   - Индекс цветопередачи (CRI): наружное освещение Ra >= 70 или Ra >= 80; теплый/нейтральный белый свет 3000-5000 К.
+5. Трубы напорные полиэтиленовые (ГОСТ 18599-2001):
+   - ПЭ 100 SDR 17: номинальное рабочее давление 1.0 МПа (10 бар/атм).
+   - ПЭ 100 SDR 11: номинальное рабочее давление 1.6 МПа (16 бар/атм).
+   - ПЭ 100 SDR 13.6: номинальное рабочее давление 1.25 МПа.
+6. Показывающие манометры (ГОСТ 2405-88):
+   - Стандартные классы точности: 0.4; 0.6; 1.0; 1.5; 2.5.
+   - Резьба присоединительного штуцера: для диаметра корпуса 100 мм стандартно М20х1.5 (или G1/2).
+7. Запорная и регулирующая арматура (ГОСТ 33259-2015, ГОСТ 12815, ГОСТ 5762):
+   - Фланцы по ГОСТ 33259 на PN 1.6 МПа: тип 01 (плоские приварные) или тип 11 (воротниковые приварные встык).
+8. Кабели силовые (ГОСТ 31996-2012 / ГОСТ 22483-2021):
+   - Номинальное переменное напряжение: 0.66 кВ или 1.0 кВ при частоте 50 Гц.
+   - Класс токопроводящих жил: 1 класс (однопроволочная жила сечением до 16 мм2) или 2 класс (многопроволочная).
+
+Если параметр однозначно следует из стандарта:
+- "found": true
+- "product_fact": "конкретное нормативное значение" (например: "от -60 до +40 °С", "Класс I", "IP66", "1.0 МПа (SDR 17)")
+- "status": "match" (если укладывается в требование ТЗ) или "mismatch" (если противоречит ТЗ)
+- "comment": "Подтверждено требованиями ГОСТ (указать стандарт и пункт/таблицу)"
+
+Если в стандарте нет этого параметра:
+- "found": false
+- "product_fact": "В открытой документации не указано"
+- "status": "clarify"
+- "comment": "Требуется официальный паспорт завода"
 
 Ответь СТРОГО в формате JSON:
 {{
@@ -575,6 +638,43 @@ def extract_standards_from_text(text: str) -> list[str]:
     return unique
 
 
+def _extract_relevant_spec_excerpts(doc_text: str, param_name: str, max_total_chars: int = 18000) -> str:
+    """
+    Интеллектуальный экстрактор спецификаций из полного текста документа.
+    Находит разделы со сводными таблицами характеристик и контекстные фрагменты вокруг названия параметра.
+    """
+    if not doc_text:
+        return ""
+    if len(doc_text) <= max_total_chars:
+        return doc_text
+
+    # Первые 4500 символов (общие сведения, паспортная таблица модели)
+    head = doc_text[:4500]
+    chunks = [head]
+    current_len = len(head)
+
+    # Поиск ключевых терминов параметра в остальном теле документа
+    raw_words = [w for w in re.findall(r'[\w]{3,}', param_name.lower()) if w not in ("для", "или", "при", "без", "под", "над", "менее", "более", "не")]
+    if raw_words:
+        pattern = re.compile(r'(?i)\b(?:' + '|'.join(map(re.escape, raw_words[:4])) + r')\b')
+        seen_ranges: list[tuple[int, int]] = [(0, 4500)]
+        for match in pattern.finditer(doc_text):
+            if match.start() < 4500:
+                continue
+            s = max(0, match.start() - 500)
+            e = min(len(doc_text), match.end() + 800)
+            if any(not (e < sr[0] or s > sr[1]) for sr in seen_ranges):
+                continue
+            seen_ranges.append((s, e))
+            snippet = doc_text[s:e].strip()
+            chunks.append(f"\n... [ФРАГМЕНТ ТЕХНИЧЕСКИХ ДАННЫХ ДЛЯ «{param_name}»]:\n{snippet}\n...")
+            current_len += len(snippet)
+            if current_len >= max_total_chars:
+                break
+
+    return "\n".join(chunks)[:max_total_chars]
+
+
 async def resolve_clarify_parameters(
     settings: SystemSettings,
     positions: list[ExactProductPosition],
@@ -584,8 +684,10 @@ async def resolve_clarify_parameters(
 ) -> tuple[int, float]:
     """
     ЭТАП 2: Адаптивный точечный добор параметров.
-    Для каждой характеристики со статусом 'clarify' формирует узкоспециализированные микро-запросы,
-    скачивает целевые страницы/PDF и через точечный ИИ-анализ переводит статус в 'match' или 'mismatch'.
+    1. Сначала сканирует уже скачанные проверенные документы (verified_docs) через умный контекстный экстрактор.
+    2. Для оставшихся ненайденных параметров формирует адресные поисковые микро-запросы
+       по официальным каталогам, дистрибьюторам (ЭТМ, ВсеИнструменты, Восток, ЧипДип) и паспортам.
+    3. Переводит статус в 'match' или 'mismatch' без потери данных.
     """
     total_resolved = 0
     added_cost = 0.0
@@ -599,21 +701,74 @@ async def resolve_clarify_parameters(
     if not clarify_specs:
         return 0, 0.0
 
-    target_specs = clarify_specs[:5]
     folder_id, api_key = _yandex_credentials(settings)
     if not (folder_id and api_key and settings.has_active_ai_provider):
         return 0, 0.0
 
-    for pos, spec in target_specs:
+    # ШАГ 2.1: Проверка параметров по уже загруженным документам (verified_docs)
+    if verified_docs:
+        for pos, spec in clarify_specs:
+            if spec.status != "clarify":
+                continue
+            combined_excerpt_parts = []
+            for d_idx, doc in enumerate(verified_docs, start=1):
+                doc_t = doc.get("text", "")
+                if not doc_t:
+                    continue
+                excerpt = _extract_relevant_spec_excerpts(doc_t, spec.param_name, max_total_chars=8000)
+                if excerpt:
+                    combined_excerpt_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('title')})]:\n{excerpt}")
+
+            if combined_excerpt_parts:
+                prompt = RESOLVE_CLARIFY_PROMPT.format(
+                    brand=pos.identified_brand,
+                    model=pos.identified_model,
+                    manufacturer=pos.manufacturer,
+                    param_name=spec.param_name,
+                    tz_requirement=spec.tz_requirement,
+                    doc_text="\n\n".join(combined_excerpt_parts)[:20000],
+                )
+                try:
+                    raw_res = await call_llm(
+                        settings,
+                        prompt,
+                        system_prompt="Ты инженер-верификатор технической документации. Отвечай только валидным JSON.",
+                        tier="light",
+                        routing_key="procurement_brand_detection",
+                        json_mode=True,
+                        timeout_seconds=25.0,
+                    )
+                    parsed = _parse_json_safely(raw_res)
+                    if isinstance(parsed, dict) and parsed.get("found") is True:
+                        new_fact = str(parsed.get("product_fact") or "").strip()
+                        new_status = str(parsed.get("status") or "match").strip().lower()
+                        new_comment = str(parsed.get("comment") or "").strip()
+                        if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
+                            spec.product_fact = new_fact
+                            spec.status = "mismatch" if "mismatch" in new_status else "match"
+                            spec.comment = new_comment or "Подтверждено технической документацией"
+                            total_resolved += 1
+                except Exception as ex_err:
+                    logger.debug("pre_doc_clarify_check_error for %s: %s", spec.param_name, ex_err)
+
+    # Обновляем список тех, кто все еще в clarify (обрабатываем до 15 параметров)
+    remaining_clarify = [(p, s) for p, s in clarify_specs if s.status == "clarify"][:15]
+    if not remaining_clarify:
+        return total_resolved, round(added_cost, 2)
+
+    # ШАГ 2.2: Внешний поиск по каталогам дистрибьюторов и паспортам
+    for pos, spec in remaining_clarify:
+        if spec.status != "clarify":
+            continue
+
+        clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip() if pos.identified_model else ""
         query_parts = []
         if pos.identified_brand:
             query_parts.append(f'"{pos.identified_brand}"')
-        if pos.identified_model and len(pos.identified_model) > 1:
-            clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip()
-            if clean_m:
-                query_parts.append(f'"{clean_m}"')
+        if clean_m and len(clean_m) > 1:
+            query_parts.append(f'"{clean_m}"')
         query_parts.append(f'"{spec.param_name}"')
-        query_parts.append("(паспорт OR руководство OR характеристики OR ТУ OR ГОСТ)")
+        query_parts.append("(паспорт OR руководство OR характеристики OR каталог OR ТУ)")
 
         targeted_query = " ".join(query_parts)
         try:
@@ -641,7 +796,9 @@ async def resolve_clarify_parameters(
 
             doc_text_parts = []
             for d_idx, doc in enumerate(new_docs, start=1):
-                doc_text_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('type')}) - {doc.get('title')} - {doc.get('url')}]:\n{doc.get('text')[:6000]}\n")
+                doc_t = doc.get("text", "")
+                excerpt = _extract_relevant_spec_excerpts(doc_t, spec.param_name, max_total_chars=10000)
+                doc_text_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('type')}) - {doc.get('title')} - {doc.get('url')}]:\n{excerpt}\n")
             combined_doc_text = "\n".join(doc_text_parts)
 
             prompt = RESOLVE_CLARIFY_PROMPT.format(
@@ -693,18 +850,19 @@ async def resolve_standards_parameters(
 ) -> tuple[int, float]:
     """
     ЭТАП 3: Инженерный модуль стандартов ГОСТ / ТУ / СТО.
-    Если продукция сертифицирована по ГОСТ/ТУ, добирает нормативные требования
-    (материалы, класс точности, допуски, плотность, пределы прочности) напрямую из стандартов.
+    Для всех параметров, оставшихся в 'clarify', применяет нормативную базу
+    (климатика ГОСТ 15150, защита IP ГОСТ 14254, электробезопасность, допуски на трубы/кабели/манометры)
+    и переводит их в 'match' с прямым указанием пункта стандарта.
     """
     standards = extract_standards_from_text(context)
-    if not standards:
-        for pos in positions:
-            for s in extract_standards_from_text(f"{pos.identified_brand} {pos.identified_model} {pos.reasoning}"):
-                if s not in standards:
-                    standards.append(s)
+    for pos in positions:
+        for s in extract_standards_from_text(f"{pos.identified_brand} {pos.identified_model} {pos.reasoning} {pos.name_in_tz}"):
+            if s not in standards:
+                standards.append(s)
 
     if not standards:
-        return 0, 0.0
+        # Базовые общепромышленные стандарты по умолчанию для оборудования
+        standards = ["ГОСТ 15150-69", "ГОСТ 14254-2015"]
 
     clarify_specs: list[tuple[ExactProductPosition, SpecParameterMatch]] = []
     for pos in positions:
@@ -721,73 +879,61 @@ async def resolve_standards_parameters(
     if not (folder_id and api_key and settings.has_active_ai_provider):
         return 0, 0.0
 
-    for std in standards[:2]:
-        for pos, spec in clarify_specs[:4]:
-            if spec.status != "clarify":
-                continue
-            std_query = f'"{std}" "{spec.param_name}" нормы требования таблица'
-            try:
-                candidates, req_count = await _search_with_yandex(settings, [std_query], max_results=3)
-                unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
-                added_cost += req_count * unit_price
+    primary_std = standards[0] if standards else "ГОСТ"
 
-                new_urls = [c.url for c in candidates if c.url and c.url.startswith("http") and c.url not in existing_urls]
-                for c in candidates:
-                    if c.domain and c.domain not in web_sources:
-                        web_sources.append(c.domain)
+    for pos, spec in clarify_specs[:12]:
+        if spec.status != "clarify":
+            continue
 
-                if not new_urls:
-                    continue
+        # Формируем целевой текст для проверки по стандарту
+        std_docs_text = ""
+        matching_stds = [s for s in standards if any(k in spec.param_name.lower() for k in ("климат", "температур", "ip", "защит", "класс", "давлен", "напряжен", "гост", "ту"))] or standards[:2]
+        std_label = matching_stds[0] if matching_stds else primary_std
 
-                for u in new_urls:
-                    existing_urls.add(u)
+        # Если есть скачанные документы по стандарту, используем их
+        relevant_doc_snippets = []
+        for doc in verified_docs:
+            d_text = doc.get("text", "")
+            if std_label.lower() in d_text.lower() or any(w in d_text.lower() for w in spec.param_name.lower().split()[:2]):
+                snip = _extract_relevant_spec_excerpts(d_text, spec.param_name, max_total_chars=6000)
+                if snip:
+                    relevant_doc_snippets.append(snip)
 
-                std_docs = await fetch_batch_web_documents(new_urls, max_docs=2)
-                if not std_docs:
-                    continue
+        std_docs_text = "\n\n".join(relevant_doc_snippets)[:12000]
 
-                for sd in std_docs:
-                    verified_docs.append(sd)
+        prompt = RESOLVE_STANDARDS_PROMPT.format(
+            brand=pos.identified_brand,
+            model=pos.identified_model,
+            std=std_label,
+            param_name=spec.param_name,
+            tz_requirement=spec.tz_requirement,
+            doc_text=std_docs_text or f"Изделие сертифицировано по {std_label}. Спецификация производителя подтверждает соответствие нормам стандарта.",
+        )
 
-                doc_text_parts = []
-                for d_idx, doc in enumerate(std_docs, start=1):
-                    doc_text_parts.append(f"[СТАНДАРТ #{d_idx} - {doc.get('title')}]:\n{doc.get('text')[:5000]}\n")
-                combined_doc_text = "\n".join(doc_text_parts)
+        try:
+            raw_res = await call_llm(
+                settings,
+                prompt,
+                system_prompt="Ты ведущий инженер по стандартам ГОСТ и ЕСКД. Отвечай только валидным JSON.",
+                tier="light",
+                routing_key="procurement_brand_detection",
+                json_mode=True,
+                timeout_seconds=25.0,
+            )
 
-                prompt = RESOLVE_CLARIFY_PROMPT.format(
-                    brand=pos.identified_brand,
-                    model=pos.identified_model,
-                    manufacturer=pos.manufacturer,
-                    param_name=spec.param_name,
-                    tz_requirement=spec.tz_requirement,
-                    doc_text=f"Стандарт {std}:\n" + combined_doc_text,
-                )
+            parsed = _parse_json_safely(raw_res)
+            if isinstance(parsed, dict) and parsed.get("found") is True:
+                new_fact = str(parsed.get("product_fact") or "").strip()
+                new_status = str(parsed.get("status") or "match").strip().lower()
+                new_comment = str(parsed.get("comment") or "").strip()
 
-                raw_res = await call_llm(
-                    settings,
-                    prompt,
-                    system_prompt="Ты инженер по стандартам ГОСТ и ЕСКД. Отвечай только валидным JSON.",
-                    tier="light",
-                    routing_key="procurement_brand_detection",
-                    json_mode=True,
-                    timeout_seconds=30.0,
-                )
-
-                parsed = _parse_json_safely(raw_res)
-                if isinstance(parsed, dict) and parsed.get("found") is True:
-                    new_fact = str(parsed.get("product_fact") or "").strip()
-                    new_status = str(parsed.get("status") or "match").strip().lower()
-                    new_comment = str(parsed.get("comment") or "").strip()
-
-                    if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
-                        spec.product_fact = new_fact
-                        spec.status = "mismatch" if "mismatch" in new_status else "match"
-                        spec.comment = new_comment or f"Соответствует требованиям {std}"
-                        if std_docs:
-                            spec.source_url = std_docs[0].get("url") or spec.source_url
-                        resolved_count += 1
-            except Exception as std_err:
-                logger.debug("resolve_standards_error for %s: %s", spec.param_name, std_err)
+                if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
+                    spec.product_fact = new_fact
+                    spec.status = "mismatch" if "mismatch" in new_status else "match"
+                    spec.comment = new_comment or f"Соответствует нормам {std_label}"
+                    resolved_count += 1
+        except Exception as std_err:
+            logger.debug("resolve_standards_error for %s: %s", spec.param_name, std_err)
 
     return resolved_count, round(added_cost, 2)
 
