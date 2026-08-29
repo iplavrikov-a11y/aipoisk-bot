@@ -41,6 +41,7 @@ export type PublicSitePayload = {
   tariffs: PublicTariff[];
   tariff_groups: {
     supplier_search: PublicTariff[];
+    exact_product?: PublicTariff[];
     procurement_report: PublicTariff[];
     supplier_search_extra: PublicTariff[];
   };
@@ -199,6 +200,7 @@ const fallbackData: PublicSitePayload = {
   tariffs: fallbackTariffs,
   tariff_groups: {
     supplier_search: fallbackTariffs.filter((item) => item.kind === "supplier_search"),
+    exact_product: fallbackTariffs.filter((item) => item.kind === "exact_product"),
     procurement_report: fallbackTariffs.filter((item) => item.kind === "procurement_report"),
     supplier_search_extra: fallbackTariffs.filter((item) => item.kind === "supplier_search_extra"),
   },
@@ -236,6 +238,9 @@ export function formatRubles(priceKopeks: number) {
 export function tariffDescription(tariff: PublicTariff) {
   if (tariff.description.trim()) {
     return tariff.description;
+  }
+  if (tariff.kind === "exact_product") {
+    return "Выявление скрытой модели по ТЗ, Форма 2 с конкретными показателями, проверка реестра Минпромторга и подбор аналогов.";
   }
   if (tariff.kind === "procurement_report") {
     return "Анализ закупочной документации: требования, условия, риски и вопросы заказчику.";

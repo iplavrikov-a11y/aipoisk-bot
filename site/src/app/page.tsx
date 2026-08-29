@@ -95,6 +95,7 @@ export default async function HomePage() {
   const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
   const cabinetUrl = "/cabinet";
   const supplierTariffs = data.tariff_groups?.supplier_search || [];
+  const exactProductTariffs = data.tariff_groups?.exact_product || [];
   const reportTariffs = data.tariff_groups?.procurement_report || [];
 
   const websiteSchema = buildWebSiteJsonLd();
@@ -341,12 +342,39 @@ export default async function HomePage() {
               </p>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-              {/* Поставщики */}
-              <div className="p-8 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+            <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
+              {/* Точный товар и аналоги */}
+              <div className="p-6 bg-gradient-to-br from-white to-amber-50/40 rounded-3xl border-2 border-amber-200/80 shadow-md flex flex-col justify-between">
                 <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Подбор поставщиков по ТЗ</span>
-                  <h3 className="text-2xl font-extrabold text-slate-900 mt-1 mb-2">Контакты поставщиков</h3>
+                  <span className="text-xs font-bold text-amber-800 uppercase tracking-wider bg-amber-100/70 px-2.5 py-0.5 rounded-full">Форма 2 и аналоги</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Точный товар и аналоги</h3>
+                  <p className="text-xs text-slate-600 mb-4">Выявление скрытой модели по ТЗ, сопоставление показателей, реестр Минпромторга (ГИСП) и 2–4 эквивалента.</p>
+                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
+                    {exactProductTariffs.length > 0 ? (
+                      exactProductTariffs.map((t: PublicTariff) => (
+                        <div key={t.id} className="flex justify-between items-center text-xs">
+                          <span className="text-slate-800 font-bold">{t.name}</span>
+                          <strong className="text-amber-800 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-800 font-bold">1 проверка ТЗ + аналоги</span>
+                        <strong className="text-amber-800 font-extrabold">99 ₽</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <Button asChild className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold h-11 text-xs shadow-md shadow-amber-600/20">
+                  <a href={cabinetUrl}>Подобрать товар и аналоги</a>
+                </Button>
+              </div>
+
+              {/* Поставщики */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
                   <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {supplierTariffs.map((t: PublicTariff) => (
@@ -363,11 +391,11 @@ export default async function HomePage() {
               </div>
 
               {/* Анализ документации */}
-              <div className="p-8 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
                 <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Анализ 44-ФЗ, 223-ФЗ и коммерческих закупок</span>
-                  <h3 className="text-2xl font-extrabold text-slate-900 mt-1 mb-2">Анализ документации</h3>
-                  <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и Минпромторга.</p>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Аудит рисков закупки</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Анализ документации</h3>
+                  <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и нацрежима (44/223-ФЗ).</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {reportTariffs.map((t: PublicTariff) => (
                       <div key={t.id} className="flex justify-between items-center text-xs">

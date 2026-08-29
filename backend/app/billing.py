@@ -17,9 +17,16 @@ from .models import BillingTransaction, Client, ClientTariffOverride, Job, Tarif
 KIND_SUPPLIER_SEARCH = "supplier_search"
 KIND_PROCUREMENT_REPORT = "procurement_report"
 KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
+KIND_EXACT_PRODUCT = "exact_product"
 KIND_MONEY = "money"
-VALID_BILLING_KINDS = {KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA}
+VALID_BILLING_KINDS = {
+    KIND_SUPPLIER_SEARCH,
+    KIND_PROCUREMENT_REPORT,
+    KIND_SUPPLIER_SEARCH_EXTRA,
+    KIND_EXACT_PRODUCT,
+}
 SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT = 50
+DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS = 9900
 
 OP_GRANT = "grant"
 OP_RESERVE = "reserve"
@@ -37,6 +44,7 @@ LOW_BALANCE_THRESHOLD = 1
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
+MODE_EXACT_PRODUCT = "exact_product"
 
 INTERNAL_JOB_TOKENS = (
     "smoke",
@@ -104,18 +112,22 @@ def billing_kind_label(kind: str) -> str:
         return "Анализ документации"
     if kind == KIND_SUPPLIER_SEARCH_EXTRA:
         return "Добор поставщиков"
+    if kind == KIND_EXACT_PRODUCT:
+        return "Точный товар и аналоги"
     return "Поставщики"
 
 
 def requested_billing_units(mode: str, *, supplier_search_count: int = 1) -> dict[str, int]:
     supplier_units = max(1, int(supplier_search_count or 1))
     if mode == MODE_SUPPLIER_SEARCH:
-        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0}
+        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
     if mode == MODE_PROCUREMENT_REPORT:
-        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0}
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0}
-    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0}
+        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
+    if mode == MODE_EXACT_PRODUCT:
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 1}
+    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
 
 
 def requested_billing_kinds(mode: str, *, supplier_search_count: int = 1, supplier_search_run_type: str = "initial") -> dict[str, int]:
@@ -156,10 +168,11 @@ def client_balance_summary(db: Session, client: Client) -> dict:
         KIND_SUPPLIER_SEARCH: balance_counter(db, client, KIND_SUPPLIER_SEARCH),
         KIND_PROCUREMENT_REPORT: balance_counter(db, client, KIND_PROCUREMENT_REPORT),
         KIND_SUPPLIER_SEARCH_EXTRA: balance_counter(db, client, KIND_SUPPLIER_SEARCH_EXTRA),
+        KIND_EXACT_PRODUCT: balance_counter(db, client, KIND_EXACT_PRODUCT),
         "money": money,
         "effective_prices": {
             kind: effective_price_to_dict(db, client, kind)
-            for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA)
+            for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
         },
     }
 
@@ -254,6 +267,8 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
         return explicit_price
     if kind == KIND_SUPPLIER_SEARCH_EXTRA:
         return _default_supplier_search_extra_price_kopeks(db, client)
+    if kind == KIND_EXACT_PRODUCT:
+        return DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS
     return 0
 
 
@@ -282,7 +297,9 @@ def _active_tariff_packages(db: Session) -> dict[str, TariffPackage]:
     return result
 
 
-def _explicit_effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int | None:
+def _explicit_effective_price_kopeks(db: Session | None, client: Client | None, kind: str) -> int | None:
+    if db is None:
+        return None
     if client:
         override = _client_tariff_override(db, client, kind)
         if override:
@@ -354,7 +371,7 @@ def _effective_price_source(kind: str, *, override: ClientTariffOverride | None,
 def _lowest_active_function_price(db: Session, client: Client) -> int:
     prices = [
         effective_price_kopeks(db, client, kind)
-        for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA)
+        for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
     ]
     active = [price for price in prices if price > 0]
     return min(active) if active else 1
@@ -392,7 +409,7 @@ def _legacy_counter(db: Session, client: Client, kind: str, *, exclude_job_id: s
     if kind == KIND_PROCUREMENT_REPORT:
         limit = int(client.monthly_procurement_report_limit or 0)
         used = report_used
-    elif kind == KIND_SUPPLIER_SEARCH_EXTRA:
+    elif kind in {KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT}:
         limit = 0
         used = 0
     else:

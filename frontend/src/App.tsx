@@ -94,6 +94,7 @@ type ClientUsage = {
   supplier_search: UsageCounter
   procurement_report: UsageCounter
   supplier_search_extra: UsageCounter
+  exact_product?: UsageCounter
   money?: {
     balance_kopeks: number
     reserved_kopeks: number
@@ -4107,7 +4108,7 @@ function ClientsView({
                     <details className="compact-form-details price-settings-details">
                       <summary>Индивидуальные цены</summary>
                       <div className="price-settings-panel">
-                        {(['supplier_search', 'procurement_report', 'supplier_search_extra'] as const).map(kind => {
+                        {(['supplier_search', 'procurement_report', 'supplier_search_extra', 'exact_product'] as const).map(kind => {
                           const price = client.usage?.effective_prices?.[kind]
                           const fallbackKopeks = price?.price_kopeks || 0
                           return (
@@ -4242,11 +4243,13 @@ function clientSummaryLine(client: Client, accounts: TelegramAccount[]) {
 
 function humanBillingKind(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор поставщиков'
+  if (kind === 'exact_product') return 'Точный товар и аналоги'
   return kind === 'procurement_report' ? 'Анализ документации' : 'Поставщики'
 }
 
 function priceBillingLabel(kind: string) {
   if (kind === 'supplier_search_extra') return 'Добор'
+  if (kind === 'exact_product') return 'Точный товар'
   return kind === 'procurement_report' ? 'Анализ' : 'Поиск'
 }
 
@@ -4634,6 +4637,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
   const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
   const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
   const extraSupplierTariffs = tariffs.filter(item => item.kind === 'supplier_search_extra')
+  const exactProductTariffs = tariffs.filter(item => item.kind === 'exact_product')
   return (
     <section className="stack">
       <div className="form-panel full-width-panel">
@@ -4643,6 +4647,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
             <span>Тип</span>
             <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
               <option value="supplier_search">Поставщики</option>
+              <option value="exact_product">Точный товар и аналоги</option>
               <option value="procurement_report">Анализ документации</option>
               <option value="supplier_search_extra">Добор поставщиков</option>
             </select>
@@ -4656,6 +4661,7 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
         <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
       </div>
 
+      <TariffGroup title="Точный товар и аналоги" tariffs={exactProductTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
       <TariffGroup title="Поставщики" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
       <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
       <TariffGroup title="Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />

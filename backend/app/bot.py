@@ -32,6 +32,7 @@ from .billing import (
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
+    KIND_EXACT_PRODUCT,
     BillingError,
     charge_job_reservation,
     client_uses_trial_access,
@@ -48,6 +49,7 @@ from .db import SessionLocal, init_db
 from .document_parser import sanitize_filename
 from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_EXACT_PRODUCT,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
     SUPPLIER_POLICY_MINPROM_ONLY,
@@ -103,9 +105,11 @@ PENDING_SUPPLIER_POLICIES: dict[int, str] = {}
 SCENARIO_SUPPLIERS = "supplier_search"
 SCENARIO_REPORT = "report"
 SCENARIO_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
+SCENARIO_EXACT_PRODUCT = "exact_product"
 BUTTON_SUPPLIERS = "🔎 Поставщики по ТЗ"
 BUTTON_REPORT = "📄 Анализ закупки"
 BUTTON_ANALYSIS_AND_SUPPLIERS = "📄🔎 Анализ + поиск"
+BUTTON_EXACT_PRODUCT = "🎯 Точный товар и аналоги"
 BUTTON_CREATE = "🚀 Создать"
 BUTTON_STATUS = "🕘 Задачи"
 BUTTON_ACCESS = "📊 Кабинет"
@@ -224,7 +228,7 @@ def _pending_input_count(pending: PendingBatch) -> int:
 
 
 def _scenario_accepts_source_links(scenario: str) -> bool:
-    return scenario in {SCENARIO_REPORT, SCENARIO_ANALYSIS_AND_SUPPLIERS}
+    return scenario in {SCENARIO_REPORT, SCENARIO_ANALYSIS_AND_SUPPLIERS, SCENARIO_EXACT_PRODUCT}
 
 
 def _scenario_uses_supplier_policy(scenario: str) -> bool:
@@ -236,6 +240,8 @@ def _scenario_job_mode(scenario: str) -> str:
         return MODE_PROCUREMENT_REPORT
     if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
         return MODE_ANALYSIS_AND_SUPPLIERS
+    if scenario == SCENARIO_EXACT_PRODUCT:
+        return MODE_EXACT_PRODUCT
     return MODE_SUPPLIER_SEARCH
 
 
@@ -281,6 +287,7 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
+            [InlineKeyboardButton(text="🎯 Точный товар и аналоги (99 ₽)", callback_data="scenario:exact_product")],
             [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
             [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
             [
@@ -318,6 +325,14 @@ def supplier_policy_keyboard(
 
 
 def report_scenario_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
+
+
+def exact_product_scenario_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
@@ -388,6 +403,8 @@ def batch_inline_keyboard(pending: PendingBatch) -> InlineKeyboardMarkup:
         action_text = "▶️ Запустить поиск поставщиков"
     elif pending.mode == MODE_PROCUREMENT_REPORT:
         action_text = "▶️ Запустить анализ закупки"
+    elif pending.mode == MODE_EXACT_PRODUCT:
+        action_text = "▶️ Найти точный товар и аналоги"
     else:
         action_text = "▶️ Запустить анализ и поиск"
     rows = [
@@ -429,6 +446,20 @@ def _report_scenario_text() -> str:
     )
 
 
+def _exact_product_scenario_text() -> str:
+    return (
+        "🎯 Точный товар и аналоги по ТЗ (99 ₽)\n\n"
+        "ИИ определит под какую конкретную модель и завод составлено ТЗ, "
+        "составит таблицу показателей (Форма 2 по 44-ФЗ), "
+        "проверит реестр Минпромторга (ГИСП) и подберет 2–4 эквивалента.\n\n"
+        "📋 Что нужно сделать:\n"
+        "1. Отправьте файл ТЗ / спецификации (.docx, .pdf, .xlsx, .txt)\n"
+        "2. Либо отправьте номер извещения ЕИС (19 цифр) или ссылку на закупку\n"
+        "3. Либо вставьте текст характеристик в поле ввода\n\n"
+        "👇 Отправьте файл или номер закупки:"
+    )
+
+
 def _analysis_and_suppliers_scenario_text(policy: str = SUPPLIER_POLICY_NORMAL) -> str:
     label = _supplier_policy_label(policy)
     return (
@@ -455,7 +486,7 @@ def _source_link_rejection_text() -> str:
     return (
         "⚠️ Номер извещения не добавлен\n\n"
         "Сейчас выбран поиск поставщиков. Для него нужен файл ТЗ/ООЗ или текстовое описание объекта закупки.\n\n"
-        f"Чтобы работать по номеру извещения, сначала выберите «{BUTTON_REPORT}» "
+        f"Чтобы работать по номеру извещения, выберите «{BUTTON_REPORT}», «{BUTTON_EXACT_PRODUCT}» "
         f"или «{BUTTON_ANALYSIS_AND_SUPPLIERS}»."
     )
 
@@ -828,6 +859,8 @@ def _mode_label(mode: str) -> str:
         return "анализ документации"
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return "анализ и поиск поставщиков"
+    if mode == MODE_EXACT_PRODUCT:
+        return "точный товар и аналоги"
     return "поиск поставщиков"
 
 
@@ -836,6 +869,8 @@ def _job_mode_for_scenario(scenario: str) -> str:
         return MODE_PROCUREMENT_REPORT
     if scenario == SCENARIO_ANALYSIS_AND_SUPPLIERS:
         return MODE_ANALYSIS_AND_SUPPLIERS
+    if scenario == SCENARIO_EXACT_PRODUCT:
+        return MODE_EXACT_PRODUCT
     return MODE_SUPPLIER_SEARCH
 
 
@@ -1391,8 +1426,11 @@ async def watch_job_progress(
 
 def _scenario_for_message(message: Message) -> str:
     caption = str(message.caption or "").lower()
+    wants_exact = any(marker in caption for marker in ("точный товар", "аналог", "эквивалент", "модель", "характеристик", "форма 2"))
     wants_analysis = any(marker in caption for marker in ("word", "docx", "отчёт", "отчет", "анализ"))
     wants_suppliers = any(marker in caption for marker in ("поставщик", "supplier", "xlsx"))
+    if wants_exact:
+        return SCENARIO_EXACT_PRODUCT
     if wants_analysis and wants_suppliers:
         return SCENARIO_ANALYSIS_AND_SUPPLIERS
     if wants_analysis:
@@ -2007,6 +2045,15 @@ async def scenario_select_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_text(prompt, reply_markup=report_scenario_keyboard())
         except Exception:
             await callback.message.answer(prompt, reply_markup=report_scenario_keyboard())
+    elif target == "exact_product":
+        cleared = _select_scenario(chat_id, SCENARIO_EXACT_PRODUCT)
+        _record_telegram_event(callback.message, "mode_selected", mode=MODE_EXACT_PRODUCT)
+        await callback.answer("Выбран сценарий: Точный товар и аналоги")
+        prompt = _exact_product_scenario_text() + _scenario_switch_note(cleared)
+        try:
+            await callback.message.edit_text(prompt, reply_markup=exact_product_scenario_keyboard())
+        except Exception:
+            await callback.message.answer(prompt, reply_markup=exact_product_scenario_keyboard())
     elif target == "analysis_and_suppliers":
         cleared = _select_scenario(chat_id, SCENARIO_ANALYSIS_AND_SUPPLIERS)
         _record_telegram_event(callback.message, "mode_selected", mode=MODE_ANALYSIS_AND_SUPPLIERS)
@@ -2031,6 +2078,19 @@ async def back_main_button(message: Message) -> None:
         return
     _clear_pending_state(message.chat.id)
     await message.answer("🏠 Меню", reply_markup=main_menu())
+
+
+@router.message(Command("exact_product"))
+@router.message(F.text == BUTTON_EXACT_PRODUCT)
+async def exact_product_command(message: Message) -> None:
+    if await _reject_if_chat_processing(message):
+        return
+    cleared = _select_scenario(message.chat.id, SCENARIO_EXACT_PRODUCT)
+    _record_telegram_event(message, "mode_selected", mode=MODE_EXACT_PRODUCT)
+    await message.answer(
+        _exact_product_scenario_text() + _scenario_switch_note(cleared),
+        reply_markup=exact_product_scenario_keyboard(),
+    )
 
 
 @router.message(F.text == BUTTON_REPORT)
@@ -2666,6 +2726,10 @@ async def _send_find_more_suppliers_offer(message: Message, job_id: str) -> None
 
 
 def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
+    if kind in {"exact_product_spec", "spec"}:
+        return "Спецификация конкретных показателей (Форма 2) во вложении."
+    if kind in {"exact_product_table", "table"}:
+        return "Таблица сопоставления и аналоги во вложении."
     if kind == "quote_request":
         return "Запрос КП во вложении."
     if kind == "analysis":
@@ -2677,6 +2741,10 @@ def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
 
 def _output_caption(mode: str, output: Path) -> str:
     suffix = output.suffix.lower()
+    if mode == MODE_EXACT_PRODUCT and suffix == ".docx":
+        return "Спецификация конкретных показателей (Форма 2) во вложении."
+    if mode == MODE_EXACT_PRODUCT and suffix == ".xlsx":
+        return "Таблица сопоставления и аналоги во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".docx":
         return "Анализ документации во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".xlsx":

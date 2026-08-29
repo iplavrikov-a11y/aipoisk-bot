@@ -31,8 +31,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
-type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers";
+type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
+type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 
 type BalanceCounter = {
@@ -85,6 +85,7 @@ type SessionPayload = {
   };
   tariff_groups?: {
     supplier_search: Tariff[];
+    exact_product?: Tariff[];
     procurement_report: Tariff[];
     supplier_search_extra?: Tariff[];
   };
@@ -162,6 +163,12 @@ const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime()
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
+    id: "exact_product",
+    label: "Точный товар и аналоги (99 ₽)",
+    description: "Форма 2, скрытая модель по ТЗ, реестр ГИСП и эквиваленты",
+    icon: CheckCircle2,
+  },
+  {
     id: "supplier_search",
     label: "Поиск поставщиков",
     description: "техническое задание файлом, текстом или архивом",
@@ -215,6 +222,19 @@ const modeCopy: Record<Scenario, {
     sourcePlaceholder: "Например: 0173200001424000001 или ссылка на zakupki.gov.ru",
     hint: "Укажите номер извещения ЕИС или прямую ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на внешние интернет-магазины и частные площадки не поддерживаются.",
     submit: "Запустить анализ документации",
+  },
+  exact_product: {
+    mode: "exact_product",
+    formSubtitle: "Загрузите спецификацию/ТЗ или укажите номер закупки для выявления конкретного товара и подбора аналогов.",
+    uploadTitle: "Загрузить ТЗ или спецификацию",
+    uploadText: "Перетащите файлы ТЗ, спецификацию или архив (PDF, DOCX, XLSX, TXT, ZIP)",
+    multipleFiles: false,
+    textLabel: "Или вставьте характеристики объекта закупки текстом",
+    textPlaceholder: "Вставьте фрагмент ТЗ с параметрами товара (диаметр, мощность, материал, ГОСТ и др.)...",
+    sourceLabel: "Номер извещения ЕИС или ссылка на закупку",
+    sourcePlaceholder: "Например: 0373200003724000123",
+    hint: "ИИ сопоставит характеристики с базой моделей, определит завод-производитель, сформирует Форму 2 и подберет 2–4 эквивалента под 44/223-ФЗ.",
+    submit: "Найти точный товар и аналоги",
   },
   analysis_and_suppliers: {
     mode: "analysis_and_suppliers",
@@ -1845,7 +1865,22 @@ export function CabinetClient() {
           const reportOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override" ? session.balance.effective_prices.procurement_report : null;
 
           return (
-            <div className="grid md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 transition-all">
+            <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
+              <div className="space-y-1 bg-amber-50/40 p-2 rounded-lg border border-amber-200/70">
+                <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Точный товар и аналоги</span>
+                <div className="space-y-1 mt-0.5">
+                  {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
+                    ? session.tariff_groups.exact_product
+                    : [{ id: 'exact-1', name: '1 проверка ТЗ + аналоги', price_kopeks: 9900 }]
+                  ).slice(0, 3).map((tariff: any) => (
+                    <div key={tariff.id} className="px-2 py-1 bg-white border border-amber-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
+                      <b className="font-extrabold text-amber-800 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
                 <div className="space-y-1 mt-0.5">

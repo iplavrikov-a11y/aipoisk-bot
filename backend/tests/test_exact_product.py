@@ -1,0 +1,151 @@
+import json
+import pytest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
+
+from app.billing import (
+    KIND_EXACT_PRODUCT,
+    MODE_EXACT_PRODUCT,
+    requested_billing_units,
+    effective_price_kopeks,
+)
+from app.exact_product import (
+    ExactProductPosition,
+    ExactProductReport,
+    GispRegistryMatch,
+    SpecParameterMatch,
+    AlternativeProduct,
+    find_minprom_gisp_match,
+    write_exact_product_docx,
+    write_exact_product_xlsx,
+    analyze_exact_product,
+)
+from app.models import SystemSettings
+
+
+def test_billing_units_and_pricing_for_exact_product():
+    units = requested_billing_units(MODE_EXACT_PRODUCT)
+    assert units[KIND_EXACT_PRODUCT] == 1
+
+    price = effective_price_kopeks(None, None, KIND_EXACT_PRODUCT)
+    assert price == 9900  # 99 rubles default
+
+
+def test_gisp_registry_search_live_or_fallback():
+    match = find_minprom_gisp_match("Диск щеточный беспроставочный", manufacturer="Профмаркет")
+    if match:
+        assert isinstance(match, GispRegistryMatch)
+        assert match.registry_number or match.product
+
+
+def test_docx_and_xlsx_generation():
+    with TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        docx_dest = tmp_path / "Форма_2_Тест.docx"
+        xlsx_dest = tmp_path / "Таблица_Аналогов.xlsx"
+
+        param1 = SpecParameterMatch(
+            param_name="Внутренний диаметр",
+            tz_requirement="не менее 128 мм",
+            product_fact="128 мм",
+            status="match",
+            comment="Полное соответствие ГОСТ",
+        )
+        param2 = SpecParameterMatch(
+            param_name="Материал ворса",
+            tz_requirement="полипропилен морозостойкий",
+            product_fact="первичный блок-сополимер пропилена",
+            status="match",
+            comment="Соответствует ТУ завода",
+        )
+
+        alt1 = AlternativeProduct(
+            brand="Коминвест-АКМТ",
+            model="Диск 128х550",
+            manufacturer="АО Коминвест-АКМТ",
+            confidence=0.95,
+            notes="В наличии на складе в РФ, дешевле оригинала на ~12%",
+        )
+
+        gisp = GispRegistryMatch(
+            registry_number="10855742",
+            manufacturer="ООО «ПК Профмаркет»",
+            product="Диск щеточный полипропиленовый беспроставочный",
+            inn="7701234567",
+        )
+
+        pos = ExactProductPosition(
+            position_no=1,
+            name_in_tz="Диск щеточный 128х550 полипропиленовый",
+            identified_brand="ПК Профмаркет",
+            identified_model="Диск щеточный беспроставочный (билайн) 128х550",
+            manufacturer="ООО «ПК Профмаркет»",
+            confidence=0.98,
+            reasoning="По геометрическим размерам посадочного кольца и типу замка «зигзаг» ТЗ скопировано с ТУ ПК Профмаркет.",
+            specs_breakdown=[param1, param2],
+            gisp_match=gisp,
+            alternative_brands=[alt1],
+        )
+
+        report = ExactProductReport(
+            procurement_title="Поставка щеточных дисков для уборочной техники",
+            total_positions=1,
+            positions=[pos],
+            summary="Выявлен 1 конкретный товар, ТЗ составлено под ПК Профмаркет с вероятностью 98%.",
+        )
+
+        assert report.total_positions == 1
+
+        # Check export to DOCX
+        written_docx = write_exact_product_docx(docx_dest, report, title="Форма 2: Сведения о качестве")
+        assert written_docx.exists()
+        assert written_docx.stat().st_size > 1000
+
+        # Check export to XLSX
+        written_xlsx = write_exact_product_xlsx(xlsx_dest, report, title="Конкретные показатели и аналоги")
+        assert written_xlsx.exists()
+        assert written_xlsx.stat().st_size > 1000
+
+
+@pytest.mark.asyncio
+async def test_analyze_exact_product_pipeline():
+    mock_llm_response = json.dumps({
+        "summary": "ТЗ скопировано под модель ПК Профмаркет",
+        "positions": [
+            {
+                "position_no": 1,
+                "name_in_tz": "Диск щеточный",
+                "identified_brand": "ПК Профмаркет",
+                "identified_model": "Диск 128х550",
+                "manufacturer": "ООО «ПК Профмаркет»",
+                "confidence": 0.95,
+                "reasoning": "Совпадение по ТУ",
+                "specs_breakdown": [
+                    {
+                        "param_name": "Диаметр",
+                        "tz_requirement": "128 мм",
+                        "product_fact": "128 мм",
+                        "status": "match",
+                        "comment": "Точное совпадение",
+                    }
+                ],
+                "alternative_brands": [
+                    {
+                        "brand": "Коминвест",
+                        "model": "Щетка-диск",
+                        "manufacturer": "Коминвест",
+                        "confidence": 0.90,
+                        "notes": "В наличии",
+                    }
+                ],
+            }
+        ]
+    })
+
+    settings = SystemSettings()
+    with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_llm_response)):
+        report = await analyze_exact_product(settings, "Техническое задание на поставку дисков 128 мм")
+        assert report.total_positions == 1
+        assert report.positions[0].identified_brand == "ПК Профмаркет"
+        assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"

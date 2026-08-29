@@ -70,6 +70,7 @@ from .config import config
 from .db import db_session, init_db
 from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_EXACT_PRODUCT,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
     SUPPLIER_POLICY_NORMAL,
@@ -1539,6 +1540,8 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.monthly_procurement_report_limit = max(int(target.monthly_procurement_report_limit or 0), int(source.monthly_procurement_report_limit or 0))
     target.monthly_file_limit = max(int(target.monthly_file_limit or 0), int(source.monthly_file_limit or 0))
     target.supplier_target_min = max(int(target.supplier_target_min or 0), int(source.supplier_target_min or 0))
+    target.money_balance_kopeks = int(target.money_balance_kopeks or 0) + int(source.money_balance_kopeks or 0)
+    target.money_reserved_kopeks = int(target.money_reserved_kopeks or 0) + int(source.money_reserved_kopeks or 0)
     merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
@@ -1546,6 +1549,10 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     db.query(BillingTransaction).filter(BillingTransaction.client_id == source.id).update({BillingTransaction.client_id: target.id}, synchronize_session=False)
     db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source.id).update({ClientTelegramAccount.client_id: target.id}, synchronize_session=False)
     db.query(WebUser).filter(WebUser.client_id == source.id).update({WebUser.client_id: target.id}, synchronize_session=False)
+    db.query(ClientTariffOverride).filter(ClientTariffOverride.client_id == source.id).update({ClientTariffOverride.client_id: target.id}, synchronize_session=False)
+    db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == source.id).update({UserJourneyEvent.client_id: target.id}, synchronize_session=False)
+    db.query(OnboardingReminder).filter(OnboardingReminder.client_id == source.id).update({OnboardingReminder.client_id: target.id}, synchronize_session=False)
+    db.query(AccountLinkToken).filter(AccountLinkToken.client_id == source.id).update({AccountLinkToken.client_id: target.id}, synchronize_session=False)
     db.flush()
     db.delete(source)
     db.commit()
@@ -1579,6 +1586,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     amount_kopeks=data.amount_kopeks,
                     note=data.note or "Ручное пополнение баланса",
                     created_by="admin",
+                    idempotency_key=data.idempotency_key or "",
                 )
             else:
                 transaction = debit_money_balance(
@@ -1587,6 +1595,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     amount_kopeks=data.amount_kopeks,
                     note=data.note or "Ручное списание с баланса",
                     created_by="admin",
+                    idempotency_key=data.idempotency_key or "",
                 )
         except BillingError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1610,6 +1619,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 package_id=package.id if package else data.package_id,
                 note=note,
                 created_by="admin",
+                idempotency_key=data.idempotency_key or "",
             )
         else:
             transaction = debit_package_units(
@@ -1620,6 +1630,7 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 amount_kopeks=data.amount_kopeks,
                 note=data.note or "Ручное списание с баланса",
                 created_by="admin",
+                idempotency_key=data.idempotency_key or "",
             )
     except BillingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2281,6 +2292,7 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
     supplier_jobs = 0
     underfilled = 0
     ai_required_failures = 0
+    ai_degraded_jobs = 0
     durations: list[float] = []
     recent_failures: list[dict] = []
 
@@ -2295,7 +2307,7 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         verified = int(getattr(job, "verified_count", 0) or 0)
         target = int(getattr(job, "target_suppliers", 0) or 0)
         total_verified += verified
-        if status in {"completed", "partial", "needs_review"} and target and verified < target:
+        if status in {"completed", "partial", "needs_review", STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED} and target and verified < target:
             underfilled += 1
         created_at = getattr(job, "created_at", None)
         completed_at = getattr(job, "completed_at", None)
@@ -2304,6 +2316,11 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         evidence = _safe_read_job_evidence(job, storage_root=storage_root)
         if evidence.get("ai_required") and status == "failed":
             ai_required_failures += 1
+        if (
+            evidence.get("candidate_rerank", {}).get("status") == "fallback_after_empty_ai_selection"
+            or evidence.get("ai_degraded")
+        ):
+            ai_degraded_jobs += 1
         search_reports = evidence.get("search", {}).get("reports", [])
         if isinstance(search_reports, list):
             for report in search_reports:
@@ -2325,6 +2342,21 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
                 }
             )
 
+    alerts = build_supplier_quality_alerts(
+        supplier_jobs=supplier_jobs,
+        status_counts=status_counts,
+        provider_status_counts=provider_status_counts,
+        ai_required_failures=ai_required_failures,
+        underfilled_terminal_jobs=underfilled,
+        average_duration_seconds=round(sum(durations) / len(durations), 2) if durations else 0,
+    )
+    if ai_degraded_jobs > 0 and not any(a.get("code") == "ai_degraded_jobs" for a in alerts):
+        alerts.append({
+            "code": "ai_degraded_jobs",
+            "level": "warning",
+            "message": f"Выявлены задачи с деградацией ИИ ({ai_degraded_jobs})",
+        })
+
     return {
         "window_size": supplier_jobs,
         "status_counts": dict(sorted(status_counts.items())),
@@ -2332,19 +2364,13 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         "average_duration_seconds": round(sum(durations) / len(durations), 2) if durations else 0,
         "underfilled_terminal_jobs": underfilled,
         "ai_required_failures": ai_required_failures,
+        "ai_degraded_jobs": ai_degraded_jobs,
         "provider_status_counts": {
             provider: dict(sorted(counts.items()))
             for provider, counts in sorted(provider_status_counts.items())
         },
         "recent_failures": recent_failures,
-        "alerts": build_supplier_quality_alerts(
-            supplier_jobs=supplier_jobs,
-            status_counts=status_counts,
-            provider_status_counts=provider_status_counts,
-            ai_required_failures=ai_required_failures,
-            underfilled_terminal_jobs=underfilled,
-            average_duration_seconds=round(sum(durations) / len(durations), 2) if durations else 0,
-        ),
+        "alerts": alerts,
     }
 
 
@@ -2402,10 +2428,10 @@ async def upload_job(
     if mode not in VALID_JOB_MODES:
         raise HTTPException(status_code=400, detail="Unknown job mode")
     sources = source_payloads_from_text(source_urls)
-    if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+    if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT}:
         raise HTTPException(
             status_code=400,
-            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis.",
+            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis and exact product matching.",
         )
     if not files and not sources:
         raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement notice number/source URL")
@@ -2444,6 +2470,7 @@ async def upload_job(
                 files=[(filename, content)],
                 sources=[],
             )
+            reserve_job_units(db, client, job)
             enqueue_job(job.id)
             jobs.append(job_to_dict(job))
         return {"batch": True, "count": len(jobs), "jobs": jobs}
@@ -2472,6 +2499,7 @@ async def upload_job(
         files=payload,
         sources=sources,
     )
+    reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
     enqueue_job(job.id)
     return job_to_dict(job)
 
@@ -2536,7 +2564,7 @@ def build_bot_analytics(db: Session, *, period_days: int = 30) -> dict:
     grants_all = [
         item
         for item in db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
-        if item.client_id not in excluded_client_ids
+        if item.client_id not in excluded_client_ids and (item.created_by or "").strip().lower() != "system"
     ]
 
     clients_with_jobs = {job.client_id for job in all_jobs if job.client_id}
@@ -2678,17 +2706,34 @@ def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict
         kind = str(item.kind or "")
         row = rows.setdefault(
             kind,
-            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0, "manual_debited": 0},
+            {
+                "kind": kind,
+                "label": billing_kind_label(kind),
+                "granted": 0,
+                "reserved": 0,
+                "charged": 0,
+                "released": 0,
+                "manual_debited": 0,
+                "granted_amount_kopeks": 0,
+                "reserved_amount_kopeks": 0,
+                "charged_amount_kopeks": 0,
+                "released_amount_kopeks": 0,
+            },
         )
         units = int(item.units or 0)
+        amount = int(item.amount_kopeks or 0)
         if item.operation == "grant":
             row["granted"] += units
+            row["granted_amount_kopeks"] += amount
         elif item.operation == "reserve":
             row["reserved"] += units
+            row["reserved_amount_kopeks"] += amount
         elif item.operation == "charge":
             row["charged"] += units
+            row["charged_amount_kopeks"] += amount
         elif item.operation == "release":
             row["released"] += units
+            row["released_amount_kopeks"] += amount
         elif item.operation == "manual_debit":
             row["manual_debited"] += units
     return sorted(rows.values(), key=lambda item: item["label"])
@@ -2821,6 +2866,7 @@ def public_site_payload(db: Session) -> dict:
         },
         "tariffs": tariffs,
         "tariff_groups": {
+            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
             "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
@@ -2897,6 +2943,7 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         },
         "tariffs": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)],
         "tariff_groups": {
+            "exact_product": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "exact_product"],
             "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
             "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
             "supplier_search_extra": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search_extra"],
@@ -2907,8 +2954,8 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "phone_url": None,
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
-            "max": None,
-            "max_url": None,
+            "max": getattr(settings, "contact_max", None) or None,
+            "max_url": max_public_url(getattr(settings, "contact_max_link", "") or getattr(settings, "contact_max", "")),
         },
         "payment": {
             "provider": settings.payment_provider or "manual",
@@ -3636,6 +3683,8 @@ def _customer_job_title_for_subject(mode: str, subject: str) -> str:
         return f"Анализ закупки: {value}"
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return f"Анализ + поиск: {value}"
+    if mode == MODE_EXACT_PRODUCT:
+        return f"Точный товар и аналоги: {value}"
     return value
 
 
@@ -3672,6 +3721,7 @@ def mode_label(mode: str) -> str:
         MODE_SUPPLIER_SEARCH: "Поиск поставщиков",
         MODE_PROCUREMENT_REPORT: "Анализ документации",
         MODE_ANALYSIS_AND_SUPPLIERS: "Анализ + поставщики",
+        MODE_EXACT_PRODUCT: "Точный товар и аналоги",
     }
     return labels.get(mode, "Задача")
 
@@ -3682,6 +3732,7 @@ def client_usage_summary(db: Session, client: Client) -> dict:
         "supplier_search": usage_counter_from_balance(balances["supplier_search"]),
         "procurement_report": usage_counter_from_balance(balances["procurement_report"]),
         "supplier_search_extra": usage_counter_from_balance(balances["supplier_search_extra"]),
+        "exact_product": usage_counter_from_balance(balances.get("exact_product", {})),
         "money": balances["money"],
         "effective_prices": balances["effective_prices"],
     }

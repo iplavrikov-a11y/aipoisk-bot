@@ -44,9 +44,14 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   Telegram manager accounts and website logins under one customer.
 - Shared customer limits for all linked Telegram accounts.
 - Customer access is based on a money balance. Each function has an effective
-  price: supplier search, procurement-document analysis, and additional
-  supplier search (`Найти ещё` / добор поставщиков). `📄🔎 Анализ + поиск`
+  price: supplier search, procurement-document analysis, additional
+  supplier search (`Найти ещё` / добор поставщиков), and exact product detection
+  (`🎯 Точный товар и аналоги по ТЗ` — 99 ₽). `📄🔎 Анализ + поиск`
   reserves and charges the supplier-search and analysis prices together.
+  Exact product detection (`exact_product` / 99 ₽) reveals hidden manufacturers/brands masked
+  in the technical specification, performs line-by-line parameter verification, finds 2–4 verified
+  equivalent models by 44/223-FZ with matching %, checks Minpromtorg/GISP industrial registry
+  inclusion, and generates downloadable Form 2 (DOCX) and comparison spreadsheets (XLSX).
   Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
   tariff package in the admin panel) with automatic fallback, and per-customer
   `Добор` prices remain editable in the admin client card. Additional supplier search

@@ -1382,8 +1382,8 @@ class ApiGuardTests(unittest.TestCase):
         finally:
             db.close()
 
-        self.assertEqual(payload["contacts"]["max"], "+79210629909")
-        self.assertEqual(payload["contacts"]["max_url"], "")
+        self.assertIsNone(payload["contacts"]["max"])
+        self.assertIsNone(payload["contacts"]["max_url"])
         self.assertEqual(session_payload["contacts"]["max"], "+79210629909")
         self.assertEqual(session_payload["contacts"]["max_url"], "")
 

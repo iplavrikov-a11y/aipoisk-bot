@@ -39,6 +39,12 @@ from .procurement_sources import (
     source_label,
 )
 from .models import parse_json_dict
+from .exact_product import (
+    analyze_exact_product,
+    write_exact_product_docx,
+    write_exact_product_xlsx,
+    ExactProductReport,
+)
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -78,7 +84,14 @@ JOB_CANCELLATION_POLL_INTERVAL_SECONDS = 0.5
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
+MODE_EXACT_PRODUCT = "exact_product"
+KIND_EXACT_PRODUCT = "exact_product"
+VALID_JOB_MODES = {
+    MODE_SUPPLIER_SEARCH,
+    MODE_PROCUREMENT_REPORT,
+    MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_EXACT_PRODUCT,
+}
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
 SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
@@ -667,6 +680,9 @@ def _process_job_sync(job_id: str) -> None:
         elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
             stage = "analysis_and_suppliers"
             _process_analysis_and_suppliers(db, job, settings, context)
+        elif job.mode == MODE_EXACT_PRODUCT:
+            stage = "exact_product"
+            _process_exact_product(db, job, settings, context)
         else:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
@@ -1367,6 +1383,55 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
     else:
         _set_job(db, job, status="completed", progress=100, message="Анализ документации готов")
         charge_job_reservation(db, job, note="Результат готов")
+    job.completed_at = now_utc()
+    db.commit()
+
+
+def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
+    _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
+    _set_job(db, job, progress=25, message="ИИ выявляет точный товар и сопоставляет характеристики")
+    subject = job.title or "Спецификация ТЗ"
+    report = asyncio.run(
+        analyze_exact_product(settings, context, procurement_title=job.title)
+    )
+    _check_cancelled(job.id)
+    _set_job(db, job, progress=75, message="Формирую Форму 2 и таблицы аналогов")
+    out_dir = job_dir(job.id) / "output"
+    stem = _result_stem(job, subject)
+    docx_path = write_exact_product_docx(
+        out_dir / _result_filename("exact_product_spec", stem, ".docx"),
+        report,
+        title=job.title or "Форма 2 и сопоставление эквивалентов",
+    )
+    xlsx_path = write_exact_product_xlsx(
+        out_dir / _result_filename("exact_product_table", stem, ".xlsx"),
+        report,
+        title=job.title or "Конкретные показатели и аналоги",
+    )
+    output_files = [
+        _output_artifact("exact_product_spec", "Спецификация и Форма 2 (DOCX)", docx_path, KIND_EXACT_PRODUCT),
+        _output_artifact("exact_product_table", "Таблица конкретных показателей и аналоги (XLSX)", xlsx_path, KIND_EXACT_PRODUCT),
+    ]
+    zip_path = zip_paths(out_dir / _result_filename("archive", stem, ".zip"), [docx_path, xlsx_path])
+    evidence_payload = {
+        "mode": job.mode,
+        "subject": subject,
+        "source_title": _source_title(job),
+        "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
+        "exact_product_report": report.to_dict(),
+        "output_files": output_files,
+        "ai_required": True,
+        "ai_used": True,
+    }
+    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+    job.evidence_path = str(evidence_path)
+    job.result_path = str(docx_path)
+    job.active_output_manifest = _save_job_output_manifest(job, output_files)
+    _set_customer_job_title_from_subject(job, subject)
+    charge_job_reservation(db, job, note="Выявление точного товара и подбор аналогов завершены")
+    _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
     job.completed_at = now_utc()
     db.commit()
 
