@@ -10,6 +10,8 @@ import {
   BellRing,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Compass,
   Copy,
@@ -819,6 +821,7 @@ export function CabinetClient() {
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [viewedJobIds, setViewedJobIds] = useState<string[]>([]);
@@ -2031,63 +2034,46 @@ export function CabinetClient() {
             })}
           </div>
 
-          {/* Active Function Thesis & Workflow Hint */}
+          {/* Collapsible Mode Hint Accordion */}
           {(() => {
             const currentThesis = SCENARIO_THESES[scenario];
             if (!currentThesis) return null;
             return (
-              <div className="p-3 bg-gradient-to-r from-emerald-50/70 via-teal-50/50 to-slate-50 border border-teal-200/80 rounded-xl shadow-2xs space-y-2 font-sans transition-all">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-100 pb-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold border uppercase tracking-wider ${currentThesis.tagColor}`}>
-                      {currentThesis.badge}
-                    </span>
-                    <strong className="text-xs font-extrabold text-slate-900">{currentThesis.title}</strong>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHelpModalTab(scenario);
-                      setShowHelpModal(true);
-                    }}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-white/90 hover:bg-white border border-teal-200 px-2 py-0.5 rounded-lg shadow-2xs transition-colors cursor-pointer"
-                  >
-                    <BookOpen size={11} className="text-teal-600" />
-                    <span>Подробнее в справке ↗</span>
-                  </button>
-                </div>
+              <div className="space-y-1.5 font-sans">
+                <button
+                  type="button"
+                  onClick={() => setShowScenarioHint(!showScenarioHint)}
+                  className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-teal-700 font-medium transition-colors cursor-pointer py-0.5 px-1 rounded-md hover:bg-slate-50"
+                  aria-expanded={showScenarioHint}
+                >
+                  <span className="text-[11px]">Как работает «{currentThesis.title}»</span>
+                  {showScenarioHint ? (
+                    <ChevronUp size={13} className="text-slate-400" />
+                  ) : (
+                    <ChevronDown size={13} className="text-slate-400" />
+                  )}
+                </button>
 
-                <div className="grid sm:grid-cols-2 gap-2 text-xs">
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] font-extrabold text-teal-800 uppercase tracking-wide flex items-center gap-1">
-                      <Sparkles size={10} className="text-teal-600" />
-                      Что делает функция:
-                    </span>
-                    <p className="text-[11px] font-medium text-slate-700 leading-relaxed">
-                      {currentThesis.whatItDoes}
-                    </p>
+                {showScenarioHint ? (
+                  <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2 text-xs text-slate-700">
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <div>
+                        <span className="font-bold text-slate-900 block text-[11px] mb-0.5">Назначение:</span>
+                        <p className="text-slate-600 leading-relaxed text-[11px]">{currentThesis.whatItDoes}</p>
+                      </div>
+                      <div>
+                        <span className="font-bold text-slate-900 block text-[11px] mb-0.5">Когда применять:</span>
+                        <p className="text-slate-600 leading-relaxed text-[11px]">{currentThesis.whenToUse}</p>
+                      </div>
+                    </div>
+                    <div className="pt-2 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <div>
+                        <span className="font-semibold text-slate-700">Результат:</span> {currentThesis.outputs}
+                      </div>
+                      <div className="text-teal-800 font-medium">{currentThesis.nextStep}</div>
+                    </div>
                   </div>
-
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] font-extrabold text-slate-600 uppercase tracking-wide flex items-center gap-1">
-                      <CheckCircle2 size={10} className="text-emerald-600" />
-                      Когда применять:
-                    </span>
-                    <p className="text-[11px] font-medium text-slate-700 leading-relaxed">
-                      {currentThesis.whenToUse}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-1.5 border-t border-teal-100/70 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <div className="flex items-center gap-1.5 text-slate-600 flex-wrap">
-                    <span className="font-bold text-slate-700">📦 Результат:</span>
-                    <span className="text-slate-600 font-medium">{currentThesis.outputs}</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-teal-800 font-semibold text-[11px]">
-                    <span>💡 Совет: {currentThesis.nextStep}</span>
-                  </div>
-                </div>
+                ) : null}
               </div>
             );
           })()}
@@ -2709,7 +2695,7 @@ export function CabinetClient() {
           </button>
         </div>
       ) : null}
-      {/* Function Guide & Workflow Compilation Modal */}
+      {/* Function Guide & Workflow Compilation Modal (No-Scroll, Clean 5-Tab Grid) */}
       {showHelpModal ? (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
@@ -2718,562 +2704,438 @@ export function CabinetClient() {
           }}
         >
           <section
-            className="bg-white rounded-3xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans max-h-[92vh]"
+            className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans"
             role="dialog"
             aria-modal="true"
             aria-labelledby="help-modal-title"
           >
             {/* Modal Header */}
-            <header className="bg-gradient-to-r from-emerald-900 via-teal-900 to-slate-900 text-white p-4 sm:p-5 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-600/50 flex items-center justify-center text-emerald-300 shadow-inner shrink-0">
-                  <BookOpen size={20} aria-hidden="true" />
+            <header className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 text-white px-5 py-3.5 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-teal-800/80 border border-teal-600/50 flex items-center justify-center text-teal-200 shrink-0 shadow-inner">
+                  <BookOpen size={16} aria-hidden="true" />
                 </div>
                 <div>
-                  <h2 id="help-modal-title" className="text-base sm:text-lg font-extrabold text-white leading-tight">
+                  <h2 id="help-modal-title" className="text-sm sm:text-base font-extrabold text-white leading-tight">
                     Справочник функций и алгоритм работы TenderLex
                   </h2>
-                  <p className="text-xs text-emerald-200/90 font-medium mt-0.5">
-                    Как правильно комбинировать инструменты и подготовить заявку для победы в тендере
+                  <p className="text-[11px] text-teal-200/90 font-medium">
+                    Пошаговый порядок подготовки к закупкам и назначение инструментов
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                className="p-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-xl transition-colors shrink-0 cursor-pointer"
+                className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
                 onClick={() => setShowHelpModal(false)}
                 aria-label="Закрыть"
               >
-                <X size={20} aria-hidden="true" />
+                <X size={18} aria-hidden="true" />
               </button>
             </header>
 
-            {/* Modal Tab Navigation */}
-            <div className="bg-slate-100 p-2 border-b border-slate-200 flex items-center gap-1 overflow-x-auto shrink-0 scrollbar-thin">
+            {/* Modal Tab Navigation (Fit all 5 tabs without horizontal scrolling) */}
+            <div className="bg-slate-100 p-1.5 border-b border-slate-200 grid grid-cols-2 sm:grid-cols-5 gap-1 text-xs shrink-0">
               <button
                 type="button"
                 onClick={() => setHelpModalTab("workflow")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "workflow"
-                    ? "bg-white text-emerald-900 border border-slate-300/80 shadow-xs"
+                    ? "bg-white text-teal-950 border border-slate-300/80 shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <Compass size={13} className={helpModalTab === "workflow" ? "text-emerald-700" : "text-slate-400"} />
-                <span>🚀 Маршрут работы (Как комбинировать)</span>
+                <Compass size={12} className={helpModalTab === "workflow" ? "text-teal-700" : "text-slate-400"} />
+                <span className="truncate">Маршрут работы</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHelpModalTab("exact_product")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "exact_product"
-                    ? "bg-white text-emerald-900 border border-slate-300/80 shadow-xs"
+                    ? "bg-white text-teal-950 border border-slate-300/80 shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <CheckCircle2 size={13} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
-                <span>🎯 Подбор товара и аналогов</span>
+                <CheckCircle2 size={12} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
+                <span className="truncate">Подбор товара</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHelpModalTab("supplier_search")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "supplier_search"
-                    ? "bg-white text-emerald-900 border border-slate-300/80 shadow-xs"
+                    ? "bg-white text-teal-950 border border-slate-300/80 shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <Search size={13} className={helpModalTab === "supplier_search" ? "text-teal-600" : "text-slate-400"} />
-                <span>🔎 Поиск поставщиков</span>
+                <Search size={12} className={helpModalTab === "supplier_search" ? "text-teal-600" : "text-slate-400"} />
+                <span className="truncate">Поиск поставщиков</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHelpModalTab("procurement_report")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "procurement_report"
-                    ? "bg-white text-emerald-900 border border-slate-300/80 shadow-xs"
+                    ? "bg-white text-teal-950 border border-slate-300/80 shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <FileText size={13} className={helpModalTab === "procurement_report" ? "text-sky-600" : "text-slate-400"} />
-                <span>📄 Анализ документации</span>
+                <FileText size={12} className={helpModalTab === "procurement_report" ? "text-sky-600" : "text-slate-400"} />
+                <span className="truncate">Анализ закупки</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHelpModalTab("analysis_and_suppliers")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer col-span-2 sm:col-span-1 ${
                   helpModalTab === "analysis_and_suppliers"
-                    ? "bg-white text-emerald-900 border border-slate-300/80 shadow-xs"
+                    ? "bg-white text-teal-950 border border-slate-300/80 shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <Receipt size={13} className={helpModalTab === "analysis_and_suppliers" ? "text-indigo-600" : "text-slate-400"} />
-                <span>📄🔎 Анализ + поиск</span>
+                <Receipt size={12} className={helpModalTab === "analysis_and_suppliers" ? "text-indigo-600" : "text-slate-400"} />
+                <span className="truncate">Анализ + поиск</span>
               </button>
             </div>
 
-            {/* Modal Body Content */}
-            <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5 text-slate-800 text-xs">
+            {/* Modal Body Content (Clean, Structured, No Scroll Clutter) */}
+            <div className="p-4 sm:p-5 text-slate-800 text-xs space-y-4">
               {helpModalTab === "workflow" ? (
-                <div className="space-y-4">
-                  <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-4 space-y-1">
-                    <h3 className="text-sm font-extrabold text-emerald-950 flex items-center gap-2">
-                      <Sparkles size={16} className="text-emerald-700" />
-                      Рекомендуемый пошаговый алгоритм работы с закупкой
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+                    <h3 className="font-extrabold text-slate-900 text-xs">
+                      Рекомендуемый пошаговый порядок работы
                     </h3>
-                    <p className="text-xs text-emerald-900/80 leading-relaxed font-medium">
-                      Чтобы исключить отклонение заявки, снизить себестоимость и уверенно выиграть тендер, используйте 3 логических шага:
-                    </p>
+                    <span className="text-[11px] text-slate-500">3 последовательных шага к победе в тендере</span>
                   </div>
 
-                  {/* 3 Step Cards */}
-                  <div className="grid gap-3">
+                  {/* 3 Step Cards in 3 Columns */}
+                  <div className="grid sm:grid-cols-3 gap-2.5">
                     {/* Step 1 */}
-                    <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-2xs hover:border-sky-300 transition-all space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="w-6 h-6 rounded-full bg-sky-100 text-sky-800 font-extrabold text-xs flex items-center justify-center shrink-0">
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-3 flex flex-col justify-between space-y-2.5 hover:border-sky-300 transition-colors">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-full bg-sky-100 text-sky-800 font-extrabold text-[10px] flex items-center justify-center shrink-0">
                             1
                           </span>
-                          <strong className="text-xs font-bold text-slate-900">Шаг 1: Экспресс-аудит рисков закупки</strong>
+                          <strong className="text-[11px] font-bold text-slate-900">Анализ документации</strong>
                         </div>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-50 text-sky-800 border border-sky-200">
-                          Режим «Анализ документации»
-                        </span>
+                        <p className="text-[11px] text-slate-600 leading-snug pt-0.5">
+                          Экспресс-аудит проекта контракта: проверка сроков, штрафов, обеспечения и ограничений нацрежима (ПП 616/617/878).
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        <strong>Когда применять:</strong> сразу при открытии извещения ЕИС до начала расчетов.
-                        ИИ проверяет проект контракта и ТЗ на кабальные штрафы, нереальные сроки поставки, требования лицензий и ограничения нацрежима (ПП 616/617/878).
-                      </p>
-                      <div className="bg-slate-50 p-2 rounded-xl text-[11px] text-slate-700 flex items-center justify-between">
-                        <span><strong>Результат:</strong> понимание юридической чистоты и безопасности сделки.</span>
+                      <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 font-medium">Оценка рисков</span>
                         <button
                           type="button"
                           onClick={() => {
                             selectScenario("procurement_report");
                             setShowHelpModal(false);
                           }}
-                          className="font-bold text-teal-700 hover:text-teal-900 shrink-0 ml-2"
+                          className="text-[11px] font-bold text-sky-700 hover:text-sky-900 cursor-pointer"
                         >
-                          Перейти к режиму ↗
+                          Выбрать →
                         </button>
                       </div>
                     </div>
 
                     {/* Step 2 */}
-                    <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-2xs hover:border-emerald-300 transition-all space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-xs flex items-center justify-center shrink-0">
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-3 flex flex-col justify-between space-y-2.5 hover:border-emerald-300 transition-colors">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-[10px] flex items-center justify-center shrink-0">
                             2
                           </span>
-                          <strong className="text-xs font-bold text-slate-900">Шаг 2: Расшифровка модели, Форма 2 и подбор аналогов</strong>
+                          <strong className="text-[11px] font-bold text-slate-900">Подбор товара и аналогов</strong>
                         </div>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                          Режим «Подбор товара и аналогов»
-                        </span>
+                        <p className="text-[11px] text-slate-600 leading-snug pt-0.5">
+                          Определение заложенной модели по ТЗ, Форма 2 для заявки без риска отклонения и 2–4 эквивалента РФ.
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        <strong>Когда применять:</strong> когда закупка одобрена и нужно составить первую часть заявки.
-                        ИИ выявляет зашитый заказчиком бренд, сверяет ГОСТ/ТУ, формирует таблицу с конкретными показателями (Форма 2) и находит 2–4 взаимозаменяемых эквивалента РФ для снижения себестоимости.
-                      </p>
-                      <div className="bg-slate-50 p-2 rounded-xl text-[11px] text-slate-700 flex items-center justify-between">
-                        <span><strong>Результат:</strong> готовая заявка без риска отклонения + варианты замены.</span>
+                      <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 font-medium">Форма 2 + ГИСП</span>
                         <button
                           type="button"
                           onClick={() => {
                             selectScenario("exact_product");
                             setShowHelpModal(false);
                           }}
-                          className="font-bold text-teal-700 hover:text-teal-900 shrink-0 ml-2"
+                          className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 cursor-pointer"
                         >
-                          Перейти к режиму ↗
+                          Выбрать →
                         </button>
                       </div>
                     </div>
 
                     {/* Step 3 */}
-                    <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-2xs hover:border-teal-300 transition-all space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-800 font-extrabold text-xs flex items-center justify-center shrink-0">
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-3 flex flex-col justify-between space-y-2.5 hover:border-teal-300 transition-colors">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-full bg-teal-100 text-teal-800 font-extrabold text-[10px] flex items-center justify-center shrink-0">
                             3
                           </span>
-                          <strong className="text-xs font-bold text-slate-900">Шаг 3: Сбор базы прямых производителей и запрос КП</strong>
+                          <strong className="text-[11px] font-bold text-slate-900">Поиск поставщиков</strong>
                         </div>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                          Режим «Поиск поставщиков»
-                        </span>
+                        <p className="text-[11px] text-slate-600 leading-snug pt-0.5">
+                          Сбор базы прямых заводов РФ и официальных дилеров с телефонами и email для запроса КП и расчета цены.
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        <strong>Когда применять:</strong> для точного расчета рентабельности и закупки продукции.
-                        ИИ находит заводы-изготовители и официальных дилеров РФ под выбранный товар или аналоги, выгружает прямые телефоны и email для запроса КП.
-                      </p>
-                      <div className="bg-slate-50 p-2 rounded-xl text-[11px] text-slate-700 flex items-center justify-between">
-                        <span><strong>Результат:</strong> прямые контакты заводов для получения минимальной цены.</span>
+                      <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 font-medium">Запрос КП</span>
                         <button
                           type="button"
                           onClick={() => {
                             selectScenario("supplier_search");
                             setShowHelpModal(false);
                           }}
-                          className="font-bold text-teal-700 hover:text-teal-900 shrink-0 ml-2"
+                          className="text-[11px] font-bold text-teal-700 hover:text-teal-900 cursor-pointer"
                         >
-                          Перейти к режиму ↗
+                          Выбрать →
                         </button>
                       </div>
                     </div>
                   </div>
 
-                  {/* Decision Helper */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
-                    <h4 className="font-extrabold text-xs text-slate-900 uppercase tracking-wider">
-                      Быстрый выбор: Что нужно сделать прямо сейчас?
-                    </h4>
-                    <div className="grid sm:grid-cols-2 gap-2 text-[11px]">
-                      <div
-                        onClick={() => {
-                          selectScenario("procurement_report");
-                          setShowHelpModal(false);
-                        }}
-                        className="p-2.5 bg-white border border-slate-200 hover:border-sky-400 rounded-xl cursor-pointer transition-all space-y-1 shadow-2xs"
-                      >
-                        <strong className="text-slate-900 block font-bold">🔍 Только нашел закупку</strong>
-                        <span className="text-slate-600 block">Оценить риски, сроки и проект контракта → Анализ документации</span>
+                  {/* Complex Mode Banner */}
+                  <div className="p-3 bg-indigo-50/70 border border-indigo-200/80 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-indigo-100 text-indigo-900 border border-indigo-300">
+                          Комплексный запуск
+                        </span>
+                        <strong className="text-slate-900 text-[11px]">Анализ + поиск в 1 клик</strong>
                       </div>
-
-                      <div
-                        onClick={() => {
-                          selectScenario("exact_product");
-                          setShowHelpModal(false);
-                        }}
-                        className="p-2.5 bg-white border border-slate-200 hover:border-emerald-400 rounded-xl cursor-pointer transition-all space-y-1 shadow-2xs"
-                      >
-                        <strong className="text-slate-900 block font-bold">📝 ТЗ без брендов, нужна Форма 2</strong>
-                        <span className="text-slate-600 block">Выявить модель, заполнить параметры и найти аналоги → Подбор товара</span>
-                      </div>
-
-                      <div
-                        onClick={() => {
-                          selectScenario("supplier_search");
-                          setShowHelpModal(false);
-                        }}
-                        className="p-2.5 bg-white border border-slate-200 hover:border-teal-400 rounded-xl cursor-pointer transition-all space-y-1 shadow-2xs"
-                      >
-                        <strong className="text-slate-900 block font-bold">📞 Нужны цены и контакты заводов</strong>
-                        <span className="text-slate-600 block">Найти прямых производителей РФ для запроса КП → Поиск поставщиков</span>
-                      </div>
-
-                      <div
-                        onClick={() => {
-                          selectScenario("analysis_and_suppliers");
-                          setShowHelpModal(false);
-                        }}
-                        className="p-2.5 bg-white border border-slate-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-all space-y-1 shadow-2xs"
-                      >
-                        <strong className="text-slate-900 block font-bold">⚡ Экспресс-оценка в один клик</strong>
-                        <span className="text-slate-600 block">Сразу получить аудит рисков + базу поставщиков → Анализ + поиск</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "exact_product" ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                      <CheckCircle2 size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-extrabold text-emerald-950">Подбор товара, Форма 2 и российские аналоги</h3>
-                      <p className="text-xs text-emerald-900/80 font-medium">
-                        Выявление зашитого в ТЗ изделия, проверка реестра Минпромторга (ГИСП) и попараметрическое сопоставление эквивалентов
+                      <p className="text-[11px] text-slate-600">
+                        Совмещает Шаг 1 и Шаг 3: сразу проверяет риски по закупке и находит базу поставщиков под спецификацию.
                       </p>
                     </div>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3 text-xs">
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Sparkles size={13} className="text-emerald-600" />
-                        Что делает:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Анализирует габариты, ГОСТ/ТУ и характеристики из ТЗ. Определяет завод-изготовитель и конкретную марку.
-                        Формирует готовую таблицу конкретных показателей для первой части заявки без неопределенных слов («не менее/не более») и подбирает 2–4 аналога.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <CheckCircle2 size={13} className="text-emerald-600" />
-                        Когда использовать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Когда заказчик умышленно «зашил» конкретную продукцию без указания бренда, либо когда оригинальный товар слишком дорогой/снят с производства и требуется предложить эквивалент по 44-ФЗ / 223-ФЗ.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Upload size={13} className="text-teal-600" />
-                        Что загружать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Файл ТЗ, спецификацию или таблицу характеристик (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент текста описания объекта закупки.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Download size={13} className="text-emerald-600" />
-                        Что на выходе:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        1) Официальный отчет Word (DOCX) с Формой 2 и таблицей аналогов.<br />
-                        2) Структурированная таблица Excel (XLSX).<br />
-                        3) Номера записей в реестре Минпромторга (ГИСП).
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("exact_product");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
-                    >
-                      <span>Выбрать «Подбор товара и аналогов»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "supplier_search" ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-4 bg-teal-50 border border-teal-200 rounded-2xl">
-                    <div className="w-10 h-10 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                      <Search size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-extrabold text-teal-950">Поиск поставщиков и заводов-производителей</h3>
-                      <p className="text-xs text-teal-900/80 font-medium">
-                        Сбор базы прямых производителей и оптовых поставщиков РФ с контактами и email для запроса КП
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3 text-xs">
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Sparkles size={13} className="text-teal-600" />
-                        Что делает:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Сканирует открытый веб, каталоги предприятий РФ, реестр Минпромторга и базы сертификатов.
-                        Находит действующие заводы и оптовых дилеров, извлекает прямые телефоны, email отдела продаж и реквизиты (ИНН).
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <CheckCircle2 size={13} className="text-teal-600" />
-                        Когда использовать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Когда нужно быстро запросить коммерческие предложения для расчета себестоимости заявки или оперативно закрыть закупку материалов/оборудования по оптовым ценам.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Sliders size={13} className="text-teal-600" />
-                        Режимы реестра Минпромторга:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        • <strong>Обычный:</strong> поиск по всем поставщикам РФ.<br />
-                        • <strong>Только реестр (ГИСП):</strong> жесткий фильтр для нацрежима ПП 616.<br />
-                        • <strong>Реестр в приоритете:</strong> заводы из реестра поднимаются наверх (ПП 617/878).
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Download size={13} className="text-teal-600" />
-                        Что на выходе:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        1) Ведомость поставщиков в Excel (XLSX).<br />
-                        2) Готовый файл запроса коммерческого предложения (DOCX).<br />
-                        3) Встроенный веб-редактор и копирование текста КП в один клик.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("supplier_search");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
-                    >
-                      <span>Выбрать «Поиск поставщиков»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "procurement_report" ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-4 bg-sky-50 border border-sky-200 rounded-2xl">
-                    <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                      <FileText size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-extrabold text-sky-950">Анализ документации и рисков закупки</h3>
-                      <p className="text-xs text-sky-900/80 font-medium">
-                        Аудит условий закупки по номеру извещения ЕИС, ссылке или файлам проекта контракта
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3 text-xs">
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Sparkles size={13} className="text-sky-600" />
-                        Что делает:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Проверяет извещение, ТЗ и проект контракта по чек-листу рисков: сроки, нацрежим, обеспечение заявки и контракта, скрытые штрафы, особые требования к лицензиям и оборудованию.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <CheckCircle2 size={13} className="text-sky-600" />
-                        Когда использовать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Перед подачей заявки для объективной оценки целесообразности участия и предотвращения кабальных обязательств или срыва сроков.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Upload size={13} className="text-sky-600" />
-                        Что загружать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Номер извещения ЕИС (19 цифр), ссылку на zakupki.gov.ru либо архив документации закупки с файлами ТЗ и проекта контракта.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Download size={13} className="text-sky-600" />
-                        Что на выходе:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        1) Официальный аналитический отчет Word (DOCX) в фирменном стиле.<br />
-                        2) Экспертный чек-лист ключевых условий и факторов риска.<br />
-                        3) Рекомендации по снижению рисков при исполнении.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("procurement_report");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-6 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
-                    >
-                      <span>Выбрать «Анализ документации»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "analysis_and_suppliers" ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-4 bg-indigo-50 border border-indigo-200 rounded-2xl">
-                    <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                      <Receipt size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-extrabold text-indigo-950">Анализ документации + Поиск поставщиков (Комплекс)</h3>
-                      <p className="text-xs text-indigo-900/80 font-medium">
-                        Полный цикл экспресс-обработки закупки в один запуск
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3 text-xs">
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Sparkles size={13} className="text-indigo-600" />
-                        Что делает:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Объединяет аудит рисков закупки и подбор профильных поставщиков. ИИ скачивает документацию, находит ТЗ, анализирует условия и сразу собирает базу заводов с контактами.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <CheckCircle2 size={13} className="text-indigo-600" />
-                        Когда использовать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        Когда нужно оперативно оценить новую закупку целиком: сразу получить юридическую картину рисков и контакты поставщиков для запроса цен.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Upload size={13} className="text-indigo-600" />
-                        Что загружать:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        19-значный номер извещения ЕИС, ссылку на zakupki.gov.ru или файлы закупочной документации.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                      <strong className="text-slate-900 font-bold block flex items-center gap-1.5">
-                        <Download size={13} className="text-indigo-600" />
-                        Что на выходе:
-                      </strong>
-                      <p className="text-slate-600 leading-relaxed">
-                        1) Аналитический отчет DOCX с факторами риска.<br />
-                        2) Таблица поставщиков XLSX с прямыми контактами и email.<br />
-                        3) Готовый файл запроса КП.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 flex justify-end">
                     <button
                       type="button"
                       onClick={() => {
                         selectScenario("analysis_and_suppliers");
                         setShowHelpModal(false);
                       }}
-                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg transition-colors cursor-pointer shrink-0"
                     >
-                      <span>Выбрать «Анализ + поиск»</span>
-                      <ArrowRight size={14} />
+                      Выбрать комплекс →
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "exact_product" ? (
+                <div className="space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Назначение:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          ИИ анализирует технические параметры ТЗ, определяет конкретную заводскую модель и производителя, формирует Форму 2 с конкретными показателями без неопределенных слов («не менее/не более») и подбирает 2–4 эквивалента РФ.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Когда применять:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Когда заказчик не указал бренд в ТЗ или требуется снизить себестоимость заявки с помощью российского аналога из реестра Минпромторга (ГИСП).
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что загружать:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Файл ТЗ, спецификации или таблицы параметров (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент описания объекта закупки текстом.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что на выходе:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          1) Отчет Word (DOCX) с Формой 2 и таблицей аналогов.<br />
+                          2) Таблица Excel (XLSX) с попараметрическим сравнением.<br />
+                          3) Проверка реестра Минпромторга (ГИСП).
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-2 border-t border-slate-100">
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      💡 Совет: после определения модели запустите «Поиск поставщиков» для запроса КП.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("exact_product");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                    >
+                      Выбрать этот режим →
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "supplier_search" ? (
+                <div className="space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Назначение:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Поиск прямых производителей, официальных дилеров и оптовых дистрибьюторов по всей России. ИИ извлекает прямые телефоны, email отдела продаж, сайты и реквизиты (ИНН).
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Режимы фильтрации Минпромторга:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          • <strong>Обычный</strong> — все поставщики РФ.<br />
+                          • <strong>Только реестр (ГИСП)</strong> — строгий фильтр под ПП 616.<br />
+                          • <strong>Реестр в приоритете</strong> — заводы из ГИСП в начале под ПП 617/878.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что загружать:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Файл ТЗ, спецификацию (.pdf, .docx, .xlsx, .zip) или список позиций текстом.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что на выходе:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          1) Ведомость поставщиков в Excel (XLSX).<br />
+                          2) Файл запроса КП в Word (DOCX).<br />
+                          3) Копирование текста КП в один клик.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-2 border-t border-slate-100">
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      💡 Совет: используйте выгруженные контакты для рассылки запросов КП.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("supplier_search");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                    >
+                      Выбрать этот режим →
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "procurement_report" ? (
+                <div className="space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Назначение:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Аудит условий закупки по 44-ФЗ и 223-ФЗ. Проверка проекта контракта и ТЗ на риски: кабальные штрафы, нереальные сроки поставки, требования лицензий, обеспечение заявки и контракта.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Когда применять:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Перед подачей заявки для оценки целесообразности участия и защиты от включения в РНП.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что загружать:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          19-значный номер извещения ЕИС, ссылку на zakupki.gov.ru или файлы документации закупки.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что на выходе:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
+                          2) Чек-лист ключевых требований и факторов риска.<br />
+                          3) Рекомендации по безопасному исполнению.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-2 border-t border-slate-100">
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      💡 Совет: если закупка безопасна, перейдите к «Подбору товара» для подготовки Формы 2.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("procurement_report");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-4 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                    >
+                      Выбрать этот режим →
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "analysis_and_suppliers" ? (
+                <div className="space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Назначение:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Совмещенный запуск в 1 клик: полный аудит документации закупки плюс автоматический подбор профильных поставщиков по позициям ТЗ.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Когда применять:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          Когда нужно быстро получить общую картину по новой закупке: оценить риски и сразу увидеть контакты поставщиков.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что загружать:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          19-значный номер извещения ЕИС, ссылку на zakupki.gov.ru или архив документации.
+                        </p>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200/70">
+                        <strong className="text-slate-900 font-bold block text-[11px]">Что на выходе:</strong>
+                        <p className="text-slate-600 leading-relaxed text-[11px] mt-0.5">
+                          1) Аналитический отчет DOCX с факторами риска.<br />
+                          2) Таблица поставщиков XLSX с прямыми контактами и email.<br />
+                          3) Готовый файл запроса КП.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-2 border-t border-slate-100">
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      💡 Совет: по сложным позициям ТЗ запустите «Подбор товара» для Формы 2.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("analysis_and_suppliers");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                    >
+                      Выбрать этот режим →
                     </button>
                   </div>
                 </div>
@@ -3281,13 +3143,13 @@ export function CabinetClient() {
             </div>
 
             {/* Modal Footer */}
-            <footer className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
+            <footer className="px-5 py-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
               <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">
                 TenderLex — профессиональная ИИ-платформа анализа закупок и подбора поставщиков
               </span>
               <button
                 type="button"
-                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-xl transition-colors cursor-pointer ml-auto"
+                className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-lg transition-colors cursor-pointer ml-auto"
                 onClick={() => setShowHelpModal(false)}
               >
                 Закрыть
