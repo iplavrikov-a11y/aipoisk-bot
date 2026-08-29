@@ -243,6 +243,30 @@ def extract_clean_spec_text(text: str) -> str:
 # Web & PDF Document Fetcher
 # ---------------------------------------------------------------------------
 
+async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[dict[str, Any]]:
+    """
+    Fallback-загрузчик через Playwright Chromium для обхода защит (KillBot, Cloudflare, DDoS-Guard)
+    и рендеринга SPA/динамических таблиц характеристик.
+    """
+    try:
+        from .procurement_sources import fetch_source_page_with_browser
+        browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=18.0)
+        if browser_page and browser_page.get("text"):
+            text = str(browser_page["text"]).strip()
+            if len(text) > 80:
+                title = f"Официальный каталог / Спецификация ({domain})"
+                return {
+                    "url": url,
+                    "domain": domain,
+                    "type": "html_browser",
+                    "title": title,
+                    "text": text[:25000],
+                }
+    except Exception as b_exc:
+        logger.debug("browser_fallback_failed for %s: %s", url, b_exc)
+    return None
+
+
 async def fetch_web_or_pdf_document(
     client: httpx.AsyncClient,
     url: str,
@@ -251,6 +275,8 @@ async def fetch_web_or_pdf_document(
     """
     Скачивает и извлекает чистый текст из HTML-страниц или PDF-паспортов/руководств.
     Поддерживает извлечение таблиц технических характеристик и параметров.
+    При блокировках (403, 503, KillBot, Cloudflare) или пустом теле автоматически
+    переключается на Playwright Headless Browser.
     """
     if not url or not url.startswith(("http://", "https://")):
         return None
@@ -266,6 +292,9 @@ async def fetch_web_or_pdf_document(
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
         response = await client.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
+        if response.status_code in (403, 503, 429):
+            # Антибот блокировка -> Playwright fallback
+            return await _fetch_with_browser_fallback(url, domain)
         if response.status_code >= 400:
             return None
 
@@ -307,7 +336,14 @@ async def fetch_web_or_pdf_document(
         # HTML parsing
         html_raw = response.text
         if not html_raw:
-            return None
+            return await _fetch_with_browser_fallback(url, domain)
+
+        # Проверка на антибот заглушки в теле 200 OK
+        lower_html = html_raw.lower()
+        if any(b in lower_html for b in ["killbot", "ddos-guard", "cloudflare", "challenge-platform", "enable javascript", "проверка браузера", "защита от роботов"]):
+            browser_doc = await _fetch_with_browser_fallback(url, domain)
+            if browser_doc:
+                return browser_doc
 
         soup = BeautifulSoup(html_raw, "html.parser")
         for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "aside", "form"]):
@@ -351,14 +387,17 @@ async def fetch_web_or_pdf_document(
                 "title": page_title,
                 "text": clean_extracted[:25000],
             }
+        else:
+            return await _fetch_with_browser_fallback(url, domain)
 
     except Exception as exc:
         logger.debug("fetch_doc_failed for %s: %s", url, exc)
+        return await _fetch_with_browser_fallback(url, domain)
 
     return None
 
 
-async def fetch_batch_web_documents(urls: list[str], max_docs: int = 5) -> list[dict[str, Any]]:
+async def fetch_batch_web_documents(urls: list[str], max_docs: int = 6) -> list[dict[str, Any]]:
     """Параллельно скачивает и извлекает контент из нескольких веб-страниц и PDF-паспортов."""
     if not urls:
         return []
@@ -397,7 +436,7 @@ def find_minprom_gisp_match(
 
     queries = []
     if manufacturer and len(manufacturer.strip()) > 3:
-        clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|«|»|")', '', manufacturer).strip()
+        clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|«|»|")', '', manufacturer).strip()
         if len(clean_manuf) >= 3:
             queries.append(clean_manuf)
     if brand and len(brand.strip()) > 2 and brand not in queries:
@@ -419,6 +458,7 @@ def find_minprom_gisp_match(
             terms = [t for t in re.findall(r"[\w]{2,}", q) if len(t) > 1]
             if not terms:
                 continue
+            # 1. Точный AND поиск по префиксам
             match_expression = " AND ".join([f'"{t}"*' for t in terms[:4]])
             try:
                 cursor = conn.execute(
@@ -443,7 +483,35 @@ def find_minprom_gisp_match(
                         matched=True,
                     )
             except sqlite3.Error:
-                continue
+                pass
+
+            # 2. Мягкий поиск по первому ключевому термину (если многословный запрос не дал результатов)
+            if len(terms) > 1 and len(terms[0]) >= 4:
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                        FROM entries_fts
+                        JOIN entries e ON e.id = entries_fts.rowid
+                        WHERE entries_fts MATCH ?
+                        LIMIT 3
+                        """,
+                        (f'"{terms[0]}"*',),
+                    )
+                    rows = cursor.fetchall()
+                    if rows:
+                        reg_num, manuf, prod, inn, src_url = rows[0]
+                        return GispRegistryMatch(
+                            registry_number=str(reg_num or "").strip(),
+                            manufacturer=str(manuf or "").strip(),
+                            product=str(prod or "").strip(),
+                            inn=str(inn or "").strip(),
+                            source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                            matched=True,
+                        )
+                except sqlite3.Error:
+                    pass
+
     except Exception as exc:
         logger.warning("gisp_lookup_failed: %s", exc)
     finally:
@@ -451,6 +519,277 @@ def find_minprom_gisp_match(
             conn.close()
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Clarify & Standards Resolvers
+# ---------------------------------------------------------------------------
+
+RESOLVE_CLARIFY_PROMPT = """Ты — ведущий эксперт по стандартизации и госзакупкам (44-ФЗ/223-ФЗ).
+Твоя задача — проверить приложенный текст новых технических документов / паспортов / ГОСТ и установить точное фактическое значение параметра для конкретной модели оборудования или материала.
+
+Товар: {brand} {model} (Производитель: {manufacturer})
+Наименование параметра: {param_name}
+Требование ТЗ: {tz_requirement}
+
+Текст найденных технических документов, паспортов и стандартов:
+{doc_text}
+
+ПРАВИЛА ВЕРИФИКАЦИИ:
+1. Ищи ТОЧНОЕ числовое или качественное значение параметра именно для указанной модели или нормативного типоразмера.
+2. Не выдумывай и не подгоняй под ТЗ! Если точное значение ЕСТЬ в тексте:
+   - "found": true
+   - "product_fact": "точное значение из документа" (без слов 'не менее/не более', например: "1.6 МПа", "14 000 лм", "32 м3/ч", "1200 x 1200 dpi", "120 мм")
+   - "status": "match" (если значение укладывается в требование ТЗ) или "mismatch" (если фактическое значение отличается от ТЗ)
+   - "comment": "краткое подтверждение со ссылкой на паспорт/документ/ГОСТ"
+3. Если значения НЕТ в тексте:
+   - "found": false
+   - "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)"
+   - "status": "clarify"
+   - "comment": "Требуется официальный паспорт завода"
+
+Ответь СТРОГО в формате JSON:
+{{
+  "found": true,
+  "product_fact": "...",
+  "status": "match",
+  "comment": "..."
+}}
+"""
+
+
+def extract_standards_from_text(text: str) -> list[str]:
+    """Извлекает обозначения стандартов ГОСТ, ТУ, СТО, ОСТ из текста."""
+    if not text:
+        return []
+    found = re.findall(
+        r"\b(?:ГОСТ\s*(?:Р\s*)?(?:ИСО|МЭК|OIML\s*R)?\s*[\d\.\-]+(?:-\d{2,4})?|СТО\s+[А-Яа-яA-Za-z0-9\-]+(?:\s+[\d\.\-]+)?|ТУ\s+[\d\.\-]+(?:-\d+)?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    unique = []
+    for s in found:
+        clean = " ".join(s.split())
+        if clean and clean not in unique:
+            unique.append(clean)
+    return unique
+
+
+async def resolve_clarify_parameters(
+    settings: SystemSettings,
+    positions: list[ExactProductPosition],
+    existing_urls: set[str],
+    web_sources: list[str],
+    verified_docs: list[dict[str, Any]],
+) -> tuple[int, float]:
+    """
+    ЭТАП 2: Адаптивный точечный добор параметров.
+    Для каждой характеристики со статусом 'clarify' формирует узкоспециализированные микро-запросы,
+    скачивает целевые страницы/PDF и через точечный ИИ-анализ переводит статус в 'match' или 'mismatch'.
+    """
+    total_resolved = 0
+    added_cost = 0.0
+
+    clarify_specs: list[tuple[ExactProductPosition, SpecParameterMatch]] = []
+    for pos in positions:
+        for spec in pos.specs_breakdown:
+            if spec.status == "clarify":
+                clarify_specs.append((pos, spec))
+
+    if not clarify_specs:
+        return 0, 0.0
+
+    target_specs = clarify_specs[:5]
+    folder_id, api_key = _yandex_credentials(settings)
+    if not (folder_id and api_key and settings.has_active_ai_provider):
+        return 0, 0.0
+
+    for pos, spec in target_specs:
+        query_parts = []
+        if pos.identified_brand:
+            query_parts.append(f'"{pos.identified_brand}"')
+        if pos.identified_model and len(pos.identified_model) > 1:
+            clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip()
+            if clean_m:
+                query_parts.append(f'"{clean_m}"')
+        query_parts.append(f'"{spec.param_name}"')
+        query_parts.append("(паспорт OR руководство OR характеристики OR ТУ OR ГОСТ)")
+
+        targeted_query = " ".join(query_parts)
+        try:
+            candidates, req_count = await _search_with_yandex(settings, [targeted_query], max_results=4)
+            unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+            added_cost += req_count * unit_price
+
+            new_urls = [c.url for c in candidates if c.url and c.url.startswith("http") and c.url not in existing_urls]
+            for c in candidates:
+                if c.domain and c.domain not in web_sources:
+                    web_sources.append(c.domain)
+
+            if not new_urls:
+                continue
+
+            for u in new_urls:
+                existing_urls.add(u)
+
+            new_docs = await fetch_batch_web_documents(new_urls, max_docs=2)
+            if not new_docs:
+                continue
+
+            for nd in new_docs:
+                verified_docs.append(nd)
+
+            doc_text_parts = []
+            for d_idx, doc in enumerate(new_docs, start=1):
+                doc_text_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('type')}) - {doc.get('title')} - {doc.get('url')}]:\n{doc.get('text')[:6000]}\n")
+            combined_doc_text = "\n".join(doc_text_parts)
+
+            prompt = RESOLVE_CLARIFY_PROMPT.format(
+                brand=pos.identified_brand,
+                model=pos.identified_model,
+                manufacturer=pos.manufacturer,
+                param_name=spec.param_name,
+                tz_requirement=spec.tz_requirement,
+                doc_text=combined_doc_text,
+            )
+
+            raw_res = await call_llm(
+                settings,
+                prompt,
+                system_prompt="Ты инженер-верификатор технической документации. Отвечай только валидным JSON.",
+                tier="light",
+                routing_key="procurement_brand_detection",
+                json_mode=True,
+                timeout_seconds=30.0,
+            )
+
+            parsed = _parse_json_safely(raw_res)
+            if isinstance(parsed, dict) and parsed.get("found") is True:
+                new_fact = str(parsed.get("product_fact") or "").strip()
+                new_status = str(parsed.get("status") or "match").strip().lower()
+                new_comment = str(parsed.get("comment") or "").strip()
+
+                if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
+                    spec.product_fact = new_fact
+                    spec.status = "mismatch" if "mismatch" in new_status else "match"
+                    if new_comment:
+                        spec.comment = new_comment
+                    if new_docs:
+                        spec.source_url = new_docs[0].get("url") or spec.source_url
+                    total_resolved += 1
+        except Exception as res_err:
+            logger.debug("resolve_clarify_error for %s: %s", spec.param_name, res_err)
+
+    return total_resolved, round(added_cost, 2)
+
+
+async def resolve_standards_parameters(
+    settings: SystemSettings,
+    positions: list[ExactProductPosition],
+    context: str,
+    existing_urls: set[str],
+    web_sources: list[str],
+    verified_docs: list[dict[str, Any]],
+) -> tuple[int, float]:
+    """
+    ЭТАП 3: Инженерный модуль стандартов ГОСТ / ТУ / СТО.
+    Если продукция сертифицирована по ГОСТ/ТУ, добирает нормативные требования
+    (материалы, класс точности, допуски, плотность, пределы прочности) напрямую из стандартов.
+    """
+    standards = extract_standards_from_text(context)
+    if not standards:
+        for pos in positions:
+            for s in extract_standards_from_text(f"{pos.identified_brand} {pos.identified_model} {pos.reasoning}"):
+                if s not in standards:
+                    standards.append(s)
+
+    if not standards:
+        return 0, 0.0
+
+    clarify_specs: list[tuple[ExactProductPosition, SpecParameterMatch]] = []
+    for pos in positions:
+        for spec in pos.specs_breakdown:
+            if spec.status == "clarify":
+                clarify_specs.append((pos, spec))
+
+    if not clarify_specs:
+        return 0, 0.0
+
+    resolved_count = 0
+    added_cost = 0.0
+    folder_id, api_key = _yandex_credentials(settings)
+    if not (folder_id and api_key and settings.has_active_ai_provider):
+        return 0, 0.0
+
+    for std in standards[:2]:
+        for pos, spec in clarify_specs[:4]:
+            if spec.status != "clarify":
+                continue
+            std_query = f'"{std}" "{spec.param_name}" нормы требования таблица'
+            try:
+                candidates, req_count = await _search_with_yandex(settings, [std_query], max_results=3)
+                unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+                added_cost += req_count * unit_price
+
+                new_urls = [c.url for c in candidates if c.url and c.url.startswith("http") and c.url not in existing_urls]
+                for c in candidates:
+                    if c.domain and c.domain not in web_sources:
+                        web_sources.append(c.domain)
+
+                if not new_urls:
+                    continue
+
+                for u in new_urls:
+                    existing_urls.add(u)
+
+                std_docs = await fetch_batch_web_documents(new_urls, max_docs=2)
+                if not std_docs:
+                    continue
+
+                for sd in std_docs:
+                    verified_docs.append(sd)
+
+                doc_text_parts = []
+                for d_idx, doc in enumerate(std_docs, start=1):
+                    doc_text_parts.append(f"[СТАНДАРТ #{d_idx} - {doc.get('title')}]:\n{doc.get('text')[:5000]}\n")
+                combined_doc_text = "\n".join(doc_text_parts)
+
+                prompt = RESOLVE_CLARIFY_PROMPT.format(
+                    brand=pos.identified_brand,
+                    model=pos.identified_model,
+                    manufacturer=pos.manufacturer,
+                    param_name=spec.param_name,
+                    tz_requirement=spec.tz_requirement,
+                    doc_text=f"Стандарт {std}:\n" + combined_doc_text,
+                )
+
+                raw_res = await call_llm(
+                    settings,
+                    prompt,
+                    system_prompt="Ты инженер по стандартам ГОСТ и ЕСКД. Отвечай только валидным JSON.",
+                    tier="light",
+                    routing_key="procurement_brand_detection",
+                    json_mode=True,
+                    timeout_seconds=30.0,
+                )
+
+                parsed = _parse_json_safely(raw_res)
+                if isinstance(parsed, dict) and parsed.get("found") is True:
+                    new_fact = str(parsed.get("product_fact") or "").strip()
+                    new_status = str(parsed.get("status") or "match").strip().lower()
+                    new_comment = str(parsed.get("comment") or "").strip()
+
+                    if new_fact and new_fact.lower() not in ("в открытом доступе не найдено", "не указано", "в открытой документации не указано"):
+                        spec.product_fact = new_fact
+                        spec.status = "mismatch" if "mismatch" in new_status else "match"
+                        spec.comment = new_comment or f"Соответствует требованиям {std}"
+                        if std_docs:
+                            spec.source_url = std_docs[0].get("url") or spec.source_url
+                        resolved_count += 1
+            except Exception as std_err:
+                logger.debug("resolve_standards_error for %s: %s", spec.param_name, std_err)
+
+    return resolved_count, round(added_cost, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +1172,34 @@ async def analyze_exact_product(
             gisp_match=gisp_match,
             source_url=pos_source_url,
         ))
+
+    # ЭТАП 2: Адаптивный точечный добор недостающих параметров (Targeted Sub-Search)
+    candidate_urls_set = set(candidate_urls) if 'candidate_urls' in locals() and candidate_urls else set()
+    try:
+        clarify_resolved, clarify_cost = await resolve_clarify_parameters(
+            settings=settings,
+            positions=positions,
+            existing_urls=candidate_urls_set,
+            web_sources=web_sources,
+            verified_docs=verified_docs,
+        )
+        yandex_cost_rub = round(yandex_cost_rub + clarify_cost, 2)
+    except Exception as cl_exc:
+        logger.debug("clarify_resolution_phase_failed: %s", cl_exc)
+
+    # ЭТАП 3: Инженерный модуль стандартов ГОСТ / ТУ / СТО
+    try:
+        std_resolved, std_cost = await resolve_standards_parameters(
+            settings=settings,
+            positions=positions,
+            context=clean_context,
+            existing_urls=candidate_urls_set,
+            web_sources=web_sources,
+            verified_docs=verified_docs,
+        )
+        yandex_cost_rub = round(yandex_cost_rub + std_cost, 2)
+    except Exception as std_exc:
+        logger.debug("standards_resolution_phase_failed: %s", std_exc)
 
     if not positions:
         positions.append(ExactProductPosition(

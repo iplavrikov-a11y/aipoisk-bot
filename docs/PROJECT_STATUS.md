@@ -12,6 +12,13 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Advanced Exact Product Multi-Stage Verification & Form-2 Engineering Engine (2026-08):
+  - Playwright Headless Browser Fallback & Anti-Bot Bypass: In `backend/app/exact_product.py`, integrated `_fetch_with_browser_fallback` and dynamic JS rendering for technical specification pages protected by Cloudflare, DDoS-Guard, KillBot, or JavaScript challenges, ensuring hidden tables and SPA spec sheets are fully captured.
+  - Targeted Clarify Resolver (`resolve_clarify_parameters`): Completely eliminates ambiguous "clarify" statuses by launching targeted multi-phrase search waves for factory manuals, passports, and technical specifications (`"{brand}" "{model}" "{param}" (паспорт OR руководство OR ТУ OR ГОСТ)`), downloading documents and extracting exact factory figures via specialized engineer LLM reasoning (`RESOLVE_CLARIFY_PROMPT`).
+  - Engineering Standards Module (`extract_standards_from_text`, `resolve_standards_parameters`): Automatically parses Russian national and industrial standards (GOST, TU, STO) directly from technical specifications and nomenclature, cross-verifying normative tolerances and material grades with direct references.
+  - Structured Parameter Normalization & KTRU Alignment: Normalizes parameter nomenclatures and measurement units in accordance with state procurement catalogues (EIS KTRU).
+  - Enhanced Minpromtorg/GISP Registry FTS5 Matching: Multi-pass full-text search against the official registry for domestic industrial goods confirmation under PP RF 719/878/616/617.
+  - Comprehensive Verification & Benchmarking: Backed by full unit tests in `backend/tests/test_exact_product_enhancements.py` (4/4 passed) and end-to-end 20-procurement realistic benchmark suite across diverse industries (`scripts/benchmark_20_procurements.py`).
 - 100% Grounded Web Verification & Deep PDF Passport Parsing for Exact Product & Analogues (2026-08):
   - Completely eradicated synthetic parameter fitting and LLM hallucinations in the «Подбор товара и аналогов» (Form 2) pipeline (`backend/app/exact_product.py`).
   - Deep Web & Factory Passport Scraper: integrated `fetch_batch_web_documents` and `fetch_web_or_pdf_document` supporting live HTML table scraping (`BeautifulSoup`) and in-memory binary PDF parsing (`PyMuPDF`/`fitz`) to extract real technical sheets, passports, and operational manuals directly from manufacturer websites.
