@@ -129,53 +129,54 @@ class ExactProductReport:
 # ---------------------------------------------------------------------------
 
 EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по государственным закупкам (44-ФЗ, 223-ФЗ) и промышленному оборудованию.
-Твоя задача — тщательно проанализировать техническое задание (ТЗ), спецификацию и требования закупки, и определить:
+Твоя задача — проанализировать техническое задание (ТЗ) и определить модель, характеристики для заявки и взаимозаменяемые аналоги.
+Пиши максимально емко, кратко и по делу, без общих фраз и лишней воды!
 
 1. ДЛЯ КАЖДОЙ ПОЗИЦИИ ТЗ:
-   - "identified_brand": Конкретный выявленный бренд или завод (под который составлено ТЗ).
-   - "identified_model": Точная заводская модель, серия или артикул изделия (с указанием точной маркировки).
-   - "manufacturer": Полное наименование завода/компании-изготовителя.
-   - "confidence": Уверенность определения модели (число от 0.50 до 0.99).
-   - "reasoning": Четкое экспертное обоснование, почему именно эта модель заложена в ТЗ (какие уникальные габариты, параметры или ГОСТы указывают на неё).
+   - "identified_brand": Бренд или завод (под который составлено ТЗ).
+   - "identified_model": Точная заводская модель/серия.
+   - "manufacturer": Полное наименование завода-изготовителя.
+   - "confidence": Уверенность (число от 0.50 до 0.99).
+   - "reasoning": 1-2 краткие строки: ключевые определяющие параметры (габариты, ТУ, ГОСТ).
 
-2. ПОСТРОЧНАЯ СВЕРКА ХАРАКТЕРИСТИК (specs_breakdown):
-   Разбей требования ТЗ на 5-15 ключевых технических параметров:
-   - "param_name": Наименование характеристики (например: "Внутренний диаметр", "Номинальная мощность", "Материал корпуса", "Диапазон рабочих температур").
-   - "tz_requirement": Требование заказчика из ТЗ (например: "≥ 120 мм", "не более 5.5 кВт", "сталь 12Х18Н10Т").
-   - "product_fact": Фактическое значение конкретной модели по заводскому паспорту/каталогу (например: "120 мм", "5.2 кВт", "сталь 12Х18Н10Т"). Без неопределенных слов "не менее / не более", строго конкретный показатель!
-   - "status": "match" (полное соответствие / подходит), "mismatch" (не подходит), "clarify" (требует опции/уточнения).
-   - "comment": Краткий комментарий (например: "Полное соответствие", "В пределах допуска ТЗ").
+2. ПОСТРОЧНАЯ СВЕРКА ХАРАКТЕРИСТИК ДЛЯ ЗАЯВКИ (specs_breakdown):
+   Выдели от 4 до 12 ключевых параметров ТЗ:
+   - "param_name": Наименование характеристики.
+   - "tz_requirement": Требование заказчика из ТЗ (например: "не менее 2.2 м³", "ГОСТ 12.2.112-86").
+   - "product_fact": Конкретное фактическое значение базовой модели (например: "2.2 м³"). Без слов "не менее/не более"!
+   - "status": "match" (подходит), "mismatch" (отклонение), "clarify" (уточнить).
+   - "comment": Краткая отметка (например: "Точное совпадение", "ГОСТ").
 
-3. ВЗАИМОЗАМЕНЯЕМЫЕ ЭКВИВАЛЕНТЫ / АНАЛОГИ ДРУГИХ ЗАВОДОВ (alternative_brands):
-   Укажи от 2 до 4 реальных моделей других заводов-производителей, подходящих под ТЗ как эквивалент по 44/223-ФЗ:
+3. ВЗАИМОЗАМЕНЯЕМЫЕ РОССИЙСКИЕ АНАЛОГИ / ЭКВИВАЛЕНТЫ (alternative_brands):
+   Укажи от 2 до 4 реальных моделей других заводов РФ, подходящих как эквивалент по 44/223-ФЗ:
    - "brand": Бренд аналога.
-   - "model": Модель/серия аналога.
+   - "model": Модель аналога.
    - "manufacturer": Завод-изготовитель аналога.
-   - "confidence": Процент соответствия ТЗ (число от 0.70 до 0.98).
-   - "notes": Преимущества или особенности (например: "Полный эквивалент, доступен на складе в РФ").
+   - "confidence": Совместимость с ТЗ (число от 0.70 до 0.98).
+   - "notes": Краткое сравнение ключевых характеристик (например: "Объем: 2.2 м³ (совпадает), Сцепка: А7, Колея: 900 мм — полный эквивалент").
 
 Спецификация и текст закупки:
 {context}
 
-Ответь СТРОГО в формате JSON без лишнего текста вокруг:
+Ответь СТРОГО в формате JSON:
 {{
-  "summary": "Краткий общий вывод по закупке (например: ТЗ сформировано под продукцию завода ПК Профмаркет, выявлены 2 полных эквивалента)",
+  "summary": "1-2 кратких предложения: под какую модель составлено ТЗ и сколько совместимых аналогов выявлено.",
   "positions": [
     {{
       "position_no": 1,
       "name_in_tz": "Наименование позиции из ТЗ",
       "identified_brand": "Бренд или завод",
-      "identified_model": "Точная модель или маркировка",
+      "identified_model": "Точная модель",
       "manufacturer": "Завод-производитель",
       "confidence": 0.95,
-      "reasoning": "Обоснование соответствия характеристикам ТЗ",
+      "reasoning": "Краткое обоснование по ключевым параметрам ТЗ",
       "specs_breakdown": [
         {{
           "param_name": "Параметр",
           "tz_requirement": "Требование ТЗ",
-          "product_fact": "Конкретный показатель модели",
+          "product_fact": "Конкретный показатель",
           "status": "match",
-          "comment": "Пояснение"
+          "comment": "Отметка"
         }}
       ],
       "alternative_brands": [
@@ -184,7 +185,7 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
           "model": "Модель аналога",
           "manufacturer": "Завод аналога",
           "confidence": 0.92,
-          "notes": "Особенности аналога"
+          "notes": "Сравнение параметров с ТЗ"
         }}
       ]
     }}
@@ -556,6 +557,19 @@ def _parse_json_safely(raw_text: str) -> Optional[dict]:
 # DOCX Export (Отчёт: Подбор товара и аналогов по ТЗ)
 # ---------------------------------------------------------------------------
 
+BRAND_EMERALD = RGBColor(4, 120, 87)       # #047857 TenderLex Primary
+DARK_EMERALD = "064E3B"                    # Deep Forest Emerald for main table headers
+MEDIUM_EMERALD = "0F766E"                  # Teal-Emerald for Form 2 headers
+SUBTLE_EMERALD = "134E4A"                  # Slate-Emerald for Analogs headers
+BANNER_EMERALD = "064E3B"                  # Banner background
+ZEBRA_MINT = "F4FBF7"                      # Very subtle fresh mint for zebra
+META_BG = "F8FAFC"
+BORDER_COLOR = "CBD5E1"
+TEXT_DARK = RGBColor(15, 23, 42)
+TEXT_MUTED = RGBColor(71, 85, 105)
+TEXT_GREEN = RGBColor(4, 120, 87)
+
+
 def write_exact_product_docx(
     path: str | Path,
     report: ExactProductReport,
@@ -576,7 +590,7 @@ def write_exact_product_docx(
     r_brand = h1.add_run("TenderLex")
     r_brand.font.bold = True
     r_brand.font.size = Pt(14)
-    r_brand.font.color.rgb = RGBColor(15, 23, 42)
+    r_brand.font.color.rgb = BRAND_EMERALD
 
     r_pipe = h1.add_run(" | ")
     r_pipe.font.size = Pt(14)
@@ -585,14 +599,15 @@ def write_exact_product_docx(
     r_title = h1.add_run("Подбор товара, характеристики и аналоги по ТЗ")
     r_title.font.bold = True
     r_title.font.size = Pt(13)
-    r_title.font.color.rgb = RGBColor(30, 41, 59)
+    r_title.font.color.rgb = TEXT_DARK
 
     # 2. Карточка метаданных
     meta_table = doc.add_table(rows=2, cols=2)
     meta_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     meta_table.autofit = False
+    _set_table_fixed_width(meta_table, 6.97)
 
-    col_widths_meta = [Inches(1.5), Inches(5.4)]
+    col_widths_meta = [Inches(1.4), Inches(5.57)]
     for row in meta_table.rows:
         for i, w in enumerate(col_widths_meta):
             row.cells[i].width = w
@@ -603,19 +618,19 @@ def write_exact_product_docx(
     p01 = c01.paragraphs[0]
     p01.add_run(report.procurement_title or "Спецификация технического задания")
 
-    sources_str = "Яндекс Поиск (открытый веб, каталоги заводов РФ), Реестр Минпромторга (ГИСП), ГОСТ/ТУ"
+    sources_str = "Яндекс Поиск (открытый веб), Реестр Минпромторга (ГИСП), ГОСТ/ТУ"
     if report.web_sources:
-        sources_str += f" | Проверено: {', '.join(report.web_sources[:5])}"
+        sources_str += f" | Проверено: {', '.join(report.web_sources[:4])}"
 
     c10, c11 = meta_table.rows[1].cells[0], meta_table.rows[1].cells[1]
     p10 = c10.paragraphs[0]
-    p10.add_run("Источники анализа:").font.bold = True
+    p10.add_run("Источники:").font.bold = True
     p11 = c11.paragraphs[0]
     p11.add_run(sources_str)
 
     for row in meta_table.rows:
         for cell in row.cells:
-            _set_cell_bg(cell, "F8FAFC")
+            _set_cell_bg(cell, META_BG)
             p = cell.paragraphs[0]
             p.paragraph_format.space_before = Pt(2)
             p.paragraph_format.space_after = Pt(2)
@@ -624,42 +639,43 @@ def write_exact_product_docx(
                 r.font.color.rgb = RGBColor(51, 65, 85)
     _set_table_full_grid_borders(meta_table, "E2E8F0")
 
-    # 3. Экспертное резюме
+    # 3. Краткое экспертное резюме
     if report.summary:
         sum_p = doc.add_paragraph()
-        sum_p.paragraph_format.space_before = Pt(8)
-        sum_p.paragraph_format.space_after = Pt(10)
-        sum_p.paragraph_format.left_indent = Inches(0.1)
+        sum_p.paragraph_format.space_before = Pt(6)
+        sum_p.paragraph_format.space_after = Pt(8)
+        sum_p.paragraph_format.left_indent = Inches(0.05)
         r_sum_lbl = sum_p.add_run("Экспертное резюме: ")
         r_sum_lbl.font.bold = True
         r_sum_lbl.font.size = Pt(9.5)
-        r_sum_lbl.font.color.rgb = RGBColor(15, 23, 42)
+        r_sum_lbl.font.color.rgb = BRAND_EMERALD
 
         r_sum_txt = sum_p.add_run(report.summary)
         r_sum_txt.font.size = Pt(9.5)
-        r_sum_txt.font.color.rgb = RGBColor(30, 41, 59)
+        r_sum_txt.font.color.rgb = TEXT_DARK
 
     # 4. Раздел 1: СВОДНАЯ ВЕДОМОСТЬ
     sec1_p = doc.add_paragraph()
-    sec1_p.paragraph_format.space_before = Pt(6)
-    sec1_p.paragraph_format.space_after = Pt(4)
-    sec1_run = sec1_p.add_run("1. Сводная ведомость подбора по всем позициям спецификации")
+    sec1_p.paragraph_format.space_before = Pt(4)
+    sec1_p.paragraph_format.space_after = Pt(3)
+    sec1_run = sec1_p.add_run("1. Сводная ведомость подбора по позициям спецификации")
     sec1_run.font.bold = True
-    sec1_run.font.size = Pt(11)
-    sec1_run.font.color.rgb = RGBColor(15, 23, 42)
+    sec1_run.font.size = Pt(10.5)
+    sec1_run.font.color.rgb = BRAND_EMERALD
 
     sum_table = doc.add_table(rows=1, cols=7)
     sum_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     sum_table.autofit = False
+    _set_table_fixed_width(sum_table, 6.97)
 
     sum_headers = [
         ("№", Inches(0.35)),
-        ("Позиция из ТЗ", Inches(1.7)),
-        ("Выявленный товар / модель", Inches(1.4)),
-        ("Завод-изготовитель", Inches(1.4)),
-        ("Реестр ГИСП", Inches(0.85)),
-        ("Соотв.", Inches(0.5)),
-        ("Основной аналог (РФ)", Inches(1.77)),
+        ("Позиция из ТЗ", Inches(1.55)),
+        ("Выявленный товар / модель", Inches(1.30)),
+        ("Завод-изготовитель", Inches(1.30)),
+        ("Реестр ГИСП", Inches(0.82)),
+        ("Соотв.", Inches(0.45)),
+        ("Основной аналог (РФ)", Inches(1.20)),
     ]
 
     for i, (h_text, w) in enumerate(sum_headers):
@@ -672,9 +688,9 @@ def write_exact_product_docx(
         p.paragraph_format.space_after = Pt(3)
         for r in p.runs:
             r.font.bold = True
-            r.font.size = Pt(8.5)
+            r.font.size = Pt(8)
             r.font.color.rgb = RGBColor(255, 255, 255)
-        _set_cell_bg(cell, "0F172A")
+        _set_cell_bg(cell, DARK_EMERALD)
 
     for pos_idx, pos in enumerate(report.positions, start=1):
         row = sum_table.add_row()
@@ -687,9 +703,9 @@ def write_exact_product_docx(
         cells[5].text = f"{int(pos.confidence * 100)}%"
 
         main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
-        cells[6].text = f"{main_alt.brand} {main_alt.model} ({main_alt.manufacturer})" if main_alt else "—"
+        cells[6].text = f"{main_alt.brand} {main_alt.model}" if main_alt else "—"
 
-        fill_color = "F8FAFC" if pos_idx % 2 == 1 else "FFFFFF"
+        fill_color = ZEBRA_MINT if pos_idx % 2 == 1 else "FFFFFF"
 
         for idx, c in enumerate(cells):
             c.width = sum_headers[idx][1]
@@ -701,7 +717,7 @@ def write_exact_product_docx(
             p.paragraph_format.space_after = Pt(2)
             for r in p.runs:
                 r.font.size = Pt(8)
-                r.font.color.rgb = RGBColor(30, 41, 59)
+                r.font.color.rgb = TEXT_DARK
             if idx in (0, 4, 5):
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             if idx == 2:
@@ -710,82 +726,83 @@ def write_exact_product_docx(
             if idx == 4 and (pos.gisp_match and pos.gisp_match.registry_number):
                 for r in p.runs:
                     r.font.bold = True
-                    r.font.color.rgb = RGBColor(22, 101, 52)
+                    r.font.color.rgb = TEXT_GREEN
             if idx == 5:
                 for r in p.runs:
                     r.font.bold = True
-                    r.font.color.rgb = RGBColor(22, 101, 52)
+                    r.font.color.rgb = TEXT_GREEN
 
-    _set_table_full_grid_borders(sum_table, "CBD5E1")
+    _set_table_full_grid_borders(sum_table, BORDER_COLOR)
     _prevent_row_split(sum_table)
     _set_table_header_repeat(sum_table)
 
     # 5. Раздел 2: ПОДРОБНЫЕ ХАРАКТЕРИСТИКИ ПО КАЖДОЙ ПОЗИЦИИ
-    doc.add_paragraph().paragraph_format.space_after = Pt(8)
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
     sec2_p = doc.add_paragraph()
-    sec2_p.paragraph_format.space_before = Pt(12)
+    sec2_p.paragraph_format.space_before = Pt(8)
     sec2_p.paragraph_format.space_after = Pt(4)
-    sec2_run = sec2_p.add_run("2. Подробные характеристики для первой части заявки (Форма 2) и аналоги")
+    sec2_run = sec2_p.add_run("2. Подробные характеристики для заявки (Форма 2) и сравнение аналогов")
     sec2_run.font.bold = True
-    sec2_run.font.size = Pt(11)
-    sec2_run.font.color.rgb = RGBColor(15, 23, 42)
+    sec2_run.font.size = Pt(10.5)
+    sec2_run.font.color.rgb = BRAND_EMERALD
 
     for pos_idx, pos in enumerate(report.positions, start=1):
         # Баннер позиции
         pos_banner = doc.add_table(rows=1, cols=1)
         pos_banner.alignment = WD_TABLE_ALIGNMENT.CENTER
         pos_banner.autofit = False
+        _set_table_fixed_width(pos_banner, 6.97)
         pos_banner.rows[0].cells[0].width = Inches(6.97)
         b_cell = pos_banner.rows[0].cells[0]
-        _set_cell_bg(b_cell, "1E293B")
+        _set_cell_bg(b_cell, BANNER_EMERALD)
         bp = b_cell.paragraphs[0]
         bp.paragraph_format.space_before = Pt(3)
         bp.paragraph_format.space_after = Pt(3)
-        bp.paragraph_format.left_indent = Inches(0.1)
+        bp.paragraph_format.left_indent = Inches(0.08)
         
         gisp_str = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
         brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\nТовар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}")
         brun.font.bold = True
-        brun.font.size = Pt(9.5)
+        brun.font.size = Pt(9)
         brun.font.color.rgb = RGBColor(255, 255, 255)
-        _set_table_full_grid_borders(pos_banner, "1E293B")
+        _set_table_full_grid_borders(pos_banner, BANNER_EMERALD)
 
         if pos.reasoning:
             rsn_p = doc.add_paragraph()
-            rsn_p.paragraph_format.space_before = Pt(4)
-            rsn_p.paragraph_format.space_after = Pt(4)
-            rsn_p.paragraph_format.left_indent = Inches(0.1)
+            rsn_p.paragraph_format.space_before = Pt(3)
+            rsn_p.paragraph_format.space_after = Pt(3)
+            rsn_p.paragraph_format.left_indent = Inches(0.05)
             r_lbl = rsn_p.add_run("Обоснование соответствия ТЗ: ")
             r_lbl.font.bold = True
             r_lbl.font.size = Pt(8.5)
-            r_lbl.font.color.rgb = RGBColor(51, 65, 85)
+            r_lbl.font.color.rgb = BRAND_EMERALD
 
             r_val = rsn_p.add_run(pos.reasoning)
             r_val.font.size = Pt(8.5)
-            r_val.font.color.rgb = RGBColor(71, 85, 105)
+            r_val.font.color.rgb = TEXT_MUTED
 
         # Таблица характеристик (Форма 2)
         if pos.specs_breakdown:
-            doc.add_paragraph().paragraph_format.space_after = Pt(1)
             sp_lbl = doc.add_paragraph()
             sp_lbl.paragraph_format.space_before = Pt(2)
             sp_lbl.paragraph_format.space_after = Pt(2)
             sp_lbl_run = sp_lbl.add_run("Показатели для первой части заявки (Форма 2):")
             sp_lbl_run.font.bold = True
-            sp_lbl_run.font.size = Pt(9)
-            sp_lbl_run.font.color.rgb = RGBColor(30, 41, 59)
+            sp_lbl_run.font.size = Pt(8.5)
+            sp_lbl_run.font.color.rgb = TEXT_DARK
 
             spec_table = doc.add_table(rows=1, cols=6)
             spec_table.alignment = WD_TABLE_ALIGNMENT.CENTER
             spec_table.autofit = False
+            _set_table_fixed_width(spec_table, 6.97)
 
             spec_headers = [
                 ("№", Inches(0.35)),
-                ("Наименование параметра", Inches(1.8)),
-                ("Требование ТЗ", Inches(1.4)),
-                ("Конкретный показатель товара", Inches(1.5)),
-                ("Соответствие", Inches(0.85)),
-                ("Примечание и обоснование", Inches(1.07)),
+                ("Наименование параметра", Inches(1.70)),
+                ("Требование ТЗ", Inches(1.45)),
+                ("Конкретный показатель товара", Inches(1.50)),
+                ("Соответствие", Inches(0.77)),
+                ("Примечание", Inches(1.20)),
             ]
 
             for i, (h_text, w) in enumerate(spec_headers):
@@ -800,7 +817,7 @@ def write_exact_product_docx(
                     r.font.bold = True
                     r.font.size = Pt(8)
                     r.font.color.rgb = RGBColor(255, 255, 255)
-                _set_cell_bg(cell, "334155")
+                _set_cell_bg(cell, MEDIUM_EMERALD)
 
             for s_idx, spec in enumerate(pos.specs_breakdown, start=1):
                 row = spec_table.add_row()
@@ -813,7 +830,7 @@ def write_exact_product_docx(
                 cells[4].text = status_text
                 cells[5].text = spec.comment
 
-                fill_color = "F8FAFC" if s_idx % 2 == 1 else "FFFFFF"
+                fill_color = ZEBRA_MINT if s_idx % 2 == 1 else "FFFFFF"
 
                 for idx, c in enumerate(cells):
                     c.width = spec_headers[idx][1]
@@ -825,7 +842,7 @@ def write_exact_product_docx(
                     p.paragraph_format.space_after = Pt(1.5)
                     for r in p.runs:
                         r.font.size = Pt(7.5)
-                        r.font.color.rgb = RGBColor(30, 41, 59)
+                        r.font.color.rgb = TEXT_DARK
                     if idx in (0, 4):
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     if idx == 3:
@@ -835,39 +852,38 @@ def write_exact_product_docx(
                         for r in p.runs:
                             r.font.bold = True
                             if spec.status == "match":
-                                r.font.color.rgb = RGBColor(22, 101, 52)
+                                r.font.color.rgb = TEXT_GREEN
                             elif spec.status == "clarify":
                                 r.font.color.rgb = RGBColor(180, 83, 9)
                             else:
                                 r.font.color.rgb = RGBColor(185, 28, 28)
 
-            _set_table_full_grid_borders(spec_table, "CBD5E1")
+            _set_table_full_grid_borders(spec_table, BORDER_COLOR)
             _prevent_row_split(spec_table)
             _set_table_header_repeat(spec_table)
 
-        # Таблица аналогов
+        # Таблица аналогов со сравнением характеристик
         if pos.alternative_brands:
-            doc.add_paragraph().paragraph_format.space_after = Pt(1)
             alt_lbl = doc.add_paragraph()
             alt_lbl.paragraph_format.space_before = Pt(3)
             alt_lbl.paragraph_format.space_after = Pt(2)
-            alt_lbl_run = alt_lbl.add_run("Взаимозаменяемые российские аналоги и эквиваленты (по 44/223-ФЗ):")
+            alt_lbl_run = alt_lbl.add_run("Сравнение взаимозаменяемых российских аналогов (по 44/223-ФЗ):")
             alt_lbl_run.font.bold = True
-            alt_lbl_run.font.size = Pt(9)
-            alt_lbl_run.font.color.rgb = RGBColor(30, 41, 59)
+            alt_lbl_run.font.size = Pt(8.5)
+            alt_lbl_run.font.color.rgb = TEXT_DARK
 
-            alt_table = doc.add_table(rows=1, cols=7)
+            alt_table = doc.add_table(rows=1, cols=6)
             alt_table.alignment = WD_TABLE_ALIGNMENT.CENTER
             alt_table.autofit = False
+            _set_table_fixed_width(alt_table, 6.97)
 
             alt_headers = [
                 ("№", Inches(0.35)),
-                ("Аналог (Бренд / Модель)", Inches(1.4)),
-                ("Завод-изготовитель", Inches(1.3)),
-                ("Страна", Inches(0.65)),
-                ("Реестр РФ", Inches(0.75)),
-                ("Совм.", Inches(0.55)),
-                ("Особенности и обоснование замены", Inches(1.97)),
+                ("Аналог (Бренд / Модель)", Inches(1.35)),
+                ("Завод-изготовитель", Inches(1.25)),
+                ("Страна / Реестр", Inches(0.85)),
+                ("Совм.", Inches(0.52)),
+                ("Сравнение ключевых характеристик и замена", Inches(2.65)),
             ]
 
             for i, (h_text, w) in enumerate(alt_headers):
@@ -882,7 +898,7 @@ def write_exact_product_docx(
                     r.font.bold = True
                     r.font.size = Pt(8)
                     r.font.color.rgb = RGBColor(255, 255, 255)
-                _set_cell_bg(cell, "475569")
+                _set_cell_bg(cell, SUBTLE_EMERALD)
 
             for a_idx, alt in enumerate(pos.alternative_brands, start=1):
                 row = alt_table.add_row()
@@ -890,12 +906,11 @@ def write_exact_product_docx(
                 cells[0].text = str(a_idx)
                 cells[1].text = f"{alt.brand} {alt.model}"
                 cells[2].text = alt.manufacturer
-                cells[3].text = "Россия"
-                cells[4].text = "Реестр РФ"
-                cells[5].text = f"{int(alt.confidence * 100)}%"
-                cells[6].text = alt.notes or "Взаимозаменяемый промышленный аналог"
+                cells[3].text = "РФ (Реестр)"
+                cells[4].text = f"{int(alt.confidence * 100)}%"
+                cells[5].text = alt.notes or "Полный функциональный аналог по ГОСТ/ТУ"
 
-                fill_color = "F8FAFC" if a_idx % 2 == 1 else "FFFFFF"
+                fill_color = ZEBRA_MINT if a_idx % 2 == 1 else "FFFFFF"
 
                 for idx, c in enumerate(cells):
                     c.width = alt_headers[idx][1]
@@ -907,29 +922,29 @@ def write_exact_product_docx(
                     p.paragraph_format.space_after = Pt(1.5)
                     for r in p.runs:
                         r.font.size = Pt(7.5)
-                        r.font.color.rgb = RGBColor(30, 41, 59)
-                    if idx in (0, 3, 4, 5):
+                        r.font.color.rgb = TEXT_DARK
+                    if idx in (0, 3, 4):
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     if idx == 1:
                         for r in p.runs:
                             r.font.bold = True
-                    if idx in (4, 5):
+                    if idx in (3, 4):
                         for r in p.runs:
                             r.font.bold = True
                             if alt.confidence >= 0.90:
-                                r.font.color.rgb = RGBColor(22, 101, 52)
+                                r.font.color.rgb = TEXT_GREEN
                             else:
-                                r.font.color.rgb = RGBColor(30, 41, 59)
+                                r.font.color.rgb = TEXT_DARK
 
-            _set_table_full_grid_borders(alt_table, "CBD5E1")
+            _set_table_full_grid_borders(alt_table, BORDER_COLOR)
             _prevent_row_split(alt_table)
             _set_table_header_repeat(alt_table)
 
     # 6. Дисклеймер
-    doc.add_paragraph().paragraph_format.space_before = Pt(12)
+    doc.add_paragraph().paragraph_format.space_before = Pt(8)
     disc_p = doc.add_paragraph()
     disc_run = disc_p.add_run(f"Примечание: {report.disclaimer}")
-    disc_run.font.size = Pt(8)
+    disc_run.font.size = Pt(7.5)
     disc_run.font.italic = True
     disc_run.font.color.rgb = RGBColor(148, 163, 184)
 
@@ -1303,6 +1318,13 @@ def _set_docx_margins(doc: Document) -> None:
 def _set_cell_bg(cell, color_hex: str) -> None:
     shading_elm = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}"/>')
     cell._tc.get_or_add_tcPr().append(shading_elm)
+
+
+def _set_table_fixed_width(table, width_in_inches: float = 6.97) -> None:
+    tblPr = table._tbl.tblPr
+    dxa_val = int(width_in_inches * 1440)
+    tblW = parse_xml(f'<w:tblW {nsdecls("w")} w:w="{dxa_val}" w:type="dxa"/>')
+    tblPr.append(tblW)
 
 
 def _set_table_full_grid_borders(table, color: str = "CBD5E1") -> None:

@@ -394,24 +394,53 @@ def _write_markdown_docx(
     intro_italic: bool = False,
 ) -> Path:
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
     for section in doc.sections:
-        section.top_margin = Pt(28)
-        section.bottom_margin = Pt(28)
-        section.left_margin = Pt(34)
-        section.right_margin = Pt(34)
-    heading = doc.add_heading(title, level=1)
-    heading.alignment = 1
+        section.top_margin = Inches(0.6)
+        section.bottom_margin = Inches(0.6)
+        section.left_margin = Inches(0.65)
+        section.right_margin = Inches(0.65)
+        section.page_width = Inches(8.27)
+        section.page_height = Inches(11.69)
+
+    brand_emerald = RGBColor(4, 120, 87)       # #047857
+    dark_emerald = RGBColor(6, 78, 59)        # #064E3B
+    teal_emerald = RGBColor(15, 118, 110)     # #0F766E
+    text_dark = RGBColor(15, 23, 42)
+
+    # Top brand header
+    h_top = doc.add_paragraph()
+    h_top.paragraph_format.space_before = Pt(0)
+    h_top.paragraph_format.space_after = Pt(2)
+    r_b = h_top.add_run("TenderLex")
+    r_b.font.bold = True
+    r_b.font.size = Pt(14)
+    r_b.font.color.rgb = brand_emerald
+
+    r_p = h_top.add_run(" | ")
+    r_p.font.size = Pt(14)
+    r_p.font.color.rgb = RGBColor(148, 163, 184)
+
+    r_t = h_top.add_run(title)
+    r_t.font.bold = True
+    r_t.font.size = Pt(13)
+    r_t.font.color.rgb = text_dark
+
     if intro:
         intro_paragraph = doc.add_paragraph()
-        intro_paragraph.paragraph_format.space_after = Pt(8)
+        intro_paragraph.paragraph_format.space_before = Pt(2)
+        intro_paragraph.paragraph_format.space_after = Pt(6)
         intro_run = intro_paragraph.add_run(intro)
         intro_run.italic = intro_italic
-        intro_run.font.size = Pt(9)
+        intro_run.font.size = Pt(8.5)
+        intro_run.font.color.rgb = RGBColor(100, 116, 139)
+
     lines = _remove_okpd_codes(str(markdown or "")).splitlines()
     index = 0
     while index < len(lines):
@@ -427,19 +456,48 @@ def _write_markdown_docx(
             doc.add_paragraph("")
             index += 1
             continue
-        if line.startswith("### "):
-            _add_markdown_runs(doc.add_heading(level=3), line[4:])
+        if line.startswith("# "):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after = Pt(3)
+            r = p.add_run(line[2:])
+            r.font.bold = True
+            r.font.size = Pt(11.5)
+            r.font.color.rgb = brand_emerald
         elif line.startswith("## "):
-            _add_markdown_runs(doc.add_heading(level=2), line[3:])
-        elif line.startswith("# "):
-            _add_markdown_runs(doc.add_heading(level=1), line[2:])
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(2)
+            r = p.add_run(line[3:])
+            r.font.bold = True
+            r.font.size = Pt(10.5)
+            r.font.color.rgb = dark_emerald
+        elif line.startswith("### "):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(2)
+            r = p.add_run(line[4:])
+            r.font.bold = True
+            r.font.size = Pt(9.5)
+            r.font.color.rgb = teal_emerald
         elif line.startswith("#### "):
-            _add_markdown_runs(doc.add_heading(level=3), line[5:])
-        elif line.startswith(("- ", "* ")):
-            _add_markdown_runs(doc.add_paragraph(style="List Bullet"), line[2:])
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(3)
+            p.paragraph_format.space_after = Pt(2)
+            r = p.add_run(line[5:])
+            r.font.bold = True
+            r.font.size = Pt(9)
+            r.font.color.rgb = dark_emerald
+        elif line.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ")):
+            paragraph = doc.add_paragraph()
+            paragraph.paragraph_format.left_indent = Inches(0.15)
+            paragraph.paragraph_format.space_before = Pt(1)
+            paragraph.paragraph_format.space_after = Pt(2)
+            _add_markdown_runs(paragraph, line)
         else:
             paragraph = doc.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(3)
+            paragraph.paragraph_format.space_before = Pt(1)
+            paragraph.paragraph_format.space_after = Pt(2)
             _add_markdown_runs(paragraph, line)
         index += 1
     doc.save(out)
@@ -463,6 +521,12 @@ def _parse_table_row(line: str) -> list[str]:
 
 
 def _add_markdown_table(doc, lines: list[str], index: int) -> int:
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    from docx.shared import Inches, Pt, RGBColor
+
     rows: list[list[str]] = [_parse_table_row(lines[index])]
     index += 2
     while index < len(lines) and lines[index].strip().startswith("|") and lines[index].strip().endswith("|"):
@@ -470,19 +534,65 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
         index += 1
     width = max(len(row) for row in rows)
     table = doc.add_table(rows=len(rows), cols=width)
-    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+
+    # Set table width = 6.97 inches (10037 dxa)
+    tblPr = table._tbl.tblPr
+    tblW = parse_xml(f'<w:tblW {nsdecls("w")} w:w="10037" w:type="dxa"/>')
+    tblPr.append(tblW)
+
     _apply_table_column_widths(table, _table_column_widths(rows[0], width))
+
+    # Set full grid borders
+    borders = parse_xml(
+        f'<w:tblBorders {nsdecls("w")}>'
+        f'<w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:left w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:right w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'<w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+        f'</w:tblBorders>'
+    )
+    tblPr.append(borders)
+
+    # Repeat header & prevent row split
+    for row in table.rows[:1]:
+        row._tr.get_or_add_trPr().append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
+    for row in table.rows:
+        row._tr.get_or_add_trPr().append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+
     for row_index, row in enumerate(rows):
+        fill_color = "064E3B" if row_index == 0 else ("F4FBF7" if row_index % 2 == 1 else "FFFFFF")
         for col_index in range(width):
             cell = table.rows[row_index].cells[col_index]
             cell.text = ""
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_color}"/>')
+            cell._tc.get_or_add_tcPr().append(shd)
+
             paragraph = cell.paragraphs[0]
+            paragraph.paragraph_format.line_spacing = 1.05
+            paragraph.paragraph_format.space_before = Pt(2)
+            paragraph.paragraph_format.space_after = Pt(2)
             value = _remove_okpd_codes(row[col_index] if col_index < len(row) else "")
             _add_markdown_runs(paragraph, value)
+
             if row_index == 0:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for run in paragraph.runs:
                     run.bold = True
-    doc.add_paragraph("")
+                    run.font.size = Pt(8)
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+            else:
+                for run in paragraph.runs:
+                    run.font.size = Pt(7.5)
+                    run.font.color.rgb = RGBColor(15, 23, 42)
+                if col_index == 0:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
     return index
 
 
