@@ -164,8 +164,8 @@ const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime()
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
     id: "exact_product",
-    label: "Точный товар и аналоги (99 ₽)",
-    description: "Форма 2, скрытая модель по ТЗ, реестр ГИСП и эквиваленты",
+    label: "Подбор точного товара",
+    description: "выявление конкретной модели по ТЗ, Форма 2 и аналоги",
     icon: CheckCircle2,
   },
   {
@@ -201,6 +201,17 @@ const modeCopy: Record<Scenario, {
   hint: string;
   submit: string;
 }> = {
+  exact_product: {
+    mode: "exact_product",
+    formSubtitle: "Загрузите техническое задание (файл/архив) или вставьте текст спецификации для выявления точного товара и подбора аналогов.",
+    uploadTitle: "Загрузить техническое задание",
+    uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, TXT, ZIP)",
+    multipleFiles: true,
+    textLabel: "Или вставьте характеристики объекта закупки текстом",
+    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. ИИ определит скрытого производителя, сверит параметры и подберет 2–4 аналога.",
+    hint: "ИИ выявит конкретного производителя, сверит соответствие параметров ТЗ, проверит реестр Минпромторга (ГИСП) и сформирует готовую Форму 2 (DOCX/XLSX).",
+    submit: "Запустить подбор точного товара",
+  },
   supplier_search: {
     mode: "supplier_search",
     formSubtitle: "Выберите тип работы и загрузите техническое задание (файл/архив) или вставьте текст.",
@@ -222,19 +233,6 @@ const modeCopy: Record<Scenario, {
     sourcePlaceholder: "Например: 0173200001424000001 или ссылка на zakupki.gov.ru",
     hint: "Укажите номер извещения ЕИС или прямую ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на внешние интернет-магазины и частные площадки не поддерживаются.",
     submit: "Запустить анализ документации",
-  },
-  exact_product: {
-    mode: "exact_product",
-    formSubtitle: "Загрузите спецификацию/ТЗ или укажите номер закупки для выявления конкретного товара и подбора аналогов.",
-    uploadTitle: "Загрузить ТЗ или спецификацию",
-    uploadText: "Перетащите файлы ТЗ, спецификацию или архив (PDF, DOCX, XLSX, TXT, ZIP)",
-    multipleFiles: false,
-    textLabel: "Или вставьте характеристики объекта закупки текстом",
-    textPlaceholder: "Вставьте фрагмент ТЗ с параметрами товара (диаметр, мощность, материал, ГОСТ и др.)...",
-    sourceLabel: "Номер извещения ЕИС или ссылка на закупку",
-    sourcePlaceholder: "Например: 0373200003724000123",
-    hint: "ИИ сопоставит характеристики с базой моделей, определит завод-производитель, сформирует Форму 2 и подберет 2–4 эквивалента под 44/223-ФЗ.",
-    submit: "Найти точный товар и аналоги",
   },
   analysis_and_suppliers: {
     mode: "analysis_and_suppliers",
@@ -1866,16 +1864,16 @@ export function CabinetClient() {
 
           return (
             <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
-              <div className="space-y-1 bg-amber-50/40 p-2 rounded-lg border border-amber-200/70">
-                <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Точный товар и аналоги</span>
+              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор точного товара</span>
                 <div className="space-y-1 mt-0.5">
                   {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
                     ? session.tariff_groups.exact_product
-                    : [{ id: 'exact-1', name: '1 проверка ТЗ + аналоги', price_kopeks: 9900 }]
+                    : [{ id: 'exact-1', name: '1 подбор точного товара', price_kopeks: 9900 }]
                   ).slice(0, 3).map((tariff: any) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-amber-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
                       <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
-                      <b className="font-extrabold text-amber-800 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
                     </div>
                   ))}
                 </div>
@@ -1937,7 +1935,7 @@ export function CabinetClient() {
             <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl" role="tablist" aria-label="Тип задачи">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl" role="tablist" aria-label="Тип задачи">
             {scenarioOptions.map((item) => {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
@@ -1959,7 +1957,7 @@ export function CabinetClient() {
             })}
           </div>
 
-          {scenario !== "procurement_report" ? (
+          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
               {supplierPolicyOptions.map((opt) => (
                 <button

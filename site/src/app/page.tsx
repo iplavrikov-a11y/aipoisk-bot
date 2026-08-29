@@ -343,30 +343,30 @@ export default async function HomePage() {
             </div>
 
             <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-              {/* Точный товар и аналоги */}
-              <div className="p-6 bg-gradient-to-br from-white to-amber-50/40 rounded-3xl border-2 border-amber-200/80 shadow-md flex flex-col justify-between">
+              {/* Подбор точного товара */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
                 <div>
-                  <span className="text-xs font-bold text-amber-800 uppercase tracking-wider bg-amber-100/70 px-2.5 py-0.5 rounded-full">Форма 2 и аналоги</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Точный товар и аналоги</h3>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Форма 2 и аналоги</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Подбор точного товара</h3>
                   <p className="text-xs text-slate-600 mb-4">Выявление скрытой модели по ТЗ, сопоставление показателей, реестр Минпромторга (ГИСП) и 2–4 эквивалента.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {exactProductTariffs.length > 0 ? (
                       exactProductTariffs.map((t: PublicTariff) => (
                         <div key={t.id} className="flex justify-between items-center text-xs">
                           <span className="text-slate-800 font-bold">{t.name}</span>
-                          <strong className="text-amber-800 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                          <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
                         </div>
                       ))
                     ) : (
                       <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">1 проверка ТЗ + аналоги</span>
-                        <strong className="text-amber-800 font-extrabold">99 ₽</strong>
+                        <span className="text-slate-800 font-bold">1 подбор точного товара</span>
+                        <strong className="text-teal-700 font-extrabold">99 ₽</strong>
                       </div>
                     )}
                   </div>
                 </div>
-                <Button asChild className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold h-11 text-xs shadow-md shadow-amber-600/20">
-                  <a href={cabinetUrl}>Подобрать товар и аналоги</a>
+                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                  <a href={cabinetUrl}>Подобрать точный товар</a>
                 </Button>
               </div>
 

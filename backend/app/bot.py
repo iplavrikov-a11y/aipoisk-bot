@@ -287,7 +287,7 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔎 Поставщики по ТЗ", callback_data="scenario:suppliers")],
-            [InlineKeyboardButton(text="🎯 Точный товар и аналоги (99 ₽)", callback_data="scenario:exact_product")],
+            [InlineKeyboardButton(text="🎯 Подбор точного товара", callback_data="scenario:exact_product")],
             [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
             [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
             [
@@ -448,15 +448,14 @@ def _report_scenario_text() -> str:
 
 def _exact_product_scenario_text() -> str:
     return (
-        "🎯 Точный товар и аналоги по ТЗ (99 ₽)\n\n"
+        "🎯 Подбор точного товара и аналогов\n\n"
         "ИИ определит под какую конкретную модель и завод составлено ТЗ, "
         "составит таблицу показателей (Форма 2 по 44-ФЗ), "
         "проверит реестр Минпромторга (ГИСП) и подберет 2–4 эквивалента.\n\n"
         "📋 Что нужно сделать:\n"
         "1. Отправьте файл ТЗ / спецификации (.docx, .pdf, .xlsx, .txt)\n"
-        "2. Либо отправьте номер извещения ЕИС (19 цифр) или ссылку на закупку\n"
-        "3. Либо вставьте текст характеристик в поле ввода\n\n"
-        "👇 Отправьте файл или номер закупки:"
+        "2. Либо вставьте фрагмент характеристик текстом в поле ввода\n\n"
+        "👇 Отправьте файл ТЗ или характеристики текстом:"
     )
 
 
