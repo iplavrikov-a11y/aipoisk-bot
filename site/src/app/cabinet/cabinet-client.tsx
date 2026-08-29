@@ -736,6 +736,7 @@ export function CabinetClient() {
   const [busy, setBusy] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
+  const [findMorePrompt, setFindMorePrompt] = useState("");
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1394,12 +1395,18 @@ export function CabinetClient() {
     setBusy(true);
     setError("");
     setMessage("");
+    const promptToSend = findMorePrompt.trim();
     setFindMoreConfirmJob(null);
+    setFindMorePrompt("");
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/find-more-suppliers`, {
         method: "POST",
         credentials: "same-origin",
-        headers: { "x-csrf-token": csrf },
+        headers: {
+          "x-csrf-token": csrf,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ additional_prompt: promptToSend }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
       setMessage(payload.message || "Запущен дополнительный поиск поставщиков.");
@@ -2445,7 +2452,10 @@ export function CabinetClient() {
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setFindMoreConfirmJob(null);
+            if (event.target === event.currentTarget) {
+              setFindMoreConfirmJob(null);
+              setFindMorePrompt("");
+            }
           }}
         >
           <section className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 font-sans text-center" role="dialog" aria-modal="true" aria-labelledby="find-more-confirm-title">
@@ -2457,11 +2467,37 @@ export function CabinetClient() {
               <p className="text-xs text-slate-600 leading-relaxed">С баланса спишется стоимость добора поставщиков. Уже найденные компании не попадут в новый результат.</p>
               <span className="text-[11px] font-bold text-slate-400 block mt-1">{findMoreConfirmJob.human_title}</span>
             </div>
+            <div className="text-left space-y-1 pt-1">
+              <label htmlFor="dobor-prompt-input" className="block text-[11px] font-semibold text-slate-500">
+                Дополнительные критерии (опционально):
+              </label>
+              <input
+                id="dobor-prompt-input"
+                type="text"
+                value={findMorePrompt}
+                onChange={(e) => setFindMorePrompt(e.target.value)}
+                placeholder="Например: дистрибьюторы со складом, поставщики аналогов..."
+                className="w-full text-xs px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 bg-slate-50 text-slate-800"
+              />
+            </div>
             <div className="flex items-center justify-center gap-3 pt-2">
-              <button className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer" type="button" onClick={() => setFindMoreConfirmJob(null)} disabled={busy}>
+              <button
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setFindMoreConfirmJob(null);
+                  setFindMorePrompt("");
+                }}
+                disabled={busy}
+              >
                 Отмена
               </button>
-              <button className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50" type="button" onClick={() => void findMoreSuppliers(findMoreConfirmJob)} disabled={busy}>
+              <button
+                className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                type="button"
+                onClick={() => void findMoreSuppliers(findMoreConfirmJob)}
+                disabled={busy}
+              >
                 {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
                 <span>Продолжить</span>
               </button>

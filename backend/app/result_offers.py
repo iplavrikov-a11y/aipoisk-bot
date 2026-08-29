@@ -337,7 +337,23 @@ def result_offer_to_dict(db: Session | None, job: Job, _evidence: dict | None = 
     ]
     if not offered_entitlements:
         offered_entitlements = _default_job_entitlements(job)
-    amount = sum(job_reserved_amount_kopeks(db, job, item) for item in dict.fromkeys(offered_entitlements))
+    primary_kind = offered_entitlements[0] if offered_entitlements else KIND_SUPPLIER_SEARCH
+    items = [
+        {
+            "billing_kind": item,
+            "units": 1,
+            "amount_kopeks": job_reserved_amount_kopeks(db, job, item),
+        }
+        for item in dict.fromkeys(offered_entitlements)
+    ]
+    amount = sum(item["amount_kopeks"] for item in items)
+    charge = {
+        "billing_kind": primary_kind,
+        "units": 1,
+        "amount_kopeks": amount,
+        "currency": "RUB",
+        "items": items,
+    }
     now = _utc(now_utc())
     pending = job.confirmation_outcome == DECISION_PENDING and not _deadline_passed(job.confirmation_expires_at, now)
     return {
@@ -354,6 +370,7 @@ def result_offer_to_dict(db: Session | None, job: Job, _evidence: dict | None = 
         "delivery_expired_at": _iso(job.offer_delivery_expired_at),
         "active_manifest": str(job.active_output_manifest or ""),
         "active_manifest_version": int(job.active_output_manifest_version or 0),
+        "charge": charge,
         "charge_amount_kopeks": amount,
         "charge_amount_rub": round(amount / 100, 2),
         "can_accept": bool(pending),

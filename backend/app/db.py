@@ -66,135 +66,140 @@ def init_db() -> None:
 
 
 def _ensure_schema() -> None:
-    inspector = inspect(engine)
-    if "job_sources" in Base.metadata.tables:
-        Base.metadata.tables["job_sources"].create(bind=engine, checkfirst=True)
-    inspector = inspect(engine)
-    system_settings_existing = _existing_columns(inspector, "system_settings")
-    system_settings_additions = {
-        "document_settings_json": "TEXT DEFAULT '{}'",
-        "supplier_search_provider_order": "VARCHAR(255) DEFAULT 'yandex,google,tavily,ddgs'",
-        "yandex_search_folder_id": "VARCHAR(255) DEFAULT ''",
-        "yandex_search_api_key": "TEXT DEFAULT ''",
-        "google_search_api_key": "TEXT DEFAULT ''",
-        "google_search_cse_id": "VARCHAR(255) DEFAULT ''",
-        "trial_enabled": "BOOLEAN DEFAULT 0",
-        "trial_supplier_search_limit": "INTEGER DEFAULT 2",
-        "trial_procurement_report_limit": "INTEGER DEFAULT 2",
-        "trial_file_limit": "INTEGER DEFAULT 10",
-        "onboarding_reminders_enabled": "BOOLEAN DEFAULT 0",
-        "onboarding_reminders_rollout_at": "VARCHAR(40) DEFAULT ''",
-        "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
-        "contact_email": "VARCHAR(255) DEFAULT ''",
-        "contact_telegram": "VARCHAR(255) DEFAULT ''",
-        "contact_max": "VARCHAR(255) DEFAULT ''",
-        "contact_max_link": "VARCHAR(255) DEFAULT ''",
-        "contact_website": "VARCHAR(255) DEFAULT ''",
-        "payment_instructions": "TEXT DEFAULT ''",
-        "payment_provider": "VARCHAR(40) DEFAULT 'manual'",
-        "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
-        "yookassa_secret_key": "TEXT DEFAULT ''",
-        "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
-        "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
-        "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
-        "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
-        "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
-    }
-    clients_existing = _existing_columns(inspector, "clients")
-    client_additions = {
-        "is_trial": "BOOLEAN DEFAULT 0",
-        "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
-        "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
-        "money_balance_kopeks": "INTEGER DEFAULT 0",
-        "money_reserved_kopeks": "INTEGER DEFAULT 0",
-        "supplier_target_min": "INTEGER DEFAULT 0",
-        "yandex_search_price_per_request": "REAL DEFAULT 0.04",
-        "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
-    }
-    jobs_existing = _existing_columns(inspector, "jobs")
-    job_additions = {
-        "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
-        "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
-        "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
-        "confirmation_kind": "VARCHAR(40) DEFAULT ''",
-        "confirmation_outcome": "VARCHAR(40) DEFAULT ''",
-        "confirmation_offered_at": "DATETIME NULL",
-        "confirmation_expires_at": "DATETIME NULL",
-        "confirmation_decided_at": "DATETIME NULL",
-        "delivery_expires_at": "DATETIME NULL",
-        "offer_delivery_outcome": "VARCHAR(40) DEFAULT ''",
-        "offer_delivery_claim_token": "VARCHAR(64) DEFAULT ''",
-        "offer_delivery_lease_expires_at": "DATETIME NULL",
-        "offer_delivered_at": "DATETIME NULL",
-        "offer_delivery_expired_at": "DATETIME NULL",
-        "active_output_manifest": "VARCHAR(40) DEFAULT ''",
-        "active_output_manifest_version": "INTEGER DEFAULT 0",
-        "active_entitlements_json": "TEXT DEFAULT '[]'",
-        "yandex_requests_count": "INTEGER DEFAULT 0",
-        "yandex_cost_rub": "REAL DEFAULT 0.0",
-        "ai_provider": "VARCHAR(80) DEFAULT ''",
-        "ai_model": "VARCHAR(160) DEFAULT ''",
-    }
-    billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
-    client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")
-    billing_transaction_additions = {
-        "amount_kopeks": "INTEGER DEFAULT 0",
-        "balance_after_kopeks": "INTEGER DEFAULT 0",
-        "reserved_after_kopeks": "INTEGER DEFAULT 0",
-        "idempotency_key": "VARCHAR(80) NULL",
-    }
-    web_users_existing = _existing_columns(inspector, "web_users")
-    web_user_additions = {
-        "is_email_verified": "BOOLEAN DEFAULT 1",
-        "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
-        "yandex_id": "VARCHAR(64) NULL",
-    }
-    onboarding_reminders_existing = _existing_columns(inspector, "onboarding_reminders")
-    onboarding_reminder_additions = {
-        "step": "VARCHAR(40) DEFAULT 'step1'",
-    }
-    supplier_results_existing = _existing_columns(inspector, "supplier_results")
-    supplier_results_additions = {
-        "match_level": "VARCHAR(40) DEFAULT ''",
-        "source": "VARCHAR(40) DEFAULT ''",
-        "search_query": "TEXT DEFAULT ''",
-        "quality_score": "INTEGER DEFAULT 0",
-        "quality_tier": "VARCHAR(40) DEFAULT ''",
-        "procurement_item_id": "VARCHAR(80) DEFAULT ''",
-        "procurement_item": "TEXT DEFAULT ''",
-        "ai_confidence": "INTEGER DEFAULT 0",
-        "site_type": "VARCHAR(80) DEFAULT ''",
-        "product_fit": "VARCHAR(80) DEFAULT ''",
-        "evidence_snippet": "TEXT DEFAULT ''",
-        "contact_evidence_snippet": "TEXT DEFAULT ''",
-        "ai_rank_confidence": "INTEGER DEFAULT 0",
-        "ai_rank_reason": "TEXT DEFAULT ''",
-    }
-    outreach_leads_existing = _existing_columns(inspector, "outreach_leads")
-    outreach_leads_additions = {
-        "task_id": "VARCHAR(32) DEFAULT ''",
-        "wave_index": "INTEGER DEFAULT 1",
-        "activity_profile": "VARCHAR(255) DEFAULT ''",
-        "relevance_score": "INTEGER DEFAULT 100",
-    }
-    outreach_search_tasks_existing = _existing_columns(inspector, "outreach_search_tasks")
-    outreach_search_tasks_additions = {
-        "waves_json": "TEXT DEFAULT '[]'",
-    }
-    outreach_campaigns_existing = _existing_columns(inspector, "outreach_campaigns")
-    outreach_campaigns_additions = {
-        "task_id_filter": "VARCHAR(32) DEFAULT ''",
-        "selected_lead_ids": "TEXT DEFAULT ''",
-    }
-    outreach_inbox_existing = _existing_columns(inspector, "outreach_inbox")
-    outreach_inbox_additions = {
-        "category": "VARCHAR(100) DEFAULT ''",
-        "is_spam": "BOOLEAN DEFAULT 0",
-    }
     with engine.begin() as connection:
+        if "job_sources" in Base.metadata.tables:
+            Base.metadata.tables["job_sources"].create(bind=connection, checkfirst=True)
+        inspector = inspect(connection)
+        system_settings_existing = _existing_columns(inspector, "system_settings")
+        system_settings_additions = {
+            "document_settings_json": "TEXT DEFAULT '{}'",
+            "supplier_search_provider_order": "VARCHAR(255) DEFAULT 'yandex,google,tavily,ddgs'",
+            "yandex_search_folder_id": "VARCHAR(255) DEFAULT ''",
+            "yandex_search_api_key": "TEXT DEFAULT ''",
+            "google_search_api_key": "TEXT DEFAULT ''",
+            "google_search_cse_id": "VARCHAR(255) DEFAULT ''",
+            "trial_enabled": "BOOLEAN DEFAULT 0",
+            "trial_supplier_search_limit": "INTEGER DEFAULT 2",
+            "trial_procurement_report_limit": "INTEGER DEFAULT 2",
+            "trial_file_limit": "INTEGER DEFAULT 10",
+            "onboarding_reminders_enabled": "BOOLEAN DEFAULT 0",
+            "onboarding_reminders_rollout_at": "VARCHAR(40) DEFAULT ''",
+            "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
+            "contact_email": "VARCHAR(255) DEFAULT ''",
+            "contact_telegram": "VARCHAR(255) DEFAULT ''",
+            "contact_max": "VARCHAR(255) DEFAULT ''",
+            "contact_max_link": "VARCHAR(255) DEFAULT ''",
+            "contact_website": "VARCHAR(255) DEFAULT ''",
+            "payment_instructions": "TEXT DEFAULT ''",
+            "payment_provider": "VARCHAR(40) DEFAULT 'manual'",
+            "yookassa_shop_id": "VARCHAR(255) DEFAULT ''",
+            "yookassa_secret_key": "TEXT DEFAULT ''",
+            "yookassa_return_url": "VARCHAR(255) DEFAULT ''",
+            "supplier_ai_provider": "VARCHAR(80) DEFAULT ''",
+            "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
+            "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
+            "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
+        }
+        clients_existing = _existing_columns(inspector, "clients")
+        client_additions = {
+            "is_active": "BOOLEAN DEFAULT 1",
+            "is_trial": "BOOLEAN DEFAULT 0",
+            "access_until": "VARCHAR(32) DEFAULT ''",
+            "allowed_supplier_search": "BOOLEAN DEFAULT 1",
+            "allowed_procurement_report": "BOOLEAN DEFAULT 0",
+            "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
+            "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
+            "money_balance_kopeks": "INTEGER DEFAULT 0",
+            "money_reserved_kopeks": "INTEGER DEFAULT 0",
+            "supplier_target_min": "INTEGER DEFAULT 0",
+            "yandex_search_price_per_request": "REAL DEFAULT 0.04",
+            "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
+        }
+        jobs_existing = _existing_columns(inspector, "jobs")
+        job_additions = {
+            "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
+            "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
+            "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
+            "confirmation_kind": "VARCHAR(40) DEFAULT ''",
+            "confirmation_outcome": "VARCHAR(40) DEFAULT ''",
+            "confirmation_offered_at": "DATETIME NULL",
+            "confirmation_expires_at": "DATETIME NULL",
+            "confirmation_decided_at": "DATETIME NULL",
+            "delivery_expires_at": "DATETIME NULL",
+            "offer_delivery_outcome": "VARCHAR(40) DEFAULT ''",
+            "offer_delivery_claim_token": "VARCHAR(64) DEFAULT ''",
+            "offer_delivery_lease_expires_at": "DATETIME NULL",
+            "offer_delivered_at": "DATETIME NULL",
+            "offer_delivery_expired_at": "DATETIME NULL",
+            "active_output_manifest": "VARCHAR(40) DEFAULT ''",
+            "active_output_manifest_version": "INTEGER DEFAULT 0",
+            "active_entitlements_json": "TEXT DEFAULT '[]'",
+            "yandex_requests_count": "INTEGER DEFAULT 0",
+            "yandex_cost_rub": "REAL DEFAULT 0.0",
+            "ai_provider": "VARCHAR(80) DEFAULT ''",
+            "ai_model": "VARCHAR(160) DEFAULT ''",
+        }
+        billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
+        client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")
+        billing_transaction_additions = {
+            "amount_kopeks": "INTEGER DEFAULT 0",
+            "balance_after_kopeks": "INTEGER DEFAULT 0",
+            "reserved_after_kopeks": "INTEGER DEFAULT 0",
+            "idempotency_key": "VARCHAR(80) NULL",
+        }
+        web_users_existing = _existing_columns(inspector, "web_users")
+        web_user_additions = {
+            "is_email_verified": "BOOLEAN DEFAULT 1",
+            "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
+            "yandex_id": "VARCHAR(64) NULL",
+        }
+        onboarding_reminders_existing = _existing_columns(inspector, "onboarding_reminders")
+        onboarding_reminder_additions = {
+            "step": "VARCHAR(40) DEFAULT 'step1'",
+        }
+        supplier_results_existing = _existing_columns(inspector, "supplier_results")
+        supplier_results_additions = {
+            "match_level": "VARCHAR(40) DEFAULT ''",
+            "source": "VARCHAR(40) DEFAULT ''",
+            "search_query": "TEXT DEFAULT ''",
+            "quality_score": "INTEGER DEFAULT 0",
+            "quality_tier": "VARCHAR(40) DEFAULT ''",
+            "procurement_item_id": "VARCHAR(80) DEFAULT ''",
+            "procurement_item": "TEXT DEFAULT ''",
+            "ai_confidence": "INTEGER DEFAULT 0",
+            "site_type": "VARCHAR(80) DEFAULT ''",
+            "product_fit": "VARCHAR(80) DEFAULT ''",
+            "evidence_snippet": "TEXT DEFAULT ''",
+            "contact_evidence_snippet": "TEXT DEFAULT ''",
+            "ai_rank_confidence": "INTEGER DEFAULT 0",
+            "ai_rank_reason": "TEXT DEFAULT ''",
+        }
+        outreach_leads_existing = _existing_columns(inspector, "outreach_leads")
+        outreach_leads_additions = {
+            "task_id": "VARCHAR(32) DEFAULT ''",
+            "wave_index": "INTEGER DEFAULT 1",
+            "activity_profile": "VARCHAR(255) DEFAULT ''",
+            "relevance_score": "INTEGER DEFAULT 100",
+        }
+        outreach_search_tasks_existing = _existing_columns(inspector, "outreach_search_tasks")
+        outreach_search_tasks_additions = {
+            "waves_json": "TEXT DEFAULT '[]'",
+        }
+        outreach_campaigns_existing = _existing_columns(inspector, "outreach_campaigns")
+        outreach_campaigns_additions = {
+            "task_id_filter": "VARCHAR(32) DEFAULT ''",
+            "selected_lead_ids": "TEXT DEFAULT ''",
+        }
+        outreach_inbox_existing = _existing_columns(inspector, "outreach_inbox")
+        outreach_inbox_additions = {
+            "category": "VARCHAR(100) DEFAULT ''",
+            "is_spam": "BOOLEAN DEFAULT 0",
+        }
+        added_settings_columns: set[str] = set()
         for column, definition in system_settings_additions.items():
             if column not in system_settings_existing:
                 connection.execute(text(f"ALTER TABLE system_settings ADD COLUMN {column} {definition}"))
+                added_settings_columns.add(column)
         if "supplier_search_provider_order" in system_settings_existing:
             connection.execute(
                 text(
@@ -207,20 +212,23 @@ def _ensure_schema() -> None:
                     """
                 )
             )
-        if (
-            "supplier_ai_provider" not in system_settings_existing
-            and "supplier_ai_model" not in system_settings_existing
-            and "light_provider" in system_settings_existing
-            and "light_model" in system_settings_existing
-        ):
+        if "supplier_ai_provider" in added_settings_columns and "light_provider" in system_settings_existing:
             connection.execute(
                 text(
                     """
                     UPDATE system_settings
-                    SET supplier_ai_provider = COALESCE(light_provider, ''),
-                        supplier_ai_model = COALESCE(light_model, '')
-                    WHERE (supplier_ai_provider IS NULL OR TRIM(supplier_ai_provider) = '')
-                      AND (supplier_ai_model IS NULL OR TRIM(supplier_ai_model) = '')
+                    SET supplier_ai_provider = light_provider
+                    WHERE light_provider IS NOT NULL AND TRIM(light_provider) != ''
+                    """
+                )
+            )
+        if "supplier_ai_model" in added_settings_columns and "light_model" in system_settings_existing:
+            connection.execute(
+                text(
+                    """
+                    UPDATE system_settings
+                    SET supplier_ai_model = light_model
+                    WHERE light_model IS NOT NULL AND TRIM(light_model) != ''
                     """
                 )
             )

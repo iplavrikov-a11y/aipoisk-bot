@@ -92,6 +92,7 @@ SUPPLIER_RUN_ADDITIONAL = "additional"
 RESULT_STEM_MAX_BYTES = 150
 RESULT_STEM_MAX_CHARS = 56
 SUPPLIER_EXCLUSIONS_FILENAME = "excluded_suppliers.json"
+DOBOR_CONTEXT_FILENAME = "dobor_context.json"
 logger = logging.getLogger(__name__)
 
 
@@ -216,23 +217,34 @@ def enqueue_job(job_id: str) -> None:
     return None
 
 
-def write_supplier_exclusions(job: Job, *, previous_job_id: str, suppliers: list[dict]) -> Path:
+def write_supplier_exclusions(
+    job: Job,
+    *,
+    previous_job_id: str,
+    suppliers: list[dict],
+    prior_verified_count: int = 0,
+) -> Path:
     input_dir = job_dir(job.id) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     path = input_dir / SUPPLIER_EXCLUSIONS_FILENAME
     payload = {
         "previous_job_id": previous_job_id,
         "suppliers": [item for item in suppliers if isinstance(item, dict)],
+        "prior_verified_count": int(prior_verified_count or 0),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
-def read_supplier_exclusions(job: Job) -> list[dict]:
+def read_supplier_exclusions_payload(job: Job) -> dict:
     path = job_dir(job.id) / "input" / SUPPLIER_EXCLUSIONS_FILENAME
     if not path.exists():
-        return []
-    payload = parse_json_dict(path.read_text(encoding="utf-8"))
+        return {}
+    return parse_json_dict(path.read_text(encoding="utf-8"))
+
+
+def read_supplier_exclusions(job: Job) -> list[dict]:
+    payload = read_supplier_exclusions_payload(job)
     suppliers = payload.get("suppliers")
     if not isinstance(suppliers, list):
         return []
@@ -241,6 +253,38 @@ def read_supplier_exclusions(job: Job) -> list[dict]:
 
 def _load_supplier_exclusions(job: Job) -> list[dict]:
     return read_supplier_exclusions(job)
+
+
+def write_dobor_context(
+    job: Job,
+    *,
+    previous_job_id: str,
+    unreviewed_candidates: list[dict] | None = None,
+    cached_procurement_profile: dict | None = None,
+    executed_queries: list[str] | None = None,
+    additional_prompt: str = "",
+    wave_index: int = 1,
+) -> Path:
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / DOBOR_CONTEXT_FILENAME
+    payload = {
+        "previous_job_id": previous_job_id,
+        "unreviewed_candidates": [item for item in (unreviewed_candidates or []) if isinstance(item, dict)],
+        "procurement_profile": cached_procurement_profile or {},
+        "executed_queries": [str(q).strip() for q in (executed_queries or []) if str(q).strip()],
+        "additional_prompt": str(additional_prompt or "").strip(),
+        "wave_index": wave_index,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def read_dobor_context(job: Job) -> dict:
+    path = job_dir(job.id) / "input" / DOBOR_CONTEXT_FILENAME
+    if not path.exists():
+        return {}
+    return parse_json_dict(path.read_text(encoding="utf-8"))
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -1076,20 +1120,40 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         _set_job(db, job, status="running", progress=progress, message=message)
 
     excluded_suppliers = _load_supplier_exclusions(job)
+    dobor_ctx = read_dobor_context(job)
+    is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
+    wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
+    try:
+        discovery_coro = discover_suppliers(
+            settings,
+            context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            preloaded_candidates=dobor_ctx.get("unreviewed_candidates"),
+            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            executed_queries=dobor_ctx.get("executed_queries"),
+            additional_prompt=dobor_ctx.get("additional_prompt", ""),
+            is_extend=is_extend,
+            wave_index=wave_idx,
+        )
+    except TypeError:
+        discovery_coro = discover_suppliers(
+            settings,
+            context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        )
     with supplier_search_job_context(job.id):
         accepted, evidence = asyncio.run(
             _run_supplier_discovery_with_cancellation(
                 job.id,
-                discover_suppliers(
-                    settings,
-                    context,
-                    job.target_suppliers,
-                    progress_callback=progress_callback,
-                    excluded_suppliers=excluded_suppliers,
-                    supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
-                ),
+                discovery_coro,
             )
-    )
+        )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
     fallback_rows = _registry_fallback_rows(evidence) if not accepted else []

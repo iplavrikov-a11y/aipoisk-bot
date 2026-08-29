@@ -26,15 +26,24 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from .ai import call_llm, resolve_job_ai_info
-from .result_offers import result_offer_to_dict
+from .result_offers import (
+    result_offer_to_dict,
+    accept_job_result_offer,
+    decline_job_result_offer,
+    claim_job_result_offer_delivery,
+    complete_job_result_offer_delivery,
+)
 from .billing import (
     BillingError,
     KIND_MONEY,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
+    STATUS_CONFIRMATION_EXPIRED,
+    STATUS_DELIVERY_EXPIRED,
     VALID_BILLING_KINDS,
     billing_kind_label,
     charge_job_reservation,
+    charge_job_kind_reservation,
     client_balance_summary,
     client_service_balance_summary,
     client_uses_trial_access,
@@ -50,6 +59,12 @@ from .billing import (
     reserve_job_units,
     tariff_to_dict,
     transaction_to_dict,
+)
+from .legal import (
+    LEGAL_VERSION,
+    LEGAL_DOCUMENT_TERMS,
+    LEGAL_DOCUMENT_PERSONAL_DATA,
+    record_legal_acceptance,
 )
 from .config import config
 from .db import db_session, init_db
@@ -70,7 +85,9 @@ from .jobs import (
     package_job_output_items,
     package_job_outputs,
     read_supplier_exclusions,
+    read_supplier_exclusions_payload,
     recover_interrupted_jobs,
+    write_dobor_context,
     write_supplier_exclusions,
 )
 from .models import (
@@ -309,6 +326,13 @@ def _customer_auth_key(request: Request, email: str) -> str:
     return f"{client_ip}:{str(email or '').strip().lower()[:255]}"
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
 def _check_customer_auth_rate(request: Request, email: str) -> str:
     key = _customer_auth_key(request, email)
     now = time.time()
@@ -376,16 +400,60 @@ def customer_register_api(
     if str(data.website or "").strip():
         _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
         raise HTTPException(status_code=400, detail="Не удалось создать кабинет.")
+    if not bool(data.terms_accepted) or not bool(data.personal_data_consent):
+        _record_customer_registration_attempt(db, request, data.email, "rejected_consent")
+        raise HTTPException(
+            status_code=400,
+            detail="Для регистрации необходимо принять оферту и согласие на обработку персональных данных.",
+        )
     _check_customer_registration_rate(db, request, data.email)
     key = _check_customer_auth_rate(request, data.email)
     try:
-        user = create_web_user(db, email=data.email, password=data.password, name=data.name, email_verified=False)
+        user = create_web_user(
+            db,
+            email=data.email,
+            password=data.password,
+            name=data.name,
+            email_verified=False,
+            commit=False,
+        )
+        client_ip = _client_ip(request)
+        user_agent = request.headers.get("user-agent", "")
+        doc_version = str(data.legal_version or LEGAL_VERSION).strip() or LEGAL_VERSION
+        record_legal_acceptance(
+            db,
+            subject_type="web_user",
+            subject_id=user.id,
+            document_type=LEGAL_DOCUMENT_TERMS,
+            source="web",
+            document_version=doc_version,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+        record_legal_acceptance(
+            db,
+            subject_type="web_user",
+            subject_id=user.id,
+            document_type=LEGAL_DOCUMENT_PERSONAL_DATA,
+            source="web",
+            document_version=doc_version,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+        db.commit()
+        db.refresh(user)
     except ValueError as exc:
+        db.rollback()
         _record_customer_registration_attempt(db, request, data.email, "failed")
         _record_customer_auth_failure(key)
         detail = str(exc)
         status_code = 409 if "уже зарегистрирован" in detail else 400
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        db.rollback()
+        _record_customer_registration_attempt(db, request, data.email, "failed")
+        _record_customer_auth_failure(key)
+        raise exc
     _record_customer_registration_attempt(db, request, user.email, "created")
     email_sent = _send_customer_verification_email(db, user, request)
     token, csrf_token, session = create_web_session(db, user, request=request)
@@ -984,14 +1052,21 @@ def customer_decline_partial_route(
 
 
 @app.post("/api/customer/jobs/{job_id}/find-more-suppliers")
-def customer_find_more_suppliers_route(
+async def customer_find_more_suppliers_route(
     job_id: str,
     request: Request,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
-    return create_additional_supplier_search_api(job_id, context=context, db=db)
+    additional_prompt = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            additional_prompt = str(body.get("additional_prompt") or "").strip()
+    except Exception:
+        pass
+    return create_additional_supplier_search_api(job_id, context=context, db=db, additional_prompt=additional_prompt)
 
 
 @app.post("/api/auth/login")
@@ -2861,7 +2936,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     supplier_units, report_units = requested_function_units(job.mode)
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
-    result_offer = result_offer_to_dict(db, job) if (confirmation_kind and db) else None
+    result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -2895,6 +2970,11 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
+    exclusions_payload = read_supplier_exclusions_payload(job)
+    if exclusions_payload or getattr(job, "supplier_search_run_type", "") == SUPPLIER_RUN_ADDITIONAL:
+        prior_count = int(exclusions_payload.get("prior_verified_count") if exclusions_payload.get("prior_verified_count") is not None else len(exclusions_payload.get("suppliers", [])))
+        data["prior_verified_count"] = prior_count
+        data["cumulative_verified_count"] = prior_count + int(job.verified_count or 0)
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
         data["sources"] = [source_to_dict(item) for item in job.sources]
@@ -3065,28 +3145,49 @@ def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> J
 
 def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
+    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
+        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
     output = package_job_outputs(job)
     if not output or not output.exists():
+        items = package_job_output_items(job)
+        if items:
+            output = Path(str(items[0].get("path") or ""))
+    if not output or not output.exists():
         raise HTTPException(status_code=404, detail="Файл результата не найден.")
-    charge_job_reservation(db, job)
+    if job.confirmation_kind and job.confirmation_outcome == "accepted" and job.offer_delivery_outcome != "delivered":
+        claim_token = claim_job_result_offer_delivery(db, job, channel="web")
+        complete_job_result_offer_delivery(db, job, claim_token, channel="web")
+    else:
+        charge_job_reservation(db, job)
     return FileResponse(output, filename=output.name)
 
 
 def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
+    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
+        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
     normalized_kind = str(file_kind or "").strip()
     output = None
+    billing_kind = None
     for item in package_job_output_items(job):
         if str(item.get("kind") or "") == normalized_kind:
             output = Path(str(item.get("path") or ""))
+            billing_kind = str(item.get("billing_kind") or "")
             break
     if not output or not output.exists():
         raise HTTPException(status_code=404, detail="Файл результата не найден.")
-    charge_job_reservation(db, job)
+    if job.confirmation_kind and job.confirmation_outcome == "accepted" and job.offer_delivery_outcome != "delivered":
+        claim_token = claim_job_result_offer_delivery(db, job, channel="web")
+        kinds = [billing_kind] if billing_kind else None
+        complete_job_result_offer_delivery(db, job, claim_token, billing_kinds=kinds, channel="web")
+    elif billing_kind:
+        charge_job_kind_reservation(db, job, billing_kind)
+    else:
+        charge_job_reservation(db, job)
     return FileResponse(output, filename=output.name)
 
 
@@ -3172,34 +3273,46 @@ def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db:
     job = _customer_job_or_404(db, job_id, context)
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
-    job.status = "partial"
-    job.message = "Клиент принял неполный отчёт"
-    job.error = ""
-    job.updated_at = now_utc()
-    if job.completed_at is None:
-        job.completed_at = now_utc()
-    db.commit()
-    return {"success": True, "job": customer_job_to_dict(job)}
+    if job.confirmation_kind:
+        job = accept_job_result_offer(db, job, channel="web")
+    else:
+        job.status = "partial"
+        job.message = "Клиент принял неполный отчёт"
+        job.error = ""
+        job.updated_at = now_utc()
+        if job.completed_at is None:
+            job.completed_at = now_utc()
+        db.commit()
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
 def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
-    release_job_reservation(db, job, note="Резерв возвращён: клиент сайта отказался от неполного отчёта")
-    job.status = STATUS_CUSTOMER_DECLINED
-    job.message = "Клиент отказался от неполного отчёта"
-    job.error = ""
-    job.completed_at = now_utc()
-    job.updated_at = now_utc()
-    db.commit()
-    return {"success": True, "job": customer_job_to_dict(job)}
+    if job.confirmation_kind:
+        job = decline_job_result_offer(db, job, channel="web")
+    else:
+        release_job_reservation(db, job, note="Резерв возвращён: клиент сайта отказался от неполного отчёта")
+        job.status = STATUS_CUSTOMER_DECLINED
+        job.message = "Клиент отказался от неполного отчёта"
+        job.error = ""
+        job.completed_at = now_utc()
+        job.updated_at = now_utc()
+        db.commit()
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
 FIND_MORE_SUPPLIER_STATUSES = {"completed", "partial", "needs_review"}
 
 
-def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+def create_additional_supplier_search_api(
+    job_id: str,
+    *,
+    context: WebAuthContext,
+    db: Session,
+    additional_prompt: str = "",
+) -> dict:
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     original_job = _customer_job_or_404(db, job_id, context)
@@ -3208,6 +3321,7 @@ def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContex
         client=context.user.client,
         original_job=original_job,
         created_by_telegram_id=f"web:{context.user.id}",
+        additional_prompt=additional_prompt,
     )
 
     return {
@@ -3217,12 +3331,27 @@ def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContex
     }
 
 
+def _additional_supplier_target(settings: SystemSettings, client: Client, original_job: Job) -> int:
+    base_target = int(original_job.target_suppliers or 0) or supplier_target_for_client(settings, client)
+    verified = int(original_job.verified_count or 0)
+    if base_target > verified and verified > 0:
+        return max(1, base_target - verified)
+    return max(1, base_target)
+
+
+def _cumulative_prior_verified_count(job: Job) -> int:
+    prev_payload = read_supplier_exclusions_payload(job)
+    prev_prior = int(prev_payload.get("prior_verified_count") or 0)
+    return prev_prior + int(job.verified_count or 0)
+
+
 def create_additional_supplier_search_for_client(
     db: Session,
     *,
     client: Client,
     original_job: Job,
     created_by_telegram_id: str,
+    additional_prompt: str = "",
 ) -> Job:
     if original_job.client_id != client.id:
         raise HTTPException(status_code=404, detail="Задача не найдена.")
@@ -3247,7 +3376,7 @@ def create_additional_supplier_search_for_client(
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
 
-    target_suppliers = max(1, int(original_job.target_suppliers or 0) or supplier_target_for_client(settings, client))
+    target_suppliers = _additional_supplier_target(settings, client, original_job)
     job: Job | None = None
     try:
         job = create_job(
@@ -3266,7 +3395,39 @@ def create_additional_supplier_search_for_client(
             supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
-        write_supplier_exclusions(job, previous_job_id=original_job.id, suppliers=excluded_suppliers)
+        prior_verified_count = _cumulative_prior_verified_count(original_job)
+        write_supplier_exclusions(
+            job,
+            previous_job_id=original_job.id,
+            suppliers=excluded_suppliers,
+            prior_verified_count=prior_verified_count,
+        )
+
+        unreviewed_candidates: list[dict] = []
+        cached_profile: dict = {}
+        executed_queries: list[str] = []
+        wave_index = 2
+        try:
+            parent_evidence = read_job_evidence_payload(original_job)
+            if isinstance(parent_evidence, dict):
+                s_ev = parent_evidence.get("supplier_search") if isinstance(parent_evidence.get("supplier_search"), dict) else parent_evidence
+                unreviewed_candidates = s_ev.get("unreviewed_candidates", [])
+                cached_profile = s_ev.get("procurement_profile", {})
+                executed_queries = s_ev.get("executed_queries", [])
+                prev_wave = int(s_ev.get("wave_index") or 1)
+                wave_index = prev_wave + 1
+        except Exception:
+            pass
+
+        write_dobor_context(
+            job,
+            previous_job_id=original_job.id,
+            unreviewed_candidates=unreviewed_candidates,
+            cached_procurement_profile=cached_profile,
+            executed_queries=executed_queries,
+            additional_prompt=additional_prompt,
+            wave_index=wave_index,
+        )
         enqueue_job(job.id)
     except BillingError as exc:
         if job:

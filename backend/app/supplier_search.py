@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from copy import deepcopy
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -138,7 +139,46 @@ BLOCKED_DOMAINS = {
     "bicotender.ru",
     "oborudunion.ru",
     "sudact.ru",
+    # Banks & Financial Brokers
+    "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",
+    "psbank.ru", "lockobank.ru", "open.ru", "sovcombank.ru", "raiffeisen.ru", "mkb.ru", "rshb.ru",
+    "domrfbank.ru", "uralsib.ru", "zenit.ru", "absolutbank.ru", "metallinvestbank.ru", "bspb.ru",
+    "sravni.ru", "banki.ru", "cifin.ru", "vsezaimy.ru", "vbr.ru", "fintender.ru", "tender-garant.ru",
+    "finstar.ru", "expertcentre.org",
+    # OFD, EDS, Reporting & Tax Software
+    "1-ofd.ru", "astral.ru", "tensor.ru", "taxcom.ru", "platformaofd.ru",
+    "taxnet.ru", "e-dis.ru", "ecplegko.ru", "ed-sro.ru",
+    # Additional Aggregators & Brokers
+    "klerk.ru", "leboard.ru", "profi.ru", "kwork.ru", "youla.ru", "hh.ru", "superjob.ru",
+    "zakon.guru", "garant.ru", "audit-it.ru", "vc.ru", "journal.tinkoff.ru",
+    "seldon-pro.ru", "seldon.ru", "sberbank-ast.ru", "roseltorg.ru", "etp-ets.ru",
+    "gz-spb.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru",
+    "tendergo.pro", "izhtender.ru", "bidexpert.ru", "tenderopora.ru", "tendercorp.ru", "tendercapital.ru",
+    "gos-44.ru", "tenderup.ru", "b2g-partner.ru", "torgi223.ru", "tender-life.ru",
+    "znanium.ru", "shkulev.ru", "e-library.ru", "cyberleninka.ru",
+    "gosuslugi.ru", "nalog.gov.ru", "cbr.ru", "fas.gov.ru", "minfin.gov.ru",
 }
+
+IRRELEVANT_PATTERNS = [
+    r"банковск(?:ая|ие|ую|их)\s+гаранти",
+    r"открыти(?:е|я)\s+расчетн(?:ого|ых)\s+счет",
+    r"кредитован(?:ие|ия)\s+бизнеса",
+    r"сравнен(?:ие|ия)\s+кредит",
+    r"онлайн[\s-]касс",
+    r"электронн(?:ая|ой|ую|ые)\s+подпис",
+    r"выпуск\s+эцп",
+    r"оператор\s+фискальных\s+данных",
+    r"курсы\s+повышения\s+квалификации",
+    r"обучение\s+(?:44-фз|223-фз|госзакупк)",
+    r"электронная\s+библиотечная\s+система",
+    r"сетевое\s+издание",
+    r"городской\s+портал",
+    r"новости\s+городов",
+    r"агрегатор\s+тендеров",
+    r"поиск\s+тендеров\s+и\s+закупок",
+    r"тендерное\s+сопровождение",
+]
+RE_IRRELEVANT = re.compile("|".join(IRRELEVANT_PATTERNS), re.IGNORECASE)
 
 BLOCKED_HOST_SUFFIXES = (
     ".gov.ru",
@@ -150,6 +190,27 @@ BLOCKED_HOST_SUFFIXES = (
     ".kz",
     ".by",
 )
+
+
+def _clean_email(email_str: str) -> str:
+    if not email_str:
+        return ""
+    import urllib.parse
+    email_str = urllib.parse.unquote(str(email_str or "")).strip().lower()
+    email_str = email_str.strip(".,;:/()[]{}<>\"'\\_+-# \t\r\n")
+    email_str = re.sub(r"^(?:20|3d|25|2f)+", "", email_str).strip()
+    if not (5 <= len(email_str) <= 100):
+        return ""
+    if "@" not in email_str or email_str.count("@") != 1:
+        return ""
+    user, domain = email_str.split("@", 1)
+    user = user.strip(".,;:/()[]{}<>\"'\\_+-#")
+    domain = domain.strip(".,;:/()[]{}<>\"'\\_+-#")
+    if not user or not domain or "." not in domain:
+        return ""
+    if any(domain.endswith(ext) for ext in (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".ico")):
+        return ""
+    return f"{user}@{domain}"
 
 
 @dataclass(frozen=True)
@@ -258,12 +319,21 @@ REGISTRY_CANDIDATE_QUERY_STOPWORDS = {
 }
 
 
+_MULTI_PART_TLDS = {
+    "com.ru", "net.ru", "org.ru", "msk.ru", "spb.ru", "nov.ru", "sochi.su", "com.tw",
+    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "com.ua", "co.il", "com.by",
+    "com.kz", "com.tr", "co.jp", "com.cn", "com.br", "co.in", "com.au", "co.nz", "co.za",
+}
+
+
 def base_domain(url_or_domain: str) -> str:
     value = str(url_or_domain or "").strip().lower()
     if "://" in value:
         value = urlparse(value).netloc
     value = value.removeprefix("www.").split(":")[0]
     parts = [part for part in value.split(".") if part]
+    if len(parts) >= 3 and f"{parts[-2]}.{parts[-1]}" in _MULTI_PART_TLDS:
+        return ".".join(parts[-3:])
     if len(parts) >= 2:
         return ".".join(parts[-2:])
     return value
@@ -1381,11 +1451,39 @@ async def build_supplier_queries(
     context: str,
     target: int,
     profile: ProcurementProfile | None = None,
+    *,
+    is_extend: bool = False,
+    wave_index: int = 1,
+    executed_queries: set[str] | list[str] | None = None,
+    additional_prompt: str = "",
 ) -> list[str]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search query generation")
     profile = profile or await build_procurement_profile(settings, context)
-    prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
+    
+    if is_extend or wave_index > 1:
+        refine_extra = f"\nДополнительные критерии добора: {additional_prompt.strip()}" if additional_prompt else ""
+        system_prompt = (
+            f"Ты ведущий эксперт по B2B поиску коммерческих поставщиков, региональных дистрибьюторов, торговых домов и оптовых складов. "
+            f"ЭТО РЕЖИМ ДОБОРА (ВОЛНА №{wave_index}). Базовые поставщики уже найдены. "
+            "Твоя задача — составить разнообразные поисковые запросы для нахождения альтернативных поставщиков, региональных центров сбыта, оптовых складов, торговых домов и комплектовщиков. "
+            "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
+        )
+        prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
+Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}
+Сформируй 18-28 поисковых запросов для поиска по регионам РФ и специализированным каналам сбыта.
+Включай в запросы минус-слова (-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы).
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+    else:
+        system_prompt = "Ты закупочный исследователь. Формируешь только поисковые запросы."
+        prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
 
 Нужно искать не только точную строку из ТЗ, а компании, которые производят или поставляют нужную товарную группу/номенклатуру и могут дать КП по характеристикам ТЗ.
 Сформируй 18-28 коротких запросов для поиска российских заводов, производителей, официальных дилеров, дистрибьюторов и B2B-поставщиков.
@@ -1410,7 +1508,7 @@ async def build_supplier_queries(
             raw = await call_llm(
                 settings,
                 prompt,
-                system_prompt="Ты закупочный исследователь. Формируешь только поисковые запросы.",
+                system_prompt=system_prompt,
                 tier="light",
                 routing_key="supplier_query_generation",
                 json_mode=True,
@@ -1419,7 +1517,10 @@ async def build_supplier_queries(
             )
             parsed = parse_json_object(raw)
             queries = _clean_supplier_queries([str(item).strip() for item in parsed.get("queries", [])])
-            if _queries_need_broadening(profile, queries, target):
+            if executed_queries:
+                exec_set = {str(q).strip().lower() for q in executed_queries}
+                queries = [q for q in queries if q.strip().lower() not in exec_set]
+            if not is_extend and _queries_need_broadening(profile, queries, target):
                 revised = await _revise_supplier_queries_with_ai(settings, context, profile, queries, target)
                 if revised:
                     queries = revised
@@ -1442,6 +1543,12 @@ async def discover_suppliers(
     progress_callback: ProgressCallback | None = None,
     excluded_suppliers: list[dict] | None = None,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    preloaded_candidates: list[dict] | None = None,
+    cached_procurement_profile: dict | None = None,
+    executed_queries: list[str] | set[str] | None = None,
+    additional_prompt: str = "",
+    is_extend: bool = False,
+    wave_index: int = 1,
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1451,6 +1558,12 @@ async def discover_suppliers(
             progress_callback=progress_callback,
             excluded_suppliers=excluded_suppliers,
             supplier_search_policy=supplier_search_policy,
+            preloaded_candidates=preloaded_candidates,
+            cached_procurement_profile=cached_procurement_profile,
+            executed_queries=executed_queries,
+            additional_prompt=additional_prompt,
+            is_extend=is_extend,
+            wave_index=wave_index,
         )
 
 
@@ -1462,15 +1575,32 @@ async def _discover_suppliers_impl(
     progress_callback: ProgressCallback | None = None,
     excluded_suppliers: list[dict] | None = None,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    preloaded_candidates: list[dict] | None = None,
+    cached_procurement_profile: dict | None = None,
+    executed_queries: list[str] | set[str] | None = None,
+    additional_prompt: str = "",
+    is_extend: bool = False,
+    wave_index: int = 1,
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
     minimum_target = max(1, min(MAX_SUPPLIER_DELIVERY_TARGET, int(target or 0)))
     delivery_target = _supplier_delivery_target(minimum_target)
     excluded_domains, excluded_company_keys = _supplier_exclusion_sets(excluded_suppliers)
-    await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
-    profile = await build_procurement_profile(settings, context)
+    
+    # 1. Build or reuse Procurement Profile
+    if cached_procurement_profile:
+        try:
+            profile = _normalize_procurement_profile(cached_procurement_profile)
+            await _emit_progress(progress_callback, 28, f"Использую профиль закупки: {len(profile.items)} позиций")
+        except Exception:
+            await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
+            profile = await build_procurement_profile(settings, context)
+    else:
+        await _emit_progress(progress_callback, 28, "Анализирую ТЗ и выделяю закупаемые позиции")
+        profile = await build_procurement_profile(settings, context)
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
+    
     policy = normalize_supplier_search_policy(supplier_search_policy)
     await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
     if policy == SUPPLIER_POLICY_NORMAL:
@@ -1489,43 +1619,90 @@ async def _discover_suppliers_impl(
     else:
         minprom_context = MinpromRegistryContext(requirement=minprom_requirement, status="not_required")
     registry_unavailable = policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY} and minprom_context.status == "error"
-    await _emit_progress(progress_callback, 42, "Подбираю поисковые запросы")
-    general_queries = await build_supplier_queries(settings, context, minimum_target, profile=profile)
-    minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context)
-    if registry_unavailable:
-        queries = []
-    elif policy == SUPPLIER_POLICY_MINPROM_ONLY:
-        queries = minprom_supplier_queries
+    
+    # Convert preloaded candidates from parent task if available
+    preloaded_objs: list[Candidate] = []
+    if preloaded_candidates:
+        for c in preloaded_candidates:
+            if isinstance(c, dict):
+                u = str(c.get("url") or "")
+                d = base_domain(str(c.get("domain") or u))
+                if d and d not in excluded_domains and d not in BLOCKED_DOMAINS:
+                    preloaded_objs.append(
+                        Candidate(
+                            url=u or f"https://{d}",
+                            domain=d,
+                            title=str(c.get("title") or ""),
+                            snippet=str(c.get("snippet") or ""),
+                            source=str(c.get("source") or "preloaded_pool"),
+                            query=str(c.get("query") or ""),
+                            ai_rank_confidence=int(c.get("ai_rank_confidence") or 0),
+                            ai_rank_reason=str(c.get("ai_rank_reason") or ""),
+                        )
+                    )
+
+    search_meta = {}
+    queries: list[str] = []
+    minprom_supplier_queries: list[str] = []
+
+    # If we have enough preloaded candidates, we skip / minimize search query calls
+    if len(preloaded_objs) >= delivery_target * 4:
+        candidates = preloaded_objs
+        search_meta = {
+            "provider_order": ["preloaded_pool"],
+            "strategy": {"source": "parent_job_cache", "count": len(preloaded_objs)},
+            "yandex_requests_count": 0,
+            "yandex_cost_rub": 0.0,
+            "reports": [{"provider": "preloaded_pool", "status": "ok", "added": len(preloaded_objs), "requested": 0}],
+        }
+        await _emit_progress(progress_callback, 50, f"Использую {len(preloaded_objs)} сохраненных сайтов из пула (0 ₽ за поиск)...")
     else:
-        queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries)
-    await _emit_progress(
-        progress_callback,
-        50,
-        f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {minimum_target}, целевой результат {delivery_target}",
-    )
-    candidates, search_meta = await discover_candidates(
-        settings,
-        queries,
-        max_results=max(delivery_target * 10, 120),
-        excluded_domains=excluded_domains,
-        primary_candidate_floor=_primary_candidate_floor(delivery_target),
-        fallback_candidate_limit=_fallback_candidate_limit(delivery_target),
-    )
+        try:
+            general_queries = await build_supplier_queries(
+                settings,
+                context,
+                minimum_target,
+                profile=profile,
+                is_extend=is_extend,
+                wave_index=wave_index,
+                executed_queries=executed_queries,
+                additional_prompt=additional_prompt,
+            )
+        except TypeError:
+            general_queries = await build_supplier_queries(
+                settings,
+                context,
+                minimum_target,
+                profile=profile,
+            )
+        minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context)
+        if registry_unavailable:
+            queries = []
+        elif policy == SUPPLIER_POLICY_MINPROM_ONLY:
+            queries = minprom_supplier_queries
+        else:
+            queries = _merge_supplier_query_tracks(general_queries, minprom_supplier_queries)
+        await _emit_progress(
+            progress_callback,
+            50,
+            f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {minimum_target}, целевой результат {delivery_target}",
+        )
+        discovered, search_meta = await discover_candidates(
+            settings,
+            queries,
+            max_results=max(delivery_target * 10, 120),
+            excluded_domains=excluded_domains,
+            primary_candidate_floor=_primary_candidate_floor(delivery_target),
+            fallback_candidate_limit=_fallback_candidate_limit(delivery_target),
+        )
+        preloaded_domains = {p.domain for p in preloaded_objs}
+        candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
+
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
     candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
-    minprom_candidates: list[Candidate] = []
-    if minprom_context.status == "ok" and minprom_context.entries:
-        await _emit_progress(progress_callback, 62, "Прямой поиск сайтов производителей из локальной базы ГИСП")
-        minprom_candidates = await _discover_minprom_registry_candidates(settings, minprom_context, excluded_domains)
-
-    # Put direct GISP registry candidates at the absolute front of the queue
-    seen_domains = {c.domain for c in minprom_candidates}
-    combined_candidates = minprom_candidates + [c for c in candidates if c.domain not in seen_domains]
-
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
-    rerank = await ai_rerank_candidates(settings, profile, combined_candidates, delivery_target, registry_context=minprom_context)
-    reranked_domains = {c.domain for c in rerank.candidates}
-    candidates = [c for c in minprom_candidates if c.domain in reranked_domains or True] + [c for c in rerank.candidates if c.domain not in seen_domains]
+    rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
+    candidates = rerank.candidates
 
     await _emit_progress(progress_callback, 72, f"Проверяю сайты и контакты: кандидатов {len(candidates)}")
     accepted, reviewed, review_meta = await _review_candidates_until_target(
@@ -1632,19 +1809,19 @@ async def _discover_suppliers_impl(
         # Merge recovery queries into main list so next round generates different queries
         queries = queries + recovery_queries
     _annotate_minprom_registry_matches(accepted, minprom_context, policy)
+    pre_strict_filter_accepted = [dict(item) for item in accepted]
 
-    # Guarantee ALL GISP registry entries appear in results and enrich them via DaData & targeted search
-    if minprom_context.status == "ok" and minprom_context.entries:
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
+    elif minprom_context.status == "ok" and minprom_context.entries:
         await _emit_progress(progress_callback, 90, "Обогащаю контакты и реквизиты реестра через DaData и поиск")
         accepted = await _enrich_unmatched_registry_suppliers(settings, accepted, minprom_context)
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
 
-    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
-        accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
-    elif policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
-        accepted.sort(key=lambda item: 0 if item.get("minprom_registry_match", {}).get("matched") else 1)
+    if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
+        accepted.sort(key=lambda item: 0 if (item.get("minprom_registry_match") or {}).get("matched") else 1)
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
 
     evidence = {
@@ -1688,6 +1865,23 @@ async def _discover_suppliers_impl(
             for item in accepted
         ),
         "queries": queries,
+        "executed_queries": queries,
+        "unreviewed_candidates": [
+            (candidate.__dict__ if hasattr(candidate, "__dict__") else candidate)
+            for candidate in candidates
+            if base_domain(getattr(candidate, "domain", "") or getattr(candidate, "url", "")) not in {base_domain(str(r.get("site") or "")) for r in accepted}
+            and base_domain(getattr(candidate, "domain", "") or getattr(candidate, "url", "")) not in excluded_domains
+        ][:120],
+        "wave_index": wave_index,
+        "registry_result": {
+            "status": minprom_context.status,
+            "verified_count": sum(1 for item in accepted if (item.get("minprom_registry_match") or {}).get("matched")),
+        },
+        "non_registry_alternative": _non_registry_alternative_evidence(
+            pre_strict_filter_accepted if (policy == SUPPLIER_POLICY_MINPROM_ONLY and not accepted) else accepted,
+            minprom_context,
+            registry_verified_count=sum(1 for item in accepted if (item.get("minprom_registry_match") or {}).get("matched")),
+        ),
         "candidates": [candidate.__dict__ for candidate in candidates],
         "accepted_count": len(accepted),
         "accepted": accepted,
@@ -1967,7 +2161,7 @@ def _annotate_minprom_registry_matches(
         item["minprom_registry_match"] = match
         if match.get("matched"):
             item["supplier_search_origin"] = "minprom_registry"
-        elif policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
+        elif policy in {SUPPLIER_POLICY_MINPROM_PRIORITY, SUPPLIER_POLICY_MINPROM_ONLY}:
             item["supplier_search_origin"] = "ordinary_fallback"
         else:
             item["supplier_search_origin"] = "ordinary"
@@ -2034,7 +2228,7 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
                     or manufacturer_key in hay_key
                 )
             )
-            product_matched = bool(product and _registry_candidate_query_scores(haystack, [product]))
+            product_matched = bool(product and item.get("product") and _registry_candidate_query_scores(str(item.get("product")), [product]))
             if manufacturer_matched and product_matched:
                 method = "manufacturer_product"
                 score = 0.9
@@ -2324,6 +2518,14 @@ def _minprom_context_to_dict(context: MinpromRegistryContext) -> dict:
 
 def _build_minprom_registry_code_queries(profile: ProcurementProfile, *, limit: int = 20) -> list[str]:
     queries: list[str] = []
+    for code in _profile_okpd2_hierarchy_codes(profile)[:6]:
+        queries.extend(
+            [
+                f"ОКПД2 {code} реестр Минпромторга",
+                f'"{code}" ПП 719 баллы',
+                f'"{code}" ПП 719',
+            ]
+        )
     for item in profile.items:
         item_name = str(item.name or "").strip()
         if item_name and len(item_name) >= 3:
@@ -2335,13 +2537,6 @@ def _build_minprom_registry_code_queries(profile: ProcurementProfile, *, limit: 
     for term in primary_terms:
         if term not in queries:
             queries.append(term)
-    for code in _profile_okpd2_hierarchy_codes(profile)[:6]:
-        queries.extend(
-            [
-                f"ОКПД2 {code} реестр Минпромторга",
-                f'"{code}" ПП 719',
-            ]
-        )
     return _clean_supplier_queries(queries)[:limit]
 
 
@@ -2424,8 +2619,7 @@ def _build_minprom_supplier_queries(
 def _merge_supplier_query_tracks(general_queries: list[str], minprom_queries: list[str]) -> list[str]:
     if not minprom_queries:
         return general_queries
-    # Interleave Minprom queries for all entries with general queries
-    prioritized = minprom_queries[:30] + general_queries + minprom_queries[30:]
+    prioritized = minprom_queries[:6] + general_queries + minprom_queries[6:]
     return _clean_supplier_queries(prioritized)[:60]
 
 
@@ -3044,6 +3238,10 @@ def _supplier_verification_timeout_seconds() -> float:
     )
 
 
+class SupplierBrowserInfrastructureError(Exception):
+    pass
+
+
 async def _verify_candidate_with_limits(
     settings: SystemSettings,
     candidate: Candidate,
@@ -3055,19 +3253,27 @@ async def _verify_candidate_with_limits(
     await _supplier_verification_limiter.acquire(_supplier_verification_limit)
     try:
         timeout = _supplier_verification_timeout_seconds()
-        try:
-            return await asyncio.wait_for(
-                verify_candidate(
-                    settings,
-                    candidate,
-                    context,
-                    profile=profile,
-                    registry_context=registry_context,
-                ),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            return None
+        for attempt in range(2):
+            try:
+                return await asyncio.wait_for(
+                    verify_candidate(
+                        settings,
+                        candidate,
+                        context,
+                        profile=profile,
+                        registry_context=registry_context,
+                    ),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                return None
+            except SupplierBrowserInfrastructureError:
+                if attempt == 0:
+                    await asyncio.sleep(0.01)
+                    continue
+                return None
+            except Exception:
+                return None
     finally:
         _supplier_verification_limiter.release()
 
@@ -3251,6 +3457,17 @@ def _fallback_candidate_limit(delivery_target: int) -> int:
     return max(6, min(16, (max(1, int(delivery_target or 0)) + 1) // 2))
 
 
+def _deterministic_measure_type(text: str) -> str:
+    lower = str(text or "").lower()
+    if "запрет" in lower or "1236" in lower:
+        return "prohibition"
+    if "ограничен" in lower or "878" in lower or "616" in lower:
+        return "restriction"
+    if "преимуществ" in lower:
+        return "advantage"
+    return ""
+
+
 async def discover_candidates(
     settings: SystemSettings,
     queries: list[str],
@@ -3259,6 +3476,7 @@ async def discover_candidates(
     excluded_domains: set[str] | None = None,
     primary_candidate_floor: int | None = None,
     fallback_candidate_limit: int | None = None,
+    reserve_only: bool = False,
 ) -> tuple[list[Candidate], dict]:
     candidates: list[Candidate] = []
     reports: list[dict] = []
@@ -3279,9 +3497,22 @@ async def discover_candidates(
         request_limit = max_results
         status = "skipped"
         error = ""
+        if reserve_only and provider == PRIMARY_SUPPLIER_SEARCH_PROVIDER:
+            reports.append(
+                {
+                    "provider": provider,
+                    "status": "skipped_post_verification_reserve",
+                    "added": 0,
+                    "returned": 0,
+                    "total_after": len(candidates),
+                    "requested": 0,
+                    "error": "",
+                }
+            )
+            continue
         is_fallback = provider != PRIMARY_SUPPLIER_SEARCH_PROVIDER
         if is_fallback:
-            if yandex_candidate_count >= primary_floor:
+            if not reserve_only and yandex_candidate_count >= primary_floor:
                 reports.append(
                     {
                         "provider": provider,
@@ -3294,7 +3525,7 @@ async def discover_candidates(
                     }
                 )
                 continue
-            if yandex_candidate_count > 0:
+            if yandex_candidate_count > 0 and not reserve_only:
                 remaining_gap = max(0, primary_floor - len(candidates))
                 remaining_fallback_budget = max(0, fallback_limit - fallback_candidates_added)
                 request_limit = min(max_results - len(candidates), remaining_gap, remaining_fallback_budget)
@@ -3312,13 +3543,17 @@ async def discover_candidates(
                     )
                     continue
             else:
-                request_limit = max(0, max_results - len(candidates))
+                request_limit = min(fallback_limit, max(0, max_results - len(candidates))) if reserve_only else max(0, max_results - len(candidates))
                 if request_limit <= 0:
                     break
         try:
             existing_domains = base_excluded_domains | {candidate.domain for candidate in candidates}
             if provider == "yandex":
-                provider_candidates, y_reqs = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                y_res = await _search_with_yandex(settings, queries, request_limit, existing_domains=existing_domains)
+                if isinstance(y_res, tuple) and len(y_res) == 2:
+                    provider_candidates, y_reqs = y_res
+                else:
+                    provider_candidates, y_reqs = y_res, len(queries)
                 yandex_total_requests += y_reqs
             elif provider == "google":
                 provider_candidates = await _search_with_google(settings, queries, request_limit, existing_domains=existing_domains)
@@ -3361,6 +3596,7 @@ async def discover_candidates(
             "fallback_candidate_limit": fallback_limit,
             "yandex_candidate_count": yandex_candidate_count,
             "fallback_used": fallback_used,
+            "reserve_only": reserve_only,
         },
         "yandex_requests_count": yandex_total_requests,
         "yandex_cost_rub": round(yandex_total_requests * float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04), 2),
@@ -3820,10 +4056,16 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
         if not clean:
             continue
         base_queries.append(clean)
-        if not re.search(r"купить|поставщик|производитель|цена|завод", clean, re.I):
-            secondary_variants.append(f"{clean} производитель поставщик купить")
-        else:
-            secondary_variants.append(f"{clean} официальный сайт")
+        variants = [
+            f"{clean} официальный сайт",
+            f"{clean} контакты",
+            f"{clean} каталог",
+            f"{clean} производитель",
+            f"{clean} поставщик",
+            f"{clean} купить",
+        ]
+        for item in variants:
+            secondary_variants.append(item)
 
     expanded: list[str] = []
     for item in [*base_queries, *secondary_variants]:
@@ -3924,7 +4166,6 @@ async def _search_with_adapter(settings: SystemSettings, queries: list[str], max
                 if len(candidates) >= max_results:
                     return candidates
     return candidates
-
 
 
 _DNS_RESOLVE_CACHE: dict[str, bool] = {}
@@ -4215,12 +4456,17 @@ def _browser_log_url(url: str) -> str:
         return "<invalid-url>"
     if not parsed.scheme or not parsed.netloc:
         return "<invalid-url>"
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:500]
+    netloc = parsed.netloc.split("@", 1)[-1]
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))[:500]
 
 
 def _browser_log_error(exc: BaseException) -> str:
     summary = _exception_summary(exc)
     summary = URL_RE.sub("<url>", summary)
+    summary = re.sub(r"(?i)(authorization|proxy-authorization)(\s*[:=]\s*)[^\r\n,;]+", r"\1\2<redacted>", summary)
+    summary = re.sub(r"(?i)(cookie)(\s*[:=]\s*)[^\r\n]+", r"\1\2<redacted>", summary)
+    summary = re.sub(r'(?i)("(?:token|password|secret|key)"\s*:\s*)"[^"]+"', r'\1"<redacted>"', summary)
+    summary = re.sub(r'(?i)(token|password|session|remember|secret|key)(\s*=\s*)[^\s;&,]+', r'\1\2<redacted>', summary)
     return re.sub(r"\s+", " ", summary).strip()[:300]
 
 
@@ -4289,11 +4535,18 @@ class _BrowserPool:
             await self._close_unlocked()
 
     async def _close_unlocked(self) -> None:
+        cancelled_exc: BaseException | None = None
         if self._browser:
-            try:
-                await self._browser.close()
-            except Exception:
-                pass
+            for attempt in range(2):
+                try:
+                    await self._browser.close()
+                    break
+                except asyncio.CancelledError as exc:
+                    cancelled_exc = exc
+                    break
+                except Exception:
+                    if attempt == 0:
+                        continue
             self._browser = None
         if self._playwright:
             try:
@@ -4301,6 +4554,8 @@ class _BrowserPool:
             except Exception:
                 pass
             self._playwright = None
+        if cancelled_exc:
+            raise cancelled_exc
 
 
 _browser_pool_context: ContextVar[_BrowserPool | None] = ContextVar(
@@ -4575,24 +4830,69 @@ def email_matches_domain(email: str, domain: str) -> bool:
     return bool(email_domain and email_domain == base_domain(domain))
 
 
+def _confidence_percent(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        num = float(value)
+    except (ValueError, TypeError):
+        return 0
+    if 0.0 < num < 1.0:
+        return int(round(num * 100))
+    if 1.0 <= num <= 10.0 and isinstance(value, (int, float)) and num == int(num):
+        raise RuntimeError("ambiguous 0-10 confidence scale")
+    if 0 <= num <= 100:
+        return int(round(num))
+    return 0
+
+
+def _normalize_phone(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    digits = re.sub(r"\D+", "", raw)
+    if not digits:
+        return ""
+    if raw.startswith("+"):
+        return f"+{digits}"
+    if len(digits) == 11 and digits[0] in {"7", "8"}:
+        return f"+7{digits[1:]}"
+    if len(digits) == 10:
+        return f"+7{digits}"
+    return f"+{digits}"
+
+
 def _verified_email(value: object, extracted_emails: list[str]) -> str:
     raw = str(value or "").strip().lower()
+    if raw and extracted_emails:
+        if raw in [e.lower() for e in extracted_emails]:
+            return raw
+        return extracted_emails[0]
     if EMAIL_RE.fullmatch(raw):
         return raw
     return extracted_emails[0] if extracted_emails else ""
 
 
 def _verified_phone(value: object, extracted_phones: list[str]) -> str:
+    if not extracted_phones:
+        return ""
     raw = str(value or "").strip()
-    match = PHONE_RE.search(raw)
-    if match:
-        normalized = _normalize_ru_phone(match.group(0))
-        if normalized:
-            return normalized
+    raw_ru = _normalize_ru_phone(raw)
+    raw_norm = _normalize_phone(raw)
     for phone in extracted_phones:
-        normalized = _normalize_ru_phone(phone)
-        if normalized:
-            return normalized
+        ru = _normalize_ru_phone(phone)
+        norm = _normalize_phone(phone)
+        if ru and (ru == raw_ru or norm == raw_norm or not raw):
+            return ru
+        if norm and (norm == raw_norm or not raw):
+            return ru if ru else norm
+    for phone in extracted_phones:
+        ru = _normalize_ru_phone(phone)
+        if ru:
+            return ru
+        norm = _normalize_phone(phone)
+        if norm:
+            return norm
     return ""
 
 
@@ -4606,6 +4906,67 @@ def _normalize_ru_phone(value: object) -> str:
     if area == "000":
         return ""
     return f"+7 ({area}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
+
+
+def _merge_deterministic_okpd2(profile: ProcurementProfile, text: str) -> ProcurementProfile:
+    codes = re.findall(r"\b\d{2}\.\d{2}(?:\.\d{2})?(?:\.\d{3})?\b", text)
+    if not codes or not profile.items:
+        return profile
+    updated_items = []
+    for item in profile.items:
+        existing = list(item.okpd2_codes or [])
+        for c in codes:
+            if c not in existing:
+                existing.append(c)
+        updated_items.append(
+            ProcurementItem(
+                id=item.id,
+                name=item.name,
+                aliases=item.aliases,
+                okpd2_codes=tuple(existing),
+                category_terms=item.category_terms,
+                exact_terms=item.exact_terms,
+                required_terms=item.required_terms,
+                excluded_terms=item.excluded_terms,
+            )
+        )
+    return ProcurementProfile(
+        summary=profile.summary,
+        items=tuple(updated_items),
+        excluded_terms=profile.excluded_terms,
+        raw=profile.raw,
+    )
+
+
+def _non_registry_alternative_evidence(
+    rows: list[dict],
+    registry_context: MinpromRegistryContext,
+    *,
+    registry_verified_count: int = 0,
+) -> dict:
+    non_registry_rows = [
+        dict(r)
+        for r in rows
+        if not (r.get("minprom_registry_match") or {}).get("matched")
+    ]
+    available = (
+        registry_context.requirement.required
+        and registry_context.status in {"empty", "ok"}
+        and registry_verified_count == 0
+        and len(non_registry_rows) > 0
+    )
+    reason_code = ""
+    if available:
+        if registry_context.status == "empty":
+            reason_code = "registry_no_relevant_entries"
+        else:
+            reason_code = "registry_entries_no_supplier_match"
+    return {
+        "available": available,
+        "verified_count": len(non_registry_rows) if non_registry_rows else len(rows),
+        "verified_rows": deepcopy(non_registry_rows) if available else [],
+        "reason_code": reason_code,
+    }
 
 
 def prioritize_emails(values: list[str], domain: str) -> list[str]:
