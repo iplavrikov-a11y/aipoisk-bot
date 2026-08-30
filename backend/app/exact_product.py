@@ -244,28 +244,64 @@ def extract_real_item_name(context: str, fallback_title: str = "") -> str:
     Извлекает реальное наименование товара/оборудования из текста спецификации,
     игнорируя канцелярские заголовки документов вроде 'Приложение №1 Описание объекта закупки'.
     """
-    if not context:
-        return fallback_title or "Оборудование по ТЗ"
+    if not context and not fallback_title:
+        return "Оборудование / Товар по ТЗ"
 
-    patterns = [
-        r"(?i)(?:наименование\s+(?:товара|изделия|оборудования|медицинского\s+изделия|объекта\s+закупки))\s*[:\|\t]\s*([^\n\r\|]{6,120})",
-        r"(?i)(?:предмет\s+закупки)\s*[:\|\t]\s*([^\n\r\|]{6,120})",
-        r"(?i)(?:поставка|приобретение|оказание\s+услуг\s+по\s+лизингу)\s+([а-яА-Яa-zA-Z0-9\s\-]{6,100})(?=\s+(?:для\s+нужд|по\s+адресу|в\s+соответствии|$|\n))",
-    ]
-    for pat in patterns:
-        m = re.search(pat, context)
-        if m:
-            candidate = m.group(1).strip()
-            candidate = re.sub(r'(?i)\b(согласно|в соответствии|техническое задание|приложение|таблица|гост)\b.*', '', candidate).strip(' :—–-|')
-            if len(candidate) >= 6 and not candidate.lower().startswith("приложение"):
-                return candidate
+    # 1. Точные паттерны в кавычках («Поставка ...», «Приобретение ...»)
+    if context:
+        quote_match = re.search(r'(?i)[«\"\“]\s*(?:поставка|приобретение|изготовление)\s+([^»\"\”\n\r\|]{6,120})[»\"\”]', context)
+        if quote_match:
+            cand = quote_match.group(1).strip()
+            cand = re.sub(r'(?i)\b(для\s+нужд|в\s+соответствии|согласно|по\s+адресу)\b.*', '', cand).strip(' :—–-|«»"')
+            if len(cand) >= 6:
+                return cand
 
+        # 2. Ключевые фразы в тексте спецификации
+        patterns = [
+            r"(?i)(?:наименование\s+(?:товара|изделия|оборудования|медицинского\s+изделия|объекта\s+закупки|продукции|мтр))\s*[:\|\t\.\-–—]\s*([^\n\r\|]{4,120})",
+            r"(?i)(?:предмет\s+(?:закупки|договора|контракта|поставки))\s*[:\|\t\.\-–—]\s*([^\n\r\|]{4,120})",
+            r"(?i)(?:на\s+поставку|поставка|приобретение)\s+([а-яА-Яa-zA-Z0-9\s\-\(\)\.,]{6,100}?)(?=\s+(?:для|по\s+адресу|в\s+соответствии|согласно|$|\n|\r))",
+        ]
+        for pat in patterns:
+            for m in re.finditer(pat, context):
+                cand = m.group(1).strip()
+                cand = re.sub(r'^\s*(?:1\.1\.|1\.|№\s*\d+|\-|\•)\s*', '', cand)
+                cand = re.sub(r'(?i)\b(согласно|в соответствии|техническое задание|приложение|таблица|гост|для нужд)\b.*', '', cand).strip(' :—–-|«»"_')
+                alpha_count = len(re.findall(r'[а-яА-Яa-zA-Z]', cand))
+                if alpha_count >= 4 and not cand.lower().startswith("приложение"):
+                    return cand
+
+    # 3. Разбор имени файла (отсекаем мусор и ищем смысловой блок)
     if fallback_title:
-        clean = re.sub(r'(?i)\b(аэф|аукцион|извещение|приложение\s*№?\s*\d*|описание\s+объекта\s+закупки|техническое\s+задание|документация|проект\s+контракта)\b', '', fallback_title).strip(' №-–—:|')
-        if len(clean) >= 6:
-            return clean
+        f_clean = re.sub(r'\.(docx|pdf|xlsx|doc|txt)$', '', fallback_title, flags=re.I)
+        parts = [p.strip() for p in f_clean.split('_') if len(p.strip()) >= 4]
+        clean_parts = []
+        for p in parts:
+            if re.search(r'(?i)(roseltorg|zakupki|sberbank|млн|руб|\.ru|\.com|приложение|извещение|аэф|тз|описание\s+объекта)', p):
+                continue
+            if re.match(r'^\d+$', p):
+                continue
+            clean_parts.append(p)
+        if clean_parts:
+            best_part = max(clean_parts, key=lambda x: (bool(re.search(r'(?i)(здание|оборудование|товар|машина|комплекс|установка|поставка|материал|прибор|канат|станок|система)', x)), len(x)))
+            if len(best_part) >= 6 and len(re.findall(r'[а-яА-Яa-zA-Z]', best_part)) >= 5:
+                return best_part
 
-    return fallback_title or "Оборудование по ТЗ"
+    # 4. Поиск первого предметного абзаца в тексте
+    if context:
+        for line in context.splitlines()[:30]:
+            l_str = line.strip().strip('«»"')
+            if len(l_str) < 10 or len(l_str) > 120:
+                continue
+            if re.search(r'(?i)(утверждаю|согласовано|приложение|телефон|инн|огрн|адрес|россия|общество|директор|заказчик|глава|описание\s+объекта)', l_str):
+                continue
+            if re.search(r'(?i)(поставка|комплекс|установка|станок|канат|прибор|аппарат|машина|изделие|оборудование|система|материал|шовная|состав)', l_str):
+                l_clean = re.sub(r'(?i)^(?:поставка|приобретение|изготовление)\s+', '', l_str)
+                l_clean = re.sub(r'(?i)\b(для\s+нужд|по\s+адресу|согласно|в\s+соответствии)\b.*', '', l_clean).strip(' :—–-|«»"')
+                if len(l_clean) >= 6:
+                    return l_clean
+
+    return fallback_title or "Оборудование / Товар по ТЗ"
 
 
 def extract_key_search_parameters(context: str) -> list[str]:
@@ -547,6 +583,22 @@ async def fetch_batch_web_documents(urls: list[str], max_docs: int = 6) -> list[
 # Minpromtorg GISP Lookup
 # ---------------------------------------------------------------------------
 
+GENERIC_GISP_TERMS = {
+    "модель", "товар", "образец", "серия", "аналог", "стандарт", "производитель",
+    "завод", "предприятие", "компания", "по тз", "соответствует тз", "по спецификации",
+    "отечественный производитель", "промышленный производитель", "завод промышленного оборудования",
+    "тип", "версия", "комплект", "устройство", "изделие", "оборудование", "материал", "состав",
+}
+
+
+def _is_generic_gisp_term(s: str) -> bool:
+    if not s:
+        return True
+    cleaned = re.sub(r'(?i)\b(ооо|ао|пао|зао|нпк|нпо|пк|тд|ип|гк|оао|рф|«|»|\"|\')\b', ' ', s.lower())
+    cleaned = re.sub(r'[^а-яa-z0-9]', ' ', cleaned).strip()
+    return cleaned in GENERIC_GISP_TERMS or len(cleaned) < 3
+
+
 def _is_gisp_product_compatible(
     gisp_product: str,
     name_in_tz: str,
@@ -565,19 +617,12 @@ def _is_gisp_product_compatible(
     model_lower = str(model or "").lower().strip()
     brand_lower = str(brand or "").lower().strip()
 
-    # 1. Если точная модель или бренд фигурирует в названии товара ГИСП
-    if model_lower and len(model_lower) >= 3 and model_lower in p_lower:
-        return True
-    if brand_lower and len(brand_lower) >= 4 and brand_lower in p_lower:
-        return True
-
-    # 2. Пересечение ключевых предметных корней слов (длиной >= 4 символа, без стоп-слов)
     stop_words = {
         "комплект", "система", "устройство", "изделие", "оборудование", "аппарат",
         "прибор", "средство", "комплекс", "блок", "модуль", "установка", "материал",
         "станция", "позиция", "наименование", "закупка", "поставка", "продукция",
         "для", "при", "или", "под", "над", "все", "всех", "типа", "вида", "типов",
-        "номер", "часть", "элемент", "серия", "марка", "модель",
+        "номер", "часть", "элемент", "серия", "марка", "модель", "стандарт", "состав",
     }
     tz_words = {
         w for w in re.findall(r"[а-яёa-z0-9]{4,}", tz_lower)
@@ -588,10 +633,23 @@ def _is_gisp_product_compatible(
         if w not in stop_words and not w.isdigit()
     }
 
-    if tz_words and prod_words and bool(tz_words & prod_words):
-        return True
+    # Пересечение категорийных терминов
+    has_term_overlap = bool(tz_words & prod_words) if (tz_words and prod_words) else False
 
-    return False
+    # 1. Если точная модель (с цифрами или >= 5 букв, не шаблон) фигурирует как отдельное слово
+    if model_lower and not _is_generic_gisp_term(model_lower) and len(model_lower) >= 3:
+        if bool(re.search(rf'\b{re.escape(model_lower)}\b', p_lower)):
+            if has_term_overlap or not tz_words:
+                return True
+
+    # 2. Если точный бренд (не шаблон) фигурирует как отдельное слово с границами слов
+    if brand_lower and not _is_generic_gisp_term(brand_lower) and len(brand_lower) >= 4:
+        if bool(re.search(rf'\b{re.escape(brand_lower)}\b', p_lower)):
+            if has_term_overlap or not tz_words:
+                return True
+
+    # 3. Обязательное категорийное пересечение
+    return has_term_overlap
 
 
 def find_minprom_gisp_match(
@@ -612,14 +670,17 @@ def find_minprom_gisp_match(
     queries = []
     if manufacturer and len(manufacturer.strip()) > 3:
         clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|«|»|")', '', manufacturer).strip()
-        if len(clean_manuf) >= 3:
+        if len(clean_manuf) >= 3 and not _is_generic_gisp_term(clean_manuf):
             queries.append(clean_manuf)
-    if brand and len(brand.strip()) > 2 and brand not in queries:
+    if brand and len(brand.strip()) > 2 and brand not in queries and not _is_generic_gisp_term(brand):
         queries.append(brand.strip())
-    if model and len(model.strip()) > 2:
+    if model and len(model.strip()) > 2 and not _is_generic_gisp_term(model):
         queries.append(model.strip())
     if name_in_tz and len(name_in_tz.strip()) > 4:
-        clean_name = re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
+        clean_name = [
+            w for w in re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
+            if len(w) >= 3 and not _is_generic_gisp_term(w)
+        ]
         if len(clean_name) >= 2:
             queries.append(" ".join(clean_name[:3]))
 
