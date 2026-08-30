@@ -365,4 +365,47 @@ async def test_auto_fill_ai_recommendations_fallback():
     assert "уточнить по паспорту" in spec.comment.lower()
 
 
+@pytest.mark.asyncio
+async def test_auto_fill_ai_recommendations_alternative_brands():
+    from app.exact_product import auto_fill_ai_recommendations, AlternativeProduct
+
+    settings = SystemSettings()
+    settings.custom_ai_providers_json = "[]"  # test fallback logic directly
+
+    alt_spec = SpecParameterMatch(
+        param_name="Осевая сжимающая нагрузка",
+        tz_requirement="не менее 50 т",
+        product_fact="В открытой документации не указано (требуется официальный паспорт завода)",
+        status="clarify",
+        comment="В каталоге не указано",
+    )
+    alt = AlternativeProduct(
+        brand="ГК Аврора",
+        model="AVRORA 114-SG",
+        manufacturer="ООО ГК «Аврора»",
+        confidence=0.90,
+        notes="Аналог",
+        specs_breakdown=[alt_spec],
+    )
+    pos = ExactProductPosition(
+        position_no=1,
+        name_in_tz="Башмак вращающийся",
+        identified_brand="ЗНО «БУРАН»",
+        identified_model="БУР-БЭВ-114",
+        manufacturer="ООО «ЗНО «БУРАН»",
+        confidence=0.95,
+        reasoning="Тест",
+        specs_breakdown=[],
+        alternative_brands=[alt],
+    )
+
+    filled = await auto_fill_ai_recommendations(settings, [pos])
+
+    assert filled == 1
+    assert alt_spec.product_fact == "50 т"
+    assert alt_spec.status == "clarify"
+    assert "уточнить по паспорту" in alt_spec.comment.lower()
+
+
+
 

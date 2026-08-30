@@ -1018,83 +1018,102 @@ async def auto_fill_ai_recommendations(
     """
     ЭТАП 4: Автоматический добор характеристик под ТЗ с обязательной пометкой
     для сверки с официальным паспортом завода перед подачей заявки.
+    Обрабатывает как основные позиции, так и таблицы аналогов (alternative_brands).
     """
     total_filled = 0
     for pos in positions:
-        missing_specs = [
-            s for s in pos.specs_breakdown
-            if s.status == "clarify" or "не указано" in s.product_fact.lower() or not s.product_fact.strip()
+        targets: list[tuple[str, str, str, list[SpecParameterMatch]]] = [
+            (
+                pos.identified_brand or "Оборудование по ТЗ",
+                pos.identified_model or "Соответствует ТЗ",
+                pos.manufacturer or "Производитель РФ",
+                pos.specs_breakdown,
+            )
         ]
-        if not missing_specs:
-            continue
+        for alt in pos.alternative_brands:
+            if alt.specs_breakdown:
+                targets.append((
+                    alt.brand or "Аналог по ТЗ",
+                    alt.model or "Аналог",
+                    alt.manufacturer or "Производитель аналога РФ",
+                    alt.specs_breakdown,
+                ))
 
-        params_list_str = "\n".join(
-            f"- {s.param_name}: требование ТЗ «{s.tz_requirement}»"
-            for s in missing_specs
-        )
+        for brand_name, model_name, mfr_name, specs_list in targets:
+            missing_specs = [
+                s for s in specs_list
+                if s.status == "clarify" or "не указано" in s.product_fact.lower() or not s.product_fact.strip()
+            ]
+            if not missing_specs:
+                continue
 
-        prompt = AUTO_FILL_RECOMMENDATIONS_PROMPT.format(
-            brand=pos.identified_brand or "Оборудование по ТЗ",
-            model=pos.identified_model or "Соответствует ТЗ",
-            manufacturer=pos.manufacturer or "Производитель РФ",
-            params_list=params_list_str,
-        )
+            params_list_str = "\n".join(
+                f"- {s.param_name}: требование ТЗ «{s.tz_requirement}»"
+                for s in missing_specs
+            )
 
-        ai_filled_names: set[str] = set()
+            prompt = AUTO_FILL_RECOMMENDATIONS_PROMPT.format(
+                brand=brand_name,
+                model=model_name,
+                manufacturer=mfr_name,
+                params_list=params_list_str,
+            )
 
-        if settings.has_active_ai_provider:
-            try:
-                raw_res = await call_llm(
-                    settings,
-                    prompt,
-                    system_prompt="Ты старший инженер-технолог по подготовке заявок Формы 2 по 44-ФЗ. Возвращай строго валидный JSON список объектов.",
-                    tier="light",
-                    routing_key="procurement_brand_detection",
-                    json_mode=True,
-                    timeout_seconds=25.0,
-                )
-                parsed = _parse_json_safely(raw_res)
-                items = []
-                if isinstance(parsed, list):
-                    items = parsed
-                elif isinstance(parsed, dict):
-                    items = parsed.get("items") or parsed.get("parameters") or parsed.get("specs") or []
-                    if not items and "param_name" in parsed:
-                        items = [parsed]
+            ai_filled_names: set[str] = set()
 
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    p_name = str(item.get("param_name") or "").strip().lower()
-                    rec_fact = str(item.get("recommended_fact") or "").strip()
-                    if not rec_fact:
-                        continue
+            if settings.has_active_ai_provider:
+                try:
+                    raw_res = await call_llm(
+                        settings,
+                        prompt,
+                        system_prompt="Ты старший инженер-технолог по подготовке заявок Формы 2 по 44-ФЗ. Возвращай строго валидный JSON список объектов.",
+                        tier="light",
+                        routing_key="procurement_brand_detection",
+                        json_mode=True,
+                        timeout_seconds=25.0,
+                    )
+                    parsed = _parse_json_safely(raw_res)
+                    items = []
+                    if isinstance(parsed, list):
+                        items = parsed
+                    elif isinstance(parsed, dict):
+                        items = parsed.get("items") or parsed.get("parameters") or parsed.get("specs") or []
+                        if not items and "param_name" in parsed:
+                            items = [parsed]
 
-                    for s in missing_specs:
-                        if s.param_name.strip().lower() == p_name or p_name in s.param_name.strip().lower() or s.param_name.strip().lower() in p_name:
-                            s.product_fact = rec_fact
-                            s.status = "clarify"
-                            s.comment = (
-                                "Подобрано ИИ под требование ТЗ. В открытых источниках параметр не опубликован — "
-                                "требуется уточнить по паспорту или официальному документу производителя перед подачей заявки."
-                            )
-                            ai_filled_names.add(s.param_name.strip().lower())
-                            total_filled += 1
-                            break
-            except Exception as fill_err:
-                logger.debug("auto_fill_ai_error for %s: %s", pos.name_in_tz, fill_err)
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        p_name = str(item.get("param_name") or "").strip().lower()
+                        rec_fact = str(item.get("recommended_fact") or "").strip()
+                        if not rec_fact:
+                            continue
 
-        # Резервный добор для параметров, не охваченных LLM
-        for s in missing_specs:
-            if s.param_name.strip().lower() not in ai_filled_names:
-                clean_val = _clean_tz_to_concrete_fact(s.tz_requirement)
-                s.product_fact = clean_val
-                s.status = "clarify"
-                s.comment = (
-                    "Подобрано под требование ТЗ. В открытых источниках параметр не опубликован — "
-                    "требуется уточнить по паспорту или официальному документу производителя перед подачей заявки."
-                )
-                total_filled += 1
+                        for s in missing_specs:
+                            if s.param_name.strip().lower() == p_name or p_name in s.param_name.strip().lower() or s.param_name.strip().lower() in p_name:
+                                s.product_fact = rec_fact
+                                s.status = "clarify"
+                                s.comment = (
+                                    "Подобрано ИИ под требование ТЗ. В открытых источниках параметр не опубликован — "
+                                    "требуется уточнить по паспорту или официальному документу производителя перед подачей заявки."
+                                )
+                                ai_filled_names.add(s.param_name.strip().lower())
+                                total_filled += 1
+                                break
+                except Exception as fill_err:
+                    logger.debug("auto_fill_ai_error for %s: %s", brand_name, fill_err)
+
+            # Резервный добор для параметров, не охваченных LLM
+            for s in missing_specs:
+                if s.param_name.strip().lower() not in ai_filled_names:
+                    clean_val = _clean_tz_to_concrete_fact(s.tz_requirement)
+                    s.product_fact = clean_val
+                    s.status = "clarify"
+                    s.comment = (
+                        "Подобрано под требование ТЗ. В открытых источниках параметр не опубликован — "
+                        "требуется уточнить по паспорту или официальному документу производителя перед подачей заявки."
+                    )
+                    total_filled += 1
 
     return total_filled
 
@@ -2031,7 +2050,7 @@ def write_exact_product_docx(
                     cells[1].text = spec.param_name
                     cells[2].text = spec.tz_requirement
                     cells[3].text = spec.product_fact
-                    status_text = "Подходит" if spec.status == "match" else "Уточнить" if spec.status == "clarify" else "Отклонение"
+                    status_text = "Подходит" if spec.status == "match" else "Уточнить (по паспорту)" if spec.status == "clarify" else "Отклонение"
                     cells[4].text = status_text
                     cells[5].text = spec.comment
 
@@ -2508,7 +2527,7 @@ def write_exact_product_xlsx(
                 _style_range(r_asp_h, 7, 8, fill=alt_hdr, font=white_bold_10, align=Alignment(horizontal="center", vertical="center"))
 
                 for s_idx, spec in enumerate(alt.specs_breakdown, start=1):
-                    status_str = "Подходит" if spec.status == "match" else "Уточнить" if spec.status == "clarify" else "Отклонение"
+                    status_str = "Подходит" if spec.status == "match" else "Уточнить (по паспорту)" if spec.status == "clarify" else "Отклонение"
                     ws.append([
                         s_idx,
                         spec.param_name,
