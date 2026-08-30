@@ -138,6 +138,10 @@ class ExactProductReport:
         }
 
 
+MAX_EXACT_POSITIONS_PER_JOB: int = 3
+MAX_YANDEX_QUERIES_PER_JOB: int = 16
+
+
 # ---------------------------------------------------------------------------
 # Strict Grounded Prompt & Parsing
 # ---------------------------------------------------------------------------
@@ -166,6 +170,10 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
 6. ДЛЯ АНАЛОГОВ (alternative_brands):
    - Указывай ТОЛЬКО реально существующие модели российских заводов из приложенных источников.
    - Построчно заполни характеристики аналога на основе его каталога/паспорта. Если параметр соответствует ТЗ — ставь "match", если отличается — "mismatch", если неизвестен — "clarify".
+7. ЛИМИТИРОВАНИЕ И ПРИОРИТИЗАЦИЯ ПОЗИЦИЙ (СТРОГО НЕ БОЛЕЕ 3):
+   - В итоговом массиве "positions" сформируй НЕ БОЛЕЕ 3 КЛЮЧЕВЫХ ТЕХНОЛОГИЧЕСКИХ ПОЗИЦИЙ ТОВАРА/ОБОРУДОВАНИЯ (сложное оборудование, основные материалы, измерительные приборы, кабели, запорная арматура).
+   - СТРОГО ИСКЛЮЧАЙ строительно-монтажные/демонтажные/пусконаладочные работы, услуги и мелкий крепеж (болты, гайки, шайбы, саморезы, дюбели).
+   - Если в ТЗ перечислено более 3 позиций, отбери ТОП-3 самых технологически сложных и капиталоемких товара.
 
 Спецификация ТЗ и проверенные документы из открытых источников:
 {context}
@@ -1171,6 +1179,7 @@ async def resolve_clarify_parameters(
     existing_urls: set[str],
     web_sources: list[str],
     verified_docs: list[dict[str, Any]],
+    max_sub_queries: int = 6,
 ) -> tuple[int, float]:
     """
     ЭТАП 2: Адаптивный точечный добор параметров.
@@ -1181,6 +1190,7 @@ async def resolve_clarify_parameters(
     """
     total_resolved = 0
     added_cost = 0.0
+    sub_queries_done = 0
 
     clarify_specs: list[tuple[ExactProductPosition, SpecParameterMatch]] = []
     for pos in positions:
@@ -1245,13 +1255,15 @@ async def resolve_clarify_parameters(
 
     # Обновляем список тех, кто все еще в clarify (обрабатываем до 15 параметров)
     remaining_clarify = [(p, s) for p, s in clarify_specs if s.status == "clarify"][:15]
-    if not remaining_clarify:
+    if not remaining_clarify or max_sub_queries <= 0:
         return total_resolved, round(added_cost, 2)
 
     # ШАГ 2.2: Внешний поиск по каталогам дистрибьюторов и паспортам
     for pos, spec in remaining_clarify:
         if spec.status != "clarify":
             continue
+        if sub_queries_done >= max_sub_queries:
+            break
 
         clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip() if pos.identified_model else ""
         query_parts = []
@@ -1263,8 +1275,15 @@ async def resolve_clarify_parameters(
         query_parts.append("(паспорт OR руководство OR характеристики OR каталог OR ТУ)")
 
         targeted_query = " ".join(query_parts)
+        sub_queries_done += 1
         try:
-            candidates, req_count = await _search_with_yandex(settings, [targeted_query], max_results=4)
+            candidates, req_count = await _search_with_yandex(
+                settings,
+                [targeted_query],
+                max_results=4,
+                expand_queries=False,
+                max_pages_per_query=1,
+            )
             unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
             added_cost += req_count * unit_price
 
@@ -1639,7 +1658,7 @@ async def plan_exact_product_search(
 
     prompt = f"""Ты — главный инженер и ведущий эксперт по промышленному оборудованию, медицинским изделиям, строительным материалам и госзакупкам по 44-ФЗ/223-ФЗ.
 Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов, спецификаций и PDF-паспортов:
-1. Предмет закупки / вид продукции: {item_name}.
+1. Предмет закупки / вид продукции: {item_name}. Извлеки НЕ БОЛЕЕ 3 ключевых технологических товаров/материалов, исключая монтажные работы, демонтаж, услуги и мелкий крепеж (болты/саморезы).
 2. Извлеки 3-5 КЛЮЧЕВЫХ ТЕХНИЧЕСКИХ ПАРАМЕТРОВ из ТЗ (тип прибора/изделия, производительность, мощность, габариты, емкость, ГОСТ или ОКПД2).
 3. Сформируй список 2-5 ОТРИЦАТЕЛЬНЫХ КЛЮЧЕВЫХ СЛОВ (negative_keywords) — неподходящие технологии, товары-антагонисты или смежные виды продукции, которые нельзя путать с предметом закупки (например: для светодиодного светильника — люминесцентный, ДРЛ; для полиэтиленовой трубы — стальная, чугунная; для саженцев сосны — ель, береза, окс).
 4. Сформируй 4-6 высокоточных поисковых запросов для Яндекса.
@@ -1647,6 +1666,7 @@ async def plan_exact_product_search(
 КРИТИЧЕСКИЕ ПРАВИЛА:
 - СТРОГО ЗАПРЕЩЕНО выдумывать конкретные модели или индексы из головы (например, полуавтомат вместо автомата), если точная модель не названа в самом ТЗ!
 - Поисковые запросы должны опираться на реальные ключевые параметры из ТЗ, чтобы найти именно то оборудование, которое заложено заказчиком, а не случайный неподходящий товар.
+- Исключай услуги, работы и мелкий крепеж из объектов поиска.
 
 Наименование закупки: {item_name}
 Фрагмент ТЗ:
@@ -1753,7 +1773,13 @@ async def analyze_exact_product(
         if primary_queries:
             try:
                 await _notify_progress(progress_callback, 35, f"Поиск технической документации в сети ({len(primary_queries)} запросов)...")
-                candidates, y_reqs = await _search_with_yandex(settings, primary_queries, max_results=12)
+                candidates, y_reqs = await _search_with_yandex(
+                    settings,
+                    primary_queries,
+                    max_results=12,
+                    expand_queries=False,
+                    max_pages_per_query=1,
+                )
                 yandex_requests_count += y_reqs
 
                 # Определение целевых и отрицательных ключевых слов для ранжирования документов
@@ -1787,7 +1813,13 @@ async def analyze_exact_product(
                         secondary_queries.append(f'"{clean_m}" "{item_name[:40]}" характеристики')
 
                 if secondary_queries:
-                    sec_candidates, sec_reqs = await _search_with_yandex(settings, secondary_queries[:3], max_results=6)
+                    sec_candidates, sec_reqs = await _search_with_yandex(
+                        settings,
+                        secondary_queries[:3],
+                        max_results=6,
+                        expand_queries=False,
+                        max_pages_per_query=1,
+                    )
                     yandex_requests_count += sec_reqs
                     sec_ranked = _rank_search_candidates(sec_candidates, target_kws, negative_kws)
                     for sc_url in sec_ranked:
@@ -2034,9 +2066,23 @@ async def analyze_exact_product(
             source_url=pos_source_url,
         ))
 
+    # ЛИМИТИРОВАНИЕ ПОЗИЦИЙ: максимум MAX_EXACT_POSITIONS_PER_JOB (3 позиции)
+    raw_positions_count = len(positions)
+    if raw_positions_count > MAX_EXACT_POSITIONS_PER_JOB:
+        positions = positions[:MAX_EXACT_POSITIONS_PER_JOB]
+        for p_idx, pos in enumerate(positions, start=1):
+            pos.position_no = p_idx
+        limit_note = (
+            f"В исходном ТЗ обнаружено {raw_positions_count} позиций. "
+            f"Сформирован детальный инженерный анализ и Форма 2 по топ-{MAX_EXACT_POSITIONS_PER_JOB} ключевым позициям оборудования/материалов "
+            f"(работы и мелкий крепеж исключены). Для анализа остальных позиций выполните отдельный запуск."
+        )
+        summary = f"{limit_note}\n\n{summary}".strip() if summary else limit_note
+
     # ЭТАП 2: Адаптивный точечный добор недостающих параметров (Targeted Sub-Search)
     await _notify_progress(progress_callback, 78, "Точечная сверка параметров по паспортам и реестру ГИСП...")
     candidate_urls_set = set(candidate_urls) if 'candidate_urls' in locals() and candidate_urls else set()
+    remaining_budget = max(0, MAX_YANDEX_QUERIES_PER_JOB - yandex_requests_count)
     try:
         clarify_resolved, clarify_cost = await resolve_clarify_parameters(
             settings=settings,
@@ -2044,6 +2090,7 @@ async def analyze_exact_product(
             existing_urls=candidate_urls_set,
             web_sources=web_sources,
             verified_docs=verified_docs,
+            max_sub_queries=min(6, remaining_budget),
         )
         yandex_cost_rub = round(yandex_cost_rub + clarify_cost, 2)
     except Exception as cl_exc:

@@ -3671,12 +3671,17 @@ async def _search_with_yandex(
     max_results: int,
     *,
     existing_domains: set[str] | None = None,
+    expand_queries: bool = True,
+    max_pages_per_query: int | None = None,
 ) -> tuple[list[Candidate], int]:
     folder_id, api_key = _yandex_credentials(settings)
     if not folder_id or not api_key:
         return [], 0
-    search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
-    max_pages = _yandex_max_pages_per_query(settings)
+    if expand_queries:
+        search_queries = _expand_search_queries(queries, max_queries=_provider_query_limit(settings, "yandex"))
+    else:
+        search_queries = [q.strip() for q in queries if str(q).strip()]
+    max_pages = max_pages_per_query if max_pages_per_query is not None else _yandex_max_pages_per_query(settings)
     semaphore = asyncio.Semaphore(3)
     requests_count = 0
 
