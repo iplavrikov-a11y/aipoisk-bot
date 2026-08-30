@@ -443,3 +443,69 @@ def test_is_gisp_product_compatible_multi_domain():
         brand="Северсталь",
         model="ЛК-РО",
     )
+
+
+@pytest.mark.asyncio
+async def test_is_gisp_product_compatible_ai_mocked():
+    from app.exact_product import is_gisp_product_compatible_ai, _GISP_COMPAT_CACHE
+    _GISP_COMPAT_CACHE.clear()
+
+    settings = SystemSettings(
+        primary_provider="custom",
+        primary_model="gpt-4o-mini",
+        custom_ai_providers_json='[{"apiKey": "test_key", "baseUrl": "https://api.openai.com/v1"}]',
+    )
+
+    with patch("app.exact_product.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = '{"compatible": false}'
+        res_false = await is_gisp_product_compatible_ai(
+            settings,
+            gisp_product="Бумага туалетная двухслойная",
+            name_in_tz="Бумага офисная формата А4 для печати",
+        )
+        assert res_false is False
+
+        mock_llm.return_value = '{"compatible": true}'
+        res_true = await is_gisp_product_compatible_ai(
+            settings,
+            gisp_product="Бумага для офисной техники марка С",
+            name_in_tz="Бумага офисная формата А4 для печати",
+        )
+        assert res_true is True
+
+
+@pytest.mark.asyncio
+async def test_plan_exact_product_search_with_negative_keywords():
+    from app.exact_product import plan_exact_product_search
+
+    settings = SystemSettings(
+        primary_provider="custom",
+        primary_model="gpt-4o-mini",
+        custom_ai_providers_json='[{"apiKey": "test_key", "baseUrl": "https://api.openai.com/v1"}]',
+    )
+
+    sample_ai = """{
+        "identified_item_name": "Сеянцы сосны обыкновенной с ЗКС",
+        "category": "Лесохозяйственная продукция",
+        "key_parameters": ["ЗКС", "возраст 2 года", "высота от 12 см"],
+        "negative_keywords": ["ель", "лиственница", "береза", "окс"],
+        "primary_manufacturers": ["Кареллесхоз"],
+        "model_series": ["Сеянцы сосны ЗКС"],
+        "search_queries": [
+            "сеянцы сосны обыкновенной 2 года ЗКС паспорт",
+            "сеянцы сосны ЗКС питомник производитель"
+        ]
+    }"""
+
+    with patch("app.exact_product.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = sample_ai
+        plan = await plan_exact_product_search(
+            settings,
+            context="Сеянцы сосны обыкновенной 2 года с ЗКС в стаканчиках",
+            procurement_title="Поставка сеянцев сосны",
+        )
+
+        assert plan["identified_item_name"] == "Сеянцы сосны обыкновенной с ЗКС"
+        assert "ель" in plan["negative_keywords"]
+        assert len(plan["search_queries"]) >= 2
+

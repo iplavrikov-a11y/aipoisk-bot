@@ -692,13 +692,77 @@ def _is_gisp_product_compatible(
     return has_term_overlap
 
 
+# Глобальный LRU/dict кэш проверок совместимости реестра ГИСП
+_GISP_COMPAT_CACHE: dict[str, bool] = {}
+
+
+async def is_gisp_product_compatible_ai(
+    settings: SystemSettings,
+    gisp_product: str,
+    name_in_tz: str,
+    brand: str = "",
+    model: str = "",
+) -> bool:
+    """
+    Интеллектуальная верификация совместимости записи ГИСП с предметом закупки через легкий LLM.
+    Исключает любые ложные совпадения из нерелевантных отраслей без хрупких списков стоп-слов.
+    """
+    if not gisp_product or not name_in_tz:
+        return False
+
+    cache_key = f"{gisp_product.strip().lower()}|{name_in_tz.strip().lower()}|{brand.strip().lower()}|{model.strip().lower()}"
+    if cache_key in _GISP_COMPAT_CACHE:
+        return _GISP_COMPAT_CACHE[cache_key]
+
+    # Если эвристика сразу дает отрицательный результат для заведомо разных слов, экономим вызов LLM
+    if not _is_gisp_product_compatible(gisp_product, name_in_tz, brand, model):
+        _GISP_COMPAT_CACHE[cache_key] = False
+        return False
+
+    if not getattr(settings, "has_active_ai_provider", False):
+        return True
+
+    prompt = f"""Определи, относятся ли два наименования товара к одной категории/типу продукции:
+Товар из Реестра Минпромторга РФ: "{gisp_product}"
+Товар/оборудование из ТЗ закупки: "{name_in_tz}"
+Бренд/модель: {brand} {model}
+
+Критерии:
+- true: если оба товара относятся к одному функциональному виду продукции (оба измерительные приборы, оба кабели, оба трубы, оба мебель, оба продукты питания, оба спецодежда, оба насосы, оба светильники одного типа).
+- false: если это случайный омоним или товар совершенно другой сферы (например: матрас вместо биохимического анализатора, туалетная бумага вместо офисной А4 для печати, диэлектрические перчатки вместо смотровых медицинских, люминесцентный светильник вместо уличного светодиодного, стальная труба вместо полиэтиленовой).
+
+Ответь строго JSON: {{"compatible": true}} или {{"compatible": false}}"""
+
+    try:
+        raw = await call_llm(
+            settings,
+            prompt,
+            system_prompt="Ты эксперт по товарной классификации. Отвечай только валидным JSON.",
+            tier="light",
+            routing_key="procurement_brand_detection",
+            json_mode=True,
+            timeout_seconds=20.0,
+        )
+        parsed = _parse_json_safely(raw)
+        if isinstance(parsed, dict) and "compatible" in parsed:
+            compat = bool(parsed["compatible"])
+            _GISP_COMPAT_CACHE[cache_key] = compat
+            return compat
+    except Exception as exc:
+        logger.debug("is_gisp_product_compatible_ai_failed: %s", exc)
+
+    compat = _is_gisp_product_compatible(gisp_product, name_in_tz, brand, model)
+    _GISP_COMPAT_CACHE[cache_key] = compat
+    return compat
+
+
 def find_minprom_gisp_match(
     brand: str,
     manufacturer: str,
     model: str = "",
     name_in_tz: str = "",
 ) -> Optional[GispRegistryMatch]:
-    """Ищет запись в локальном SQLite FTS5 индексе Реестра Минпромторга (ГИСП)."""
+    """Синхронный поиск записи в Реестре Минпромторга (ГИСП) с базовой эвристикой."""
     sqlite_path = _minprom_registry_sqlite_path()
     if not sqlite_path or not sqlite_path.is_file():
         shared_path = Path("/root/projects/emailagent/storage/minprom_registry/minprom_registry.sqlite")
@@ -734,7 +798,6 @@ def find_minprom_gisp_match(
             terms = [t for t in re.findall(r"[\w]{2,}", q) if len(t) > 1]
             if not terms:
                 continue
-            # 1. Точный AND поиск по префиксам
             match_expression = " AND ".join([f'"{t}"*' for t in terms[:4]])
             try:
                 cursor = conn.execute(
@@ -761,7 +824,6 @@ def find_minprom_gisp_match(
             except sqlite3.Error:
                 pass
 
-            # 2. Мягкий поиск по первому ключевому термину (с обязательной фильтрацией по совместимости)
             if len(terms) > 1 and len(terms[0]) >= 4:
                 try:
                     cursor = conn.execute(
@@ -790,6 +852,112 @@ def find_minprom_gisp_match(
 
     except Exception as exc:
         logger.warning("gisp_lookup_failed: %s", exc)
+    finally:
+        if conn:
+            conn.close()
+
+    return None
+
+
+async def find_minprom_gisp_match_ai(
+    settings: SystemSettings,
+    brand: str,
+    manufacturer: str,
+    model: str = "",
+    name_in_tz: str = "",
+) -> Optional[GispRegistryMatch]:
+    """
+    Асинхронный поиск записи в Реестре Минпромторга (ГИСП) со строгой семантической ИИ-проверкой совместимости.
+    """
+    sqlite_path = _minprom_registry_sqlite_path()
+    if not sqlite_path or not sqlite_path.is_file():
+        shared_path = Path("/root/projects/emailagent/storage/minprom_registry/minprom_registry.sqlite")
+        if shared_path.is_file():
+            sqlite_path = shared_path
+        else:
+            return None
+
+    queries = []
+    if manufacturer and len(manufacturer.strip()) > 3:
+        clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|«|»|")', '', manufacturer).strip()
+        if len(clean_manuf) >= 3 and not _is_generic_gisp_term(clean_manuf):
+            queries.append(clean_manuf)
+    if brand and len(brand.strip()) > 2 and brand not in queries and not _is_generic_gisp_term(brand):
+        queries.append(brand.strip())
+    if model and len(model.strip()) > 2 and not _is_generic_gisp_term(model):
+        queries.append(model.strip())
+    if name_in_tz and len(name_in_tz.strip()) > 4:
+        clean_name = [
+            w for w in re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
+            if len(w) >= 3 and not _is_generic_gisp_term(w)
+        ]
+        if len(clean_name) >= 2:
+            queries.append(" ".join(clean_name[:3]))
+
+    if not queries:
+        return None
+
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+        for q in queries:
+            terms = [t for t in re.findall(r"[\w]{2,}", q) if len(t) > 1]
+            if not terms:
+                continue
+            match_expression = " AND ".join([f'"{t}"*' for t in terms[:4]])
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                    FROM entries_fts
+                    JOIN entries e ON e.id = entries_fts.rowid
+                    WHERE entries_fts MATCH ?
+                    LIMIT 8
+                    """,
+                    (match_expression,),
+                )
+                rows = cursor.fetchall()
+                for reg_num, manuf, prod, inn, src_url in rows:
+                    if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
+                        return GispRegistryMatch(
+                            registry_number=str(reg_num or "").strip(),
+                            manufacturer=str(manuf or "").strip(),
+                            product=str(prod or "").strip(),
+                            inn=str(inn or "").strip(),
+                            source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                            matched=True,
+                        )
+            except sqlite3.Error:
+                pass
+
+            if len(terms) > 1 and len(terms[0]) >= 4:
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                        FROM entries_fts
+                        JOIN entries e ON e.id = entries_fts.rowid
+                        WHERE entries_fts MATCH ?
+                        LIMIT 8
+                        """,
+                        (f'"{terms[0]}"*',),
+                    )
+                    rows = cursor.fetchall()
+                    for reg_num, manuf, prod, inn, src_url in rows:
+                        if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
+                            return GispRegistryMatch(
+                                registry_number=str(reg_num or "").strip(),
+                                manufacturer=str(manuf or "").strip(),
+                                product=str(prod or "").strip(),
+                                inn=str(inn or "").strip(),
+                                source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                                matched=True,
+                            )
+                except sqlite3.Error:
+                    pass
+
+    except Exception as exc:
+        logger.warning("gisp_lookup_ai_failed: %s", exc)
     finally:
         if conn:
             conn.close()
@@ -1460,6 +1628,7 @@ async def plan_exact_product_search(
         "identified_item_name": item_name,
         "category": "Промышленная и медицинская продукция",
         "key_parameters": key_params,
+        "negative_keywords": [],
         "primary_manufacturers": [],
         "model_series": [],
         "search_queries": default_queries[:6],
@@ -1472,7 +1641,8 @@ async def plan_exact_product_search(
 Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов, спецификаций и PDF-паспортов:
 1. Предмет закупки / вид продукции: {item_name}.
 2. Извлеки 3-5 КЛЮЧЕВЫХ ТЕХНИЧЕСКИХ ПАРАМЕТРОВ из ТЗ (тип прибора/изделия, производительность, мощность, габариты, емкость, ГОСТ или ОКПД2).
-3. Сформируй 4-6 высокоточных поисковых запросов для Яндекса.
+3. Сформируй список 2-5 ОТРИЦАТЕЛЬНЫХ КЛЮЧЕВЫХ СЛОВ (negative_keywords) — неподходящие технологии, товары-антагонисты или смежные виды продукции, которые нельзя путать с предметом закупки (например: для светодиодного светильника — люминесцентный, ДРЛ; для полиэтиленовой трубы — стальная, чугунная; для саженцев сосны — ель, береза, окс).
+4. Сформируй 4-6 высокоточных поисковых запросов для Яндекса.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
 - СТРОГО ЗАПРЕЩЕНО выдумывать конкретные модели или индексы из головы (например, полуавтомат вместо автомата), если точная модель не названа в самом ТЗ!
@@ -1487,6 +1657,7 @@ async def plan_exact_product_search(
   "identified_item_name": "{item_name[:80]}",
   "category": "Отраслевая категория",
   "key_parameters": ["параметр 1", "параметр 2", "параметр 3"],
+  "negative_keywords": ["антикритерий 1", "антикритерий 2"],
   "primary_manufacturers": ["Завод 1", "Завод 2"],
   "model_series": ["Серия 1", "Серия 2"],
   "search_queries": [
@@ -1510,6 +1681,8 @@ async def plan_exact_product_search(
         parsed = _parse_json_safely(raw)
         if isinstance(parsed, dict) and parsed.get("search_queries"):
             ai_queries = [str(q).strip() for q in parsed.get("search_queries", []) if str(q).strip()]
+            ai_neg_kws = [str(n).strip().lower() for n in parsed.get("negative_keywords", []) if str(n).strip()]
+            ai_item_name = str(parsed.get("identified_item_name") or item_name).strip()
             if ai_queries:
                 combined = []
                 for q in ai_queries:
@@ -1519,6 +1692,8 @@ async def plan_exact_product_search(
                     if dq not in combined:
                         combined.append(dq)
                 parsed["search_queries"] = combined[:6]
+                parsed["negative_keywords"] = ai_neg_kws
+                parsed["identified_item_name"] = ai_item_name or item_name
                 return parsed
     except Exception as exc:
         logger.warning("plan_exact_product_search_llm_failed: %s", exc)
@@ -1537,11 +1712,11 @@ async def analyze_exact_product(
 ) -> ExactProductReport:
     """
     Главная функция анализа ТЗ:
-    1. Интеллектуальное планирование поиска через LLM.
+    1. Интеллектуальное планирование поиска через LLM с динамическими анти-критериями.
     2. Двухэтапный глубокий поиск в Яндексе (по базовому товару и аналогам).
     3. Скачивание реальных веб-страниц заводов и PDF-паспортов изделий.
     4. Строгая сверка характеристик Формы 2 без подгонки.
-    5. Сопоставление с Реестром Минпромторга (ГИСП).
+    5. Семантическое ИИ-сопоставление с Реестром Минпромторга (ГИСП).
     """
     clean_context = extract_clean_spec_text(context)
     if not clean_context:
@@ -1574,6 +1749,10 @@ async def analyze_exact_product(
                 target_kws.extend(["паспорт", "каталог", "характеристики", "руководство"])
 
                 negative_kws = build_universal_negative_keywords(clean_context)
+                for neg in search_plan.get("negative_keywords", []):
+                    clean_neg = str(neg).strip().lower()
+                    if clean_neg and clean_neg not in negative_kws:
+                        negative_kws.append(clean_neg)
 
                 candidate_urls = _rank_search_candidates(candidates, target_kws, negative_kws)
                 for cand in candidates:
@@ -1795,8 +1974,9 @@ async def analyze_exact_product(
                 if alt_specs_list:
                     a_conf = compute_spec_compliance(alt_specs_list)
 
-                # Поиск аналога в реестре Минпромторга (ГИСП)
-                alt_gisp_match = find_minprom_gisp_match(
+                # Поиск аналога в реестре Минпромторга (ГИСП) с ИИ-проверкой совместимости
+                alt_gisp_match = await find_minprom_gisp_match_ai(
+                    settings=settings,
                     brand=a_brand,
                     manufacturer=a_manuf,
                     model=a_model,
@@ -1815,8 +1995,9 @@ async def analyze_exact_product(
                         source_url=a_src_url,
                     ))
 
-        # Поиск в реестре Минпромторга (ГИСП)
-        gisp_match = find_minprom_gisp_match(
+        # Поиск в реестре Минпромторга (ГИСП) с ИИ-проверкой совместимости
+        gisp_match = await find_minprom_gisp_match_ai(
+            settings=settings,
             brand=brand,
             manufacturer=manufacturer,
             model=model,
