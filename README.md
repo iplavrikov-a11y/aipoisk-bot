@@ -52,7 +52,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   in the technical specification, performs line-by-line parameter verification for the main product
   and all identified interchangeable Russian analogues (Form 2 tables with customer requirements vs concrete figures),
   finds verified equivalent models by 44/223-FZ with matching %, checks Minpromtorg/GISP industrial registry
-  inclusion, and generates official downloadable Form 2 reports in Word (DOCX) and Excel (XLSX) formats.
+  inclusion, provides 100% parameter auto-completion under customer requirements with explicit factory passport
+  verification notices (preventing tender disqualification while ensuring zero empty cells in Form 2 and analogue tables),
+  and generates official downloadable Form 2 reports in Word (DOCX) format.
   Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
   tariff package in the admin panel) with automatic fallback, and per-customer
   `Добор` prices remain editable in the admin client card. Additional supplier search
