@@ -384,13 +384,62 @@ def test_rank_search_candidates():
     from collections import namedtuple
 
     Candidate = namedtuple("Candidate", ["url", "title", "snippet"])
-    c1 = Candidate(url="https://vital.ru/vitalon-400-semi-auto", title="Полуавтоматический анализатор Виталон", snippet="полуавтомат 100 тестов")
-    c2 = Candidate(url="https://hti.ru/biochem-fc-360-passport.pdf", title="Автоматический биохимический анализатор FC-360", snippet="360 тестов паспорт")
+    c1 = Candidate(url="https://site1.ru/semi-auto", title="Полуавтоматический прибор", snippet="полуавтомат")
+    c2 = Candidate(url="https://site2.ru/passport.pdf", title="Автоматический агрегат", snippet="паспорт")
 
     ranked = _rank_search_candidates(
         [c1, c2],
-        target_keywords=["автоматический", "360 тестов", "паспорт"],
+        target_keywords=["автоматический", "паспорт"],
         negative_keywords=["полуавтоматический", "полуавтомат"],
     )
-    # c2 must be ranked first because c1 has heavy negative penalty
-    assert ranked[0] == "https://hti.ru/biochem-fc-360-passport.pdf"
+    assert ranked[0] == "https://site2.ru/passport.pdf"
+
+
+def test_build_universal_negative_keywords():
+    from app.exact_product import build_universal_negative_keywords
+
+    # Mechanics / Power
+    neg_gen = build_universal_negative_keywords("поставка генератора электрического стационарного")
+    assert "б/у" in neg_gen
+    assert "дизельный" in neg_gen
+    assert "передвижной" in neg_gen
+
+    # Metallurgy / Pipes
+    neg_pipe = build_universal_negative_keywords("труба стальная бесшовная оцинкованная")
+    assert "с хранения" in neg_pipe
+
+    # Medical / Consumables
+    neg_med = build_universal_negative_keywords("шприцы одноразовые стерильные")
+    assert "нестерильный" in neg_med
+
+
+def test_is_gisp_product_compatible_multi_domain():
+    from app.exact_product import _is_gisp_product_compatible
+
+    # Incompatible cross-industry pairs
+    assert not _is_gisp_product_compatible(
+        gisp_product="Куртка утепленная мужская",
+        name_in_tz="Смесь сухая строительная цементная",
+        brand="Завод",
+        model="Стандарт",
+    )
+    assert not _is_gisp_product_compatible(
+        gisp_product="Шкаф деревянный офисный",
+        name_in_tz="Аппарат рентгеновский диагностический",
+        brand="Производитель",
+        model="Модель 1",
+    )
+
+    # Compatible intra-industry pairs
+    assert _is_gisp_product_compatible(
+        gisp_product="Трубы напорные из полиэтилена ПЭ 100 ГОСТ 18599-2001",
+        name_in_tz="Труба полиэтиленовая ПЭ 100",
+        brand="Полипластик",
+        model="ПЭ 100",
+    )
+    assert _is_gisp_product_compatible(
+        gisp_product="Канаты стальные оцинкованные ГОСТ 3083-80",
+        name_in_tz="Канат стальной типа ЛК-РО",
+        brand="Северсталь",
+        model="ЛК-РО",
+    )

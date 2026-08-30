@@ -307,28 +307,30 @@ def extract_real_item_name(context: str, fallback_title: str = "") -> str:
 def extract_key_search_parameters(context: str) -> list[str]:
     """
     Извлекает числовые характеристики, производительность, мощность, габариты и ГОСТ/ОКПД2
-    для формирования высокоточных поисковых запросов без галлюцинаций.
+    для формирования высокоточных поисковых запросов без галлюцинаций для любых отраслей.
     """
     params: list[str] = []
     if not context:
         return params
 
-    # 1. Коды классификаторов ОКПД2
-    okpd = re.findall(r'\b26\.\d{2}\.\d{2}\.\d{3}\b|\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b', context)
-    if okpd:
-        params.append(f"ОКПД2 {okpd[0]}")
+    # 1. Любые коды классификаторов ОКПД2 (01..99)
+    okpd = re.findall(r'\b\d{2}\.\d{2}\.\d{2}(?:\.\d{3})?\b', context)
+    for code in okpd[:2]:
+        params.append(f"ОКПД2 {code}")
 
-    # 2. Стандарты ГОСТ / ТУ
-    gosts = re.findall(r'\bГОСТ\s*(?:Р\s*)?[\d\.\-]+', context, re.IGNORECASE)
-    for g in gosts[:2]:
-        clean_g = g.strip(' .,;:|')
-        if clean_g and clean_g not in params:
-            params.append(clean_g)
+    # 2. Стандарты ГОСТ / ТУ / ОСТ / СТО
+    standards = re.findall(r'\b(?:ГОСТ(?:\s*Р)?|ТУ|СТО|ОСТ)\s*[\d\.\-]+', context, re.IGNORECASE)
+    for s in standards[:2]:
+        clean_s = s.strip(' .,;:|')
+        if clean_s and clean_s not in params:
+            params.append(clean_s)
 
-    # 3. Числовые характеристики (тесты/час, мощность, объем, емкость, кюветы, реагенты)
+    # 3. Универсальные физико-технические, электрические, механические и строительные величины
     unit_patterns = [
-        r'(\b\d+\s*тестов(?:/ч|\s*в\s*час)?\b)',
-        r'(\b(?:не\s*менее|не\s*более|от|до)?\s*\d+(?:[\.,]\d+)?\s*(?:кВт|квт|МВт|Вт|об/мин|м3/ч|л/ч|мм2|мм|см|м|кг|т|кювет|реагентов|позиций))\b',
+        # Производительность / скорость в единицу времени
+        r'(\b\d+(?:[\.,]\d+)?\s*(?:тестов|шт|м|м3|л|пачек|циклов|тактов|ударов|оборотов|кг|т)(?:/(?:ч|мин|с|сут)|\s*в\s*(?:час|минуту|секунду|сутки))?\b)',
+        # Механические, тепловые, электрические, оптические и геометрические величины с диапазонами
+        r'(\b(?:не\s*менее|не\s*более|от|до)?\s*\d+(?:[\.,]\d+)?\s*(?:кВт|МВт|Вт|кВА|МВА|ВА|об/мин|м3/ч|л/ч|л/мин|мм2|см2|м2|мкм|мм|см|м|кг|т|кН|Н|МПа|кПа|Па|бар|атм|°C|град|В|кВ|мВ|А|мА|Гц|кГц|МГц|Ом|кОм|кювет|реагентов|позиций|литров|м3|л|дБ))\b',
     ]
     for pat in unit_patterns:
         matches = re.findall(pat, context, re.IGNORECASE)
@@ -338,6 +340,37 @@ def extract_key_search_parameters(context: str) -> list[str]:
                 params.append(m_clean)
 
     return params[:6]
+
+
+def build_universal_negative_keywords(clean_context: str) -> list[str]:
+    """
+    Системно строит список отрицательных ключевых слов для любого типа товара:
+    1. Общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку).
+    2. Бинарные отраслевые антитезы (автоматический/ручной, электрический/дизельный, стационарный/мобильный).
+    """
+    universal_disallowed = [
+        "б/у", "б.у.", "бывший в употреблении", "бывшие в употреблении",
+        "восстановленный", "восстановленные", "с хранения", "неликвид",
+        "неликвиды", "аренда", "с пробегом", "демонтаж", "после ремонта", "уценка",
+    ]
+    negatives = list(universal_disallowed)
+
+    ctx_lower = clean_context.lower()
+    antitheses = [
+        ("автоматическ", ["полуавтоматический", "полуавтомат", "ручной"]),
+        ("электрическ", ["дизельный", "бензиновый", "газовый"]),
+        ("стационарн", ["передвижной", "мобильный", "портативный", "переносной"]),
+        ("бесшовн", ["электросварной", "прямошовный", "шовный"]),
+        ("оцинкованн", ["черный", "неоцинкованный"]),
+        ("стерильн", ["нестерильный"]),
+        ("первичн", ["вторичный", "переработанный", "вторсырье"]),
+        ("оригинальн", ["реплика", "копия"]),
+    ]
+    for required_stem, prohibited_terms in antitheses:
+        if required_stem in ctx_lower and not any(p[:5] in ctx_lower for p in prohibited_terms):
+            negatives.extend(prohibited_terms)
+
+    return list(dict.fromkeys(negatives))
 
 
 def _rank_search_candidates(
@@ -607,7 +640,7 @@ def _is_gisp_product_compatible(
 ) -> bool:
     """
     Проверяет, что найденный в Реестре Минпромторга (ГИСП) товар семантически совместим с предметом закупки,
-    а не является случайным однофамильцем из другой отрасли (например: матрас вместо биохимического анализатора).
+    а не является случайным однофамильцем из другой товарной категории или отрасли.
     """
     if not gisp_product or not name_in_tz:
         return False
@@ -624,28 +657,35 @@ def _is_gisp_product_compatible(
         "для", "при", "или", "под", "над", "все", "всех", "типа", "вида", "типов",
         "номер", "часть", "элемент", "серия", "марка", "модель", "стандарт", "состав",
     }
-    tz_words = {
-        w for w in re.findall(r"[а-яёa-z0-9]{4,}", tz_lower)
-        if w not in stop_words and not w.isdigit()
-    }
-    prod_words = {
-        w for w in re.findall(r"[а-яёa-z0-9]{4,}", p_lower)
-        if w not in stop_words and not w.isdigit()
-    }
+    def _extract_word_stems(text: str) -> set[str]:
+        words = re.findall(r"[а-яёa-z0-9]{4,}", text.lower())
+        stems = set()
+        for w in words:
+            if w in stop_words or w.isdigit():
+                continue
+            stem = re.sub(r'(?:овая|евая|иная|ный|ная|ное|ные|ого|его|ому|ему|ыми|ими|ом|ем|ах|ях|ам|ям|ов|ев|ей|ая|яя|ое|ее|ые|ие|ый|ий|ой|ей|у|ю|а|я|о|е|ы|и)$', '', w)
+            if len(stem) >= 3:
+                stems.add(stem)
+            else:
+                stems.add(w[:4])
+        return stems
 
-    # Пересечение категорийных терминов
-    has_term_overlap = bool(tz_words & prod_words) if (tz_words and prod_words) else False
+    tz_stems = _extract_word_stems(tz_lower)
+    prod_stems = _extract_word_stems(p_lower)
+
+    # Пересечение категорийных корней слов
+    has_term_overlap = bool(tz_stems & prod_stems) if (tz_stems and prod_stems) else False
 
     # 1. Если точная модель (с цифрами или >= 5 букв, не шаблон) фигурирует как отдельное слово
     if model_lower and not _is_generic_gisp_term(model_lower) and len(model_lower) >= 3:
         if bool(re.search(rf'\b{re.escape(model_lower)}\b', p_lower)):
-            if has_term_overlap or not tz_words:
+            if has_term_overlap or not tz_stems:
                 return True
 
     # 2. Если точный бренд (не шаблон) фигурирует как отдельное слово с границами слов
     if brand_lower and not _is_generic_gisp_term(brand_lower) and len(brand_lower) >= 4:
         if bool(re.search(rf'\b{re.escape(brand_lower)}\b', p_lower)):
-            if has_term_overlap or not tz_words:
+            if has_term_overlap or not tz_stems:
                 return True
 
     # 3. Обязательное категорийное пересечение
@@ -1533,12 +1573,7 @@ async def analyze_exact_product(
                     target_kws.append(str(kp).strip())
                 target_kws.extend(["паспорт", "каталог", "характеристики", "руководство"])
 
-                negative_kws = []
-                ctx_lower = clean_context.lower()
-                if "автоматический" in ctx_lower and "полуавтоматический" not in ctx_lower:
-                    negative_kws.extend(["полуавтоматический", "полуавтомат"])
-                if "новый" in ctx_lower and "б/у" not in ctx_lower:
-                    negative_kws.extend(["б/у", "восстановленный", "аренда"])
+                negative_kws = build_universal_negative_keywords(clean_context)
 
                 candidate_urls = _rank_search_candidates(candidates, target_kws, negative_kws)
                 for cand in candidates:
