@@ -88,9 +88,9 @@ const mainFaqItems: FaqItem[] = [
       "Модуль проверяет проект контракта и извещение на наличие нетипичных штрафов, несоответствия сроков поставки и приемки, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).",
   },
   {
-    question: "Как работает подбор товара и аналогов по ТЗ и заполнение Формы 2?",
+    question: "Как работает подбор товара и аналогов по ТЗ?",
     answer:
-      "Алгоритм анализирует параметры спецификации и сопоставляет их с паспортами оборудования заводов РФ. ИИ выявляет модель-первоисточник, заложенную заказчиком, построчно сверяет параметры ТЗ с заводскими характеристиками без искусственной подгонки цифр, находит отечественные аналоги из Реестра Минпромторга (ГИСП) и формирует готовую Форму 2 в DOCX и XLSX.",
+      "Алгоритм анализирует параметры спецификации и сопоставляет их с паспортами оборудования заводов РФ. ИИ выявляет модель-первоисточник, заложенную заказчиком, построчно сверяет параметры ТЗ с заводскими характеристиками без искусственной подгонки цифр, находит отечественные аналоги из Реестра Минпромторга (ГИСП) и формирует подробный структурированный отчет в Word (DOCX).",
   },
   {
     question: "Как протестировать сервис бесплатно?",
@@ -262,17 +262,14 @@ export default async function HomePage() {
               </div>
 
               {/* Module 2: Подбор товара и аналогов (Second as requested) */}
-              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-teal-500/80 flex flex-col justify-between space-y-6 shadow-md relative hover:border-teal-600 transition-all">
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-teal-600 text-white text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full shadow-xs">
-                  Новая функция
-                </div>
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
                 <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center">
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
                     <Layers className="w-6 h-6" />
                   </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">2. Форма 2 и аналоги</span>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">2. Подбор товара</span>
                   <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
-                    Подбор товара и аналогов по ТЗ (Форма 2)
+                    Подбор товара и аналогов по ТЗ
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                     Распознавание заложенного заказчиком бренда, сверка параметров по паспортам без подгонки, реестр Минпромторга (ГИСП) и 2–4 эквивалента.
@@ -289,7 +286,7 @@ export default async function HomePage() {
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Выгрузка в официальные форматы DOCX и XLSX</span>
+                      <span>Выгрузка подробного отчета в Word (DOCX)</span>
                     </li>
                   </ul>
                 </div>
@@ -394,10 +391,30 @@ export default async function HomePage() {
             </div>
 
             <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-              {/* Подбор товара и аналогов */}
+              {/* 1. Поставщики */}
               <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
                 <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Форма 2 и аналоги</span>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
+                  <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
+                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
+                    {supplierTariffs.map((t: PublicTariff) => (
+                      <div key={t.id} className="flex justify-between items-center text-xs">
+                        <span className="text-slate-800 font-bold">{t.name}</span>
+                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                  <a href={cabinetUrl}>Выбрать пакет поставщиков</a>
+                </Button>
+              </div>
+
+              {/* 2. Подбор товара и аналогов */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Подбор по спецификации</span>
                   <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Подбор товара и аналогов</h3>
                   <p className="text-xs text-slate-600 mb-4">Выявление скрытой модели по ТЗ, сопоставление показателей, реестр Минпромторга (ГИСП) и 2–4 эквивалента.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
@@ -421,27 +438,7 @@ export default async function HomePage() {
                 </Button>
               </div>
 
-              {/* Поставщики */}
-              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
-                <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
-                  <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
-                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
-                    {supplierTariffs.map((t: PublicTariff) => (
-                      <div key={t.id} className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">{t.name}</span>
-                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href={cabinetUrl}>Выбрать пакет поставщиков</a>
-                </Button>
-              </div>
-
-              {/* Анализ документации */}
+              {/* 3. Анализ документации */}
               <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
                 <div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Аудит рисков закупки</span>

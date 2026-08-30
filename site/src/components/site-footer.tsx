@@ -36,7 +36,7 @@ export function SiteFooter() {
           <strong className="text-slate-900 font-bold text-sm block mb-3">Сервисы платформы</strong>
           <ul className="space-y-2.5">
             <li><Link href="/poisk-postavshchikov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск поставщиков по ТЗ</Link></li>
-            <li><Link href="/podbor-tovara-i-analogov-po-tz" className="hover:text-teal-700 transition-colors font-bold text-teal-800">Подбор товара и аналогов (Форма 2)</Link></li>
+            <li><Link href="/podbor-tovara-i-analogov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Подбор товара и аналогов</Link></li>
             <li><Link href="/poisk-proizvoditeley-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск заводов-производителей</Link></li>
             <li><Link href="/poisk-postavshchikov-dlya-tendera" className="hover:text-teal-700 transition-colors font-medium">Подбор поставщиков под тендер</Link></li>
             <li><Link href="/postavshchiki-dlya-zaprosa-kp" className="hover:text-teal-700 transition-colors font-medium">База адресатов для запроса КП</Link></li>

@@ -66,42 +66,41 @@ export function SiteHeader() {
           <TenderLexLogo size={34} textColor="text-teal-700" />
         </div>
 
-        {/* Navigation Menu (clean, focused on core product) */}
-        <nav className="hidden lg:flex items-center gap-6">
+        {/* Navigation Menu (clean, single-line, whitespace-nowrap) */}
+        <nav className="hidden lg:flex items-center gap-5 whitespace-nowrap">
           <Link
             href="/poisk-postavshchikov-po-tz"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
             Поиск поставщиков
           </Link>
           <Link
             href="/podbor-tovara-i-analogov-po-tz"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors flex items-center gap-1"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
-            <span>Аналоги и Форма 2</span>
-            <span className="text-[10px] font-black uppercase text-teal-700 bg-teal-50 border border-teal-200 px-1.5 py-0.2 rounded-full">New</span>
+            Подбор аналогов
           </Link>
           <Link
             href="/analiz-zakupochnoi-dokumentacii"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
             Анализ документации
           </Link>
           <Link
             href="/#pricing"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
             Тарифы
           </Link>
           <Link
             href="/baza-znaniy"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
             База знаний
           </Link>
           <Link
             href="/about"
-            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
             О сервисе
           </Link>

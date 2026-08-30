@@ -9,6 +9,12 @@
 - Customer-facing product name is `TenderLex` for the Telegram bot, public site, reports, filenames, and admin-visible branding. `AI Poisk`/`aipoisk-bot` is only a repository/service identifier and must not appear in customer-facing copy.
 - Tenderplan/API procurement access is an internal data source. Do not expose the Tenderplan name in customer-facing Telegram messages, DOCX/XLSX titles, output filenames, report text, or customer-visible errors. Name output files and report headings by the procurement subject/product when it is available.
 - Public website and cabinet copy must speak in client-result language: what the user can do and what decision/result they get. Do not sell with file-format labels like DOCX/XLSX, technical account details like "web balance" or "protected session", or exact free-run counters. If examples are needed, use professional procurement scenarios close to real work, not random artificial company names.
+- **Exact Product & Analogs Report Format Rule**: The exact product and analogue selection report (`exact_product`) is generated EXCLUSIVELY in Word format (`.docx`). There is NO Excel/XLSX report for this feature. NEVER state, promise, or write that exact product produces Excel/XLSX reports.
+- **Form 2 & Badges Naming Rule**: Do NOT put `(Форма 2)` in headings, cards, badges, or navigation links (not all users know what Form 2 is). Use plain client-facing naming: `Подбор товара и аналогов` or `Подбор аналогов`. Do NOT put `NEW` / `Новая функция` badges in header or cards.
+- **Platform Modules & Tariffs Strict Order**: Always present the three core modules and tariff packages in the exact order:
+  1. `Поиск поставщиков`
+  2. `Подбор товара и аналогов`
+  3. `Анализ документации`
 
 ## Strict Prohibition on Caching for Client Tasks
 

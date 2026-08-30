@@ -26,14 +26,13 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Подбор аналогов и эквивалентов по ТЗ — Форма 2 и Реестр Минпромторга (ГИСП)",
+  title: "Подбор аналогов и эквивалентов по ТЗ — Реестр Минпромторга (ГИСП)",
   description:
-    "ИИ-подбор товаров и взаимозаменяемых аналогов по техническому заданию (44-ФЗ, 223-ФЗ). Определение скрытого производителя, построчная сверка параметров по паспортам, Форма 2 в DOCX и XLSX без риска отклонения.",
+    "ИИ-подбор товаров и взаимозаменяемых аналогов по техническому заданию (44-ФЗ, 223-ФЗ). Определение скрытого производителя, построчная сверка параметров по паспортам, выгрузка подробного отчета в Word (DOCX) без риска отклонения.",
   keywords: [
     "подбор аналогов по тз",
     "поиск товаров по тз",
     "подбор эквивалента товара 44 фз",
-    "форма 2 госзакупки",
     "конкретные показатели товара",
     "подбор российских аналогов оборудования",
     "реестр минпромторга аналоги",
@@ -126,21 +125,21 @@ export default function PodborTovaraPage() {
   ]);
 
   const schemaService = buildServiceJsonLd({
-    name: "Подбор товара и аналогов по ТЗ — Форма 2 и Реестр Минпромторга",
+    name: "Подбор товара и аналогов по ТЗ — Реестр Минпромторга",
     description:
-      "Автоматизированный подбор аналогов оборудования и материалов по техническому заданию: определение скрытого завода, Форма 2 с конкретными показателями, Реестр ГИСП.",
+      "Автоматизированный подбор аналогов оборудования и материалов по техническому заданию: определение скрытого завода, таблица конкретных показателей, Реестр ГИСП.",
     path: pagePath,
   });
 
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
     name: "Как подобрать товар и аналоги по ТЗ за 4 шага",
-    description: "Процесс сопоставления спецификации, выявления модели и подготовки Формы 2.",
+    description: "Процесс сопоставления спецификации, выявления модели и подбора эквивалентов.",
     steps: [
       { name: "Загрузка спецификации", text: "Загрузите файл ТЗ (Word, Excel, PDF) или вставьте текст требований." },
       { name: "Поиск первоисточников", text: "Алгоритм Deep Search сопоставляет требования с паспортами заводов и ГОСТ." },
-      { name: "Формирование Формы 2", text: "Получите таблицу конкретных параметров модели и 2–4 отечественных эквивалентов." },
-      { name: "Выгрузка отчета и поиск поставщиков", text: "Скачайте готовый DOCX/XLSX и в 1 клик запустите сбор коммерческих предложений." },
+      { name: "Подбор характеристик и аналогов", text: "Получите таблицу конкретных параметров модели и 2–4 отечественных эквивалентов." },
+      { name: "Выгрузка отчета и поиск поставщиков", text: "Скачайте готовый отчет в Word (DOCX) и в 1 клик запустите сбор коммерческих предложений." },
     ],
   });
 
@@ -157,17 +156,17 @@ export default function PodborTovaraPage() {
         {/* HERO SECTION */}
         <section className="relative pt-12 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
               <Sparkles size={14} className="text-teal-600 animate-pulse" />
-              <span>Форма 2 для заявок 44-ФЗ / 223-ФЗ & Реестр Минпромторга (ГИСП)</span>
+              <span>Реестр Минпромторга (ГИСП) • Подбор российских аналогов по ТЗ</span>
             </div>
 
-            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Подбор товара и аналогов по ТЗ: выявление скрытых брендов и заполнение Формы 2
+            <h1 className="text-3xl sm:text-5xl font-extrabold text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Подбор товара и отечественных аналогов по ТЗ
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-3xl mx-auto font-normal leading-relaxed">
-              Загрузите спецификацию или проект контракта. ИИ распознает заложенную заказчиком модель, проведет построчную сверку параметров по паспортам заводов РФ, подберет эквиваленты из реестра ГИСП и сформирует готовую Форму 2 в Word и Excel.
+              Загрузите спецификацию или проект контракта. ИИ распознает заложенную заказчиком модель, проведет построчную сверку параметров по паспортам заводов РФ, подберет эквиваленты из реестра ГИСП и сформирует подробный отчет в Word (DOCX).
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -202,7 +201,7 @@ export default function PodborTovaraPage() {
               <span className="hidden sm:inline text-slate-300">•</span>
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-teal-600" />
-                Выгрузка в DOCX (Word) и XLSX (Excel)
+                Выгрузка отчета в Word (DOCX)
               </span>
             </div>
           </div>
@@ -242,9 +241,9 @@ export default function PodborTovaraPage() {
               {/* Card 2 */}
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200 space-y-4 shadow-sm hover:border-teal-500 transition-all">
                 <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center font-bold">
-                  <FileSpreadsheet className="w-6 h-6" />
+                  <FileText className="w-6 h-6" />
                 </div>
-                <h3 className="text-xl font-extrabold text-slate-900">Готовая Форма 2 без пустых ячеек</h3>
+                <h3 className="text-xl font-extrabold text-slate-900">Конкретные показатели без пустых ячеек</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
                   Построчная таблица с четким разделением: требование заказчика vs реальный показатель завода vs статус соответствия. Никаких «не более/не менее» в заявке.
                 </p>
@@ -272,7 +271,7 @@ export default function PodborTovaraPage() {
           </div>
         </section>
 
-        {/* INTERACTIVE TABLE SAMPLE: REAL FORM 2 PREVIEW */}
+        {/* INTERACTIVE TABLE SAMPLE: REAL SPECIFICATION PREVIEW */}
         <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             <div className="text-center max-w-3xl mx-auto mb-12 space-y-3">
@@ -283,7 +282,7 @@ export default function PodborTovaraPage() {
                 Как выглядит результат сопоставления в отчете
               </h2>
               <p className="text-slate-600 text-sm sm:text-base">
-                Фрагмент таблицы из итогового документа DOCX/XLSX: конкретные показатели вместо диапазонных требований ТЗ.
+                Фрагмент таблицы из итогового документа в Word (DOCX): конкретные показатели вместо диапазонных требований ТЗ.
               </p>
             </div>
 
@@ -402,7 +401,7 @@ export default function PodborTovaraPage() {
                 Прозрачная цена от 75.8 ₽ за позицию
               </h2>
               <p className="text-slate-600 text-sm">
-                Включает распознавание скрытой модели, Форму 2, сверку с реестром Минпромторга и DOCX/XLSX.
+                Включает распознавание скрытой модели, сверку с реестром Минпромторга и отчет в Word (DOCX).
               </p>
             </div>
 
@@ -454,7 +453,7 @@ export default function PodborTovaraPage() {
           <div className="container max-w-4xl mx-auto px-4 sm:px-6">
             <div className="text-center mb-12 space-y-3">
               <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Часто задаваемые вопросы по аналогам и Форме 2
+                Часто задаваемые вопросы по подбору аналогов
               </h2>
               <p className="text-slate-600 text-sm">
                 Юридические и технические нюансы подбора эквивалентов по 44-ФЗ и 223-ФЗ.
