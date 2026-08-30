@@ -8,13 +8,16 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from urllib.parse import unquote
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
 SUPPLIER_HEADERS = [
     "Компания",
+    "Соответствие",
+    "Реестр Минпромторга",
     "Сайт",
     "Телефоны",
     "Email",
@@ -124,67 +127,347 @@ def _normalize_xlsx_font_order(path: Path) -> None:
             temporary_path.unlink()
 
 
+def _style_range(
+    ws,
+    row: int,
+    start_col: int,
+    end_col: int,
+    *,
+    fill: PatternFill | None = None,
+    font: Font | None = None,
+    align: Alignment | None = None,
+    border: Border | None = None,
+) -> None:
+    if end_col > start_col:
+        ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
+    for c in range(start_col, end_col + 1):
+        cell = ws.cell(row=row, column=c)
+        if fill:
+            cell.fill = fill
+        if font:
+            cell.font = font
+        if align:
+            cell.alignment = align
+        if border:
+            cell.border = border
+
+
+def _product_fit_badge(row: dict) -> tuple[str, Font, PatternFill]:
+    product_fit = str(row.get("product_fit") or "").strip().lower()
+    if product_fit == "exact":
+        return (
+            "Точный товар",
+            Font(name="Calibri", size=10, bold=True, color="15803D"),
+            PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid"),
+        )
+    if product_fit == "analog":
+        return (
+            "Аналог",
+            Font(name="Calibri", size=10, bold=True, color="B45309"),
+            PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid"),
+        )
+    if product_fit == "category":
+        return (
+            "Категория",
+            Font(name="Calibri", size=10, color="334155"),
+            PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"),
+        )
+    if product_fit == "profile":
+        return (
+            "Профиль компании",
+            Font(name="Calibri", size=10, color="334155"),
+            PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"),
+        )
+    return (
+        "Уточнить",
+        Font(name="Calibri", size=10, color="64748B"),
+        PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"),
+    )
+
+
+def _registry_badge(row: dict) -> tuple[str, Font, PatternFill]:
+    match = row.get("minprom_registry_match") if isinstance(row.get("minprom_registry_match"), dict) else {}
+    if match.get("matched"):
+        reg_no = _clean_comment_text(match.get("registry_number") or "")
+        if not reg_no and match.get("evidence"):
+            ev_m = re.search(r"(?:заключение|срок действия/заключение|реестровый номер|первичный)[:\s]*([A-Z0-9/-]+)", str(match.get("evidence") or ""), re.I)
+            if ev_m:
+                reg_no = ev_m.group(1).strip()
+        label = f"№ {reg_no} (ГИСП)" if reg_no else "Подтверждён (ГИСП)"
+        return (
+            label,
+            Font(name="Calibri", size=10, bold=True, color="15803D"),
+            PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid"),
+        )
+    status = str(row.get("minprom_registry_status") or "").strip().lower()
+    origin = str(row.get("supplier_search_origin") or "").strip()
+    policy = str(row.get("supplier_search_policy") or "").strip()
+    if status == "empty" or origin == "ordinary_fallback" or policy in ("minprom_registry_only", "minprom_registry_priority"):
+        return (
+            "Обычный поиск",
+            Font(name="Calibri", size=10, color="64748B"),
+            PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"),
+        )
+    return (
+        "—",
+        Font(name="Calibri", size=10, color="94A3B8"),
+        PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
+    )
+
+
+def _calc_supplier_row_h(cells: list[tuple[str, int]], line_h: int = 15, min_h: int = 24) -> int:
+    max_lines = 1
+    for val, col_w in cells:
+        cleaned = str(val or "").strip()
+        if not cleaned:
+            continue
+        chars_per_line = max(8, int(col_w * 0.85))
+        for part in cleaned.split("\n"):
+            lines = max(1, (len(part) + chars_per_line - 1) // chars_per_line)
+            if lines > max_lines:
+                max_lines = lines
+    return max(min_h, max_lines * line_h + 8)
+
+
+def _write_quote_request_sheet(wb: Workbook, *, title: str, subject: str = "") -> None:
+    ws = wb.create_sheet(title="Запрос КП")
+    ws.views.sheetView[0].showGridLines = True
+    base_title = _clean_comment_text(subject) or _clean_comment_text(title) or "Продукция по ТЗ"
+
+    # Шапка
+    ws.append(["TenderLex | ПРОЕКТ ОФИЦИАЛЬНОГО ЗАПРОСА КОММЕРЧЕСКОГО ПРЕДЛОЖЕНИЯ"])
+    _style_range(ws, 1, 1, 5, font=Font(name="Calibri", size=14, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    ws.row_dimensions[1].height = 28
+
+    ws.append([f"Готовый шаблон письма для направления поставщикам | Предмет: {base_title}"])
+    _style_range(ws, 2, 1, 5, font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
+    ws.row_dimensions[2].height = 22
+
+    hint = (
+        "💡 ИНСТРУКЦИЯ: Скопируйте текст ниже в тело исходящего письма или прикрепите к обращению. "
+        "Укажите реквизиты вашей компании, контактное лицо и желаемый срок предоставления КП."
+    )
+    ws.append([hint])
+    _style_range(ws, 3, 1, 5, fill=PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"), font=Font(name="Calibri", size=10, color="334155"), align=Alignment(vertical="top", wrap_text=True))
+    ws.row_dimensions[3].height = 28
+
+    ws.append([None] * 5)
+    ws.row_dimensions[4].height = 10
+
+    # Тема письма
+    ws.append([f"Тема письма: Запрос коммерческого предложения / счёта на поставку: {base_title}"])
+    _style_range(ws, 5, 1, 5, fill=PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"), font=Font(name="Calibri", size=11, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    ws.row_dimensions[5].height = 24
+
+    ws.append(["Добрый день, отдел продаж!"])
+    _style_range(ws, 6, 1, 5, font=Font(name="Calibri", size=11, color="1E293B"), align=Alignment(vertical="center"))
+    ws.row_dimensions[6].height = 22
+
+    ws.append(["Просим Вас предоставить коммерческое предложение (счёт) на поставку следующей продукции:"])
+    _style_range(ws, 7, 1, 5, font=Font(name="Calibri", size=10, color="334155"), align=Alignment(vertical="center"))
+    ws.row_dimensions[7].height = 20
+
+    # Таблица спецификации
+    spec_headers = ["№", "Наименование продукции", "Требуемые характеристики / ГОСТ", "Ед. изм.", "Количество"]
+    ws.append(spec_headers)
+    hdr_row = ws.max_row
+    for c in range(1, 6):
+        cell = ws.cell(row=hdr_row, column=c)
+        cell.font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        cell.alignment = Alignment(vertical="center", horizontal="center" if c in (1, 4, 5) else "left")
+    ws.row_dimensions[hdr_row].height = 24
+
+    # Строка 1 спецификации
+    ws.append([1, base_title, "Согласно техническому заданию / спецификации заказчика", "шт.", "По согласованию"])
+    spec_row = ws.max_row
+    thin_b = Border(left=Side(style="thin", color="CBD5E1"), right=Side(style="thin", color="CBD5E1"), top=Side(style="thin", color="CBD5E1"), bottom=Side(style="thin", color="CBD5E1"))
+    for c in range(1, 6):
+        cell = ws.cell(row=spec_row, column=c)
+        cell.font = Font(name="Calibri", size=10, color="1E293B")
+        cell.border = thin_b
+        cell.alignment = Alignment(vertical="top", wrap_text=True, horizontal="center" if c in (1, 4, 5) else "left")
+    ws.row_dimensions[spec_row].height = 36
+
+    ws.append([None] * 5)
+    ws.row_dimensions[ws.max_row].height = 12
+
+    # Условия
+    conditions = [
+        "В коммерческом предложении просим обязательно указать:",
+        "1. Стоимость за единицу и общую стоимость продукции (с учётом НДС).",
+        "2. Фактическое наличие на складе и минимальные сроки отгрузки / производства.",
+        "3. Условия и стоимость доставки до объекта либо возможность самовывоза.",
+        "4. Наличие паспортов качества, сертификатов соответствия и реестровых записей ГИСП (при наличии).",
+        "5. Срок действия коммерческого предложения и условия оплаты (аванс / постоплата).",
+    ]
+    for cond in conditions:
+        ws.append([cond])
+        is_h = cond.startswith("В коммерческом")
+        _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, bold=is_h, color="0F172A" if is_h else "334155"), align=Alignment(vertical="center"))
+        ws.row_dimensions[ws.max_row].height = 20
+
+    ws.append([None] * 5)
+    ws.row_dimensions[ws.max_row].height = 12
+
+    ws.append(["Ответ и коммерческое предложение просим направить на электронную почту / по телефону."])
+    _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, italic=True, color="64748B"), align=Alignment(vertical="center"))
+
+    ws.append(["С уважением, отдел закупок и снабжения."])
+    _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, bold=True, color="1E293B"), align=Alignment(vertical="center"))
+
+    quote_widths = [6, 32, 45, 12, 18]
+    for col_idx, w in enumerate(quote_widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = w
+
+
 def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
     ws.title = "Поставщики"
-    ws.append([_supplier_report_heading(title, subject)])
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(SUPPLIER_HEADERS))
-    ws["A1"].font = Font(bold=True, size=14)
-    ws["A1"].alignment = Alignment(wrap_text=True)
-    policy_label = _supplier_policy_label(policy)
-    if policy_label:
-        ws.append([policy_label])
-        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(SUPPLIER_HEADERS))
-        ws["A2"].font = Font(italic=True, color="4B5563")
-        ws["A2"].alignment = Alignment(wrap_text=True)
-        summary_row = 3
-        header_row = 4
-        freeze_row = "A5"
-    else:
-        summary_row = 2
-        header_row = 3
-        freeze_row = "A4"
+    ws.views.sheetView[0].showGridLines = True
+
+    # 1. Шапка документа
+    brand_title = f"TenderLex | {_supplier_report_heading(title, subject)}"
+    ws.append([brand_title])
+    _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    ws.row_dimensions[1].height = 28
+
+    # 2. Подзаголовок (ТЗ + Режим)
+    policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
+    item_title = _clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация"
+    ws.append([f"Предмет закупки / ТЗ: {item_title} | {policy_label}"])
+    _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
+    ws.row_dimensions[2].height = 22
+
+    # 3. Инфо-плашка
+    hint_msg = (
+        "💡 КАК РАБОТАТЬ С ТАБЛИЦЕЙ: В отчёте собраны прямые производители, официальные дистрибьюторы и оптовые склады. "
+        "Контакты проверены на актуальность сайтов, телефонов и почт. На второй вкладке «Запрос КП» подготовлен проект письма для рассылки."
+    )
+    ws.append([hint_msg])
+    hint_bg = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    hint_font = Font(name="Calibri", size=10, color="334155")
+    _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=hint_bg, font=hint_font, align=Alignment(vertical="top", wrap_text=True))
+    ws.row_dimensions[3].height = 28
+
+    # 4. Сводка / KPI
     summary = _supplier_count_summary(rows, target)
-    if _is_registry_fallback_report(rows):
+    is_fallback = _is_registry_fallback_report(rows)
+    if is_fallback:
         summary = f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}"
     ws.append([summary])
-    ws.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=len(SUPPLIER_HEADERS))
-    if _is_registry_fallback_report(rows):
-        ws.cell(row=summary_row, column=1).font = Font(bold=True, color="9C2A10")
-        ws.cell(row=summary_row, column=1).fill = PatternFill("solid", fgColor="FEF3C7")
+    summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "1E293B")
+    _style_range(ws, 4, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
+    ws.row_dimensions[4].height = 36 if is_fallback else 24
+
+    # 5. Разделитель
+    ws.append([None] * len(SUPPLIER_HEADERS))
+    ws.row_dimensions[5].height = 10
+
+    # 6. Заголовки таблицы
     ws.append(SUPPLIER_HEADERS)
-    header_fill = PatternFill("solid", fgColor="E5E7EB")
+    header_row = 6
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     for cell in ws[header_row]:
-        cell.font = Font(bold=True)
+        cell.font = header_font
         cell.fill = header_fill
-        cell.alignment = Alignment(wrap_text=True, vertical="top")
-    for row in rows:
-        ws.append(
-            [
-                row.get("company_name", ""),
-                row.get("site", ""),
-                row.get("phone", ""),
-                row.get("email", ""),
-                _client_supplier_comment(row),
-            ]
-        )
+        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="left")
+    ws.row_dimensions[header_row].height = 26
+    freeze_row = f"A{header_row + 1}"
+
+    # Данные
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+
     data_start_row = header_row + 1
-    for row_index in range(data_start_row, ws.max_row + 1):
-        site_cell = ws.cell(row=row_index, column=2)
-        if site_cell.value:
-            site_cell.hyperlink = str(site_cell.value)
-            site_cell.style = "Hyperlink"
-    widths = [30, 42, 24, 30, 70]
+    for row_idx, row in enumerate(rows, start=data_start_row):
+        is_even = (row_idx % 2 == 0)
+        base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        
+        company = str(row.get("company_name") or "").strip()
+        fit_text, fit_font, fit_fill = _product_fit_badge(row)
+        reg_text, reg_font, reg_fill = _registry_badge(row)
+        site_raw = str(row.get("site") or "").strip()
+        site_display = unquote(site_raw) if site_raw else ""
+        phone = str(row.get("phone") or "").strip()
+        email = str(row.get("email") or "").strip()
+        comment = _client_supplier_comment(row)
+
+        ws.append([company, fit_text, reg_text, site_display, phone, email, comment])
+
+        # Col 1: Компания
+        c1 = ws.cell(row=row_idx, column=1)
+        c1.font = Font(name="Calibri", size=10, bold=True, color="0F172A")
+        c1.fill = base_bg
+        c1.border = thin_border
+        c1.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 2: Соответствие
+        c2 = ws.cell(row=row_idx, column=2)
+        c2.font = fit_font
+        c2.fill = fit_fill
+        c2.border = thin_border
+        c2.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
+        # Col 3: Реестр Минпромторга
+        c3 = ws.cell(row=row_idx, column=3)
+        c3.font = reg_font
+        c3.fill = reg_fill
+        c3.border = thin_border
+        c3.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
+        # Col 4: Сайт
+        c4 = ws.cell(row=row_idx, column=4)
+        if site_raw:
+            c4.hyperlink = site_raw
+            c4.font = Font(name="Calibri", size=10, color="0284C7", underline="single")
+        else:
+            c4.font = Font(name="Calibri", size=10, color="64748B")
+        c4.fill = base_bg
+        c4.border = thin_border
+        c4.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 5: Телефоны
+        c5 = ws.cell(row=row_idx, column=5)
+        c5.font = Font(name="Calibri", size=10, color="1E293B")
+        c5.fill = base_bg
+        c5.border = thin_border
+        c5.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 6: Email
+        c6 = ws.cell(row=row_idx, column=6)
+        c6.font = Font(name="Calibri", size=10, color="0F766E")
+        c6.fill = base_bg
+        c6.border = thin_border
+        c6.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 7: Комментарий
+        c7 = ws.cell(row=row_idx, column=7)
+        c7.font = Font(name="Calibri", size=10, color="334155")
+        c7.fill = base_bg
+        c7.border = thin_border
+        c7.alignment = Alignment(wrap_text=True, vertical="top")
+
+        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 28), (comment, 55)], min_h=24)
+
+    widths = [28, 18, 26, 34, 22, 26, 55]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
     ws.freeze_panes = freeze_row
     ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(SUPPLIER_HEADERS))}{max(header_row, ws.max_row)}"
-    for row in ws.iter_rows():
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # Вторая вкладка: Запрос КП
+    _write_quote_request_sheet(wb, title=title, subject=subject)
+
     _save_xlsx(wb, out)
     return out
 
