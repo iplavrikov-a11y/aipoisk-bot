@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Mail, Phone, Building2, CheckCircle2, Copy, FileText, Send } from "lucide-react";
 import { useState } from "react";
@@ -93,7 +93,7 @@ export function RfqPreviewWidget() {
           </div>
 
           <div className="text-slate-800 space-y-2 leading-relaxed font-mono text-[11px]">
-            <p>Здравствуйте, отдел продаж!</p>
+            <p>Добрый день!</p>
             <p>Просим предоставить коммерческое предложение на следующую номенклатуру:</p>
             <div className="p-2.5 bg-white rounded-lg border border-slate-200 text-[11px] text-slate-900 font-mono shadow-2xs">
               1. Кабель ВВГнг-LS 3х2.5 (ГОСТ 31996-2012) — 5 000 метров<br />

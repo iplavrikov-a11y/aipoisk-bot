@@ -245,7 +245,7 @@ def _write_quote_request_sheet(wb: Workbook, *, title: str, subject: str = "") -
     # Скомпилированный текст в одной ячейке A3 для моментального копирования в Word / Email
     quote_text = (
         f"Тема письма: Запрос коммерческого предложения / счёта на поставку: {base_title}\n\n"
-        "Добрый день, отдел продаж!\n\n"
+        "Добрый день!\n\n"
         "Просим Вас предоставить коммерческое предложение (счёт) на поставку следующей продукции:\n"
         f"• {base_title} (согласно техническому заданию / спецификации заказчика)\n\n"
         "В коммерческом предложении просим обязательно указать:\n"
@@ -396,9 +396,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
     
-    # Без закрепления областей - страница свободно прокручивается
-    ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(SUPPLIER_HEADERS))}{max(header_row, ws.max_row)}"
-
+    # Без закрепления областей и без стрелок автофильтра - чистая прокрутка
     # Вторая вкладка: Запрос КП
     _write_quote_request_sheet(wb, title=title, subject=subject)
 

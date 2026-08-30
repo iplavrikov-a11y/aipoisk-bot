@@ -187,12 +187,15 @@ class ReportBuilderTests(unittest.TestCase):
             ws_quote = wb["Запрос КП"]
             quote_text = ws_quote["A3"].value
             self.assertIsNone(ws.freeze_panes)
+            self.assertFalse(ws.auto_filter.ref)
             wb.close()
 
         self.assertEqual(sheet_title, "Поставщики")
         self.assertIn("TenderLex", report_title)
         self.assertIn("Сварочный полуавтомат", report_title)
         self.assertIn("Тема письма: Запрос коммерческого предложения", quote_text)
+        self.assertIn("Добрый день!\n\n", quote_text)
+        self.assertNotIn("отдел продаж", quote_text.lower())
         self.assertIn("С уважением", quote_text)
         self.assertEqual(
             headers,
