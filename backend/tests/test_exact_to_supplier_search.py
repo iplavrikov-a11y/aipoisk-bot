@@ -84,12 +84,22 @@ class TestExactToSupplierSearch(unittest.TestCase):
                 job = MagicMock(evidence_path=str(evidence_file))
                 summary = _customer_exact_product_summary(job)
                 self.assertIsNotNone(summary)
-                self.assertEqual(summary["primary_product"], "Broen A/S Broen Clorius M1F")
+                self.assertEqual(summary["primary_product"], "Broen A/S Clorius M1F")
                 self.assertEqual(len(summary["alternatives"]), 2)
-                self.assertIn("Danfoss Danfoss VFM-2", summary["alternatives"])
-                self.assertIn("ЗАО Теплосила Теплосила ТРВ-50", summary["alternatives"])
+                self.assertIn("Danfoss VFM-2", summary["alternatives"])
+                self.assertIn("ЗАО Теплосила ТРВ-50", summary["alternatives"])
             finally:
                 config.storage_dir = orig_storage_dir
+
+    def test_clean_brand_model_label_deduplication(self):
+        from app.main import _clean_brand_model_label
+        # Triple duplication like in user screenshot:
+        clean = _clean_brand_model_label("Белтпрофи", "Белтпрофи", "Белтпрофи 1200-3-EP200-5/2")
+        self.assertEqual(clean, "Белтпрофи 1200-3-EP200-5/2")
+
+        # Generic manufacturer placeholder elimination:
+        clean_alt = _clean_brand_model_label("Отечественный производитель (Россия)", "РТИ-РУС", "1.2-1200-3-ТК-200-2-5-2-Б-РБ")
+        self.assertEqual(clean_alt, "РТИ-РУС 1.2-1200-3-ТК-200-2-5-2-Б-РБ")
 
     def test_create_supplier_search_from_exact_product_success(self):
         from app.config import config

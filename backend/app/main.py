@@ -3574,6 +3574,43 @@ def job_can_start_supplier_search(job: Job | object) -> bool:
     )
 
 
+def _clean_brand_model_label(mfr: str, brand: str, model: str) -> str:
+    mfr = str(mfr or "").strip()
+    brand = str(brand or "").strip()
+    model = str(model or "").strip()
+
+    generic_mfr = {
+        "не указан", "нет данных", "отечественный производитель", "россия", "рф",
+        "отечественный производитель (россия)", "не определен", "не требуется"
+    }
+    if mfr.lower() in generic_mfr:
+        mfr = ""
+
+    seen_significant_words: set[str] = set()
+    result_words: list[str] = []
+    ignore_duplicate_check = {"dn", "pn", "ру", "ду", "мм", "см", "м", "в", "вт", "квт", "а", "v", "w", "1", "2", "3", "no", "тип"}
+
+    for part in [mfr, brand, model]:
+        if not part:
+            continue
+        for word in part.split():
+            clean_w = word.strip(" ,;.:\"'()[]")
+            w_lower = clean_w.lower()
+            if not clean_w:
+                continue
+            if w_lower in seen_significant_words and w_lower not in ignore_duplicate_check:
+                if len(result_words) > 0 and result_words[-1].lower() == w_lower:
+                    continue
+                if any(rw.lower() == w_lower for rw in result_words):
+                    continue
+            result_words.append(word)
+            if len(w_lower) >= 3 and w_lower not in ignore_duplicate_check:
+                seen_significant_words.add(w_lower)
+
+    res = " ".join(result_words).strip()
+    return res or model or brand or mfr
+
+
 def _customer_exact_product_summary(job: Job) -> dict | None:
     try:
         evidence = read_job_evidence_payload(job)
@@ -3589,19 +3626,24 @@ def _customer_exact_product_summary(job: Job) -> dict | None:
         brand = str(first_pos.get("identified_brand") or "").strip()
         model = str(first_pos.get("identified_model") or "").strip()
         mfr = str(first_pos.get("manufacturer") or "").strip()
-        primary_parts = [p for p in [mfr, brand, model] if p]
-        primary_str = " ".join(primary_parts) or str(first_pos.get("name_in_tz") or "").strip()
+        name_tz = str(first_pos.get("name_in_tz") or "").strip()
+        primary_str = _clean_brand_model_label(mfr, brand, model) or name_tz
+
         alts: list[str] = []
         for a in first_pos.get("alternative_brands", []) or []:
             if isinstance(a, dict):
                 a_b = str(a.get("brand") or "").strip()
                 a_m = str(a.get("model") or "").strip()
                 a_mfr = str(a.get("manufacturer") or "").strip()
-                alt_str = " ".join([p for p in [a_mfr, a_b, a_m] if p])
+                alt_str = _clean_brand_model_label(a_mfr, a_b, a_m)
                 if alt_str and alt_str not in alts:
                     alts.append(alt_str)
         return {
             "primary_product": primary_str,
+            "brand": brand,
+            "model": model,
+            "manufacturer": mfr,
+            "name_in_tz": name_tz,
             "alternatives": alts,
             "total_positions": len(positions),
         }
@@ -3635,7 +3677,7 @@ def _build_exact_product_supplier_selection_text(
             model = pos.get("identified_model", "")
             mfr = pos.get("manufacturer", "")
             lines.append(f"Позиция {p_no}: {name_tz}")
-            identified = " ".join([p for p in [mfr, brand, model] if p]).strip()
+            identified = _clean_brand_model_label(mfr, brand, model)
             if identified:
                 lines.append(f"- Выявленный точный товар: {identified}")
             alts = pos.get("alternative_brands", [])
@@ -3646,7 +3688,7 @@ def _build_exact_product_supplier_selection_text(
                         a_b = a.get("brand", "")
                         a_m = a.get("model", "")
                         a_mfr = a.get("manufacturer", "")
-                        item_str = " ".join([p for p in [a_mfr, a_b, a_m] if p]).strip()
+                        item_str = _clean_brand_model_label(a_mfr, a_b, a_m)
                         if item_str:
                             alt_lines.append(item_str)
                 if alt_lines:

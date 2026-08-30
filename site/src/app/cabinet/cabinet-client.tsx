@@ -132,6 +132,10 @@ type CustomerJob = {
   can_start_supplier_search?: boolean;
   exact_product_summary?: {
     primary_product?: string;
+    brand?: string;
+    model?: string;
+    manufacturer?: string;
+    name_in_tz?: string;
     alternatives?: string[];
     total_positions?: number;
   } | null;
@@ -2702,117 +2706,224 @@ export function CabinetClient() {
 
       {startSupplierSearchConfirmJob ? (
         <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
               setStartSupplierSearchConfirmJob(null);
             }
           }}
         >
-          <section className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 font-sans text-center" role="dialog" aria-modal="true" aria-labelledby="start-suppliers-confirm-title">
-            <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-700 mx-auto flex items-center justify-center border border-teal-200 shadow-2xs mb-2">
-              <Search size={20} aria-hidden="true" />
-            </div>
-            <div className="space-y-1">
-              <h2 id="start-suppliers-confirm-title" className="text-base font-extrabold text-slate-900">Поиск поставщиков по подобранным товарам</h2>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Система запустит поиск официальных дистрибьюторов, дилеров и поставщиков на основе выявленного оборудования и ТЗ.
-              </p>
-              <span className="text-[11px] font-bold text-slate-400 block mt-1">{startSupplierSearchConfirmJob.human_title}</span>
-            </div>
-
-            {startSupplierSearchConfirmJob.exact_product_summary ? (
-              <div className="text-left bg-slate-50 border border-slate-200/80 rounded-2xl p-3 space-y-1.5 text-xs text-slate-700">
-                {startSupplierSearchConfirmJob.exact_product_summary.primary_product ? (
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Выявленный товар:</span>
-                    <strong className="text-slate-900 font-bold">{startSupplierSearchConfirmJob.exact_product_summary.primary_product}</strong>
-                  </div>
-                ) : null}
-                {startSupplierSearchConfirmJob.exact_product_summary.alternatives?.length ? (
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Подтверждённые аналоги:</span>
-                    <span className="text-slate-600">{startSupplierSearchConfirmJob.exact_product_summary.alternatives.join(", ")}</span>
-                  </div>
-                ) : null}
+          <section
+            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="start-suppliers-confirm-title"
+          >
+            {/* Header with Title and Close Button */}
+            <header className="px-6 py-4 sm:py-5 border-b border-slate-200/90 flex items-start justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+              <div className="flex items-start gap-3.5 min-w-0 pr-2">
+                <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                  <Search size={20} aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="start-suppliers-confirm-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">
+                    Поиск поставщиков по подобранным товарам
+                  </h2>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Автоматическая передача выявленного оборудования и аналогов в ИИ-поиск дилеров
+                  </p>
+                </div>
               </div>
-            ) : null}
+              <button
+                type="button"
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                onClick={() => setStartSupplierSearchConfirmJob(null)}
+                aria-label="Закрыть"
+              >
+                <X size={20} aria-hidden="true" />
+              </button>
+            </header>
 
-            <div className="text-left space-y-2.5 pt-1">
-              <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-slate-500">Режим поиска (Реестр Минпромторга):</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {[
-                    { id: "normal", label: "Обычный" },
-                    { id: "minprom_registry_priority", label: "Реестр в приоритете" },
-                    { id: "minprom_registry_only", label: "Только реестр" },
-                  ].map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`px-2 py-1.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer text-center ${
-                        startSupplierSearchPolicy === item.id
-                          ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
-                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-                      }`}
-                      onClick={() => setStartSupplierSearchPolicy(item.id as SupplierSearchPolicy)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
+            {/* Scrollable Content Body */}
+            <div className="p-5 sm:p-6 space-y-4 sm:space-y-5 max-h-[calc(85vh-130px)] overflow-y-auto">
+              {/* Source Procurement Card */}
+              <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3 sm:p-3.5 flex items-center gap-2.5 text-xs text-slate-600">
+                <FileText size={16} className="text-teal-700 shrink-0" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Исходная закупка / ТЗ:</span>
+                  <strong className="text-slate-800 font-semibold truncate block mt-0.5">{startSupplierSearchConfirmJob.human_title}</strong>
                 </div>
               </div>
 
-              <label className="flex items-start gap-2 pt-1 cursor-pointer select-none">
+              {/* Detected Equipment Section */}
+              {startSupplierSearchConfirmJob.exact_product_summary ? (
+                <div className="space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    <Sparkles size={14} className="text-teal-600" aria-hidden="true" />
+                    <span>Оборудование для поиска:</span>
+                  </div>
+
+                  {/* Primary Identified Product */}
+                  {startSupplierSearchConfirmJob.exact_product_summary.primary_product ? (
+                    <div className="bg-teal-50/40 border border-teal-200/90 rounded-2xl p-3.5 sm:p-4 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-600 text-white uppercase tracking-wider">
+                          <CheckCircle2 size={11} aria-hidden="true" />
+                          Точный выявленный товар
+                        </span>
+                        {startSupplierSearchConfirmJob.exact_product_summary.total_positions && startSupplierSearchConfirmJob.exact_product_summary.total_positions > 1 ? (
+                          <span className="text-[11px] text-teal-800 font-semibold">
+                            Всего позиций: {startSupplierSearchConfirmJob.exact_product_summary.total_positions}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-sm font-extrabold text-slate-900 leading-snug pt-0.5">
+                        {startSupplierSearchConfirmJob.exact_product_summary.primary_product}
+                      </div>
+                      {startSupplierSearchConfirmJob.exact_product_summary.name_in_tz && startSupplierSearchConfirmJob.exact_product_summary.name_in_tz !== startSupplierSearchConfirmJob.exact_product_summary.primary_product ? (
+                        <p className="text-[11px] text-slate-500 line-clamp-1">
+                          По ТЗ: {startSupplierSearchConfirmJob.exact_product_summary.name_in_tz}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {/* Confirmed Equivalents / Analogs */}
+                  {startSupplierSearchConfirmJob.exact_product_summary.alternatives?.length ? (
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 sm:p-4 space-y-2">
+                      <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center justify-between">
+                        <span>Подтверждённые взаимозаменяемые аналоги:</span>
+                        <span className="text-slate-400 font-normal">{startSupplierSearchConfirmJob.exact_product_summary.alternatives.length} шт.</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {startSupplierSearchConfirmJob.exact_product_summary.alternatives.map((alt, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200/90 text-xs font-semibold text-slate-800 shadow-2xs"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0" />
+                            {alt}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Policy Selection Cards */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Требования к реестру Минпромторга РФ:
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {[
+                    {
+                      id: "normal",
+                      label: "Обычный поиск",
+                      desc: "По всем проверенным дилерам и оптовым складам",
+                    },
+                    {
+                      id: "minprom_registry_priority",
+                      label: "Реестр в приоритете",
+                      desc: "Приоритет заводам из реестра ГИСП Минпромторга",
+                    },
+                    {
+                      id: "minprom_registry_only",
+                      label: "Только реестр",
+                      desc: "Строго производители с реестровой записью (44-ФЗ)",
+                    },
+                  ].map((opt) => {
+                    const isSelected = startSupplierSearchPolicy === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setStartSupplierSearchPolicy(opt.id as SupplierSearchPolicy)}
+                        className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="text-xs font-extrabold">{opt.label}</span>
+                          <span className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${isSelected ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                            {isSelected ? <span className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 leading-snug mt-1">{opt.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Include Alternatives Checkbox Card */}
+              <label className="flex items-start gap-3 p-3.5 rounded-2xl border border-slate-200/90 bg-slate-50/60 hover:bg-slate-100/60 transition-colors cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={startSupplierSearchAlternatives}
                   onChange={(e) => setStartSupplierSearchAlternatives(e.target.checked)}
-                  className="mt-0.5 rounded text-teal-600 focus:ring-teal-500 cursor-pointer"
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
                 />
-                <span className="text-xs text-slate-700">Искать поставщиков как основного товара, так и аналогов</span>
+                <div className="text-xs leading-normal">
+                  <strong className="text-slate-900 font-bold block">
+                    Искать поставщиков как основного оборудования, так и аналогов
+                  </strong>
+                  <span className="text-slate-500 text-[11px] block mt-0.5">
+                    Рекомендуется: позволяет сравнить коммерческие предложения нескольких производителей и найти больше складов с наличием.
+                  </span>
+                </div>
               </label>
 
-              <div className="space-y-1 pt-1">
-                <label htmlFor="exact-suppliers-prompt-input" className="block text-[11px] font-semibold text-slate-500">
-                  Дополнительные пожелания (опционально):
+              {/* Additional Wishes Input */}
+              <div className="space-y-1.5">
+                <label htmlFor="exact-suppliers-prompt-input" className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Дополнительные пожелания к поиску (опционально):
                 </label>
                 <input
                   id="exact-suppliers-prompt-input"
                   type="text"
                   value={startSupplierSearchPrompt}
                   onChange={(e) => setStartSupplierSearchPrompt(e.target.value)}
-                  placeholder="Например: склады в СПб, только дистрибьюторы..."
-                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 bg-slate-50 text-slate-800"
+                  placeholder="Например: склады в Северо-Западном регионе, только официальные дистрибьюторы..."
+                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 bg-slate-50/50 text-slate-800"
                 />
               </div>
 
-              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200/80 rounded-xl p-2.5 leading-snug">
-                С баланса спишется 1 поиск поставщиков. Будет сформирована итоговая таблица контактов с КП.
-              </p>
+              {/* Balance & Output Notice */}
+              <div className="flex items-start gap-2.5 p-3 rounded-2xl bg-amber-50/80 border border-amber-200/70 text-amber-900 text-xs leading-relaxed">
+                <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                <div>
+                  <strong className="font-bold block">С баланса будет списан 1 поиск поставщиков.</strong>
+                  <span className="text-[11px] text-amber-800/90 block mt-0.5">
+                    В результате сформируется Excel-таблица с прямыми контактами поставщиков, сайтами, ИНН и готовым запросом КП.
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center justify-center gap-3 pt-2">
+            {/* Modal Actions Footer */}
+            <footer className="px-6 py-4 bg-slate-50/90 border-t border-slate-200/80 flex items-center justify-end gap-3 shrink-0">
               <button
-                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
                 type="button"
-                onClick={() => {
-                  setStartSupplierSearchConfirmJob(null);
-                }}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
+                onClick={() => setStartSupplierSearchConfirmJob(null)}
                 disabled={busy}
               >
                 Отмена
               </button>
               <button
-                className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 type="button"
+                className="px-6 py-2.5 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                 onClick={() => void startSupplierSearchFromExact(startSupplierSearchConfirmJob)}
                 disabled={busy}
               >
                 {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
-                <span>Запустить поиск</span>
+                <span>Запустить поиск поставщиков</span>
               </button>
-            </div>
+            </footer>
           </section>
         </div>
       ) : null}
