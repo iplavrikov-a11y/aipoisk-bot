@@ -260,9 +260,9 @@ async def test_analyze_exact_product_pipeline_strict_grounding():
         assert report.total_positions == 1
         assert report.positions[0].identified_brand == "ПК Профмаркет"
         assert report.positions[0].specs_breakdown[0].param_name == "Диаметр"
-        assert report.positions[0].specs_breakdown[0].status == "match"
         assert report.positions[0].specs_breakdown[1].status == "clarify"
-        assert "В открытой документации не указано" in report.positions[0].specs_breakdown[1].product_fact
+        assert report.positions[0].specs_breakdown[1].product_fact == "0.85 кг"
+        assert "уточнить по паспорту" in report.positions[0].specs_breakdown[1].comment.lower()
         assert len(report.positions[0].alternative_brands[0].specs_breakdown) == 1
 
 

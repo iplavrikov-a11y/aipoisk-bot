@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
@@ -286,5 +287,82 @@ async def test_grounded_rejection_of_hallucination():
         assert resolved == 0
         assert spec.status == "clarify"
         assert spec.product_fact == "В открытой документации не указано"
+
+
+@pytest.mark.asyncio
+async def test_auto_fill_ai_recommendations_with_llm():
+    from app.exact_product import auto_fill_ai_recommendations
+
+    settings = SystemSettings()
+    settings.custom_ai_providers_json = '[{"id": "p1", "baseUrl": "http://mock", "apiKey": "t"}]'
+
+    spec = SpecParameterMatch(
+        param_name="Относительное удлинение при разрыве",
+        tz_requirement="не менее 500%",
+        product_fact="В открытой документации не указано (требуется паспорт завода)",
+        status="clarify",
+        comment="Требуется официальный паспорт завода",
+    )
+    pos = ExactProductPosition(
+        position_no=1,
+        name_in_tz="Мастика полиуретановая",
+        identified_brand="ТЕХНОНИКОЛЬ",
+        identified_model="ТЕХНОНИКОЛЬ 21",
+        manufacturer="ТЕХНОНИКОЛЬ",
+        confidence=0.95,
+        reasoning="Тест",
+        specs_breakdown=[spec],
+    )
+
+    mock_res_json = json.dumps([
+        {
+            "param_name": "Относительное удлинение при разрыве",
+            "recommended_fact": "550%",
+            "comment": "Подобрано ИИ под требование ТЗ. В открытых источниках параметр не опубликован — требуется уточнить по паспорту или официальному документу производителя перед подачей заявки.",
+        }
+    ])
+
+    with patch("app.exact_product.call_llm", AsyncMock(return_value=mock_res_json)):
+        filled = await auto_fill_ai_recommendations(settings, [pos])
+
+        assert filled == 1
+        assert spec.product_fact == "550%"
+        assert spec.status == "clarify"
+        assert "уточнить по паспорту" in spec.comment.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_fill_ai_recommendations_fallback():
+    from app.exact_product import auto_fill_ai_recommendations
+
+    settings = SystemSettings()
+    # No AI provider -> uses clean_tz fallback
+    settings.custom_ai_providers_json = "[]"
+
+    spec = SpecParameterMatch(
+        param_name="Время высыхания до отлипа",
+        tz_requirement="не более 24 часов",
+        product_fact="В открытой документации не указано (требуется паспорт завода)",
+        status="clarify",
+        comment="Требуется официальный паспорт завода",
+    )
+    pos = ExactProductPosition(
+        position_no=1,
+        name_in_tz="Мастика полиуретановая",
+        identified_brand="ТЕХНОНИКОЛЬ",
+        identified_model="ТЕХНОНИКОЛЬ 21",
+        manufacturer="ТЕХНОНИКОЛЬ",
+        confidence=0.95,
+        reasoning="Тест",
+        specs_breakdown=[spec],
+    )
+
+    filled = await auto_fill_ai_recommendations(settings, [pos])
+
+    assert filled == 1
+    assert spec.product_fact == "24 часов"
+    assert spec.status == "clarify"
+    assert "уточнить по паспорту" in spec.comment.lower()
+
 
 
