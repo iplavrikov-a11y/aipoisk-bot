@@ -9,6 +9,7 @@ import {
   BellOff,
   BellRing,
   BookOpen,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -2841,8 +2842,18 @@ export function CabinetClient() {
                   type="checkbox"
                   checked={startSupplierSearchAlternatives}
                   onChange={(e) => setStartSupplierSearchAlternatives(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer shrink-0"
+                  className="sr-only"
                 />
+                <div
+                  className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all shrink-0 ${
+                    startSupplierSearchAlternatives
+                      ? "border-teal-600 bg-teal-600 text-white shadow-2xs"
+                      : "border-slate-300 bg-white hover:border-slate-400"
+                  }`}
+                  aria-hidden="true"
+                >
+                  {startSupplierSearchAlternatives ? <Check size={11} strokeWidth={3.5} className="text-white" /> : null}
+                </div>
                 <div className="text-xs leading-snug">
                   <span className="text-slate-900 font-bold">Искать поставщиков как основного товара, так и аналогов</span>
                   <span className="text-slate-500 text-[11px] block mt-0.5">Рекомендуется: позволяет сравнить КП нескольких брендов и найти склады с наличием</span>

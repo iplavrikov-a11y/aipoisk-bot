@@ -180,27 +180,32 @@ class ReportBuilderTests(unittest.TestCase):
             ws = wb["Поставщики"]
             sheet_title = ws.title
             report_title = ws["A1"].value
-            headers = [cell.value for cell in ws[6]]
-            values = [cell.value for cell in ws[7]]
-            site_hyperlink = ws["D7"].hyperlink.target if ws["D7"].hyperlink else ""
+            headers = [cell.value for cell in ws[5]]
+            values = [cell.value for cell in ws[6]]
+            site_hyperlink = ws["B6"].hyperlink.target if ws["B6"].hyperlink else ""
             self.assertIn("Запрос КП", wb.sheetnames)
+            ws_quote = wb["Запрос КП"]
+            quote_text = ws_quote["A3"].value
+            self.assertIsNone(ws.freeze_panes)
             wb.close()
 
         self.assertEqual(sheet_title, "Поставщики")
         self.assertIn("TenderLex", report_title)
         self.assertIn("Сварочный полуавтомат", report_title)
+        self.assertIn("Тема письма: Запрос коммерческого предложения", quote_text)
+        self.assertIn("С уважением", quote_text)
         self.assertEqual(
             headers,
             [
                 "Компания",
-                "Соответствие",
-                "Реестр Минпромторга",
                 "Сайт",
                 "Телефоны",
                 "Email",
                 "Комментарий",
+                "Реестр Минпромторга",
             ],
         )
+        self.assertNotIn("Соответствие", headers)
         self.assertNotIn("Search Query", headers)
         self.assertNotIn("Evidence snippet", headers)
         self.assertNotIn("AI уверенность", headers)
@@ -258,7 +263,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            comment = ws["G7"].value
+            comment = ws["E6"].value
             wb.close()
 
         self.assertIn("Профиль компании подходит.", comment)
@@ -288,7 +293,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            comment = ws["G7"].value
+            comment = ws["E6"].value
             wb.close()
 
         self.assertIn("Точное соответствие:", comment)
@@ -318,7 +323,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            comment = ws["G7"].value
+            comment = ws["E6"].value
             wb.close()
 
         self.assertIn("Категория совпадает", comment)
@@ -350,7 +355,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            comment = ws["G7"].value
+            comment = ws["E6"].value
             wb.close()
 
         self.assertIn("Точное соответствие", comment)
@@ -384,9 +389,9 @@ class ReportBuilderTests(unittest.TestCase):
 
                 wb = load_workbook(path)
                 ws = wb["Поставщики"]
-                document_warning = ws["A4"].value
-                row_comment = ws["G7"].value
-                warning_fill = ws["A4"].fill.fgColor.rgb
+                document_warning = ws["A3"].value
+                row_comment = ws["E6"].value
+                warning_fill = ws["A3"].fill.fgColor.rgb
                 wb.close()
 
             self.assertIn(REGISTRY_FALLBACK_REPORT_DISCLAIMER, document_warning)
@@ -431,21 +436,20 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            headers = [cell.value for cell in ws[6]]
-            comment = ws["G7"].value
-            registry_cell = ws["C7"].value
+            headers = [cell.value for cell in ws[5]]
+            comment = ws["E6"].value
+            registry_cell = ws["F6"].value
             wb.close()
 
         self.assertEqual(
             headers,
             [
                 "Компания",
-                "Соответствие",
-                "Реестр Минпромторга",
                 "Сайт",
                 "Телефоны",
                 "Email",
                 "Комментарий",
+                "Реестр Минпромторга",
             ],
         )
         self.assertIn("Реестр ГИСП Минпромторга: запись № РПП-123", comment)
@@ -474,7 +478,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            summary = ws["A4"].value
+            summary = ws["A3"].value
             wb.close()
 
         self.assertIn("Проверены сайты и контакты. Кандидатов: 4", summary)
@@ -504,7 +508,7 @@ class ReportBuilderTests(unittest.TestCase):
 
             wb = load_workbook(path)
             ws = wb["Поставщики"]
-            summary = ws["A4"].value
+            summary = ws["A3"].value
             wb.close()
 
         self.assertIn("Проверены сайты и контакты. Кандидатов: 1", summary)

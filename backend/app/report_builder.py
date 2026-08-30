@@ -16,12 +16,11 @@ from openpyxl.utils import get_column_letter
 
 SUPPLIER_HEADERS = [
     "Компания",
-    "Соответствие",
-    "Реестр Минпромторга",
     "Сайт",
     "Телефоны",
     "Email",
     "Комментарий",
+    "Реестр Минпромторга",
 ]
 SPREADSHEETML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 FONT_CHILD_ORDER = {
@@ -235,90 +234,44 @@ def _write_quote_request_sheet(wb: Workbook, *, title: str, subject: str = "") -
     base_title = _clean_comment_text(subject) or _clean_comment_text(title) or "Продукция по ТЗ"
 
     # Шапка
-    ws.append(["TenderLex | ПРОЕКТ ОФИЦИАЛЬНОГО ЗАПРОСА КОММЕРЧЕСКОГО ПРЕДЛОЖЕНИЯ"])
-    _style_range(ws, 1, 1, 5, font=Font(name="Calibri", size=14, bold=True, color="0F172A"), align=Alignment(vertical="center"))
-    ws.row_dimensions[1].height = 28
+    ws.append(["TenderLex | ГОТОВЫЙ ТЕКСТ ЗАПРОСА КП ДЛЯ КОПИРОВАНИЯ (НАЖМИТЕ НА ЯЧЕЙКУ A3 И СКОПИРУЙТЕ CTRL+C)"])
+    _style_range(ws, 1, 1, 2, font=Font(name="Calibri", size=13, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    ws.row_dimensions[1].height = 26
 
-    ws.append([f"Готовый шаблон письма для направления поставщикам | Предмет: {base_title}"])
-    _style_range(ws, 2, 1, 5, font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
+    ws.append([f"Предмет закупки / номенклатура: {base_title}"])
+    _style_range(ws, 2, 1, 2, font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
-    hint = (
-        "💡 ИНСТРУКЦИЯ: Скопируйте текст ниже в тело исходящего письма или прикрепите к обращению. "
-        "Укажите реквизиты вашей компании, контактное лицо и желаемый срок предоставления КП."
+    # Скомпилированный текст в одной ячейке A3 для моментального копирования в Word / Email
+    quote_text = (
+        f"Тема письма: Запрос коммерческого предложения / счёта на поставку: {base_title}\n\n"
+        "Добрый день, отдел продаж!\n\n"
+        "Просим Вас предоставить коммерческое предложение (счёт) на поставку следующей продукции:\n"
+        f"• {base_title} (согласно техническому заданию / спецификации заказчика)\n\n"
+        "В коммерческом предложении просим обязательно указать:\n"
+        "1. Стоимость за единицу и общую стоимость продукции (с учётом НДС).\n"
+        "2. Фактическое наличие на складе и минимальные сроки отгрузки / производства.\n"
+        "3. Условия и стоимость доставки до объекта либо возможность самовывоза.\n"
+        "4. Наличие паспортов качества, сертификатов соответствия и реестровых записей ГИСП (при наличии).\n"
+        "5. Срок действия коммерческого предложения и условия оплаты (аванс / постоплата).\n\n"
+        "Ответ и коммерческое предложение просим направить в ответном письме либо по телефону.\n\n"
+        "С уважением,\n"
+        "Отдел закупок и снабжения"
     )
-    ws.append([hint])
-    _style_range(ws, 3, 1, 5, fill=PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"), font=Font(name="Calibri", size=10, color="334155"), align=Alignment(vertical="top", wrap_text=True))
-    ws.row_dimensions[3].height = 28
 
-    ws.append([None] * 5)
-    ws.row_dimensions[4].height = 10
-
-    # Тема письма
-    ws.append([f"Тема письма: Запрос коммерческого предложения / счёта на поставку: {base_title}"])
-    _style_range(ws, 5, 1, 5, fill=PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"), font=Font(name="Calibri", size=11, bold=True, color="0F172A"), align=Alignment(vertical="center"))
-    ws.row_dimensions[5].height = 24
-
-    ws.append(["Добрый день, отдел продаж!"])
-    _style_range(ws, 6, 1, 5, font=Font(name="Calibri", size=11, color="1E293B"), align=Alignment(vertical="center"))
-    ws.row_dimensions[6].height = 22
-
-    ws.append(["Просим Вас предоставить коммерческое предложение (счёт) на поставку следующей продукции:"])
-    _style_range(ws, 7, 1, 5, font=Font(name="Calibri", size=10, color="334155"), align=Alignment(vertical="center"))
-    ws.row_dimensions[7].height = 20
-
-    # Таблица спецификации
-    spec_headers = ["№", "Наименование продукции", "Требуемые характеристики / ГОСТ", "Ед. изм.", "Количество"]
-    ws.append(spec_headers)
-    hdr_row = ws.max_row
-    for c in range(1, 6):
-        cell = ws.cell(row=hdr_row, column=c)
-        cell.font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-        cell.fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-        cell.alignment = Alignment(vertical="center", horizontal="center" if c in (1, 4, 5) else "left")
-    ws.row_dimensions[hdr_row].height = 24
-
-    # Строка 1 спецификации
-    ws.append([1, base_title, "Согласно техническому заданию / спецификации заказчика", "шт.", "По согласованию"])
-    spec_row = ws.max_row
-    thin_b = Border(left=Side(style="thin", color="CBD5E1"), right=Side(style="thin", color="CBD5E1"), top=Side(style="thin", color="CBD5E1"), bottom=Side(style="thin", color="CBD5E1"))
-    for c in range(1, 6):
-        cell = ws.cell(row=spec_row, column=c)
-        cell.font = Font(name="Calibri", size=10, color="1E293B")
-        cell.border = thin_b
-        cell.alignment = Alignment(vertical="top", wrap_text=True, horizontal="center" if c in (1, 4, 5) else "left")
-    ws.row_dimensions[spec_row].height = 36
-
-    ws.append([None] * 5)
-    ws.row_dimensions[ws.max_row].height = 12
-
-    # Условия
-    conditions = [
-        "В коммерческом предложении просим обязательно указать:",
-        "1. Стоимость за единицу и общую стоимость продукции (с учётом НДС).",
-        "2. Фактическое наличие на складе и минимальные сроки отгрузки / производства.",
-        "3. Условия и стоимость доставки до объекта либо возможность самовывоза.",
-        "4. Наличие паспортов качества, сертификатов соответствия и реестровых записей ГИСП (при наличии).",
-        "5. Срок действия коммерческого предложения и условия оплаты (аванс / постоплата).",
-    ]
-    for cond in conditions:
-        ws.append([cond])
-        is_h = cond.startswith("В коммерческом")
-        _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, bold=is_h, color="0F172A" if is_h else "334155"), align=Alignment(vertical="center"))
-        ws.row_dimensions[ws.max_row].height = 20
-
-    ws.append([None] * 5)
-    ws.row_dimensions[ws.max_row].height = 12
-
-    ws.append(["Ответ и коммерческое предложение просим направить на электронную почту / по телефону."])
-    _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, italic=True, color="64748B"), align=Alignment(vertical="center"))
-
-    ws.append(["С уважением, отдел закупок и снабжения."])
-    _style_range(ws, ws.max_row, 1, 5, font=Font(name="Calibri", size=10, bold=True, color="1E293B"), align=Alignment(vertical="center"))
-
-    quote_widths = [6, 32, 45, 12, 18]
-    for col_idx, w in enumerate(quote_widths, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = w
+    ws.append([quote_text])
+    c = ws.cell(row=3, column=1)
+    c.font = Font(name="Calibri", size=11, color="0F172A")
+    c.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    c.border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+    c.alignment = Alignment(vertical="top", horizontal="left", wrap_text=True)
+    ws.row_dimensions[3].height = 360
+    ws.column_dimensions["A"].width = 115
 
 
 def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
@@ -342,18 +295,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
-    # 3. Инфо-плашка
-    hint_msg = (
-        "💡 КАК РАБОТАТЬ С ТАБЛИЦЕЙ: В отчёте собраны прямые производители, официальные дистрибьюторы и оптовые склады. "
-        "Контакты проверены на актуальность сайтов, телефонов и почт. На второй вкладке «Запрос КП» подготовлен проект письма для рассылки."
-    )
-    ws.append([hint_msg])
-    hint_bg = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-    hint_font = Font(name="Calibri", size=10, color="334155")
-    _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=hint_bg, font=hint_font, align=Alignment(vertical="top", wrap_text=True))
-    ws.row_dimensions[3].height = 28
-
-    # 4. Сводка / KPI
+    # 3. Сводка / KPI (без лишней плашки "как работать")
     summary = _supplier_count_summary(rows, target)
     is_fallback = _is_registry_fallback_report(rows)
     if is_fallback:
@@ -361,16 +303,16 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     ws.append([summary])
     summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "1E293B")
-    _style_range(ws, 4, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
-    ws.row_dimensions[4].height = 36 if is_fallback else 24
+    _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
+    ws.row_dimensions[3].height = 36 if is_fallback else 24
 
-    # 5. Разделитель
+    # 4. Разделитель
     ws.append([None] * len(SUPPLIER_HEADERS))
-    ws.row_dimensions[5].height = 10
+    ws.row_dimensions[4].height = 10
 
-    # 6. Заголовки таблицы
+    # 5. Заголовки таблицы: Компания, Сайт, Телефоны, Email, Комментарий, Реестр Минпромторга
     ws.append(SUPPLIER_HEADERS)
-    header_row = 6
+    header_row = 5
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     for cell in ws[header_row]:
@@ -378,9 +320,8 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         cell.fill = header_fill
         cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="left")
     ws.row_dimensions[header_row].height = 26
-    freeze_row = f"A{header_row + 1}"
 
-    # Данные
+    # 6. Данные
     thin_border = Border(
         left=Side(style="thin", color="CBD5E1"),
         right=Side(style="thin", color="CBD5E1"),
@@ -394,7 +335,6 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
         
         company = str(row.get("company_name") or "").strip()
-        fit_text, fit_font, fit_fill = _product_fit_badge(row)
         reg_text, reg_font, reg_fill = _registry_badge(row)
         site_raw = str(row.get("site") or "").strip()
         site_display = unquote(site_raw) if site_raw else ""
@@ -402,7 +342,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         email = str(row.get("email") or "").strip()
         comment = _client_supplier_comment(row)
 
-        ws.append([company, fit_text, reg_text, site_display, phone, email, comment])
+        ws.append([company, site_display, phone, email, comment, reg_text])
 
         # Col 1: Компания
         c1 = ws.cell(row=row_idx, column=1)
@@ -411,58 +351,52 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         c1.border = thin_border
         c1.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 2: Соответствие
+        # Col 2: Сайт
         c2 = ws.cell(row=row_idx, column=2)
-        c2.font = fit_font
-        c2.fill = fit_fill
-        c2.border = thin_border
-        c2.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-
-        # Col 3: Реестр Минпромторга
-        c3 = ws.cell(row=row_idx, column=3)
-        c3.font = reg_font
-        c3.fill = reg_fill
-        c3.border = thin_border
-        c3.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-
-        # Col 4: Сайт
-        c4 = ws.cell(row=row_idx, column=4)
         if site_raw:
-            c4.hyperlink = site_raw
-            c4.font = Font(name="Calibri", size=10, color="0284C7", underline="single")
+            c2.hyperlink = site_raw
+            c2.font = Font(name="Calibri", size=10, color="0284C7", underline="single")
         else:
-            c4.font = Font(name="Calibri", size=10, color="64748B")
+            c2.font = Font(name="Calibri", size=10, color="64748B")
+        c2.fill = base_bg
+        c2.border = thin_border
+        c2.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 3: Телефоны
+        c3 = ws.cell(row=row_idx, column=3)
+        c3.font = Font(name="Calibri", size=10, color="1E293B")
+        c3.fill = base_bg
+        c3.border = thin_border
+        c3.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Col 4: Email
+        c4 = ws.cell(row=row_idx, column=4)
+        c4.font = Font(name="Calibri", size=10, color="0F766E")
         c4.fill = base_bg
         c4.border = thin_border
         c4.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 5: Телефоны
+        # Col 5: Комментарий
         c5 = ws.cell(row=row_idx, column=5)
-        c5.font = Font(name="Calibri", size=10, color="1E293B")
+        c5.font = Font(name="Calibri", size=10, color="334155")
         c5.fill = base_bg
         c5.border = thin_border
         c5.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 6: Email
+        # Col 6: Реестр Минпромторга (последний столбец)
         c6 = ws.cell(row=row_idx, column=6)
-        c6.font = Font(name="Calibri", size=10, color="0F766E")
-        c6.fill = base_bg
+        c6.font = reg_font
+        c6.fill = reg_fill
         c6.border = thin_border
-        c6.alignment = Alignment(wrap_text=True, vertical="top")
+        c6.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
-        # Col 7: Комментарий
-        c7 = ws.cell(row=row_idx, column=7)
-        c7.font = Font(name="Calibri", size=10, color="334155")
-        c7.fill = base_bg
-        c7.border = thin_border
-        c7.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 60)], min_h=24)
 
-        ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 28), (comment, 55)], min_h=24)
-
-    widths = [28, 18, 26, 34, 22, 26, 55]
+    widths = [32, 35, 22, 26, 60, 26]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
-    ws.freeze_panes = freeze_row
+    
+    # Без закрепления областей - страница свободно прокручивается
     ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(SUPPLIER_HEADERS))}{max(header_row, ws.max_row)}"
 
     # Вторая вкладка: Запрос КП
