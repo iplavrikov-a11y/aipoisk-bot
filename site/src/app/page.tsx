@@ -39,19 +39,19 @@ export const revalidate = 300;
 
 export const metadata: Metadata = {
   title: {
-    absolute: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
+    absolute: "TenderLex — Поиск поставщиков, подбор аналогов по ТЗ и анализ закупок",
   },
   description:
-    "ИИ-сервис для закупщиков: поиск прямых контактов заводов и дилеров по ТЗ, подготовка запросов КП и анализ рисков 44-ФЗ, 223-ФЗ и коммерческих закупок.",
+    "Поиск надежных поставщиков и производителей по ТЗ, ГОСТ и спецификациям онлайн. Подбор российских аналогов оборудования, проверка ИНН и запрос КП в 1 клик. Попробуйте бесплатно!",
   keywords: [
     "поиск поставщиков по ТЗ",
     "подбор аналогов по ТЗ",
     "поиск товаров по ТЗ",
-    "форма 2 госзакупки",
     "эквивалент оборудования 44 фз",
     "поиск производителей Россия",
-    "коммерческое предложение закупка",
+    "запрос коммерческого предложения",
     "контакты отделов продаж заводов",
+    "реестр минпромторга аналоги",
     "анализ рисков 44-ФЗ и 223-ФЗ",
     "коммерческие закупки",
     "TenderLex",
@@ -135,18 +135,18 @@ export default async function HomePage() {
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
-                Поиск поставщиков, подбор аналогов по ТЗ и анализ рисков закупок
+                Поиск надежных поставщиков и подбор аналогов по ТЗ за 2 минуты
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
-                От разбора технического задания и подбора российских эквивалентов до сбора прямых контактов заводов РФ и проверки проекта контракта за 3 минуты.
+                От выявления производителя и сопоставления аналогов по ГОСТ до прямых контактов заводов РФ и проверки проекта контракта с помощью ИИ.
               </p>
 
               {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
               <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
                 <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
                   <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
-                    <span>Попробовать бесплатно</span>
+                    <span>Попробовать бесплатно (без привязки карты)</span>
                   </Link>
                 </Button>
                 <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">

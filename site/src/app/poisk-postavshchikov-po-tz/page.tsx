@@ -13,17 +13,17 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск товаров и подбор аналогов по ТЗ — база проверенных поставщиков",
+  title: "Поиск поставщиков и заводов-производителей по ТЗ онлайн",
   description:
-    "ИИ-подбор поставщиков, поиск товаров и подбор аналогов под техническое задание и спецификацию. Прямые email отделов сбыта заводов, контакты и запрос КП за 3 минуты.",
+    "Поиск поставщиков и производителей по ТЗ, ГОСТ и спецификациям онлайн. Готовый реестр прямых контактов отделов сбыта заводов с проверкой ИНН и запрос КП в 1 клик. Попробуйте бесплатно!",
   keywords: [
-    "поиск товаров по ТЗ",
-    "подбор аналогов по ТЗ",
     "поиск поставщиков по ТЗ",
     "подбор поставщиков по спецификации",
     "поиск производителей по ТЗ",
     "контакты отделов продаж заводов",
     "запрос коммерческого предложения",
+    "производители по ГОСТ",
+    "проверка ИНН поставщика",
     "TenderLex",
   ],
   alternates: {
@@ -104,19 +104,19 @@ export default function PoiskPostavshchikovPage() {
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-extrabold text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Поиск товаров и подбор аналогов по техническому заданию (ТЗ)
+              Поиск поставщиков и заводов-производителей по ТЗ
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-normal leading-relaxed">
-              Загрузите файл документации или спецификации — TenderLex выделит номенклатуру, подберет эквиваленты, найдет прямые контакты отделов сбыта заводов и подготовит единый запрос КП за 3 минуты.
+              Загрузите файл документации или спецификации — TenderLex выделит номенклатуру, найдет прямые контакты отделов сбыта заводов РФ и подготовит единый запрос КП за 3 минуты.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
                 href="/cabinet"
-                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
-                <span>Найти поставщиков</span>
+                <span>Найти поставщиков бесплатно (без привязки карты)</span>
               </a>
               <a
                 href="https://t.me/tenderlex_bot"
@@ -155,6 +155,27 @@ export default function PoiskPostavshchikovPage() {
                   Автоматически скомпонованное деловое письмо для мгновенной веерной рассылки.
                 </p>
               </div>
+            </div>
+
+            {/* Cross-linking Banner: Подбор аналогов по ТЗ */}
+            <div className="mt-12 p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-teal-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="space-y-2 max-w-xl text-left">
+                <span className="text-xs font-bold text-teal-300 uppercase tracking-wider bg-teal-400/20 px-3 py-1 rounded-full border border-teal-400/30 inline-block">
+                  Смежный сервис
+                </span>
+                <h3 className="text-xl sm:text-2xl font-extrabold text-white">
+                  Нужно выявить скрытую модель или подобрать аналоги по ТЗ?
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                  Используйте модуль «Подбор товара и аналогов», чтобы распознать модель-первоисточник, сверить параметры по паспортам заводов РФ, найти эквиваленты из реестра ГИСП и выгрузить отчет в Word (DOCX).
+                </p>
+              </div>
+              <Link
+                href="/podbor-tovara-i-analogov-po-tz"
+                className="shrink-0 px-6 py-3.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md transition-all hover:scale-102"
+              >
+                Подобрать аналоги по ТЗ →
+              </Link>
             </div>
           </div>
         </section>

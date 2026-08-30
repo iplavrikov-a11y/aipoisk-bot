@@ -43,6 +43,29 @@ export const metadata: Metadata = {
   alternates: {
     canonical: "/podbor-tovara-i-analogov-po-tz",
   },
+  openGraph: {
+    type: "website",
+    url: "/podbor-tovara-i-analogov-po-tz",
+    title: "Подбор аналогов и эквивалентов по ТЗ — Реестр Минпромторга | TenderLex",
+    description:
+      "ИИ-подбор товаров и взаимозаменяемых аналогов по ТЗ: выявление производителя, сверка параметров по паспортам и выгрузка отчета в Word (DOCX).",
+    siteName: "TenderLex",
+    images: [
+      {
+        url: "/tenderlex-product-preview.png",
+        width: 1200,
+        height: 630,
+        alt: "TenderLex — Подбор товара и аналогов по ТЗ",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Подбор аналогов и эквивалентов по ТЗ | TenderLex",
+    description:
+      "ИИ-подбор товаров и отечественных аналогов по техническому заданию (44-ФЗ, 223-ФЗ).",
+    images: ["/tenderlex-product-preview.png"],
+  },
 };
 
 const pagePath = "/podbor-tovara-i-analogov-po-tz";
@@ -154,8 +177,15 @@ export default function PodborTovaraPage() {
         <SiteHeader />
 
         {/* HERO SECTION */}
-        <section className="relative pt-12 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
-          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+        <section className="relative pt-8 pb-20 border-b border-slate-200 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-5">
+            {/* Visual Breadcrumb Navigation */}
+            <nav aria-label="Breadcrumb" className="flex items-center justify-center gap-2 text-xs text-slate-500 mb-1">
+              <Link href="/" className="hover:text-teal-700 transition-colors">Главная</Link>
+              <span>/</span>
+              <span className="text-slate-800 font-medium">Подбор товара и аналогов по ТЗ</span>
+            </nav>
+
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
               <Sparkles size={14} className="text-teal-600 animate-pulse" />
               <span>Реестр Минпромторга (ГИСП) • Подбор российских аналогов по ТЗ</span>

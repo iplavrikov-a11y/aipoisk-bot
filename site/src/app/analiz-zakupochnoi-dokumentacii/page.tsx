@@ -139,6 +139,27 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
                 </p>
               </div>
             </div>
+
+            {/* Cross-linking Banner: Заточка в ТЗ? Подберите эквивалент */}
+            <div className="mt-12 p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-teal-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="space-y-2 max-w-xl text-left">
+                <span className="text-xs font-bold text-teal-300 uppercase tracking-wider bg-teal-400/20 px-3 py-1 rounded-full border border-teal-400/30 inline-block">
+                  Смежный модуль
+                </span>
+                <h3 className="text-xl sm:text-2xl font-extrabold text-white">
+                  Аудит выявил заложенного монопольного производителя?
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                  Используйте модуль «Подбор товара и аналогов», чтобы распознать скрытую модель по параметрам, подобрать от 2 до 4 российских аналогов из реестра Минпромторга и выгрузить подробный отчет в Word (DOCX).
+                </p>
+              </div>
+              <Link
+                href="/podbor-tovara-i-analogov-po-tz"
+                className="shrink-0 px-6 py-3.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md transition-all hover:scale-102"
+              >
+                Подобрать аналоги по ТЗ →
+              </Link>
+            </div>
           </div>
         </section>
 

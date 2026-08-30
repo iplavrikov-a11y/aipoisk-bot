@@ -140,7 +140,7 @@ export function ProcurementCalculator() {
                 ~{savedHours} {savedHours === 1 ? "час" : savedHours < 5 ? "часа" : "часов"}
               </div>
               <span className="text-[11px] text-slate-500">
-                вместо ручного сбора контактов и набора запросов КП
+                вместо ручного поиска аналогов по ГОСТ, сбора контактов заводов и набора запросов КП
               </span>
             </div>
 
@@ -153,7 +153,7 @@ export function ProcurementCalculator() {
                 ~{savedBudget.toLocaleString("ru-RU")} ₽
               </div>
               <span className="text-[11px] text-slate-500">
-                освобождение времени для работы с ценами и сделками
+                освобождение времени для работы с ценами и заключения выгодных контрактов
               </span>
             </div>
           </div>
@@ -162,7 +162,7 @@ export function ProcurementCalculator() {
             href="/cabinet"
             className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
           >
-            <span>Попробовать бесплатно</span>
+            <span>Попробовать бесплатно (без привязки карты)</span>
           </a>
         </div>
       </div>

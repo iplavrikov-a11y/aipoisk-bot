@@ -1103,7 +1103,7 @@ export const KNOWLEDGE_ARTICLES: KnowledgeArticleMeta[] = [
         ],
       },
     ],
-    relatedSlugs: ["generator-tz-po-gost-44-fz-standarty", "ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik", "analiz-riskov-zakupki-44-fz-223-fz"],
+    relatedSlugs: ["kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz", "podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz", "ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik"],
   },
   {
     slug: "tipovye-oshibki-v-pervoi-chasti-zayavki-na-aukcion",
@@ -1153,7 +1153,7 @@ export const KNOWLEDGE_ARTICLES: KnowledgeArticleMeta[] = [
         ],
       },
     ],
-    relatedSlugs: ["podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz", "generator-tz-po-gost-44-fz-standarty", "ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik"],
+    relatedSlugs: ["kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli", "podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz", "generator-tz-po-gost-44-fz-standarty"],
   },
   {
     slug: "trebovaniya-k-garantii-kachestva-i-obsluzhivaniyu-v-tz",
@@ -1675,7 +1675,7 @@ export const KNOWLEDGE_ARTICLES: KnowledgeArticleMeta[] = [
         ],
       },
     ],
-    relatedSlugs: ["ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik", "analiz-riskov-zakupki-44-fz-223-fz", "podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz"],
+    relatedSlugs: ["podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz", "kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz", "ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik"],
   },
   {
     slug: "postanovlenie-878-reestr-radioelektroniki-i-bally",
