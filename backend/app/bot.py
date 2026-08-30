@@ -1676,7 +1676,7 @@ def _find_more_suppliers_offer_text() -> str:
 def _exact_to_suppliers_offer_text() -> str:
     return (
         "💡 Рекомендуемый следующий шаг:\n\n"
-        "Найти официальных дистрибьюторов, дилеров и оптовых поставщиков этого оборудования.\n"
+        "Найти официальных дистрибьюторов, дилеров и оптовых поставщиков этого товара (продукции).\n"
         "Система передаст выявленный товар и аналоги в поиск поставщиков."
     )
 
@@ -1684,7 +1684,7 @@ def _exact_to_suppliers_offer_text() -> str:
 def _exact_to_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Найти поставщиков этого оборудования", callback_data=f"exact_suppliers_prompt:{job_id}")],
+            [InlineKeyboardButton(text="🔍 Найти поставщиков этого товара", callback_data=f"exact_suppliers_prompt:{job_id}")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
         ]
     )
