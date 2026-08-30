@@ -309,3 +309,88 @@ def test_process_exact_product_worker():
             assert job.progress == 100
             assert Path(job.result_path).exists()
             assert Path(job.evidence_path).exists()
+
+
+def test_compute_spec_compliance():
+    from app.exact_product import compute_spec_compliance, SpecParameterMatch
+
+    # 3 matches, 7 mismatches = 30%
+    specs = [
+        SpecParameterMatch(param_name=f"p{i}", tz_requirement="req", product_fact="fact", status="match", comment="")
+        for i in range(3)
+    ] + [
+        SpecParameterMatch(param_name=f"p{i}", tz_requirement="req", product_fact="fact", status="mismatch", comment="")
+        for i in range(7)
+    ]
+    assert compute_spec_compliance(specs) == 0.30
+
+    # 10 matches, 0 mismatches = 99%
+    all_match = [
+        SpecParameterMatch(param_name=f"p{i}", tz_requirement="req", product_fact="fact", status="match", comment="")
+        for i in range(10)
+    ]
+    assert compute_spec_compliance(all_match) == 0.99
+
+    # 5 match, 5 clarify = 75%
+    half_clarify = [
+        SpecParameterMatch(param_name=f"p{i}", tz_requirement="req", product_fact="fact", status="match", comment="")
+        for i in range(5)
+    ] + [
+        SpecParameterMatch(param_name=f"p{i}", tz_requirement="req", product_fact="fact", status="clarify", comment="")
+        for i in range(5)
+    ]
+    assert compute_spec_compliance(half_clarify) == 0.75
+
+
+def test_is_gisp_product_compatible():
+    from app.exact_product import _is_gisp_product_compatible
+
+    # False positive test: Mattress vs Analyzer
+    assert not _is_gisp_product_compatible(
+        gisp_product="Матрас BALANCE RAYTON",
+        name_in_tz="Анализатор биохимический множественных аналитов клинической химии ИВД, лабораторный, автоматический",
+        brand="Vitalon",
+        model="Vitalon 400",
+    )
+
+    # Positive test: Biochemical Analyzer
+    assert _is_gisp_product_compatible(
+        gisp_product="Анализатор биохимический автоматический BioChem FC-360",
+        name_in_tz="Анализатор биохимический множественных аналитов клинической химии ИВД, лабораторный, автоматический",
+        brand="HTI",
+        model="BioChem FC-360",
+    )
+
+
+def test_extract_real_item_name():
+    from app.exact_product import extract_real_item_name
+
+    text = "Приложение №1 Описание объекта закупки\nНаименование объекта закупки: Анализатор биохимический автоматический"
+    assert "Анализатор биохимический автоматический" in extract_real_item_name(text, "АЭФ 42-26 Описание объекта закупки.docx")
+
+
+def test_extract_key_search_parameters():
+    from app.exact_product import extract_key_search_parameters
+
+    text = "Производительность не менее 360 тестов/ч, количество кювет 80 кювет, ОКПД2 26.51.53.141"
+    params = extract_key_search_parameters(text)
+    assert any("26.51.53.141" in p for p in params)
+    assert any("360 тестов" in p for p in params)
+    assert any("80 кювет" in p for p in params)
+
+
+def test_rank_search_candidates():
+    from app.exact_product import _rank_search_candidates
+    from collections import namedtuple
+
+    Candidate = namedtuple("Candidate", ["url", "title", "snippet"])
+    c1 = Candidate(url="https://vital.ru/vitalon-400-semi-auto", title="Полуавтоматический анализатор Виталон", snippet="полуавтомат 100 тестов")
+    c2 = Candidate(url="https://hti.ru/biochem-fc-360-passport.pdf", title="Автоматический биохимический анализатор FC-360", snippet="360 тестов паспорт")
+
+    ranked = _rank_search_candidates(
+        [c1, c2],
+        target_keywords=["автоматический", "360 тестов", "паспорт"],
+        negative_keywords=["полуавтоматический", "полуавтомат"],
+    )
+    # c2 must be ranked first because c1 has heavy negative penalty
+    assert ranked[0] == "https://hti.ru/biochem-fc-360-passport.pdf"

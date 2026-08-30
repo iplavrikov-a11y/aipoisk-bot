@@ -180,7 +180,7 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
       "identified_brand": "Бренд или завод",
       "identified_model": "Точная модель / серия",
       "manufacturer": "Завод-производитель",
-      "confidence": 0.95,
+      "confidence": 1.0,
       "reasoning": "Обоснование соответствия по ГОСТ/ТУ/размерам",
       "source_url": "URL сайта производителя или паспорта",
       "specs_breakdown": [
@@ -198,7 +198,7 @@ EXACT_PRODUCT_PROMPT = """Ты — ведущий эксперт по госуд
           "brand": "Бренд аналога",
           "model": "Модель аналога",
           "manufacturer": "Завод аналога",
-          "confidence": 0.90,
+          "confidence": 1.0,
           "notes": "Обоснование эквивалентности и отличия",
           "source_url": "URL сайта завода аналога",
           "specs_breakdown": [
@@ -237,6 +237,119 @@ def extract_clean_spec_text(text: str) -> str:
     if len(cleaned) > 35000:
         cleaned = cleaned[:35000]
     return cleaned
+
+
+def extract_real_item_name(context: str, fallback_title: str = "") -> str:
+    """
+    Извлекает реальное наименование товара/оборудования из текста спецификации,
+    игнорируя канцелярские заголовки документов вроде 'Приложение №1 Описание объекта закупки'.
+    """
+    if not context:
+        return fallback_title or "Оборудование по ТЗ"
+
+    patterns = [
+        r"(?i)(?:наименование\s+(?:товара|изделия|оборудования|медицинского\s+изделия|объекта\s+закупки))\s*[:\|\t]\s*([^\n\r\|]{6,120})",
+        r"(?i)(?:предмет\s+закупки)\s*[:\|\t]\s*([^\n\r\|]{6,120})",
+        r"(?i)(?:поставка|приобретение|оказание\s+услуг\s+по\s+лизингу)\s+([а-яА-Яa-zA-Z0-9\s\-]{6,100})(?=\s+(?:для\s+нужд|по\s+адресу|в\s+соответствии|$|\n))",
+    ]
+    for pat in patterns:
+        m = re.search(pat, context)
+        if m:
+            candidate = m.group(1).strip()
+            candidate = re.sub(r'(?i)\b(согласно|в соответствии|техническое задание|приложение|таблица|гост)\b.*', '', candidate).strip(' :—–-|')
+            if len(candidate) >= 6 and not candidate.lower().startswith("приложение"):
+                return candidate
+
+    if fallback_title:
+        clean = re.sub(r'(?i)\b(аэф|аукцион|извещение|приложение\s*№?\s*\d*|описание\s+объекта\s+закупки|техническое\s+задание|документация|проект\s+контракта)\b', '', fallback_title).strip(' №-–—:|')
+        if len(clean) >= 6:
+            return clean
+
+    return fallback_title or "Оборудование по ТЗ"
+
+
+def extract_key_search_parameters(context: str) -> list[str]:
+    """
+    Извлекает числовые характеристики, производительность, мощность, габариты и ГОСТ/ОКПД2
+    для формирования высокоточных поисковых запросов без галлюцинаций.
+    """
+    params: list[str] = []
+    if not context:
+        return params
+
+    # 1. Коды классификаторов ОКПД2
+    okpd = re.findall(r'\b26\.\d{2}\.\d{2}\.\d{3}\b|\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b', context)
+    if okpd:
+        params.append(f"ОКПД2 {okpd[0]}")
+
+    # 2. Стандарты ГОСТ / ТУ
+    gosts = re.findall(r'\bГОСТ\s*(?:Р\s*)?[\d\.\-]+', context, re.IGNORECASE)
+    for g in gosts[:2]:
+        clean_g = g.strip(' .,;:|')
+        if clean_g and clean_g not in params:
+            params.append(clean_g)
+
+    # 3. Числовые характеристики (тесты/час, мощность, объем, емкость, кюветы, реагенты)
+    unit_patterns = [
+        r'(\b\d+\s*тестов(?:/ч|\s*в\s*час)?\b)',
+        r'(\b(?:не\s*менее|не\s*более|от|до)?\s*\d+(?:[\.,]\d+)?\s*(?:кВт|квт|МВт|Вт|об/мин|м3/ч|л/ч|мм2|мм|см|м|кг|т|кювет|реагентов|позиций))\b',
+    ]
+    for pat in unit_patterns:
+        matches = re.findall(pat, context, re.IGNORECASE)
+        for m in matches[:4]:
+            m_clean = m.strip()
+            if m_clean and len(m_clean) >= 3 and m_clean not in params:
+                params.append(m_clean)
+
+    return params[:6]
+
+
+def _rank_search_candidates(
+    candidates: list[Any],
+    target_keywords: list[str],
+    negative_keywords: list[str],
+) -> list[str]:
+    """
+    Ранжирует URL-адреса кандидатов из поисковой выдачи:
+    повышает в приоритете документы с конкретными паспортными данными и ключевыми параметрами,
+    и штрафует противоположные по смыслу результаты (например, полуавтомат вместо автомата).
+    """
+    scored: list[tuple[float, str]] = []
+    for c in candidates:
+        url = getattr(c, "url", "") or ""
+        if not url or not url.startswith("http"):
+            continue
+        title = getattr(c, "title", "") or ""
+        snippet = getattr(c, "snippet", "") or ""
+        text = f"{title} {snippet} {url}".lower()
+
+        score = 0.0
+        for kw in target_keywords:
+            kw_clean = kw.lower().strip()
+            if kw_clean and len(kw_clean) >= 3 and kw_clean in text:
+                score += 3.0
+
+        for nkw in negative_keywords:
+            nkw_clean = nkw.lower().strip()
+            if nkw_clean and len(nkw_clean) >= 3 and nkw_clean in text:
+                score -= 15.0  # строгий штраф за несоответствующий тип изделия
+
+        if ".pdf" in url.lower() or "pasport" in text or "паспорт" in text or "руководство" in text:
+            score += 4.0
+
+        if any(bad in url.lower() for bad in ["zakupki.gov.ru", "synapsenet.ru", "tenderplan.ru", "rostender.info", "bicotender.ru"]):
+            score -= 5.0
+
+        scored.append((score, url))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    seen = set()
+    ordered_urls: list[str] = []
+    for _, u in scored:
+        if u not in seen:
+            seen.add(u)
+            ordered_urls.append(u)
+    return ordered_urls
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +547,53 @@ async def fetch_batch_web_documents(urls: list[str], max_docs: int = 6) -> list[
 # Minpromtorg GISP Lookup
 # ---------------------------------------------------------------------------
 
+def _is_gisp_product_compatible(
+    gisp_product: str,
+    name_in_tz: str,
+    brand: str = "",
+    model: str = "",
+) -> bool:
+    """
+    Проверяет, что найденный в Реестре Минпромторга (ГИСП) товар семантически совместим с предметом закупки,
+    а не является случайным однофамильцем из другой отрасли (например: матрас вместо биохимического анализатора).
+    """
+    if not gisp_product or not name_in_tz:
+        return False
+
+    p_lower = str(gisp_product or "").lower().strip()
+    tz_lower = str(name_in_tz or "").lower().strip()
+    model_lower = str(model or "").lower().strip()
+    brand_lower = str(brand or "").lower().strip()
+
+    # 1. Если точная модель или бренд фигурирует в названии товара ГИСП
+    if model_lower and len(model_lower) >= 3 and model_lower in p_lower:
+        return True
+    if brand_lower and len(brand_lower) >= 4 and brand_lower in p_lower:
+        return True
+
+    # 2. Пересечение ключевых предметных корней слов (длиной >= 4 символа, без стоп-слов)
+    stop_words = {
+        "комплект", "система", "устройство", "изделие", "оборудование", "аппарат",
+        "прибор", "средство", "комплекс", "блок", "модуль", "установка", "материал",
+        "станция", "позиция", "наименование", "закупка", "поставка", "продукция",
+        "для", "при", "или", "под", "над", "все", "всех", "типа", "вида", "типов",
+        "номер", "часть", "элемент", "серия", "марка", "модель",
+    }
+    tz_words = {
+        w for w in re.findall(r"[а-яёa-z0-9]{4,}", tz_lower)
+        if w not in stop_words and not w.isdigit()
+    }
+    prod_words = {
+        w for w in re.findall(r"[а-яёa-z0-9]{4,}", p_lower)
+        if w not in stop_words and not w.isdigit()
+    }
+
+    if tz_words and prod_words and bool(tz_words & prod_words):
+        return True
+
+    return False
+
+
 def find_minprom_gisp_match(
     brand: str,
     manufacturer: str,
@@ -482,40 +642,13 @@ def find_minprom_gisp_match(
                     FROM entries_fts
                     JOIN entries e ON e.id = entries_fts.rowid
                     WHERE entries_fts MATCH ?
-                    LIMIT 3
+                    LIMIT 5
                     """,
                     (match_expression,),
                 )
                 rows = cursor.fetchall()
-                if rows:
-                    reg_num, manuf, prod, inn, src_url = rows[0]
-                    return GispRegistryMatch(
-                        registry_number=str(reg_num or "").strip(),
-                        manufacturer=str(manuf or "").strip(),
-                        product=str(prod or "").strip(),
-                        inn=str(inn or "").strip(),
-                        source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
-                        matched=True,
-                    )
-            except sqlite3.Error:
-                pass
-
-            # 2. Мягкий поиск по первому ключевому термину (если многословный запрос не дал результатов)
-            if len(terms) > 1 and len(terms[0]) >= 4:
-                try:
-                    cursor = conn.execute(
-                        """
-                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
-                        FROM entries_fts
-                        JOIN entries e ON e.id = entries_fts.rowid
-                        WHERE entries_fts MATCH ?
-                        LIMIT 3
-                        """,
-                        (f'"{terms[0]}"*',),
-                    )
-                    rows = cursor.fetchall()
-                    if rows:
-                        reg_num, manuf, prod, inn, src_url = rows[0]
+                for reg_num, manuf, prod, inn, src_url in rows:
+                    if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
                         return GispRegistryMatch(
                             registry_number=str(reg_num or "").strip(),
                             manufacturer=str(manuf or "").strip(),
@@ -524,6 +657,33 @@ def find_minprom_gisp_match(
                             source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
                             matched=True,
                         )
+            except sqlite3.Error:
+                pass
+
+            # 2. Мягкий поиск по первому ключевому термину (с обязательной фильтрацией по совместимости)
+            if len(terms) > 1 and len(terms[0]) >= 4:
+                try:
+                    cursor = conn.execute(
+                        """
+                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                        FROM entries_fts
+                        JOIN entries e ON e.id = entries_fts.rowid
+                        WHERE entries_fts MATCH ?
+                        LIMIT 5
+                        """,
+                        (f'"{terms[0]}"*',),
+                    )
+                    rows = cursor.fetchall()
+                    for reg_num, manuf, prod, inn, src_url in rows:
+                        if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
+                            return GispRegistryMatch(
+                                registry_number=str(reg_num or "").strip(),
+                                manufacturer=str(manuf or "").strip(),
+                                product=str(prod or "").strip(),
+                                inn=str(inn or "").strip(),
+                                source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                                matched=True,
+                            )
                 except sqlite3.Error:
                     pass
 
@@ -1118,6 +1278,54 @@ async def auto_fill_ai_recommendations(
     return total_filled
 
 
+def compute_spec_compliance(specs: list[SpecParameterMatch]) -> float:
+    """
+    Математический расчет процента соответствия ТЗ по проверенным параметрам (Форма 2).
+    Исключает подгонку и галлюцинации ИИ.
+    """
+    if not specs:
+        return 0.50
+    total = len(specs)
+    matches = sum(1 for s in specs if s.status == "match")
+    mismatches = sum(1 for s in specs if s.status == "mismatch")
+    clarifies = sum(1 for s in specs if s.status == "clarify")
+
+    if mismatches > 0:
+        # Прямые отклонения жестко снижают процент
+        return round(matches / total, 2)
+    else:
+        # Если отклонений нет, параметры без открытого подтверждения (clarify)
+        # учитываются с коэффициентом 0.5 до момента проверки по заводскому паспорту
+        return round(min(0.99, (matches + 0.5 * clarifies) / total), 2)
+
+
+def recompute_and_reconcile_positions(positions: list[ExactProductPosition]) -> None:
+    """
+    Пересчитывает честное соответствие по всем позициям и аналогам
+    и добавляет предупреждения при обнаружении критических отклонений от ТЗ.
+    """
+    for pos in positions:
+        if pos.specs_breakdown:
+            total = len(pos.specs_breakdown)
+            mismatches = sum(1 for s in pos.specs_breakdown if s.status == "mismatch")
+            real_conf = compute_spec_compliance(pos.specs_breakdown)
+            pos.confidence = real_conf
+
+            if mismatches >= 3 or (total > 0 and mismatches / total >= 0.4):
+                pct_str = f"{int(real_conf * 100)}%"
+                warning_lead = (
+                    f"ВНИМАНИЕ: Проверенная модель {pos.identified_brand} {pos.identified_model} "
+                    f"имеет критические отклонения от ТЗ (соответствие {pct_str}, {mismatches} из {total} параметров отклоняются). "
+                    f"Товар не удовлетворяет требованиям заказчика."
+                )
+                if warning_lead not in pos.reasoning:
+                    pos.reasoning = f"{warning_lead} {pos.reasoning}".strip()
+
+        for alt in pos.alternative_brands:
+            if alt.specs_breakdown:
+                alt.confidence = compute_spec_compliance(alt.specs_breakdown)
+
+
 # ---------------------------------------------------------------------------
 # Intelligent Search Query Planner
 # ---------------------------------------------------------------------------
@@ -1129,58 +1337,62 @@ async def plan_exact_product_search(
 ) -> dict[str, Any]:
     """
     Интеллектуальный генератор поисковой стратегии:
-    выделяет реальный предмет закупки, отраслевую категорию, ведущих производителей РФ,
-    серии оборудования и формирует точные целевые поисковые запросы для каталогов и PDF-паспортов.
+    выделяет реальный предмет закупки, отраслевую категорию, ключевые числовые критерии
+    и формирует точные целевые поисковые запросы для каталогов и PDF-паспортов без выдумывания моделей.
     """
-    default_queries: list[str] = []
-    if procurement_title and len(procurement_title.strip()) > 5:
-        clean_title = re.sub(
-            r'(?i)\b(поставка|оказание услуг|выполнение работ|закупка|для нужд|приобретение|приложение|извещение|техническое задание)\b',
-            '',
-            procurement_title,
-        ).strip()
-        if clean_title:
-            default_queries.append(f"{clean_title[:65]} производитель Россия")
-            default_queries.append(f"{clean_title[:65]} технические характеристики паспорт")
-            default_queries.append(f"{clean_title[:65]} filetype:pdf (паспорт OR характеристики)")
+    item_name = extract_real_item_name(context, procurement_title)
+    key_params = extract_key_search_parameters(context)
+
+    default_queries: list[str] = [
+        f"{item_name[:55]} характеристики паспорт",
+        f"{item_name[:55]} производитель Россия каталог",
+        f"{item_name[:55]} filetype:pdf (паспорт OR руководство)",
+    ]
+    for kp in key_params[:2]:
+        default_queries.append(f'"{item_name[:40]}" {kp} паспорт')
 
     tu_matches = re.findall(r"(?:ТУ|СТО|ГОСТ)\s*[\d\.\-]+", context, re.IGNORECASE)
     for tu in tu_matches[:2]:
         default_queries.append(f'"{tu.strip()}" завод производитель')
 
     default_plan = {
-        "identified_item_name": procurement_title or "Оборудование по ТЗ",
-        "category": "Промышленная продукция",
+        "identified_item_name": item_name,
+        "category": "Промышленная и медицинская продукция",
+        "key_parameters": key_params,
         "primary_manufacturers": [],
         "model_series": [],
-        "search_queries": default_queries[:5],
+        "search_queries": default_queries[:6],
     }
 
     if not settings.has_active_ai_provider:
         return default_plan
 
-    prompt = f"""Ты — главный инженер и ведущий эксперт по промышленному оборудованию и госзакупкам по 44-ФЗ/223-ФЗ.
-Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов и PDF-паспортов:
-1. Выдели точный предмет закупки / вид оборудования (очисти от названий документов типа "Приложение №...", "Извещение...").
-2. Определи отраслевую категорию и технические серии/типоразмеры оборудования в РФ.
-3. Назови 2-4 ведущих российских завода-производителя и их модельные ряды.
-4. Сформируй 4-6 высокоточных поисковых запросов для Яндекса для поиска официальных сайтов заводов, каталогов, технических описаний и PDF-паспортов.
+    prompt = f"""Ты — главный инженер и ведущий эксперт по промышленному оборудованию, медицинским изделиям, строительным материалам и госзакупкам по 44-ФЗ/223-ФЗ.
+Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов, спецификаций и PDF-паспортов:
+1. Предмет закупки / вид продукции: {item_name}.
+2. Извлеки 3-5 КЛЮЧЕВЫХ ТЕХНИЧЕСКИХ ПАРАМЕТРОВ из ТЗ (тип прибора/изделия, производительность, мощность, габариты, емкость, ГОСТ или ОКПД2).
+3. Сформируй 4-6 высокоточных поисковых запросов для Яндекса.
 
-Наименование/контекст закупки: {procurement_title}
+КРИТИЧЕСКИЕ ПРАВИЛА:
+- СТРОГО ЗАПРЕЩЕНО выдумывать конкретные модели или индексы из головы (например, полуавтомат вместо автомата), если точная модель не названа в самом ТЗ!
+- Поисковые запросы должны опираться на реальные ключевые параметры из ТЗ, чтобы найти именно то оборудование, которое заложено заказчиком, а не случайный неподходящий товар.
+
+Наименование закупки: {item_name}
 Фрагмент ТЗ:
-{context[:4500]}
+{context[:5500]}
 
 Ответь СТРОГО в формате JSON:
 {{
-  "identified_item_name": "Точное наименование оборудования",
+  "identified_item_name": "{item_name[:80]}",
   "category": "Отраслевая категория",
-  "primary_manufacturers": ["Завод 1", "Завод 2", "Завод 3"],
+  "key_parameters": ["параметр 1", "параметр 2", "параметр 3"],
+  "primary_manufacturers": ["Завод 1", "Завод 2"],
   "model_series": ["Серия 1", "Серия 2"],
   "search_queries": [
-    "запрос 1 каталог производителя РФ",
-    "запрос 2 технические характеристики таблица",
+    "запрос 1 с ключевыми параметрами ТЗ",
+    "запрос 2 с характеристиками и паспортом",
     "запрос 3 filetype:pdf (паспорт OR руководство OR опросный лист)",
-    "запрос 4 конкретная модель завод аналог"
+    "запрос 4 производитель каталог"
   ]
 }}"""
 
@@ -1188,7 +1400,7 @@ async def plan_exact_product_search(
         raw = await call_llm(
             settings,
             prompt,
-            system_prompt="Ты эксперт по закупкам и промышленному оборудованию. Отвечай только JSON.",
+            system_prompt="Ты эксперт по закупкам и инженерному анализу. Отвечай только валидным JSON.",
             tier="light",
             routing_key="procurement_brand_detection",
             json_mode=True,
@@ -1198,7 +1410,14 @@ async def plan_exact_product_search(
         if isinstance(parsed, dict) and parsed.get("search_queries"):
             ai_queries = [str(q).strip() for q in parsed.get("search_queries", []) if str(q).strip()]
             if ai_queries:
-                parsed["search_queries"] = ai_queries[:6]
+                combined = []
+                for q in ai_queries:
+                    if q not in combined:
+                        combined.append(q)
+                for dq in default_queries[:2]:
+                    if dq not in combined:
+                        combined.append(dq)
+                parsed["search_queries"] = combined[:6]
                 return parsed
     except Exception as exc:
         logger.warning("plan_exact_product_search_llm_failed: %s", exc)
@@ -1227,7 +1446,8 @@ async def analyze_exact_product(
     if not clean_context:
         clean_context = context[:20000]
 
-    header_context = f"Наименование закупки: {procurement_title}\n\n" if procurement_title else ""
+    item_name = extract_real_item_name(clean_context, procurement_title)
+    header_context = f"Наименование закупки: {item_name}\n\n" if item_name else ""
 
     yandex_requests_count = 0
     yandex_cost_rub = 0.0
@@ -1238,7 +1458,7 @@ async def analyze_exact_product(
     folder_id, api_key = _yandex_credentials(settings)
     if folder_id and api_key:
         # ЭТАП 1: Интеллектуальное планирование поисковых запросов
-        search_plan = await plan_exact_product_search(settings, clean_context, procurement_title)
+        search_plan = await plan_exact_product_search(settings, clean_context, item_name)
         primary_queries = search_plan.get("search_queries", [])
 
         if primary_queries:
@@ -1246,30 +1466,45 @@ async def analyze_exact_product(
                 candidates, y_reqs = await _search_with_yandex(settings, primary_queries, max_results=12)
                 yandex_requests_count += y_reqs
 
-                candidate_urls = [c.url for c in candidates if c.url and c.url.startswith("http")]
+                # Определение целевых и отрицательных ключевых слов для ранжирования документов
+                target_kws = [item_name[:30]]
+                for kp in search_plan.get("key_parameters", [])[:4]:
+                    target_kws.append(str(kp).strip())
+                target_kws.extend(["паспорт", "каталог", "характеристики", "руководство"])
+
+                negative_kws = []
+                ctx_lower = clean_context.lower()
+                if "автоматический" in ctx_lower and "полуавтоматический" not in ctx_lower:
+                    negative_kws.extend(["полуавтоматический", "полуавтомат"])
+                if "новый" in ctx_lower and "б/у" not in ctx_lower:
+                    negative_kws.extend(["б/у", "восстановленный", "аренда"])
+
+                candidate_urls = _rank_search_candidates(candidates, target_kws, negative_kws)
                 for cand in candidates:
                     if cand.domain and cand.domain not in web_sources:
                         web_sources.append(cand.domain)
 
-                # ЭТАП 2: Добор документации по ключевым заводам-аналогам
+                # ЭТАП 2: Добор документации по ключевым параметрам и заводам-аналогам
+                key_params = search_plan.get("key_parameters", [])
                 manufacturers = search_plan.get("primary_manufacturers", [])
-                model_series = search_plan.get("model_series", [])
                 secondary_queries: list[str] = []
+                for kp in key_params[:2]:
+                    clean_kp = re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', str(kp)).strip()
+                    if clean_kp and len(clean_kp) >= 4:
+                        secondary_queries.append(f'"{item_name[:40]}" {clean_kp[:45]} паспорт')
                 for m in manufacturers[:2]:
                     clean_m = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|ГК|НПК|НПО|ТД|«|»|")', '', str(m)).strip()
                     if clean_m and len(clean_m) > 2:
-                        secondary_queries.append(f'"{clean_m}" {search_plan.get("identified_item_name", "")[:40]} характеристики паспорт')
-                for s in model_series[:2]:
-                    clean_s = str(s).strip()
-                    if clean_s and len(clean_s) > 2:
-                        secondary_queries.append(f'"{clean_s}" технические характеристики filetype:pdf')
+                        secondary_queries.append(f'"{clean_m}" "{item_name[:40]}" характеристики')
 
                 if secondary_queries:
                     sec_candidates, sec_reqs = await _search_with_yandex(settings, secondary_queries[:3], max_results=6)
                     yandex_requests_count += sec_reqs
+                    sec_ranked = _rank_search_candidates(sec_candidates, target_kws, negative_kws)
+                    for sc_url in sec_ranked:
+                        if sc_url not in candidate_urls:
+                            candidate_urls.append(sc_url)
                     for sc in sec_candidates:
-                        if sc.url and sc.url not in candidate_urls:
-                            candidate_urls.append(sc.url)
                         if sc.domain and sc.domain not in web_sources:
                             web_sources.append(sc.domain)
 
@@ -1349,14 +1584,14 @@ async def analyze_exact_product(
         manufacturer = str(pos_dict.get("manufacturer") or "").strip()
         pos_source_url = str(pos_dict.get("source_url") or "").strip()
         
-        raw_conf = pos_dict.get("confidence", 0.95)
+        raw_conf = pos_dict.get("confidence", 0.50)
         try:
             conf = float(raw_conf)
             if conf > 1.0:
                 conf = conf / 100.0
-            conf = round(min(0.99, max(0.50, conf)), 2)
+            conf = round(min(0.99, max(0.10, conf)), 2)
         except Exception:
-            conf = 0.95
+            conf = 0.50
 
         reasoning = str(pos_dict.get("reasoning") or "").strip()
 
@@ -1393,6 +1628,10 @@ async def analyze_exact_product(
                         source_url=s_url,
                     ))
 
+        # Честный математический расчет соответствия позиции по Форме 2
+        if specs_list:
+            conf = compute_spec_compliance(specs_list)
+
         # Парсинг аналогов
         alts_list: list[AlternativeProduct] = []
         raw_alts = pos_dict.get("alternative_brands") or []
@@ -1405,14 +1644,14 @@ async def analyze_exact_product(
                 a_manuf = str(a.get("manufacturer") or a_brand).strip()
                 a_notes = str(a.get("notes") or "").strip()
                 a_src_url = str(a.get("source_url") or "").strip()
-                raw_a_conf = a.get("confidence", 0.90)
+                raw_a_conf = a.get("confidence", 0.50)
                 try:
                     a_conf = float(raw_a_conf)
                     if a_conf > 1.0:
                         a_conf = a_conf / 100.0
-                    a_conf = round(min(0.99, max(0.50, a_conf)), 2)
+                    a_conf = round(min(0.99, max(0.10, a_conf)), 2)
                 except Exception:
-                    a_conf = 0.90
+                    a_conf = 0.50
 
                 # Построчная сверка параметров аналога для Формы-2
                 alt_specs_list: list[SpecParameterMatch] = []
@@ -1456,6 +1695,9 @@ async def analyze_exact_product(
                             comment="Параметр аналога не подтвержден в открытых источниках",
                             source_url=a_src_url,
                         ))
+
+                if alt_specs_list:
+                    a_conf = compute_spec_compliance(alt_specs_list)
 
                 # Поиск аналога в реестре Минпромторга (ГИСП)
                 alt_gisp_match = find_minprom_gisp_match(
@@ -1536,10 +1778,21 @@ async def analyze_exact_product(
     except Exception as auto_exc:
         logger.debug("auto_fill_recommendations_phase_failed: %s", auto_exc)
 
+    # Финальная сверка и честный математический пересчет соответствия по всем позициям
+    recompute_and_reconcile_positions(positions)
+
+    # Если все выявленные позиции имеют критические отклонения (< 0.60), предупреждаем в резюме
+    if positions and all(p.confidence < 0.60 for p in positions):
+        summary = (
+            f"ВНИМАНИЕ: Проверенная модель {positions[0].identified_brand} {positions[0].identified_model} "
+            f"имеет существенные отклонения от требований ТЗ (соответствие {int(positions[0].confidence * 100)}%). "
+            f"Подробная ведомость расхождений приведена ниже в Форме 2. Рекомендуется запросить официальный паспорт производителя."
+        )
+
     if not positions:
         positions.append(ExactProductPosition(
             position_no=1,
-            name_in_tz=procurement_title or "Оборудование / Товар по ТЗ",
+            name_in_tz=item_name or procurement_title or "Оборудование / Товар по ТЗ",
             identified_brand="Промышленный производитель РФ",
             identified_model="Соответствует ТЗ",
             manufacturer="Завод промышленного оборудования",
@@ -1553,7 +1806,7 @@ async def analyze_exact_product(
         ))
 
     report = ExactProductReport(
-        procurement_title=procurement_title or "Анализ технического задания и подбор эквивалентов",
+        procurement_title=item_name or procurement_title or "Анализ технического задания и подбор эквивалентов",
         total_positions=len(positions),
         positions=positions,
         summary=summary or f"Выявлено {len(positions)} позиций ТЗ с конкретными моделями производителей и аналогами по 44/223-ФЗ.",
@@ -1761,7 +2014,13 @@ def write_exact_product_docx(
         cells[2].text = f"{pos.identified_brand} {pos.identified_model}".strip()
         cells[3].text = pos.manufacturer
         cells[4].text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
-        cells[5].text = f"{int(pos.confidence * 100)}%"
+        conf_pct = int(round(pos.confidence * 100))
+        if conf_pct >= 85:
+            cells[5].text = f"{conf_pct}%"
+        elif conf_pct >= 60:
+            cells[5].text = f"{conf_pct}%"
+        else:
+            cells[5].text = f"{conf_pct}%\n(Откл.)"
 
         main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
         cells[6].text = f"{main_alt.brand} {main_alt.model}" if main_alt else "—"
@@ -1791,7 +2050,12 @@ def write_exact_product_docx(
             if idx == 5:
                 for r in p.runs:
                     r.font.bold = True
-                    r.font.color.rgb = TEXT_GREEN
+                    if conf_pct >= 85:
+                        r.font.color.rgb = TEXT_GREEN
+                    elif conf_pct >= 60:
+                        r.font.color.rgb = RGBColor(180, 83, 9)
+                    else:
+                        r.font.color.rgb = RGBColor(220, 38, 38)
 
     _set_table_full_grid_borders(sum_table, BORDER_COLOR)
     _prevent_row_split(sum_table)
@@ -1814,7 +2078,10 @@ def write_exact_product_docx(
         _set_table_fixed_width(pos_banner, 6.97)
         pos_banner.rows[0].cells[0].width = Inches(6.97)
         b_cell = pos_banner.rows[0].cells[0]
-        _set_cell_bg(b_cell, BANNER_EMERALD)
+        
+        conf_pct = int(round(pos.confidence * 100))
+        banner_bg = BANNER_EMERALD if conf_pct >= 60 else "991B1B"
+        _set_cell_bg(b_cell, banner_bg)
         bp = b_cell.paragraphs[0]
         bp.paragraph_format.space_before = Pt(3)
         bp.paragraph_format.space_after = Pt(3)
@@ -1822,21 +2089,24 @@ def write_exact_product_docx(
         
         gisp_str = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
         src_tag = f" | Источник: {pos.source_url[:45]}..." if pos.source_url else ""
-        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\nТовар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")
+        status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
+        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")
         brun.font.bold = True
         brun.font.size = Pt(9)
         brun.font.color.rgb = RGBColor(255, 255, 255)
-        _set_table_full_grid_borders(pos_banner, BANNER_EMERALD)
+        _set_table_full_grid_borders(pos_banner, banner_bg)
 
         if pos.reasoning:
             rsn_p = doc.add_paragraph()
             rsn_p.paragraph_format.space_before = Pt(3)
             rsn_p.paragraph_format.space_after = Pt(3)
             rsn_p.paragraph_format.left_indent = Inches(0.05)
-            r_lbl = rsn_p.add_run("Обоснование соответствия ТЗ: ")
+            lbl_title = "Обоснование соответствия ТЗ: " if conf_pct >= 60 else "Результат сверки с ТЗ (Отклонение): "
+            lbl_color = BRAND_EMERALD if conf_pct >= 60 else RGBColor(220, 38, 38)
+            r_lbl = rsn_p.add_run(lbl_title)
             r_lbl.font.bold = True
             r_lbl.font.size = Pt(8.5)
-            r_lbl.font.color.rgb = BRAND_EMERALD
+            r_lbl.font.color.rgb = lbl_color
 
             r_val = rsn_p.add_run(pos.reasoning)
             r_val.font.size = Pt(8.5)
@@ -2338,6 +2608,9 @@ def write_exact_product_xlsx(
         main_alt = pos.alternative_brands[0] if pos.alternative_brands else None
         alt_str = f"{main_alt.brand} {main_alt.model} ({main_alt.manufacturer})" if main_alt else "—"
 
+        conf_pct = int(round(pos.confidence * 100))
+        conf_label = f"{conf_pct}%" if conf_pct >= 60 else f"{conf_pct}% (Откл.)"
+
         row_vals = [
             pos.position_no or pos_idx,
             pos.name_in_tz,
@@ -2345,7 +2618,7 @@ def write_exact_product_xlsx(
             pos.identified_model,
             pos.manufacturer,
             gisp_text,
-            f"{int(pos.confidence * 100)}%",
+            conf_label,
             alt_str,
         ]
         ws.append(row_vals)
@@ -2363,7 +2636,12 @@ def write_exact_product_xlsx(
                 c.font = green_bold if (pos.gisp_match and pos.gisp_match.registry_number) else reg_10
                 c.alignment = Alignment(horizontal="center", vertical="top")
             elif col_idx == 7:
-                c.font = green_bold
+                if conf_pct >= 85:
+                    c.font = green_bold
+                elif conf_pct >= 60:
+                    c.font = amber_bold
+                else:
+                    c.font = red_bold
                 c.alignment = Alignment(horizontal="center", vertical="top")
             elif col_idx in (3, 4):
                 c.font = bold_10
@@ -2392,11 +2670,14 @@ def write_exact_product_xlsx(
         ws.row_dimensions[r_pos_sep].height = 10
 
         gisp_text = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
-        banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_text}"
+        conf_pct = int(round(pos.confidence * 100))
+        status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
+        banner_text = f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}   |   {status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_text}"
 
+        banner_fill = navy_pos if conf_pct >= 60 else PatternFill(start_color="991B1B", end_color="991B1B", fill_type="solid")
         ws.append([banner_text])
         r_ban = ws.max_row
-        _style_range(r_ban, 1, 8, fill=navy_pos, font=white_bold_11, align=Alignment(vertical="center", wrap_text=True))
+        _style_range(r_ban, 1, 8, fill=banner_fill, font=white_bold_11, align=Alignment(vertical="center", wrap_text=True))
         ws.row_dimensions[r_ban].height = _calc_merged_h(banner_text, 169, 20, 28)
 
         if pos.reasoning:
@@ -2469,25 +2750,28 @@ def write_exact_product_xlsx(
 
             for a_idx, alt in enumerate(pos.alternative_brands, start=1):
                 notes_text = alt.notes or "Взаимозаменяемый промышленный аналог"
+                alt_conf_pct = int(round(alt.confidence * 100))
+                alt_conf_label = f"{alt_conf_pct}%" if alt_conf_pct >= 60 else f"{alt_conf_pct}% (Откл.)"
                 ws.append([
                     a_idx,
                     f"{alt.brand} {alt.model}",
                     alt.manufacturer,
                     "Россия",
                     "Реестр РФ",
-                    f"{int(alt.confidence * 100)}%",
+                    alt_conf_label,
                     notes_text,
                     "",
                 ])
                 r_alt = ws.max_row
                 fill_a = zebra_bg if a_idx % 2 == 1 else white_bg
+                alt_conf_font = green_bold if alt_conf_pct >= 85 else amber_bold if alt_conf_pct >= 60 else red_bold
 
                 _style_range(r_alt, 1, 1, fill=fill_a, font=bold_10, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
                 _style_range(r_alt, 2, 2, fill=fill_a, font=bold_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
                 _style_range(r_alt, 3, 3, fill=fill_a, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
                 _style_range(r_alt, 4, 4, fill=fill_a, font=reg_10, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
                 _style_range(r_alt, 5, 5, fill=fill_a, font=green_bold, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
-                _style_range(r_alt, 6, 6, fill=fill_a, font=green_bold, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
+                _style_range(r_alt, 6, 6, fill=fill_a, font=alt_conf_font, align=Alignment(horizontal="center", vertical="top"), border=thin_border)
                 _style_range(r_alt, 7, 8, fill=fill_a, font=reg_10, align=Alignment(vertical="top", wrap_text=True), border=thin_border)
 
                 alt_cells = [

@@ -3677,20 +3677,26 @@ def _build_exact_product_supplier_selection_text(
             model = pos.get("identified_model", "")
             mfr = pos.get("manufacturer", "")
             lines.append(f"Позиция {p_no}: {name_tz}")
+            conf = float(pos.get("confidence", 0.90) or 0.90)
             identified = _clean_brand_model_label(mfr, brand, model)
             if identified:
-                lines.append(f"- Выявленный точный товар: {identified}")
+                if conf >= 0.60:
+                    lines.append(f"- Выявленный точный товар: {identified}")
+                else:
+                    lines.append(f"- Проверенная модель {identified} имеет отклонения от ТЗ (соответствие {int(conf*100)}%). Искать поставщиков по техническим характеристикам позиции: {name_tz}")
             alts = pos.get("alternative_brands", [])
             if include_alternatives and isinstance(alts, list) and alts:
                 alt_lines = []
                 for a in alts:
                     if isinstance(a, dict):
-                        a_b = a.get("brand", "")
-                        a_m = a.get("model", "")
-                        a_mfr = a.get("manufacturer", "")
-                        item_str = _clean_brand_model_label(a_mfr, a_b, a_m)
-                        if item_str:
-                            alt_lines.append(item_str)
+                        a_conf = float(a.get("confidence", 0.90) or 0.90)
+                        if a_conf >= 0.60:
+                            a_b = a.get("brand", "")
+                            a_m = a.get("model", "")
+                            a_mfr = a.get("manufacturer", "")
+                            item_str = _clean_brand_model_label(a_mfr, a_b, a_m)
+                            if item_str:
+                                alt_lines.append(item_str)
                 if alt_lines:
                     lines.append(f"- Допустимые проверенные аналоги: {'; '.join(alt_lines)}")
             lines.append("")
