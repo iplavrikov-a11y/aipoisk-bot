@@ -4544,13 +4544,13 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                     ? `Товаров: ${job.verified_count || 1}`
                     : `Поставщиков: ${supplierCountLabel(job)}`}
                 </span>
-                {job.mode === 'exact_product' ? (
-                  <span className="badge-pill yandex-cost" title="Подбор товара использует локальный анализ LLM без платных запросов к Яндекс Поиску">
-                    ⚡ Без Яндекс API (0.00 ₽)
-                  </span>
-                ) : Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
+                {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
                   <span className="badge-pill yandex-cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
                     🔍 {job.yandex_requests_count ? `${job.yandex_requests_count} запр. · ` : ''}{(job.yandex_cost_rub || 0).toFixed(2)} ₽
+                  </span>
+                ) : job.mode === 'exact_product' ? (
+                  <span className="badge-pill yandex-cost" title="Подбор товара выполнен без платных запросов к Яндекс Поиску">
+                    ⚡ Без Яндекс API (0.00 ₽)
                   </span>
                 ) : null}
               </div>
