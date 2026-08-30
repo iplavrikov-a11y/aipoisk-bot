@@ -78,7 +78,7 @@ TERMINAL_JOB_STATUSES = {
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_DELIVERY_EXPIRED,
 }
-STALE_RUNNING_AFTER = timedelta(minutes=2)
+STALE_RUNNING_AFTER = timedelta(minutes=8)
 WORKER_POLL_INTERVAL_SECONDS = 2.0
 JOB_CANCELLATION_POLL_INTERVAL_SECONDS = 0.5
 MODE_SUPPLIER_SEARCH = "supplier_search"
@@ -1432,13 +1432,23 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
 def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
-    _set_job(db, job, progress=25, message="Поиск производителей в интернете (Яндекс) и реестре Минпромторга")
+    _set_job(db, job, progress=15, message="Интеллектуальный анализ ТЗ и планирование поиска (ИИ)")
     subject = job.title or "Спецификация ТЗ"
+
+    async def _progress_callback(progress: int, message: str) -> None:
+        _check_cancelled(job.id, db=db, job=job)
+        _set_job(db, job, progress=progress, message=message)
+
     report = asyncio.run(
-        analyze_exact_product(settings, context, procurement_title=job.title)
+        analyze_exact_product(
+            settings,
+            context,
+            procurement_title=job.title,
+            progress_callback=_progress_callback,
+        )
     )
     _check_cancelled(job.id)
-    _set_job(db, job, progress=75, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
+    _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
     out_dir = job_dir(job.id) / "output"
     stem = _result_stem(job, subject)
     docx_path = write_exact_product_docx(

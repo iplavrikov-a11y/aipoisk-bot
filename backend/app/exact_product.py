@@ -1705,10 +1705,21 @@ async def plan_exact_product_search(
 # Main Analysis Pipeline
 # ---------------------------------------------------------------------------
 
+async def _notify_progress(callback: Any, progress: int, message: str) -> None:
+    if callback:
+        try:
+            res = callback(progress, message)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception:
+            pass
+
+
 async def analyze_exact_product(
     settings: SystemSettings,
     context: str,
     procurement_title: str = "",
+    progress_callback: Any = None,
 ) -> ExactProductReport:
     """
     Главная функция анализа ТЗ:
@@ -1731,6 +1742,8 @@ async def analyze_exact_product(
     verified_docs: list[dict[str, Any]] = []
     verified_docs_block = ""
 
+    await _notify_progress(progress_callback, 20, "Интеллектуальный анализ ТЗ и планирование поиска (ИИ)...")
+
     folder_id, api_key = _yandex_credentials(settings)
     if folder_id and api_key:
         # ЭТАП 1: Интеллектуальное планирование поисковых запросов
@@ -1739,6 +1752,7 @@ async def analyze_exact_product(
 
         if primary_queries:
             try:
+                await _notify_progress(progress_callback, 35, f"Поиск технической документации в сети ({len(primary_queries)} запросов)...")
                 candidates, y_reqs = await _search_with_yandex(settings, primary_queries, max_results=12)
                 yandex_requests_count += y_reqs
 
@@ -1787,6 +1801,7 @@ async def analyze_exact_product(
                 yandex_cost_rub = round(yandex_requests_count * unit_price, 2)
 
                 # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
+                await _notify_progress(progress_callback, 50, f"Скачивание паспортов и спецификаций ({len(candidate_urls[:6])} источников)...")
                 fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=6)
                 verified_docs = fetched_documents
 
@@ -1814,6 +1829,7 @@ async def analyze_exact_product(
                 logger.warning("yandex_search_enrichment_failed_for_exact_product: %s", y_exc)
 
     prompt_text = header_context + clean_context + verified_docs_block
+    await _notify_progress(progress_callback, 65, "Сопоставление ТЗ со спецификациями и каталогами (ИИ)...")
 
     system_prompt = (
         "Ты — ведущий эксперт по государственным закупкам по 44-ФЗ/223-ФЗ и проверке технической документации. "
@@ -2019,6 +2035,7 @@ async def analyze_exact_product(
         ))
 
     # ЭТАП 2: Адаптивный точечный добор недостающих параметров (Targeted Sub-Search)
+    await _notify_progress(progress_callback, 78, "Точечная сверка параметров по паспортам и реестру ГИСП...")
     candidate_urls_set = set(candidate_urls) if 'candidate_urls' in locals() and candidate_urls else set()
     try:
         clarify_resolved, clarify_cost = await resolve_clarify_parameters(
@@ -2033,6 +2050,7 @@ async def analyze_exact_product(
         logger.debug("clarify_resolution_phase_failed: %s", cl_exc)
 
     # ЭТАП 3: Инженерный модуль стандартов ГОСТ / ТУ / СТО
+    await _notify_progress(progress_callback, 88, "Сверка со стандартами ГОСТ/ТУ и автоподбор Формы 2...")
     try:
         std_resolved, std_cost = await resolve_standards_parameters(
             settings=settings,
