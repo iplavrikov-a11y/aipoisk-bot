@@ -129,6 +129,12 @@ type CustomerJob = {
   can_download: boolean;
   can_cancel: boolean;
   can_find_more_suppliers: boolean;
+  can_start_supplier_search?: boolean;
+  exact_product_summary?: {
+    primary_product?: string;
+    alternatives?: string[];
+    total_positions?: number;
+  } | null;
   result_files: Array<{
     kind: string;
     label: string;
@@ -816,6 +822,10 @@ export function CabinetClient() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
   const [findMorePrompt, setFindMorePrompt] = useState("");
+  const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
+  const [startSupplierSearchPolicy, setStartSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [startSupplierSearchAlternatives, setStartSupplierSearchAlternatives] = useState<boolean>(true);
+  const [startSupplierSearchPrompt, setStartSupplierSearchPrompt] = useState<string>("");
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1492,6 +1502,41 @@ export function CabinetClient() {
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
       setMessage(payload.message || "Запущен дополнительный поиск поставщиков.");
+      setJobsPage(1);
+      await loadSession();
+      await loadJobs(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startSupplierSearchFromExact(job: CustomerJob) {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    const policyToSend = startSupplierSearchPolicy;
+    const includeAlts = startSupplierSearchAlternatives;
+    const promptToSend = startSupplierSearchPrompt.trim();
+    setStartSupplierSearchConfirmJob(null);
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/start-supplier-search`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "x-csrf-token": csrf,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          supplier_search_policy: policyToSend,
+          include_alternatives: includeAlts,
+          additional_prompt: promptToSend,
+        }),
+      });
+      const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      setMessage(payload.message || "Поиск поставщиков успешно запущен на основе подобранного оборудования.");
       setJobsPage(1);
       await loadSession();
       await loadJobs(1);
@@ -2482,6 +2527,25 @@ export function CabinetClient() {
                             <span>Найти ещё</span>
                           </button>
                         ) : null}
+                        {job.can_start_supplier_search || (job.mode === "exact_product" && isCompletedWithResult) ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markJobAsViewed(job.id);
+                              setStartSupplierSearchConfirmJob(job);
+                              setStartSupplierSearchPolicy("normal");
+                              setStartSupplierSearchAlternatives(true);
+                              setStartSupplierSearchPrompt("");
+                            }}
+                            disabled={busy}
+                            title="Найти поставщиков подобранного оборудования"
+                          >
+                            <Search size={15} aria-hidden="true" />
+                            <span>Найти поставщиков</span>
+                          </button>
+                        ) : null}
                         {(() => {
                           if (job.mode !== "analysis_and_suppliers" || !isFailed) {
                             return null;
@@ -2630,6 +2694,123 @@ export function CabinetClient() {
               >
                 {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
                 <span>Продолжить</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {startSupplierSearchConfirmJob ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setStartSupplierSearchConfirmJob(null);
+            }
+          }}
+        >
+          <section className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 space-y-4 font-sans text-center" role="dialog" aria-modal="true" aria-labelledby="start-suppliers-confirm-title">
+            <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-700 mx-auto flex items-center justify-center border border-teal-200 shadow-2xs mb-2">
+              <Search size={20} aria-hidden="true" />
+            </div>
+            <div className="space-y-1">
+              <h2 id="start-suppliers-confirm-title" className="text-base font-extrabold text-slate-900">Поиск поставщиков по подобранным товарам</h2>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Система запустит поиск официальных дистрибьюторов, дилеров и поставщиков на основе выявленного оборудования и ТЗ.
+              </p>
+              <span className="text-[11px] font-bold text-slate-400 block mt-1">{startSupplierSearchConfirmJob.human_title}</span>
+            </div>
+
+            {startSupplierSearchConfirmJob.exact_product_summary ? (
+              <div className="text-left bg-slate-50 border border-slate-200/80 rounded-2xl p-3 space-y-1.5 text-xs text-slate-700">
+                {startSupplierSearchConfirmJob.exact_product_summary.primary_product ? (
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Выявленный товар:</span>
+                    <strong className="text-slate-900 font-bold">{startSupplierSearchConfirmJob.exact_product_summary.primary_product}</strong>
+                  </div>
+                ) : null}
+                {startSupplierSearchConfirmJob.exact_product_summary.alternatives?.length ? (
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Подтверждённые аналоги:</span>
+                    <span className="text-slate-600">{startSupplierSearchConfirmJob.exact_product_summary.alternatives.join(", ")}</span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="text-left space-y-2.5 pt-1">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-slate-500">Режим поиска (Реестр Минпромторга):</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { id: "normal", label: "Обычный" },
+                    { id: "minprom_registry_priority", label: "Реестр в приоритете" },
+                    { id: "minprom_registry_only", label: "Только реестр" },
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`px-2 py-1.5 rounded-xl border text-[11px] font-bold transition-all cursor-pointer text-center ${
+                        startSupplierSearchPolicy === item.id
+                          ? "bg-teal-600 text-white border-teal-600 shadow-2xs"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      }`}
+                      onClick={() => setStartSupplierSearchPolicy(item.id as SupplierSearchPolicy)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2 pt-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={startSupplierSearchAlternatives}
+                  onChange={(e) => setStartSupplierSearchAlternatives(e.target.checked)}
+                  className="mt-0.5 rounded text-teal-600 focus:ring-teal-500 cursor-pointer"
+                />
+                <span className="text-xs text-slate-700">Искать поставщиков как основного товара, так и аналогов</span>
+              </label>
+
+              <div className="space-y-1 pt-1">
+                <label htmlFor="exact-suppliers-prompt-input" className="block text-[11px] font-semibold text-slate-500">
+                  Дополнительные пожелания (опционально):
+                </label>
+                <input
+                  id="exact-suppliers-prompt-input"
+                  type="text"
+                  value={startSupplierSearchPrompt}
+                  onChange={(e) => setStartSupplierSearchPrompt(e.target.value)}
+                  placeholder="Например: склады в СПб, только дистрибьюторы..."
+                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600 bg-slate-50 text-slate-800"
+                />
+              </div>
+
+              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200/80 rounded-xl p-2.5 leading-snug">
+                С баланса спишется 1 поиск поставщиков. Будет сформирована итоговая таблица контактов с КП.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setStartSupplierSearchConfirmJob(null);
+                }}
+                disabled={busy}
+              >
+                Отмена
+              </button>
+              <button
+                className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                type="button"
+                onClick={() => void startSupplierSearchFromExact(startSupplierSearchConfirmJob)}
+                disabled={busy}
+              >
+                {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
+                <span>Запустить поиск</span>
               </button>
             </div>
           </section>

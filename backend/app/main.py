@@ -1070,6 +1070,44 @@ async def customer_find_more_suppliers_route(
     return create_additional_supplier_search_api(job_id, context=context, db=db, additional_prompt=additional_prompt)
 
 
+@app.post("/api/customer/jobs/{job_id}/start-supplier-search")
+async def customer_start_supplier_search_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    if not context.user.is_email_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    supplier_search_policy = SUPPLIER_POLICY_NORMAL
+    include_alternatives = True
+    additional_prompt = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            supplier_search_policy = str(body.get("supplier_search_policy") or SUPPLIER_POLICY_NORMAL).strip()
+            include_alternatives = bool(body.get("include_alternatives", True))
+            additional_prompt = str(body.get("additional_prompt") or "").strip()
+    except Exception:
+        pass
+    original_job = _customer_job_or_404(db, job_id, context)
+    job = create_supplier_search_from_exact_product(
+        db,
+        client=context.user.client,
+        original_job=original_job,
+        created_by_telegram_id=f"web:{context.user.id}",
+        supplier_search_policy=supplier_search_policy,
+        include_alternatives=include_alternatives,
+        additional_prompt=additional_prompt,
+    )
+    return {
+        "success": True,
+        "message": "Поиск поставщиков успешно запущен на основе подобранного оборудования.",
+        "job": customer_job_to_dict(job, db=db),
+    }
+
+
 @app.post("/api/auth/login")
 def login(data: LoginRequest, request: Request, response: Response) -> dict:
     client_ip = request.client.host if request.client else "unknown"
@@ -3006,6 +3044,8 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
         "can_cancel": job.status in {"pending", "running"},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
+        "can_start_supplier_search": job_can_start_supplier_search(job),
+        "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
         "result_files": result_files,
         "result_offer": result_offer,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
@@ -3524,6 +3564,180 @@ def _repeat_supplier_search_input_files(job: Job) -> list[tuple[str, bytes]]:
         return payload
     context = _supplier_context_from_job_evidence(job)
     return [("previous_supplier_context.txt", context.encode("utf-8"))] if context else []
+
+
+def job_can_start_supplier_search(job: Job | object) -> bool:
+    return bool(
+        str(getattr(job, "mode", "") or "") == MODE_EXACT_PRODUCT
+        and str(getattr(job, "status", "") or "") in {"completed", "done"}
+        and not getattr(job, "error", "")
+    )
+
+
+def _customer_exact_product_summary(job: Job) -> dict | None:
+    try:
+        evidence = read_job_evidence_payload(job)
+        if not isinstance(evidence, dict):
+            return None
+        rep = evidence.get("exact_product_report")
+        if not isinstance(rep, dict):
+            return None
+        positions = rep.get("positions", [])
+        if not positions or not isinstance(positions, list):
+            return None
+        first_pos = positions[0] if isinstance(positions[0], dict) else {}
+        brand = str(first_pos.get("identified_brand") or "").strip()
+        model = str(first_pos.get("identified_model") or "").strip()
+        mfr = str(first_pos.get("manufacturer") or "").strip()
+        primary_parts = [p for p in [mfr, brand, model] if p]
+        primary_str = " ".join(primary_parts) or str(first_pos.get("name_in_tz") or "").strip()
+        alts: list[str] = []
+        for a in first_pos.get("alternative_brands", []) or []:
+            if isinstance(a, dict):
+                a_b = str(a.get("brand") or "").strip()
+                a_m = str(a.get("model") or "").strip()
+                a_mfr = str(a.get("manufacturer") or "").strip()
+                alt_str = " ".join([p for p in [a_mfr, a_b, a_m] if p])
+                if alt_str and alt_str not in alts:
+                    alts.append(alt_str)
+        return {
+            "primary_product": primary_str,
+            "alternatives": alts,
+            "total_positions": len(positions),
+        }
+    except Exception:
+        return None
+
+
+def _build_exact_product_supplier_selection_text(
+    exact_report: dict,
+    include_alternatives: bool = True,
+    additional_prompt: str = "",
+    job_title: str = "",
+) -> str:
+    lines = [
+        "=== ВЫЯВЛЕННЫЙ ТОЧНЫЙ ТОВАР И АНАЛОГИ (ПОДБОР TENDERLEX) ===",
+        "Инструкция для ИИ-поиска поставщиков:",
+        "По данному техническому заданию был выполнен детальный подбор оборудования и эквивалентов.",
+        "Необходимо найти прямых производителей, официальных дистрибьюторов, дилеров и оптовых поставщиков для следующей номенклатуры:",
+        "",
+    ]
+    if job_title:
+        lines.append(f"Предмет закупки: {job_title}\n")
+    positions = exact_report.get("positions", [])
+    if isinstance(positions, list) and positions:
+        for pos in positions:
+            if not isinstance(pos, dict):
+                continue
+            p_no = pos.get("position_no", 1)
+            name_tz = pos.get("name_in_tz", "")
+            brand = pos.get("identified_brand", "")
+            model = pos.get("identified_model", "")
+            mfr = pos.get("manufacturer", "")
+            lines.append(f"Позиция {p_no}: {name_tz}")
+            identified = " ".join([p for p in [mfr, brand, model] if p]).strip()
+            if identified:
+                lines.append(f"- Выявленный точный товар: {identified}")
+            alts = pos.get("alternative_brands", [])
+            if include_alternatives and isinstance(alts, list) and alts:
+                alt_lines = []
+                for a in alts:
+                    if isinstance(a, dict):
+                        a_b = a.get("brand", "")
+                        a_m = a.get("model", "")
+                        a_mfr = a.get("manufacturer", "")
+                        item_str = " ".join([p for p in [a_mfr, a_b, a_m] if p]).strip()
+                        if item_str:
+                            alt_lines.append(item_str)
+                if alt_lines:
+                    lines.append(f"- Допустимые проверенные аналоги: {'; '.join(alt_lines)}")
+            lines.append("")
+    else:
+        summary = str(exact_report.get("summary") or "").strip()
+        if summary:
+            lines.append(f"Результаты подбора: {summary}\n")
+    if additional_prompt:
+        lines.append(f"ТРЕБОВАНИЯ И ПОЖЕЛАНИЯ КЛИЕНТА К ПОИСКУ ПОСТАВЩИКОВ:\n{additional_prompt.strip()}\n")
+    lines.append("=== ИСХОДНОЕ ТЕХНИЧЕСКОЕ ЗАДАНИЕ И ТРЕБОВАНИЯ СМ. ВО ВЛОЖЕНИЯХ ===")
+    return "\n".join(lines)
+
+
+def create_supplier_search_from_exact_product(
+    db: Session,
+    *,
+    client: Client,
+    original_job: Job,
+    created_by_telegram_id: str,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    include_alternatives: bool = True,
+    additional_prompt: str = "",
+) -> Job:
+    if original_job.client_id != client.id:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    if str(getattr(original_job, "mode", "") or "") != MODE_EXACT_PRODUCT:
+        raise HTTPException(status_code=409, detail="Поиск поставщиков можно запустить только из задачи подбора товара.")
+    if str(getattr(original_job, "status", "") or "") not in {"completed", "done"}:
+        raise HTTPException(status_code=409, detail="Дождитесь завершения подбора товара перед поиском поставщиков.")
+
+    input_files = _repeat_supplier_search_input_files(original_job)
+    settings = get_or_create_settings(db)
+    access_error = client_access_error(
+        db,
+        client,
+        MODE_SUPPLIER_SEARCH,
+        incoming_file_count=max(1, len(input_files)),
+        supplier_search_count=1,
+    )
+    if access_error:
+        raise HTTPException(status_code=403, detail=access_error)
+
+    exact_report = {}
+    try:
+        evidence = read_job_evidence_payload(original_job)
+        if isinstance(evidence, dict):
+            exact_report = evidence.get("exact_product_report") or {}
+    except Exception:
+        pass
+
+    selection_text = _build_exact_product_supplier_selection_text(
+        exact_report=exact_report,
+        include_alternatives=include_alternatives,
+        additional_prompt=additional_prompt,
+        job_title=original_job.title or "",
+    )
+
+    combined_files = [("podbor_tovara_i_analogi_rezultat.txt", selection_text.encode("utf-8")), *input_files]
+    subject = _customer_job_subject_from_evidence(original_job) or _clean_customer_job_subject(original_job.title) or human_job_title(original_job)
+    title = _ellipsize_customer_title(f"Поставщики: {subject}", limit=120)
+    target_suppliers = supplier_target_for_client(settings, client)
+    normalized_policy = _normalize_supplier_search_policy_for_job(MODE_SUPPLIER_SEARCH, supplier_search_policy)
+
+    job: Job | None = None
+    try:
+        job = create_job(
+            db,
+            client_id=client.id,
+            created_by_telegram_id=created_by_telegram_id,
+            mode=MODE_SUPPLIER_SEARCH,
+            title=title,
+            target_suppliers=target_suppliers,
+            files=combined_files,
+            sources=[],
+            supplier_search_policy=normalized_policy,
+            supplier_search_run_type="initial",
+        )
+        reserve_job_units(db, client, job, supplier_search_count=1)
+        enqueue_job(job.id)
+    except BillingError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return job
 
 
 def _supplier_context_from_job_evidence(job: Job) -> str:

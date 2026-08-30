@@ -63,7 +63,7 @@ from .jobs import (
     package_job_output_files,
     package_job_output_items,
 )
-from .main import create_additional_supplier_search_for_client, job_can_find_more_suppliers
+from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
 from .journey import claim_reminder, record_journey_event, reminder_candidates
 from .legal import (
     LEGAL_DOCUMENT_PERSONAL_DATA,
@@ -1673,6 +1673,49 @@ def _find_more_suppliers_offer_text() -> str:
     )
 
 
+def _exact_to_suppliers_offer_text() -> str:
+    return (
+        "💡 Рекомендуемый следующий шаг:\n\n"
+        "Найти официальных дистрибьюторов, дилеров и оптовых поставщиков этого оборудования.\n"
+        "Система передаст выявленный товар и аналоги в поиск поставщиков."
+    )
+
+
+def _exact_to_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Найти поставщиков этого оборудования", callback_data=f"exact_suppliers_prompt:{job_id}")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
+
+
+def _exact_to_suppliers_confirmation_text() -> str:
+    return (
+        "Запустить поиск проверенных поставщиков?\n\n"
+        "• В поиск будут переданы точный выявленный товар и его аналоги.\n"
+        "• С баланса будет списан 1 поиск поставщиков.\n"
+        "• Вы получите готовую Excel-таблицу с контактами и запрос КП."
+    )
+
+
+def _exact_to_suppliers_confirmation_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, запустить поиск", callback_data=f"exact_suppliers_yes:{job_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"exact_suppliers_no:{job_id}")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+        ]
+    )
+
+
+async def _send_exact_to_suppliers_offer(message: Message, job_id: str) -> None:
+    await message.answer(
+        _exact_to_suppliers_offer_text(),
+        reply_markup=_exact_to_suppliers_offer_keyboard(job_id),
+    )
+
+
 def _find_more_suppliers_offer_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -2586,6 +2629,8 @@ async def _send_result_offer_outputs(
                 )
             if job_can_find_more_suppliers(job):
                 await _send_find_more_suppliers_offer(message, job.id)
+            elif str(getattr(job, "mode", "") or "") == MODE_EXACT_PRODUCT:
+                await _send_exact_to_suppliers_offer(message, job.id)
             return True
         except Exception:
             if token and job is not None:
@@ -2662,6 +2707,8 @@ async def _send_job_outputs_locked(
                 )
             if job_can_find_more_suppliers(done_job):
                 await _send_find_more_suppliers_offer(message, done_job.id)
+            elif str(getattr(done_job, "mode", "") or "") == MODE_EXACT_PRODUCT:
+                await _send_exact_to_suppliers_offer(message, done_job.id)
             else:
                 await message.answer(
                     "🚀 Что хотите сделать дальше?",
@@ -3082,6 +3129,89 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
     await callback.answer("Дополнительный поиск запущен.")
     launch_message = await callback.message.answer(
         _format_launch_progress(launch_snapshot, "✅ Дополнительный поиск поставщиков запущен."),
+        reply_markup=processing_menu(),
+    )
+    try:
+        snapshot = await watch_job_progress(callback.message, new_job_id, status_message=launch_message)
+        if not (snapshot and snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION):
+            await _send_job_outputs(callback.message, new_job_id, snapshot)
+    finally:
+        BATCH_RUNNING_CHATS.discard(chat_id)
+
+
+@router.callback_query(F.data.startswith("exact_suppliers_prompt:"))
+async def exact_suppliers_prompt_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.message.answer(
+        _exact_to_suppliers_confirmation_text(),
+        reply_markup=_exact_to_suppliers_confirmation_keyboard(job_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("exact_suppliers_no:"))
+async def exact_suppliers_no_callback(callback: CallbackQuery) -> None:
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            "🚀 Что хотите сделать дальше?",
+            reply_markup=main_inline_keyboard(),
+        )
+    await callback.answer("Поиск отменён.")
+
+
+@router.callback_query(F.data.startswith("exact_suppliers_yes:"))
+async def exact_suppliers_yes_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1]
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    chat_id = int(callback.message.chat.id)
+    if _chat_has_processing_job(chat_id):
+        await callback.answer("У вас уже есть задача в работе. Дождитесь результата.", show_alert=True)
+        return
+
+    telegram_id, username, name = _callback_user_fields(callback)
+    db = SessionLocal()
+    new_job_id = ""
+    launch_snapshot: JobProgressSnapshot | None = None
+    try:
+        client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+        if account_error:
+            await callback.answer(account_error, show_alert=True)
+            return
+        if not client:
+            await callback.answer("Доступ не подключён. Откройте «Контакты» и отправьте владельцу ваш Telegram ID.", show_alert=True)
+            return
+        original_job = db.get(Job, job_id)
+        if not original_job or original_job.client_id != client.id:
+            await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+            return
+        new_job = create_supplier_search_from_exact_product(
+            db,
+            client=client,
+            original_job=original_job,
+            created_by_telegram_id=telegram_id,
+        )
+        new_job_id = new_job.id
+        launch_snapshot = _job_snapshot(new_job)
+    except HTTPException as exc:
+        detail = str(exc.detail or "Не удалось запустить поиск поставщиков.")
+        await callback.answer(detail, show_alert=True)
+        return
+    finally:
+        db.close()
+
+    BATCH_RUNNING_CHATS.add(chat_id)
+    await callback.answer("Поиск поставщиков запущен.")
+    launch_message = await callback.message.answer(
+        _format_launch_progress(launch_snapshot, "✅ Поиск поставщиков запущен на основе подобранного товара."),
         reply_markup=processing_menu(),
     )
     try:
