@@ -50,13 +50,11 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   supplier search (`Найти ещё` / добор поставщиков), and exact product detection
   (`🎯 Точный товар и аналоги по ТЗ` — 99 ₽). `📄🔎 Анализ + поиск`
   reserves and charges the supplier-search and analysis prices together.
-  Exact product detection (`exact_product` / 99 ₽) reveals hidden manufacturers/brands masked
-  in the technical specification, performs line-by-line parameter verification for the main product
-  and all identified interchangeable Russian analogues (Form 2 tables with customer requirements vs concrete figures),
-  finds verified equivalent models by 44/223-FZ with matching %, checks Minpromtorg/GISP industrial registry
-  inclusion, provides 100% parameter auto-completion under customer requirements with explicit factory passport
-  verification notices (preventing tender disqualification while ensuring zero empty cells in Form 2 and analogue tables),
-  and generates official downloadable Form 2 reports in Word (DOCX) format.
+- Exact Product & Analogs Public Landing Page & SEO Hub:
+  - Commercial landing page `/podbor-tovara-i-analogov-po-tz` with structured Schema.org (`Service`, `FAQPage`, `HowTo`, `BreadcrumbList`), interactive Form 2 specification preview, Deep Search benefits, and direct 1-click supplier transition.
+  - Three-module core platform grid on homepage `/` (1. Поиск поставщиков, 2. Подбор товара и аналогов по ТЗ, 3. Экспресс-аудит документации 44/223-ФЗ).
+  - Extended SEO Knowledge Hub with targeted articles: `kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli`, `kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz`, and enriched `podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz`.
+  - Full sitemap integration and header/footer navigation links.
   Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
   tariff package in the admin panel) with automatic fallback, and per-customer
   `Добор` prices remain editable in the admin client card. Additional supplier search

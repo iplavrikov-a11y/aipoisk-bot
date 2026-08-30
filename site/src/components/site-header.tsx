@@ -67,12 +67,19 @@ export function SiteHeader() {
         </div>
 
         {/* Navigation Menu (clean, focused on core product) */}
-        <nav className="hidden lg:flex items-center gap-8">
+        <nav className="hidden lg:flex items-center gap-6">
           <Link
             href="/poisk-postavshchikov-po-tz"
             className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors"
           >
             Поиск поставщиков
+          </Link>
+          <Link
+            href="/podbor-tovara-i-analogov-po-tz"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors flex items-center gap-1"
+          >
+            <span>Аналоги и Форма 2</span>
+            <span className="text-[10px] font-black uppercase text-teal-700 bg-teal-50 border border-teal-200 px-1.5 py-0.2 rounded-full">New</span>
           </Link>
           <Link
             href="/analiz-zakupochnoi-dokumentacii"

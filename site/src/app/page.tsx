@@ -45,6 +45,10 @@ export const metadata: Metadata = {
     "ИИ-сервис для закупщиков: поиск прямых контактов заводов и дилеров по ТЗ, подготовка запросов КП и анализ рисков 44-ФЗ, 223-ФЗ и коммерческих закупок.",
   keywords: [
     "поиск поставщиков по ТЗ",
+    "подбор аналогов по ТЗ",
+    "поиск товаров по ТЗ",
+    "форма 2 госзакупки",
+    "эквивалент оборудования 44 фз",
     "поиск производителей Россия",
     "коммерческое предложение закупка",
     "контакты отделов продаж заводов",
@@ -82,6 +86,11 @@ const mainFaqItems: FaqItem[] = [
     question: "Что проверяет модуль анализа документации 44-ФЗ и 223-ФЗ?",
     answer:
       "Модуль проверяет проект контракта и извещение на наличие нетипичных штрафов, несоответствия сроков поставки и приемки, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).",
+  },
+  {
+    question: "Как работает подбор товара и аналогов по ТЗ и заполнение Формы 2?",
+    answer:
+      "Алгоритм анализирует параметры спецификации и сопоставляет их с паспортами оборудования заводов РФ. ИИ выявляет модель-первоисточник, заложенную заказчиком, построчно сверяет параметры ТЗ с заводскими характеристиками без искусственной подгонки цифр, находит отечественные аналоги из Реестра Минпромторга (ГИСП) и формирует готовую Форму 2 в DOCX и XLSX.",
   },
   {
     question: "Как протестировать сервис бесплатно?",
@@ -122,15 +131,15 @@ export default async function HomePage() {
             <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
                 <Sparkles size={14} className="text-teal-600 animate-pulse" />
-                <span>ИИ-поиск поставщиков & Экспресс-аудит 44-ФЗ, 223-ФЗ и коммерческих закупок</span>
+                <span>ИИ-поиск поставщиков • Подбор аналогов по ТЗ • Экспресс-аудит 44-ФЗ и 223-ФЗ</span>
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
-                Поиск поставщиков по ТЗ и анализ рисков закупок за 3 минуты
+                Поиск поставщиков, подбор аналогов по ТЗ и анализ рисков закупок
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
-                От загрузки технического задания и проверки условий до поиска прямых заводов РФ и подготовки запроса цен.
+                От разбора технического задания и подбора российских эквивалентов до сбора прямых контактов заводов РФ и проверки проекта контракта за 3 минуты.
               </p>
 
               {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
@@ -197,7 +206,7 @@ export default async function HomePage() {
           </div>
         </section>
 
-        {/* TWO PRIMARY MODULES (Core Platform Architecture) */}
+        {/* THREE PRIMARY MODULES (Core Platform Architecture) */}
         <section className="py-16 sm:py-24 bg-white border-b border-slate-200">
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
@@ -208,82 +217,124 @@ export default async function HomePage() {
                 Инструменты для снабжения и участия в закупках
               </h2>
               <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                TenderLex закрывает две главные задачи бизнеса: быстрый выход на прямых поставщиков и правовая защита при участии в торгах.
+                TenderLex автоматизирует три ключевые задачи тендерного бизнеса: поиск прямых заводов, подготовку Формы 2 с подбором аналогов и правовой аудит контракта.
               </p>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-8">
-              {/* Module 1 */}
-              <div className="p-8 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+            <div className="grid md:grid-cols-3 gap-6">
+              {/* Module 1: Поиск поставщиков (First as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
                 <div className="space-y-4">
                   <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
                     <Search className="w-6 h-6" />
                   </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Поиск поставщиков</span>
-                  <h3 className="text-2xl font-extrabold text-slate-900">
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">1. Поиск поставщиков</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
                     Поиск поставщиков и заводов по всей России
                   </h3>
-                  <p className="text-sm text-slate-600 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                     Автоматический разбор сложных спецификаций, распознавание ГОСТ, марок сталей и типоразмеров. Сбор прямых контактов отделов сбыта без посредников.
                   </p>
 
-                  <ul className="space-y-3 pt-2 border-t border-slate-200">
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Прямые e-mail адреса и телефоны менеджеров по продажам</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Прямые e-mail адреса и телефоны сбыта</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Разделение компаний на заводы-изготовители и дилерские сети</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Разделение заводов и дилерских сетей</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Авто-генератор готового текста Запроса коммерческого предложения (RFQ)</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Авто-генератор готового Запроса КП (RFQ)</span>
                     </li>
                   </ul>
                 </div>
 
-                <div className="pt-4">
-                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
                     <Link href="/poisk-postavshchikov-po-tz">
-                      <span>Подробнее о поиске поставщиков</span>
+                      <span>Подробнее о поставщиках</span>
                     </Link>
                   </Button>
                 </div>
               </div>
 
-              {/* Module 2 */}
-              <div className="p-8 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+              {/* Module 2: Подбор товара и аналогов (Second as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-teal-500/80 flex flex-col justify-between space-y-6 shadow-md relative hover:border-teal-600 transition-all">
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-teal-600 text-white text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full shadow-xs">
+                  Новая функция
+                </div>
                 <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
-                    <ShieldAlert className="w-6 h-6" />
+                  <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center">
+                    <Layers className="w-6 h-6" />
                   </div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">Анализ документации</span>
-                  <h3 className="text-2xl font-extrabold text-slate-900">
-                    Экспресс-аудит документации: 44-ФЗ, 223-ФЗ и коммерческие закупки
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">2. Форма 2 и аналоги</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
+                    Подбор товара и аналогов по ТЗ (Форма 2)
                   </h3>
-                  <p className="text-sm text-slate-600 leading-relaxed">
-                    Проверка проекта контракта до подачи заявки на участие: выявление скрытых штрафов, невыполнимых сроков и ограничений национального режима.
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Распознавание заложенного заказчиком бренда, сверка параметров по паспортам без подгонки, реестр Минпромторга (ГИСП) и 2–4 эквивалента.
                   </p>
 
-                  <ul className="space-y-3 pt-2 border-t border-slate-200">
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Сверка графиков поставки и сроков приемки заказчиком</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Конкретные заводские показатели без «не более»</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Аудит штрафов и неустоек на соответствие ПП РФ № 1042</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Отечественные аналоги из реестра ГИСП</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                      <span>Проверка требований Минпромторга (Постановления № 616 и № 617)</span>
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Выгрузка в официальные форматы DOCX и XLSX</span>
                     </li>
                   </ul>
                 </div>
 
-                <div className="pt-4">
-                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
+                    <Link href="/podbor-tovara-i-analogov-po-tz">
+                      <span>Подробнее о подборе аналогов</span>
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Module 3: Анализ документации (Third as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+                <div className="space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
+                    <ShieldAlert className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">3. Анализ документации</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
+                    Экспресс-аудит документации: 44-ФЗ, 223-ФЗ
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Проверка проекта контракта до подачи заявки: выявление скрытых штрафов, невыполнимых сроков и ограничений национального режима.
+                  </p>
+
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Сверка графиков поставки и сроков приемки</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Аудит штрафов по ПП РФ № 1042</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Проверка ПП № 616 и № 617 (нацрежим)</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
                     <Link href="/analiz-zakupochnoi-dokumentacii">
                       <span>Подробнее об анализе документации</span>
                     </Link>

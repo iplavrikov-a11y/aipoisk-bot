@@ -27,6 +27,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.95,
     },
     {
+      url: `${siteUrl}/podbor-tovara-i-analogov-po-tz`,
+      lastModified: seoUpdated,
+      changeFrequency: "weekly",
+      priority: 0.95,
+    },
+    {
       url: `${siteUrl}/poisk-postavshchikov-dlya-tendera`,
       lastModified: seoUpdated,
       changeFrequency: "weekly",
