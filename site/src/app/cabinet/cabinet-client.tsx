@@ -462,10 +462,10 @@ function modeDisplayName(job: CustomerJob) {
   const policy = (job as unknown as { supplier_search_policy?: string }).supplier_search_policy;
   const policyLabel =
     policy === "registry_only" || policy === "minprom_registry_only"
-      ? "Только реестр (Минпромторг)"
+      ? "Только реестр"
       : policy === "registry_priority" || policy === "minprom_registry_priority"
-      ? "Реестр в приоритете (Минпромторг)"
-      : "Обычный поиск";
+      ? "Реестр в приоритете"
+      : "Обычный";
 
   if (job.mode === "exact_product") return "Подбор товара и аналогов";
   if (job.mode === "procurement_report") return "Анализ документации";
