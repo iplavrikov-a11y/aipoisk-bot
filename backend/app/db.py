@@ -63,6 +63,7 @@ def init_db() -> None:
     _ensure_schema()
     _ensure_legacy_client_accounts()
     _ensure_default_tariffs()
+    _ensure_master_api_key()
 
 
 def _ensure_schema() -> None:
@@ -386,6 +387,42 @@ def _ensure_default_tariffs() -> None:
                         )
                     )
                 db.commit()
+    finally:
+        db.close()
+
+
+def _ensure_master_api_key() -> None:
+    from .models import ApiKey
+    import hashlib
+    import secrets
+
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        master = db.query(ApiKey).filter(ApiKey.is_admin == True, ApiKey.is_active == True).first()
+        if not master:
+            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
+            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
+            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
+            master = ApiKey(
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                name="Главный Master-ключ Администратора",
+                is_admin=True,
+                is_active=True,
+                allowed_supplier_search=True,
+                allowed_exact_product=True,
+                allowed_procurement_report=True,
+                quota_supplier_search=999999,
+                quota_exact_product=999999,
+                quota_procurement_report=999999,
+                rate_limit_per_minute=120,
+                notes="Мастер-ключ с полным безлимитным доступом ко всем модулям TenderLex",
+            )
+            db.add(master)
+            db.commit()
+    except Exception:
+        db.rollback()
     finally:
         db.close()
 

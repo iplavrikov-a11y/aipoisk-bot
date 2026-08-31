@@ -42,8 +42,9 @@ import {
   Calendar,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
+import { McpApiView } from './McpApiView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp'
 
 type Dashboard = {
   clients: number
@@ -599,6 +600,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   outreach: {
     title: 'Лидогенерация и Рассылка',
     description: 'Массовый поиск B2B контактов по нише, отправка email-рассылок через info@tenderlex.ru и входящие ответы.',
+  },
+  mcp: {
+    title: 'MCP & Public API',
+    description: 'Управление API-ключами, интеграция с Claude Desktop, Cursor, ChatGPT Codex и прямое подключение внешних систем.',
   },
 }
 
@@ -1264,6 +1269,7 @@ export function App() {
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
+    { id: 'mcp' as const, label: 'MCP & API', icon: KeyRound },
   ]
 
   if (!authenticated) {
@@ -1376,6 +1382,7 @@ export function App() {
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} />}
+        {isReady && view === 'mcp' && <McpApiView clients={clients} />}
 
         {showServerModal && opsStatus && (
           <div className="server-modal-backdrop" onClick={() => setShowServerModal(false)}>

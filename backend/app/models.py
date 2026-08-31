@@ -546,6 +546,39 @@ class SupplierResult(Base):
     job: Mapped[Job] = relationship(back_populates="suppliers")
 
 
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    key_prefix: Mapped[str] = mapped_column(String(24), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="API Key")
+    client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    quota_supplier_search: Mapped[int] = mapped_column(Integer, default=10)
+    quota_exact_product: Mapped[int] = mapped_column(Integer, default=10)
+    quota_procurement_report: Mapped[int] = mapped_column(Integer, default=10)
+
+    spent_supplier_search: Mapped[int] = mapped_column(Integer, default=0)
+    spent_exact_product: Mapped[int] = mapped_column(Integer, default=0)
+    spent_procurement_report: Mapped[int] = mapped_column(Integer, default=0)
+
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=30)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    client: Mapped[Client | None] = relationship(foreign_keys=[client_id])
+
+
 def parse_json_list(value: str) -> list[dict]:
     try:
         parsed = json.loads(value or "[]")
