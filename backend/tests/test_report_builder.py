@@ -520,6 +520,98 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertNotIn("1/15", summary)
         self.assertNotIn("миним", summary.lower())
 
+    def test_quote_request_rejects_contract_metadata_tables(self) -> None:
+        # Recreates the Screenshot 3 bug: contract table with sections (Заказчик, Сроки, Место)
+        source = """### Техническое задание
+| № п/п | Наименование | Содержание требований |
+|---|---|---|
+| 1 | Общие сведения | Информация о закупке |
+| 2 | Заказчик | ГКУ РТ |
+| 3 | Сведения месте проведения работ | г. Казань |
+| 4 | Сроки оказания услуг | до 31.12.2026 |
+| 5 | Цель выполнения | Обеспечение деятельности |
+
+Предмет закупки: Мобильный склад контейнерного типа
+"""
+        markdown = build_quote_request_markdown(source, subject="Мобильный склад контейнерного типа")
+        self.assertIn("Мобильный склад контейнерного типа", markdown)
+        self.assertNotIn("Заказчик", markdown)
+        self.assertNotIn("Сведения месте", markdown)
+        self.assertNotIn("Сроки оказания", markdown)
+        self.assertNotIn("Цель выполнения", markdown)
+
+    def test_quote_request_formats_characteristics_as_clean_bullet_lines(self) -> None:
+        # Recreates the Screenshot 1 scenario: semicolon-separated characteristics
+        source = """### Товары и требования
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Гидравлическая аэродромная установка | Тип масел: HYJET IV-A; Длина шлангов: 12 м; Система питания: <= 7 бар; Давление: <= 207 бар | шт | 2 |
+"""
+        markdown = build_quote_request_markdown(source, subject="Гидравлическая аэродромная установка")
+        self.assertIn("• Тип масел: HYJET IV-A<br>• Длина шлангов: 12 м<br>• Система питания: <= 7 бар<br>• Давление: <= 207 бар", markdown)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quote.docx"
+            write_quote_request_docx(path, markdown, title="Запрос КП")
+            from docx import Document
+            doc = Document(path)
+            # Table cells should contain line breaks for bullet items
+            cell_text = doc.tables[0].rows[1].cells[2].text
+            self.assertIn("• Тип масел: HYJET IV-A", cell_text)
+            self.assertIn("• Длина шлангов: 12 м", cell_text)
+            self.assertIn("\n", cell_text)
+
+    def test_supplier_xlsx_quote_request_sheet_contains_spec_table_and_conditions(self) -> None:
+        # Recreates the Screenshot 2 scenario: Excel must have items table, characteristics, and conditions
+        quote_markdown = """# ЗАПРОС КП
+
+Просим выставить счёт на поставку продукции:
+
+**Мобильный склад контейнерного типа**
+
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Мобильный склад контейнерного типа | • Габариты: 6000х2400х2600 мм<br>• Каркас: цельносварной металлический<br>• Утепление: минвата 100 мм | шт | 1 |
+
+### Условия поставки
+
+- **Срок поставки:** 30 календарных дней
+- **Город поставки:** г. Казань
+- **Условия оплаты:** 50% аванс
+- **Документы качества:** Паспорт качества, сертификат соответствия
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [{"company_name": "ООО СкладСтрой", "product_fit": "exact"}],
+                title="Мобильный склад",
+                subject="Мобильный склад контейнерного типа",
+                target=1,
+                quote_markdown=quote_markdown,
+            )
+
+            wb = load_workbook(path)
+            self.assertIn("Запрос КП", wb.sheetnames)
+            ws = wb["Запрос КП"]
+            quote_text = ws["A3"].value
+            self.assertIn("Мобильный склад контейнерного типа", quote_text)
+            self.assertIn("Габариты: 6000х2400х2600 мм", quote_text)
+            self.assertIn("30 календарных дней", quote_text)
+
+            # Specification table in Excel
+            spec_header = [cell.value for cell in ws[6]]
+            self.assertEqual(spec_header, ["№", "Наименование товара", "Характеристики и требования", "Ед. изм.", "Кол-во"])
+            row_data = [cell.value for cell in ws[7]]
+            self.assertEqual(row_data[0], "1")
+            self.assertEqual(row_data[1], "Мобильный склад контейнерного типа")
+            self.assertIn("Габариты: 6000х2400х2600 мм", row_data[2])
+            self.assertIn("Каркас: цельносварной металлический", row_data[2])
+            self.assertEqual(row_data[3], "шт")
+            self.assertEqual(row_data[4], "1")
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+

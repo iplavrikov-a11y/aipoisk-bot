@@ -1118,6 +1118,12 @@ def _build_registry_fallback_supplier_outputs(
     supplier_billing_kind: str,
     quote_billing_kind: str,
 ) -> tuple[Path, list[dict]]:
+    quote_markdown = build_quote_request_markdown(
+        context,
+        subject=subject,
+        procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+    )
+    quote_markdown = f"{quote_markdown.rstrip()}\n\n## Важно: реестр Минпромторга\n\n{REGISTRY_FALLBACK_QUOTE_WARNING}\n"
     xlsx_path = write_supplier_xlsx(
         out_dir / _result_filename("suppliers", stem, ".xlsx"),
         rows,
@@ -1125,13 +1131,8 @@ def _build_registry_fallback_supplier_outputs(
         subject=subject,
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
+        quote_markdown=quote_markdown,
     )
-    quote_markdown = build_quote_request_markdown(
-        context,
-        subject=subject,
-        procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
-    )
-    quote_markdown = f"{quote_markdown.rstrip()}\n\n## Важно: реестр Минпромторга\n\n{REGISTRY_FALLBACK_QUOTE_WARNING}\n"
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
     quote_docx_path = write_quote_request_docx(
@@ -1302,14 +1303,6 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         return
 
     stem = _result_stem(job, subject)
-    xlsx_path = write_supplier_xlsx(
-        out_dir / _result_filename("suppliers", stem, ".xlsx"),
-        accepted,
-        title=job.title,
-        subject=subject,
-        target=job.target_suppliers,
-        policy=getattr(job, "supplier_search_policy", "") or "",
-    )
     quote_markdown = asyncio.run(
         build_quote_request_markdown_with_ai(
             settings,
@@ -1317,6 +1310,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             subject=subject,
             procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
         )
+    )
+    xlsx_path = write_supplier_xlsx(
+        out_dir / _result_filename("suppliers", stem, ".xlsx"),
+        accepted,
+        title=job.title,
+        subject=subject,
+        target=job.target_suppliers,
+        policy=getattr(job, "supplier_search_policy", "") or "",
+        quote_markdown=quote_markdown,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1603,6 +1605,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             subject=subject,
             target=job.target_suppliers,
             policy=getattr(job, "supplier_search_policy", "") or "",
+            quote_markdown=quote_markdown,
         )
     output_files = [_output_artifact("analysis", "Анализ", docx_path, KIND_PROCUREMENT_REPORT)]
     if xlsx_path:
