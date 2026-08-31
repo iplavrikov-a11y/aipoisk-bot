@@ -12,6 +12,12 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Unified TenderLex Brand Visual Identity for Excel & Word Reports (2026-08):
+  - Table Header Palette Unification (`write_supplier_xlsx`, `backend/app/report_builder.py`): Completely replaced cold gray/slate (`#1E293B`) table headers with TenderLex deep forest emerald (`#064E3B`) with white bold text, achieving 100% visual consistency with Word DOCX summary tables (`write_exact_product_docx`, `_write_markdown_docx`).
+  - Brand Titles & Section Accents: Styled sheet headers with brand emerald (`#047857`), subheadings with deep emerald (`#064E3B`), and KPI summary cards with fresh mint tint (`#ECFDF5`) / emerald text (`#064E3B`).
+  - Mint Zebra Striping: Replaced cold slate-50 alternating rows with fresh mint background (`#F4FBF7`), maintaining clean legibility across large supplier lists.
+  - RFQ Quote Request Sheet Polish: Re-styled the «Запрос КП» Excel tab with brand emerald header, mint text box background (`#F4FBF7`), and emerald border accents.
+  - Customer Cabinet Mode Display Polish (`site/src/app/cabinet/cabinet-client.tsx`): Fixed nested double parentheses in task list mode column (`Поиск поставщиков (Только реестр)` instead of `Поиск поставщиков (Только реестр (Минпромторг))`), ensuring clean labels across all search policies (`Только реестр`, `Реестр в приоритете`, `Обычный`).
 - 100% Domain-Agnostic Architecture for Product Matching, Negative Keywords & GISP Registry (2026-08):
   - Morphological Root Stemming for GISP Category Verification (`_is_gisp_product_compatible`, `_extract_word_stems`): Categorical overlap between procurement requirements and Minpromtorg registry entries is calculated using pure morphological root stemming that strips Russian declension endings, plural/singular inflections, and adjectival suffixes (e.g. matching `труба`/`трубы`, `полиэтиленовая`/`полиэтилена`, `канат`/`канаты`, `кабель`/`кабельная`). Guarantees that conflicting commodity sectors (apparel vs construction, furniture vs medical diagnostics, tools vs metallurgy) yield empty root intersections and are strictly excluded, with zero reliance on hardcoded product lists.
   - Universal Negative Keywords Engine (`build_universal_negative_keywords`): Eliminates ad-hoc product conditions by systematically enforcing:
