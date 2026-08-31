@@ -61,6 +61,8 @@ class GispRegistryMatch:
     manufacturer: str
     product: str
     inn: str = ""
+    conclusion_number: str = ""
+    valid_until: str = ""
     source_url: str = GISP_PRODUCT_REGISTRY_URL
     matched: bool = True
 
@@ -144,8 +146,8 @@ class ExactProductReport:
         }
 
 
-MAX_EXACT_POSITIONS_PER_JOB: int = 3
-MAX_YANDEX_QUERIES_PER_JOB: int = 16
+MAX_EXACT_POSITIONS_PER_JOB: int = 5
+MAX_YANDEX_QUERIES_PER_JOB: int = 20
 
 
 # ---------------------------------------------------------------------------
@@ -487,21 +489,27 @@ async def fetch_web_or_pdf_document(
             "Accept": "text/html,application/xhtml+xml,application/xml,application/pdf;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
+        is_direct_pdf = url.lower().endswith(".pdf")
+        if is_direct_pdf:
+            headers["Range"] = "bytes=0-10485760"
+
         response = await client.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
         if response.status_code in (403, 503, 429):
             # Антибот блокировка -> Playwright fallback
             return await _fetch_with_browser_fallback(url, domain)
-        if response.status_code >= 400:
+        if response.status_code >= 400 and response.status_code != 416:
             return None
 
         ctype = (response.headers.get("content-type") or "").lower()
         url_lower = str(response.url).lower()
-        is_pdf = "application/pdf" in ctype or url_lower.endswith(".pdf") or response.content.startswith(b"%PDF-")
+        is_pdf = "application/pdf" in ctype or url_lower.endswith(".pdf") or is_direct_pdf
 
-        if is_pdf:
-            pdf_bytes = response.content
-            if len(pdf_bytes) > 20 * 1024 * 1024:
-                pdf_bytes = pdf_bytes[:20 * 1024 * 1024]
+        raw_content = response.content if hasattr(response, "content") else (response.text.encode("utf-8", errors="replace") if hasattr(response, "text") else b"")
+
+        if is_pdf or raw_content.startswith(b"%PDF-"):
+            pdf_bytes = raw_content
+            if len(pdf_bytes) > 10 * 1024 * 1024:
+                pdf_bytes = pdf_bytes[:10 * 1024 * 1024]
 
             pdf_text = ""
             try:
@@ -545,7 +553,7 @@ async def fetch_web_or_pdf_document(
                 }
 
         # HTML parsing
-        html_raw = response.text
+        html_raw = response.text if hasattr(response, "text") and response.text else raw_content.decode("utf-8", errors="replace")
         if not html_raw:
             return await _fetch_with_browser_fallback(url, domain)
 
@@ -807,6 +815,83 @@ async def is_gisp_product_compatible_ai(
     return compat
 
 
+def _extract_conclusion_info(evidence: str) -> tuple[str, str]:
+    """Извлекает номер заключения Минпромторга и срок его действия из поля evidence."""
+    conclusion_number = ""
+    valid_until = ""
+    if not evidence:
+        return conclusion_number, valid_until
+    m_conc = re.search(r'(?:заключение|срок действия\/заключение|заключение минпромторга)[\s:]*([^\;\,\n]+)', evidence, re.IGNORECASE)
+    if m_conc:
+        val = m_conc.group(1).strip()
+        date_match = re.search(r'(\d{2}[.\/]\d{2}[.\/]\d{4}|\d{4}-\d{2}-\d{2})', val)
+        if date_match:
+            valid_until = date_match.group(1)
+        num_clean = re.sub(r'(\d{2}[.\/]\d{2}[.\/]\d{4}|\d{4}-\d{2}-\d{2})', '', val).strip(" №/-,.")
+        if num_clean:
+            conclusion_number = num_clean
+    return conclusion_number, valid_until
+
+
+def _build_gisp_fts_query_grid(
+    brand: str,
+    manufacturer: str,
+    model: str = "",
+    name_in_tz: str = "",
+) -> list[str]:
+    """Формирует упорядоченную сетку FTS-запросов от высокоточных комбинаций к общим."""
+    queries: list[str] = []
+
+    clean_manuf = ""
+    if manufacturer and len(manufacturer.strip()) > 3:
+        clean_manuf = re.sub(r'(?i)\b(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|ОАО|РФ|«|»|"|\')\b', '', manufacturer).strip()
+        clean_manuf = re.sub(r'[^а-яА-Яa-zA-Z0-9\s-]', ' ', clean_manuf).strip()
+        if _is_generic_gisp_term(clean_manuf) or len(clean_manuf) < 3:
+            clean_manuf = ""
+
+    clean_brand = ""
+    if brand and len(brand.strip()) > 2 and not _is_generic_gisp_term(brand):
+        clean_brand = brand.strip()
+
+    clean_model = ""
+    if model and len(model.strip()) > 2 and not _is_generic_gisp_term(model):
+        clean_model = model.strip()
+
+    clean_tz_terms: list[str] = []
+    if name_in_tz and len(name_in_tz.strip()) > 4:
+        clean_tz_terms = [
+            w for w in re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
+            if len(w) >= 3 and not _is_generic_gisp_term(w)
+        ]
+
+    # 1. Высокоточный запрос: Производитель + Модель (напр.: "КЭЗСБ СШУ-22")
+    if clean_manuf and clean_model:
+        queries.append(f"{clean_manuf} {clean_model}")
+    # 2. Высокоточный запрос: Бренд + Модель
+    if clean_brand and clean_model and clean_brand != clean_manuf:
+        queries.append(f"{clean_brand} {clean_model}")
+    # 3. Производитель + Ключевые слова из ТЗ
+    if clean_manuf and clean_tz_terms:
+        queries.append(f"{clean_manuf} {' '.join(clean_tz_terms[:2])}")
+    # 4. Бренд + Ключевые слова из ТЗ
+    if clean_brand and clean_tz_terms and clean_brand != clean_manuf:
+        queries.append(f"{clean_brand} {' '.join(clean_tz_terms[:2])}")
+    # 5. Одиночный производитель
+    if clean_manuf and clean_manuf not in queries:
+        queries.append(clean_manuf)
+    # 6. Одиночный бренд
+    if clean_brand and clean_brand not in queries:
+        queries.append(clean_brand)
+    # 7. Одиночная модель
+    if clean_model and clean_model not in queries:
+        queries.append(clean_model)
+    # 8. Ключевые слова предмета закупки
+    if clean_tz_terms and len(clean_tz_terms) >= 2:
+        queries.append(" ".join(clean_tz_terms[:3]))
+
+    return queries
+
+
 def find_minprom_gisp_match(
     brand: str,
     manufacturer: str,
@@ -822,23 +907,7 @@ def find_minprom_gisp_match(
         else:
             return None
 
-    queries = []
-    if manufacturer and len(manufacturer.strip()) > 3:
-        clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|«|»|")', '', manufacturer).strip()
-        if len(clean_manuf) >= 3 and not _is_generic_gisp_term(clean_manuf):
-            queries.append(clean_manuf)
-    if brand and len(brand.strip()) > 2 and brand not in queries and not _is_generic_gisp_term(brand):
-        queries.append(brand.strip())
-    if model and len(model.strip()) > 2 and not _is_generic_gisp_term(model):
-        queries.append(model.strip())
-    if name_in_tz and len(name_in_tz.strip()) > 4:
-        clean_name = [
-            w for w in re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
-            if len(w) >= 3 and not _is_generic_gisp_term(w)
-        ]
-        if len(clean_name) >= 2:
-            queries.append(" ".join(clean_name[:3]))
-
+    queries = _build_gisp_fts_query_grid(brand, manufacturer, model, name_in_tz)
     if not queries:
         return None
 
@@ -853,22 +922,25 @@ def find_minprom_gisp_match(
             try:
                 cursor = conn.execute(
                     """
-                    SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                    SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url, e.evidence
                     FROM entries_fts
                     JOIN entries e ON e.id = entries_fts.rowid
                     WHERE entries_fts MATCH ?
-                    LIMIT 5
+                    LIMIT 8
                     """,
                     (match_expression,),
                 )
                 rows = cursor.fetchall()
-                for reg_num, manuf, prod, inn, src_url in rows:
+                for reg_num, manuf, prod, inn, src_url, evidence in rows:
                     if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
+                        conc_num, v_until = _extract_conclusion_info(str(evidence or ""))
                         return GispRegistryMatch(
                             registry_number=str(reg_num or "").strip(),
                             manufacturer=str(manuf or "").strip(),
                             product=str(prod or "").strip(),
                             inn=str(inn or "").strip(),
+                            conclusion_number=conc_num,
+                            valid_until=v_until,
                             source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
                             matched=True,
                         )
@@ -879,22 +951,25 @@ def find_minprom_gisp_match(
                 try:
                     cursor = conn.execute(
                         """
-                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url, e.evidence
                         FROM entries_fts
                         JOIN entries e ON e.id = entries_fts.rowid
                         WHERE entries_fts MATCH ?
-                        LIMIT 5
+                        LIMIT 8
                         """,
                         (f'"{terms[0]}"*',),
                     )
                     rows = cursor.fetchall()
-                    for reg_num, manuf, prod, inn, src_url in rows:
+                    for reg_num, manuf, prod, inn, src_url, evidence in rows:
                         if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
+                            conc_num, v_until = _extract_conclusion_info(str(evidence or ""))
                             return GispRegistryMatch(
                                 registry_number=str(reg_num or "").strip(),
                                 manufacturer=str(manuf or "").strip(),
                                 product=str(prod or "").strip(),
                                 inn=str(inn or "").strip(),
+                                conclusion_number=conc_num,
+                                valid_until=v_until,
                                 source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
                                 matched=True,
                             )
@@ -928,23 +1003,7 @@ async def find_minprom_gisp_match_ai(
         else:
             return None
 
-    queries = []
-    if manufacturer and len(manufacturer.strip()) > 3:
-        clean_manuf = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|НПК|НПО|ПК|ТД|ИП|ГК|«|»|")', '', manufacturer).strip()
-        if len(clean_manuf) >= 3 and not _is_generic_gisp_term(clean_manuf):
-            queries.append(clean_manuf)
-    if brand and len(brand.strip()) > 2 and brand not in queries and not _is_generic_gisp_term(brand):
-        queries.append(brand.strip())
-    if model and len(model.strip()) > 2 and not _is_generic_gisp_term(model):
-        queries.append(model.strip())
-    if name_in_tz and len(name_in_tz.strip()) > 4:
-        clean_name = [
-            w for w in re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', name_in_tz).split()
-            if len(w) >= 3 and not _is_generic_gisp_term(w)
-        ]
-        if len(clean_name) >= 2:
-            queries.append(" ".join(clean_name[:3]))
-
+    queries = _build_gisp_fts_query_grid(brand, manufacturer, model, name_in_tz)
     if not queries:
         return None
 
@@ -959,7 +1018,7 @@ async def find_minprom_gisp_match_ai(
             try:
                 cursor = conn.execute(
                     """
-                    SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                    SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url, e.evidence
                     FROM entries_fts
                     JOIN entries e ON e.id = entries_fts.rowid
                     WHERE entries_fts MATCH ?
@@ -968,16 +1027,20 @@ async def find_minprom_gisp_match_ai(
                     (match_expression,),
                 )
                 rows = cursor.fetchall()
-                for reg_num, manuf, prod, inn, src_url in rows:
-                    if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
-                        return GispRegistryMatch(
-                            registry_number=str(reg_num or "").strip(),
-                            manufacturer=str(manuf or "").strip(),
-                            product=str(prod or "").strip(),
-                            inn=str(inn or "").strip(),
-                            source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
-                            matched=True,
-                        )
+                for reg_num, manuf, prod, inn, src_url, evidence in rows:
+                    if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
+                        if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
+                            conc_num, v_until = _extract_conclusion_info(str(evidence or ""))
+                            return GispRegistryMatch(
+                                registry_number=str(reg_num or "").strip(),
+                                manufacturer=str(manuf or "").strip(),
+                                product=str(prod or "").strip(),
+                                inn=str(inn or "").strip(),
+                                conclusion_number=conc_num,
+                                valid_until=v_until,
+                                source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                                matched=True,
+                            )
             except sqlite3.Error:
                 pass
 
@@ -985,7 +1048,7 @@ async def find_minprom_gisp_match_ai(
                 try:
                     cursor = conn.execute(
                         """
-                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url
+                        SELECT e.registry_number, e.manufacturer, e.product, e.inn, e.source_url, e.evidence
                         FROM entries_fts
                         JOIN entries e ON e.id = entries_fts.rowid
                         WHERE entries_fts MATCH ?
@@ -994,16 +1057,20 @@ async def find_minprom_gisp_match_ai(
                         (f'"{terms[0]}"*',),
                     )
                     rows = cursor.fetchall()
-                    for reg_num, manuf, prod, inn, src_url in rows:
-                        if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
-                            return GispRegistryMatch(
-                                registry_number=str(reg_num or "").strip(),
-                                manufacturer=str(manuf or "").strip(),
-                                product=str(prod or "").strip(),
-                                inn=str(inn or "").strip(),
-                                source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
-                                matched=True,
-                            )
+                    for reg_num, manuf, prod, inn, src_url, evidence in rows:
+                        if _is_gisp_product_compatible(prod, name_in_tz, brand, model):
+                            if await is_gisp_product_compatible_ai(settings, prod, name_in_tz, brand, model):
+                                conc_num, v_until = _extract_conclusion_info(str(evidence or ""))
+                                return GispRegistryMatch(
+                                    registry_number=str(reg_num or "").strip(),
+                                    manufacturer=str(manuf or "").strip(),
+                                    product=str(prod or "").strip(),
+                                    inn=str(inn or "").strip(),
+                                    conclusion_number=conc_num,
+                                    valid_until=v_until,
+                                    source_url=str(src_url or GISP_PRODUCT_REGISTRY_URL),
+                                    matched=True,
+                                )
                 except sqlite3.Error:
                     pass
 
@@ -2438,7 +2505,12 @@ def write_exact_product_docx(
         cells[1].text = pos.name_in_tz
         cells[2].text = f"{pos.identified_brand} {pos.identified_model}".strip()
         cells[3].text = pos.manufacturer
-        cells[4].text = f"№ {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "Не в реестре"
+        gisp_cell_text = "Не в реестре"
+        if pos.gisp_match and pos.gisp_match.registry_number:
+            gisp_cell_text = f"№ {pos.gisp_match.registry_number}"
+            if pos.gisp_match.conclusion_number:
+                gisp_cell_text += f"\n(Закл. № {pos.gisp_match.conclusion_number})"
+        cells[4].text = gisp_cell_text
         conf_pct = int(round(pos.confidence * 100))
         if conf_pct >= 85:
             cells[5].text = f"{conf_pct}%"
@@ -2512,7 +2584,11 @@ def write_exact_product_docx(
         bp.paragraph_format.space_after = Pt(3)
         bp.paragraph_format.left_indent = Inches(0.08)
         
-        gisp_str = f"ГИСП № {pos.gisp_match.registry_number}" if (pos.gisp_match and pos.gisp_match.registry_number) else "ГИСП: Не в реестре"
+        gisp_str = "ГИСП: Не в реестре"
+        if pos.gisp_match and pos.gisp_match.registry_number:
+            gisp_str = f"ГИСП № {pos.gisp_match.registry_number}"
+            if pos.gisp_match.conclusion_number:
+                gisp_str += f" (Заключение № {pos.gisp_match.conclusion_number})"
         src_tag = f" | Источник: {pos.source_url[:45]}..." if pos.source_url else ""
         status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
         brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")

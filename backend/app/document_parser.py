@@ -18,7 +18,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 DEFAULT_DOCUMENT_OPTIONS = {
     "ocr_enabled": True,
-    "pdf_ocr_pages": 3,
+    "pdf_ocr_pages": 12,
     "archive_max_files": 80,
     "archive_max_mb": 250,
     "archive_depth": 2,

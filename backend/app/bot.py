@@ -2643,7 +2643,7 @@ async def _send_result_offer_outputs(
             sent_output_base_caption = ""
             for index, (item, output) in enumerate(prepared_items):
                 is_last = index == len(prepared_items) - 1
-                sent_output_base_caption = _output_caption_for_item(job.mode, str(item.get("kind") or ""), output)
+                sent_output_base_caption = _output_caption_for_item(job.mode, str(item.get("kind") or ""), output, job=job)
                 sent_output_message = await message.answer_document(
                     FSInputFile(output),
                     caption=sent_output_base_caption,
@@ -2735,7 +2735,7 @@ async def _send_job_outputs_locked(
             for index, item in enumerate(output_items):
                 output = Path(str(item.get("path") or ""))
                 is_last = index == len(output_items) - 1
-                sent_output_base_caption = _output_caption_for_item(done_job.mode, str(item.get("kind") or ""), output)
+                sent_output_base_caption = _output_caption_for_item(done_job.mode, str(item.get("kind") or ""), output, job=done_job)
                 sent_output_message = await message.answer_document(
                     FSInputFile(output),
                     caption=sent_output_base_caption,
@@ -2824,8 +2824,74 @@ async def _send_find_more_suppliers_offer(message: Message, job_id: str) -> None
     )
 
 
-def _output_caption_for_item(mode: str, kind: str, output: Path) -> str:
-    if kind in {"exact_product", "exact_product_table", "exact_product_spec", "spec", "table"}:
+def format_exact_product_telegram_summary(report_data: dict) -> str:
+    """Формирует структурированную карточку-сводку подбора товара для Telegram."""
+    if not isinstance(report_data, dict):
+        return ""
+    positions = report_data.get("positions") or []
+    if not positions:
+        return ""
+
+    lines = ["🎯 *Подбор товара и аналогов:*"]
+    for idx, pos in enumerate(positions[:3], start=1):
+        name = str(pos.get("name_in_tz") or f"Позиция {idx}").strip()
+        brand = str(pos.get("identified_brand") or "").strip()
+        model = str(pos.get("identified_model") or "").strip()
+        mfr = str(pos.get("manufacturer") or "").strip()
+
+        prod_title = f"{brand} {model}".strip() or name
+        if mfr and mfr not in prod_title:
+            prod_title += f" ({mfr})"
+
+        gisp = pos.get("gisp_match") or {}
+        reg_num = gisp.get("registry_number") if gisp.get("matched") else ""
+        conc_num = gisp.get("conclusion_number") or ""
+
+        if reg_num:
+            gisp_info = f"№ {reg_num}"
+            if conc_num:
+                gisp_info += f" (Закл. № {conc_num})"
+        else:
+            gisp_info = "в реестре не найден"
+
+        specs = pos.get("specs_breakdown") or []
+        mismatches = [s for s in specs if s.get("status") == "mismatch"]
+        conf_pct = int(round(float(pos.get("confidence") or 1.0) * 100))
+
+        if not specs:
+            spec_info = f"соответствие по каталогу ({conf_pct}%)"
+        elif not mismatches:
+            spec_info = f"100% соответствие ТЗ ({len(specs)} парам.)"
+        else:
+            spec_info = f"{len(specs) - len(mismatches)}/{len(specs)} парам. (расхождений: {len(mismatches)})"
+
+        lines.append(
+            f"\n*{idx}. {name}*\n"
+            f"• Товар: {prod_title}\n"
+            f"• Минпромторг (ГИСП): {gisp_info}\n"
+            f"• Сверка ТЗ: {spec_info}"
+        )
+
+    if len(positions) > 3:
+        lines.append(f"\n_...и ещё {len(positions) - 3} поз. в прикреплённом файле._")
+
+    return "\n".join(lines)
+
+
+def _output_caption_for_item(mode: str, kind: str, output: Path, job: Job | None = None) -> str:
+    if kind in {"exact_product", "exact_product_table", "exact_product_spec", "spec", "table"} or mode == MODE_EXACT_PRODUCT:
+        if job and getattr(job, "evidence_path", None):
+            try:
+                ev_path = Path(str(job.evidence_path))
+                if ev_path.is_file():
+                    ev_data = json.loads(ev_path.read_text(encoding="utf-8"))
+                    ep_data = ev_data.get("exact_product_report") or ev_data.get("exact_product")
+                    if isinstance(ep_data, dict):
+                        summary_card = format_exact_product_telegram_summary(ep_data)
+                        if summary_card:
+                            return summary_card
+            except Exception:
+                pass
         return "Подбор товара, характеристики и аналоги во вложении."
     if kind == "quote_request":
         return "Запрос КП во вложении."
