@@ -2589,7 +2589,7 @@ def write_exact_product_docx(
             gisp_str = f"ГИСП № {pos.gisp_match.registry_number}"
             if pos.gisp_match.conclusion_number:
                 gisp_str += f" (Заключение № {pos.gisp_match.conclusion_number})"
-        src_tag = f" | Источник: {pos.source_url[:45]}..." if pos.source_url else ""
+        src_tag = f" | Источник: {pos.source_url}" if pos.source_url else ""
         status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
         brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")
         brun.font.bold = True
@@ -2901,8 +2901,8 @@ def write_exact_product_docx(
             cells = row.cells
             cells[0].text = str(row_count)
             cells[1].text = "PDF Паспорт" if doc_item.get("type") == "pdf" else "Сайт завода"
-            cells[2].text = str(doc_item.get("title") or "Техническая документация")[:60]
-            cells[3].text = str(doc_item.get("url") or doc_item.get("domain") or "—")[:70]
+            cells[2].text = str(doc_item.get("title") or "Техническая документация").strip()
+            cells[3].text = str(doc_item.get("url") or doc_item.get("domain") or "—").strip()
 
             fill_color = ZEBRA_MINT if row_count % 2 == 1 else "FFFFFF"
             for idx, c in enumerate(cells):
