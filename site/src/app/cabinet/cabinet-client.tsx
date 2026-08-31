@@ -2403,7 +2403,9 @@ export function CabinetClient() {
                   <div className="col-span-6 md:col-span-2 flex flex-col gap-1">
                     <span
                       className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
-                        isFailed
+                        job.status_label === "нет в реестре"
+                          ? "bg-slate-100 text-slate-700 border-slate-300"
+                          : isFailed
                           ? "bg-rose-50 text-rose-700 border-rose-200"
                           : isPending
                           ? "bg-amber-50 text-amber-800 border-amber-200 animate-pulse"
@@ -2414,18 +2416,24 @@ export function CabinetClient() {
                     >
                       {job.status_label}
                     </span>
-                    {job.error ? <small className="text-rose-600 text-[10px] block mt-0.5 break-words">{job.error}</small> : null}
+                    {job.error && job.status_label !== "нет в реестре" && job.error !== job.message ? (
+                      <small className="text-rose-600 text-[10px] block mt-0.5 break-words">
+                        {job.error}
+                      </small>
+                    ) : null}
                   </div>
 
                   <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600">
                     {activeJobStatuses.has(job.status) ? <JobStageSteps progress={job.progress} /> : null}
                     <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mt-1.5" aria-label={`Прогресс ${job.progress}%`}>
                       <i
-                        className={`block h-full transition-all rounded-full ${isFailed ? "bg-rose-500" : "bg-teal-600"}`}
+                        className={`block h-full transition-all rounded-full ${
+                          job.status_label === "нет в реестре" ? "bg-slate-400" : isFailed ? "bg-rose-500" : "bg-teal-600"
+                        }`}
                         style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
                       />
                     </div>
-                    <span className="text-[10px] text-slate-500 font-mono">{job.message || `${job.progress}%`}</span>
+                    <span className="text-[11px] text-slate-600 leading-snug">{job.message || `${job.progress}%`}</span>
                   </div>
 
                   <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end">

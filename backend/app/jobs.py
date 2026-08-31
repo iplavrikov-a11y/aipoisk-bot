@@ -1280,12 +1280,12 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         release_job_reservation(db, job, note="Резерв возвращён: поставщики не найдены")
         is_registry_only = normalize_supplier_search_policy(getattr(job, "supplier_search_policy", "")) == SUPPLIER_POLICY_MINPROM_ONLY
         msg = (
-            "В реестре Минпромторга (ГИСП) подходящие производители не найдены. Вы можете запустить обычный поиск по открытому рынку."
+            "В реестре Минпромторга подходящие производители не найдены"
             if is_registry_only
             else "Поставщики не найдены: подтверждённых официальных сайтов с контактами 0" + browser_failure_note
         )
         err = (
-            "В реестре Минпромторга (ГИСП) записи по спецификации отсутствуют."
+            ""
             if is_registry_only
             else browser_failure_error or "Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика."
         )

@@ -3020,6 +3020,9 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    status_lbl = human_status_label(job.status)
+    if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
+        status_lbl = "нет в реестре"
     data = {
         "id": job.id,
         "client_id": job.client_id,
@@ -3028,7 +3031,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
         "status": job.status,
-        "status_label": human_status_label(job.status),
+        "status_label": status_lbl,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,
