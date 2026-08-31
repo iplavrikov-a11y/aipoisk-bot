@@ -683,7 +683,7 @@ def get_or_create_master_key(
     db: Session = Depends(db_session),
 ):
     """
-    Returns the Master Admin API key details. If none exists, creates one automatically.
+    Returns the Master Admin API key details and active raw token.
     """
     master = db.query(ApiKey).filter(ApiKey.is_admin == True, ApiKey.is_active == True).first()
     if not master:
@@ -691,6 +691,7 @@ def get_or_create_master_key(
         master = ApiKey(
             key_hash=key_hash,
             key_prefix=key_prefix,
+            secret_token=raw_key,
             name="Главный Master-ключ Администратора",
             is_admin=True,
             is_active=True,
@@ -708,13 +709,21 @@ def get_or_create_master_key(
         db.refresh(master)
         return {
             "ok": True,
-            "raw_api_key": raw_key,  # generated new
+            "raw_api_key": raw_key,
             "item": _serialize_api_key_item(master),
         }
 
+    if not master.secret_token:
+        raw_key, key_hash, key_prefix = generate_api_key(is_admin=True)
+        master.key_hash = key_hash
+        master.key_prefix = key_prefix
+        master.secret_token = raw_key
+        db.commit()
+        db.refresh(master)
+
     return {
         "ok": True,
-        "raw_api_key": None,  # already existing, hash stored
+        "raw_api_key": master.secret_token,
         "item": _serialize_api_key_item(master),
     }
 
@@ -742,8 +751,9 @@ def create_api_key(
     new_key = ApiKey(
         key_hash=key_hash,
         key_prefix=key_prefix,
+        secret_token=raw_key if req.is_admin else None,
         name=req.name.strip(),
-        client_id=req.client_id,
+        client_id=req.client_id or None,
         is_admin=req.is_admin,
         is_active=True,
         allowed_supplier_search=req.allowed_supplier_search,
@@ -781,6 +791,8 @@ def regenerate_api_key(
     raw_key, key_hash, key_prefix = generate_api_key(is_admin=key.is_admin)
     key.key_hash = key_hash
     key.key_prefix = key_prefix
+    if key.is_admin:
+        key.secret_token = raw_key
     db.commit()
     db.refresh(key)
 

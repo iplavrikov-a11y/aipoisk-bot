@@ -552,6 +552,7 @@ class ApiKey(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     key_prefix: Mapped[str] = mapped_column(String(24), index=True)
+    secret_token: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     name: Mapped[str] = mapped_column(String(120), default="API Key")
     client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -304,6 +304,13 @@ def _ensure_schema() -> None:
         for column, definition in outreach_settings_additions.items():
             if outreach_settings_existing and column not in outreach_settings_existing:
                 connection.execute(text(f"ALTER TABLE outreach_settings ADD COLUMN {column} {definition}"))
+        api_keys_existing = _existing_columns(inspector, "api_keys")
+        api_keys_additions = {
+            "secret_token": "VARCHAR(120) NULL",
+        }
+        for column, definition in api_keys_additions.items():
+            if api_keys_existing and column not in api_keys_existing:
+                connection.execute(text(f"ALTER TABLE api_keys ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:
@@ -407,6 +414,7 @@ def _ensure_master_api_key() -> None:
             master = ApiKey(
                 key_hash=key_hash,
                 key_prefix=key_prefix,
+                secret_token=raw_key,
                 name="Главный Master-ключ Администратора",
                 is_admin=True,
                 is_active=True,
@@ -420,6 +428,14 @@ def _ensure_master_api_key() -> None:
                 notes="Мастер-ключ с полным безлимитным доступом ко всем модулям TenderLex",
             )
             db.add(master)
+            db.commit()
+        elif not master.secret_token:
+            raw_key = f"tl_admin_{secrets.token_urlsafe(32)}"
+            key_hash = hashlib.sha256(raw_key.strip().encode("utf-8")).hexdigest()
+            key_prefix = f"{raw_key[:12]}...{raw_key[-4:]}"
+            master.key_hash = key_hash
+            master.key_prefix = key_prefix
+            master.secret_token = raw_key
             db.commit()
     except Exception:
         db.rollback()
