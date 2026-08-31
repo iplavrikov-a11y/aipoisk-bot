@@ -882,6 +882,7 @@ def customer_jobs_api(
     q: str = "",
     mode: str = "",
     policy: str = "",
+    status: str = "",
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> list[dict] | dict:
@@ -896,14 +897,18 @@ def customer_jobs_api(
             or_(
                 func.coalesce(Job.title, "").ilike(pattern),
                 func.coalesce(Job.message, "").ilike(pattern),
+                Job.files.any(JobFile.original_filename.ilike(pattern)),
             )
         )
     clean_mode = str(mode or "").strip()
-    if clean_mode in {"supplier_search", "procurement_report", "analysis_and_suppliers"}:
+    if clean_mode in {MODE_SUPPLIER_SEARCH, MODE_EXACT_PRODUCT, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         query = query.filter(Job.mode == clean_mode)
     clean_policy = str(policy or "").strip()
     if clean_policy in {"normal", "minprom_registry_only", "minprom_registry_priority"}:
         query = query.filter(Job.supplier_search_policy == clean_policy)
+    clean_status = str(status or "").strip()
+    if clean_status:
+        query = query.filter(Job.status == clean_status)
     total = query.count()
     jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
     items = [customer_job_to_dict(job) for job in jobs]

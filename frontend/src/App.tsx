@@ -3371,7 +3371,24 @@ function ClientsView({
   const [searchQuery, setSearchQuery] = useState('')
   const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(25)
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_admin_clients_page_size')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (parsed === 25 || parsed === 50 || parsed === 100) return parsed
+      }
+    } catch {}
+    return 25
+  })
+
+  function handleClientPageSizeChange(nextSize: number) {
+    setPageSize(nextSize)
+    setPage(1)
+    try {
+      localStorage.setItem('tenderlex_admin_clients_page_size', String(nextSize))
+    } catch {}
+  }
 
   const webClientsCount = useMemo(
     () => clients.filter(c => c.web_users && c.web_users.length > 0).length,
@@ -3822,10 +3839,7 @@ function ClientsView({
           </div>
           <select
             value={pageSize}
-            onChange={e => {
-              setPageSize(Number(e.target.value))
-              setPage(1)
-            }}
+            onChange={e => handleClientPageSizeChange(Number(e.target.value))}
             style={{ width: 'auto', minWidth: 100, fontSize: 12 }}
             title="Количество клиентов на странице"
           >
@@ -4298,6 +4312,25 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({})
   const [jobDetails, setJobDetails] = useState<Record<string, JobDetail | JobDetailError>>({})
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('tenderlex_admin_jobs_page_size')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (parsed === 12 || parsed === 25 || parsed === 50 || parsed === 100) return parsed
+      }
+    } catch {}
+    return 12
+  })
+
+  function handleJobPageSizeChange(nextSize: number) {
+    setPageSize(nextSize)
+    setPage(1)
+    try {
+      localStorage.setItem('tenderlex_admin_jobs_page_size', String(nextSize))
+    } catch {}
+  }
+
   const [showInternalJobs, setShowInternalJobs] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
   const [modeFilter, setModeFilter] = useState('')
@@ -4324,10 +4357,10 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         supplierRunTypeLabel(job),
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
     }), [jobs, showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
-  const pageCount = Math.max(1, Math.ceil(filteredJobs.length / ADMIN_JOBS_PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(filteredJobs.length / pageSize))
   const currentPage = Math.min(page, pageCount)
-  const pageStart = (currentPage - 1) * ADMIN_JOBS_PAGE_SIZE
-  const visibleJobs = filteredJobs.slice(pageStart, pageStart + ADMIN_JOBS_PAGE_SIZE)
+  const pageStart = (currentPage - 1) * pageSize
+  const visibleJobs = filteredJobs.slice(pageStart, pageStart + pageSize)
   const hiddenInternalCount = useMemo(() => showInternalJobs ? 0 : jobs.filter(job => job.is_internal).length, [jobs, showInternalJobs])
   const statusOptions = useMemo(() => [
     { id: 'pending', label: 'В очереди' },
@@ -4340,6 +4373,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   ], [])
   const modeOptions = useMemo(() => [
     { id: 'supplier_search', label: 'Поиск поставщиков' },
+    { id: 'exact_product', label: 'Подбор товара и аналогов' },
     { id: 'procurement_report', label: 'Анализ документации' },
     { id: 'analysis_and_suppliers', label: 'Анализ + поиск' },
   ], [])
@@ -4433,7 +4467,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
             {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
           </div>
-          {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
+          {filteredJobs.length > pageSize && (
             <div className="list-pagination toolbar-pagination">
               <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
               <span>Страница {currentPage} из {pageCount}</span>
@@ -4459,6 +4493,17 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="">Все статусы</option>
             {statusOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
+          </select>
+          <select
+            value={pageSize}
+            onChange={e => handleJobPageSizeChange(Number(e.target.value))}
+            style={{ width: 'auto', minWidth: 90, fontSize: 12 }}
+            title="Количество задач на странице"
+          >
+            <option value={12}>По 12</option>
+            <option value={25}>По 25</option>
+            <option value={50}>По 50</option>
+            <option value={100}>По 100</option>
           </select>
           {hasActiveFilters && (
             <button className="ghost small-text" onClick={resetFilters} title="Сбросить фильтры" style={{ height: '34px', padding: '0 10px' }}>
@@ -4597,7 +4642,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         })}
         {!visibleJobs.length && <div className="empty inline-empty">Нет пользовательских задач для показа.</div>}
       </div>
-      {filteredJobs.length > ADMIN_JOBS_PAGE_SIZE && (
+      {filteredJobs.length > pageSize && (
         <div className="list-pagination">
           <button className="ghost small-text" onClick={() => setPage(value => Math.max(1, value - 1))} disabled={currentPage <= 1}>Назад</button>
           <span>Страница {currentPage} из {pageCount}</span>

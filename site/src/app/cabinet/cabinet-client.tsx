@@ -174,7 +174,7 @@ type CustomerJobsResponse = {
   offset: number;
 };
 
-const CUSTOMER_JOBS_PAGE_SIZE = 15;
+const DEFAULT_CUSTOMER_JOBS_PAGE_SIZE = 15;
 const CUSTOMER_JOB_FETCH_OPTIONS: RequestInit = {
   credentials: "same-origin",
   cache: "no-store",
@@ -805,6 +805,26 @@ export function CabinetClient() {
   const [jobs, setJobs] = useState<CustomerJob[]>([]);
   const [jobsPage, setJobsPage] = useState(1);
   const [jobsTotal, setJobsTotal] = useState(0);
+  const [jobsPageSize, setJobsPageSize] = useState<number>(() => {
+    if (typeof window === "undefined") return DEFAULT_CUSTOMER_JOBS_PAGE_SIZE;
+    try {
+      const saved = localStorage.getItem("tenderlex_customer_jobs_page_size");
+      if (saved) {
+        const num = parseInt(saved, 10);
+        if (num === 15 || num === 25 || num === 50 || num === 100) return num;
+      }
+    } catch {}
+    return DEFAULT_CUSTOMER_JOBS_PAGE_SIZE;
+  });
+
+  function handleJobsPageSizeChange(size: number) {
+    setJobsPageSize(size);
+    setJobsPage(1);
+    try {
+      localStorage.setItem("tenderlex_customer_jobs_page_size", String(size));
+    } catch {}
+  }
+
   const [jobSearchQuery, setJobSearchQuery] = useState("");
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobModeFilter, setJobModeFilter] = useState("");
@@ -881,9 +901,9 @@ export function CabinetClient() {
     () => jobs.filter((job) => ["pending", "running", "awaiting_customer_confirmation"].includes(job.status)).length,
     [jobs],
   );
-  const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / CUSTOMER_JOBS_PAGE_SIZE));
-  const jobsStart = jobsTotal ? (jobsPage - 1) * CUSTOMER_JOBS_PAGE_SIZE + 1 : 0;
-  const jobsEnd = Math.min(jobsTotal, jobsPage * CUSTOMER_JOBS_PAGE_SIZE);
+  const jobsPageCount = Math.max(1, Math.ceil(jobsTotal / jobsPageSize));
+  const jobsStart = jobsTotal ? (jobsPage - 1) * jobsPageSize + 1 : 0;
+  const jobsEnd = Math.min(jobsTotal, jobsPage * jobsPageSize);
   const hasFindMoreSuppliers = jobs.some((job) => job.can_find_more_suppliers);
 
   async function loadSession() {
@@ -901,13 +921,14 @@ export function CabinetClient() {
     query = debouncedJobSearch,
     mode = jobModeFilter,
     policy = jobPolicyFilter,
+    pageSize = jobsPageSize,
   ) {
     if (!authenticated) return;
     setJobsLoading(true);
     try {
-      const offset = (page - 1) * CUSTOMER_JOBS_PAGE_SIZE;
+      const offset = (page - 1) * pageSize;
       const params = new URLSearchParams({
-        limit: String(CUSTOMER_JOBS_PAGE_SIZE),
+        limit: String(pageSize),
         offset: String(offset),
         include_pagination: "true",
       });
@@ -1089,13 +1110,13 @@ export function CabinetClient() {
 
   useEffect(() => {
     if (!authenticated) return;
-    loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter);
+    loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
     const timer = window.setInterval(() => {
-      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter);
+      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
       if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
-  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, activeJobs]);
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, activeJobs]);
 
   useEffect(() => {
     if (!findMoreConfirmJob) return;
@@ -2256,7 +2277,7 @@ export function CabinetClient() {
           </div>
 
           <div className="flex items-center gap-3">
-            {jobsTotal > CUSTOMER_JOBS_PAGE_SIZE ? (
+            {jobsTotal > jobsPageSize ? (
               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700" aria-label="Навигация по задачам">
                 <button
                   type="button"
@@ -2279,6 +2300,17 @@ export function CabinetClient() {
                 </button>
               </div>
             ) : null}
+            <select
+              value={jobsPageSize}
+              onChange={(e) => handleJobsPageSizeChange(Number(e.target.value))}
+              className="py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
+              title="Количество задач на странице"
+            >
+              <option value={15}>По 15</option>
+              <option value={25}>По 25</option>
+              <option value={50}>По 50</option>
+              <option value={100}>По 100</option>
+            </select>
           </div>
         </div>
 
@@ -2310,11 +2342,15 @@ export function CabinetClient() {
           <div className="col-span-6 md:col-span-3">
             <select
               value={jobModeFilter}
-              onChange={(e) => setJobModeFilter(e.target.value)}
+              onChange={(e) => {
+                setJobModeFilter(e.target.value);
+                setJobsPage(1);
+              }}
               className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
             >
               <option value="">Все типы</option>
               <option value="supplier_search">Поиск поставщиков</option>
+              <option value="exact_product">Подбор товара и аналогов</option>
               <option value="procurement_report">Анализ документации</option>
               <option value="analysis_and_suppliers">Анализ + поиск</option>
             </select>
@@ -2324,7 +2360,10 @@ export function CabinetClient() {
           <div className="col-span-6 md:col-span-3 flex items-center gap-1.5">
             <select
               value={jobPolicyFilter}
-              onChange={(e) => setJobPolicyFilter(e.target.value)}
+              onChange={(e) => {
+                setJobPolicyFilter(e.target.value);
+                setJobsPage(1);
+              }}
               className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
             >
               <option value="">Все режимы</option>
@@ -2625,6 +2664,38 @@ export function CabinetClient() {
             </div>
           )}
         </div>
+
+        {jobsTotal > jobsPageSize ? (
+          <div className="flex items-center justify-center gap-1.5 pt-3 border-t border-slate-100 text-xs font-bold text-slate-700" aria-label="Навигация по задачам (нижняя)">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+              onClick={() => {
+                setJobsPage((page) => Math.max(1, page - 1));
+                const el = document.getElementById("jobs");
+                if (el) el.scrollIntoView({ behavior: "smooth" });
+              }}
+              disabled={jobsPage <= 1 || jobsLoading}
+            >
+              Назад
+            </button>
+            <span className="px-2 text-xs font-medium text-slate-600">
+              Страница {jobsPage} из {jobsPageCount}
+            </span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+              onClick={() => {
+                setJobsPage((page) => Math.min(jobsPageCount, page + 1));
+                const el = document.getElementById("jobs");
+                if (el) el.scrollIntoView({ behavior: "smooth" });
+              }}
+              disabled={jobsPage >= jobsPageCount || jobsLoading}
+            >
+              Вперёд
+            </button>
+          </div>
+        ) : null}
       </section>
 
       {quoteRequestModal ? (
