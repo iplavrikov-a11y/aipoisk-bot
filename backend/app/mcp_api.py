@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from .ai import get_model_selection
@@ -207,8 +207,55 @@ def consume_quota(db: Session, api_key: ApiKey, service: str, count: int = 1) ->
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Public MCP Request / Response Schemas
 # ---------------------------------------------------------------------------
+
+def _extract_str(data: dict[str, Any], keys: list[str], default: str = "") -> str:
+    for k in keys:
+        val = data.get(k)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return default
+
+
+def _extract_int(data: dict[str, Any], keys: list[str], default: int) -> int:
+    for k in keys:
+        val = data.get(k)
+        if val is not None:
+            try:
+                iv = int(val)
+                if iv > 0:
+                    return iv
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
+def _format_characteristics(chars: Any) -> str:
+    """Formats characteristics passed as list of dicts, dict, or list of strings into clean text."""
+    if not chars:
+        return ""
+    lines = []
+    if isinstance(chars, list):
+        for item in chars:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("param") or item.get("parameter") or item.get("title") or item.get("key") or ""
+                value = item.get("value") or item.get("val") or item.get("description") or ""
+                if name and value:
+                    lines.append(f"• {name}: {value}")
+                elif name or value:
+                    lines.append(f"• {name or value}")
+            elif isinstance(item, str) and item.strip():
+                lines.append(f"• {item.strip()}")
+    elif isinstance(chars, dict):
+        for k, v in chars.items():
+            if str(k).strip() and str(v).strip():
+                lines.append(f"• {str(k).strip()}: {str(v).strip()}")
+    elif isinstance(chars, str) and chars.strip():
+        lines.append(chars.strip())
+    return "\n".join(lines)
+
 
 class McpBalanceResponse(BaseModel):
     ok: bool = True
@@ -224,7 +271,7 @@ class McpBalanceResponse(BaseModel):
 
 
 class McpSupplierSearchRequest(BaseModel):
-    specification: str = Field(..., min_length=5, max_length=_MAX_SPEC_LENGTH, description="Текст ТЗ, спецификации или наименование закупаемой продукции")
+    specification: str = Field(..., min_length=2, max_length=_MAX_SPEC_LENGTH, description="Текст ТЗ, спецификации или наименование закупаемой продукции")
     target_count: int = Field(default=5, ge=1, le=50, description="Желаемое количество поставщиков для поиска")
     city: str = Field(default="", max_length=120, description="Город или регион поставки (опционально)")
     include_quote_request: bool = Field(default=True, description="Сформировать готовый шаблон запроса КП")
@@ -232,6 +279,63 @@ class McpSupplierSearchRequest(BaseModel):
         default="normal",
         description="Режим поиска: 'normal' (обычный рынок РФ), 'minprom_registry_priority' (приоритет реестра Минпромторга / ГИСП), 'minprom_registry_only' (только производители из реестра Минпромторга РФ)"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+
+        # 1. Target count / limit / max_results
+        target = _extract_int(d, ["target_count", "max_results", "limit", "count", "suppliers_count", "target"], default=5)
+        d["target_count"] = min(50, max(1, target))
+
+        # 2. City / Delivery region
+        city = _extract_str(d, ["city", "delivery_region", "region", "location", "delivery_city", "address"], default="")
+        d["city"] = city
+
+        # 3. Search policy
+        policy = _extract_str(d, ["search_policy", "policy", "mode"], default="normal").lower().strip()
+        if policy in {"minprom_registry_only", "only_registry", "gisp_only"}:
+            d["search_policy"] = "minprom_registry_only"
+        elif policy in {"minprom_registry_priority", "registry_priority", "priority_registry", "gisp_priority"}:
+            d["search_policy"] = "minprom_registry_priority"
+        else:
+            d["search_policy"] = "normal"
+
+        # 4. Include quote request
+        if "include_quote_request" not in d:
+            for k in ["quote_request", "commercial_offer", "kp", "with_quote"]:
+                if k in d:
+                    d["include_quote_request"] = bool(d[k])
+                    break
+
+        # 5. Specification assembly from any AI agent format
+        spec_text = _extract_str(d, ["specification", "spec", "text", "tz", "description", "content", "query"], default="")
+        prod_name = _extract_str(d, ["product_name", "procurement_title", "title", "name", "item_name", "subject", "item"], default="")
+        okpd2 = _extract_str(d, ["okpd2", "okpd", "code"], default="")
+        qty = d.get("quantity") or d.get("amount") or d.get("count_items")
+        chars_text = _format_characteristics(d.get("characteristics") or d.get("params") or d.get("parameters") or d.get("specs") or d.get("attributes"))
+
+        parts = []
+        if prod_name and prod_name.lower() not in spec_text.lower():
+            parts.append(f"Предмет закупки / товар: {prod_name}")
+        if okpd2 and okpd2 not in spec_text:
+            parts.append(f"Код ОКПД2: {okpd2}")
+        if qty and str(qty) not in spec_text:
+            parts.append(f"Количество: {qty}")
+        if spec_text:
+            parts.append(spec_text)
+        if chars_text and chars_text not in spec_text:
+            parts.append(f"Характеристики:\n{chars_text}")
+
+        final_spec = "\n\n".join([p for p in parts if p.strip()]).strip()
+        if not final_spec:
+            final_spec = prod_name or spec_text or "Товар по спецификации"
+
+        d["specification"] = final_spec
+        return d
 
 
 class McpSupplierItem(BaseModel):
@@ -260,8 +364,44 @@ class McpSupplierSearchResponse(BaseModel):
 
 
 class McpExactProductRequest(BaseModel):
-    specification: str = Field(..., min_length=5, max_length=_MAX_SPEC_LENGTH, description="Текст технического задания, параметров или требований к оборудованию")
+    specification: str = Field(..., min_length=2, max_length=_MAX_SPEC_LENGTH, description="Текст технического задания, параметров или требований к оборудованию")
     procurement_title: str = Field(default="", max_length=300, description="Наименование предмета закупки (опционально)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+
+        # 1. Procurement title
+        title = _extract_str(d, ["procurement_title", "product_name", "title", "name", "item_name", "subject", "item"], default="")
+        d["procurement_title"] = title
+
+        # 2. Specification assembly from any AI agent format
+        spec_text = _extract_str(d, ["specification", "spec", "text", "tz", "description", "content", "query"], default="")
+        okpd2 = _extract_str(d, ["okpd2", "okpd", "code"], default="")
+        qty = d.get("quantity") or d.get("amount") or d.get("count_items")
+        chars_text = _format_characteristics(d.get("characteristics") or d.get("params") or d.get("parameters") or d.get("specs") or d.get("attributes"))
+
+        parts = []
+        if title and title.lower() not in spec_text.lower():
+            parts.append(f"Предмет закупки / товар: {title}")
+        if okpd2 and okpd2 not in spec_text:
+            parts.append(f"Код ОКПД2: {okpd2}")
+        if qty and str(qty) not in spec_text:
+            parts.append(f"Количество: {qty}")
+        if spec_text:
+            parts.append(spec_text)
+        if chars_text and chars_text not in spec_text:
+            parts.append(f"Характеристики:\n{chars_text}")
+
+        final_spec = "\n\n".join([p for p in parts if p.strip()]).strip()
+        if not final_spec:
+            final_spec = title or spec_text or "Товар по спецификации"
+
+        d["specification"] = final_spec
+        return d
 
 
 class McpSpecMatchItem(BaseModel):
@@ -305,7 +445,20 @@ class McpExactProductResponse(BaseModel):
 
 
 class McpProcurementAnalyzeRequest(BaseModel):
-    document_text: str = Field(..., min_length=10, max_length=_MAX_DOC_LENGTH, description="Текст проекта контракта, извещения или закупочной документации")
+    document_text: str = Field(..., min_length=2, max_length=_MAX_DOC_LENGTH, description="Текст проекта контракта, извещения или закупочной документации")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        doc_text = _extract_str(d, [
+            "document_text", "text", "document", "doc", "contract_text",
+            "tz", "specification", "content", "file_content", "description", "data"
+        ], default="")
+        d["document_text"] = doc_text or "Документация закупки"
+        return d
 
 
 class McpProcurementAnalyzeResponse(BaseModel):
