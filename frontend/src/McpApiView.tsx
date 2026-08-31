@@ -6,8 +6,6 @@ import {
   RefreshCw,
   Plus,
   Shield,
-  Zap,
-  Terminal,
   Code2,
   Trash2,
   Edit2,
@@ -18,9 +16,7 @@ import {
   XCircle,
   Eye,
   EyeOff,
-  FileText,
-  Search,
-  ExternalLink,
+  Terminal,
 } from 'lucide-react'
 
 type Client = {
@@ -63,6 +59,7 @@ export function McpApiView({ clients }: { clients: Client[] }) {
   const [loading, setLoading] = useState(true)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [activeConfigTab, setActiveConfigTab] = useState<'claude' | 'cursor' | 'codex' | 'python'>('claude')
+  const [showTokenText, setShowTokenText] = useState(false)
 
   // Modals & form state
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -303,278 +300,220 @@ export function McpApiView({ clients }: { clients: Client[] }) {
     2
   )
 
-  const codexInstructions = `### Интеграция TenderLex MCP с ChatGPT / Codex:
-1. Запустите локальный MCP-сервер или используйте прямое обращение к REST API.
-2. Базовый URL: https://tenderlex.ru/api/v1/mcp
-3. Передавайте заголовок: Authorization: Bearer ${effectiveMasterToken}
+  const codexInstructions = `### Интеграция TenderLex с ChatGPT / Codex:
+Base URL: https://tenderlex.ru/api/v1/mcp
+Headers: Authorization: Bearer ${effectiveMasterToken}
 
-Доступные функции:
+Эндпоинты:
 - POST /api/v1/mcp/suppliers/search (Поиск поставщиков)
-- POST /api/v1/mcp/products/exact-analogs (Подбор точного товара и аналогов Форма 2)
-- POST /api/v1/mcp/procurements/analyze (Анализ документации 44-ФЗ / 223-ФЗ)
-- GET /api/v1/mcp/balance (Проверка баланса и квот)`
+- POST /api/v1/mcp/products/exact-analogs (Подбор товара и аналогов)
+- POST /api/v1/mcp/procurements/analyze (Анализ документации)
+- GET /api/v1/mcp/balance (Остатки квот)`
 
   const pythonSnippet = `import requests
 
 API_KEY = "${effectiveMasterToken}"
 API_URL = "https://tenderlex.ru/api/v1/mcp"
+headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
-
-# 1. Поиск поставщиков
+# Поиск поставщиков по ТЗ
 resp = requests.post(f"{API_URL}/suppliers/search", headers=headers, json={
-    "specification": "Поставка насосов центробежных К 80-50-200",
-    "target_count": 5,
-    "include_quote_request": True
+    "specification": "Насос центробежный К 80-50-200",
+    "target_count": 5
 })
-print("Поставщики:", resp.json())
-
-# 2. Подбор товара и аналогов (Форма 2)
-resp_exact = requests.post(f"{API_URL}/products/exact-analogs", headers=headers, json={
-    "specification": "Светильник светодиодный 40 Вт, световой поток не менее 4500 лм, IP65",
-    "procurement_title": "Поставка офисных светильников"
-})
-print("Точный товар и аналоги:", resp_exact.json())`
+print(resp.json())`
 
   return (
-    <div className="mcp-container">
-      {/* 1. MASTER ADMIN KEY SECTION */}
-      <div className="mcp-card master-card">
-        <div className="mcp-card-header">
-          <div className="mcp-card-title-wrap">
-            <div className="mcp-icon-badge master">
-              <Shield size={20} />
+    <div className="mcp-compact-root">
+      {/* 1. TOP ROW: 2 COMPACT CARDS (MASTER KEY & CONFIG SNIPPET) */}
+      <div className="mcp-top-grid">
+        {/* Left: Master Key Card */}
+        <div className="mcp-compact-card master">
+          <div className="mcp-card-title-row">
+            <div className="mcp-card-title-left">
+              <span className="mcp-icon-tag master"><Shield size={16} /></span>
+              <div>
+                <h3>Master API-ключ Администратора</h3>
+                <small>Полный безлимитный доступ ко всем модулям TenderLex</small>
+              </div>
             </div>
-            <div>
-              <h2>Личный Master API-ключ Администратора</h2>
-              <p>Главный мастер-ключ с полным безлимитным доступом ко всем модулям TenderLex для Claude, Cursor и ваших личных агентов.</p>
-            </div>
+            {masterKeyInfo.item && (
+              <button
+                type="button"
+                className="mcp-mini-action-btn"
+                title="Сгенерировать новый мастер-ключ"
+                onClick={() => handleRegenerateKey(masterKeyInfo.item!)}
+              >
+                <RefreshCw size={13} />
+                <span>Обновить</span>
+              </button>
+            )}
           </div>
-          {masterKeyInfo.item && (
-            <button
-              type="button"
-              className="ghost small-text"
-              style={{ color: '#0f766e', borderColor: '#0f766e' }}
-              onClick={() => handleRegenerateKey(masterKeyInfo.item!)}
-            >
-              <RefreshCw size={14} style={{ marginRight: 6 }} />
-              Сгенерировать новый ключ
-            </button>
-          )}
-        </div>
 
-        <div className="mcp-token-box">
-          <div className="mcp-token-display">
-            <span className="token-label">Токен:</span>
-            <code className="token-code">
-              {masterKeyInfo.raw_api_key ? masterKeyInfo.raw_api_key : masterKeyInfo.item?.key_prefix || 'tl_admin_...'}
-            </code>
-          </div>
-          <div className="mcp-token-actions">
-            <button
-              type="button"
-              className="primary small-text"
-              onClick={() =>
-                handleCopy(
-                  masterKeyInfo.raw_api_key || masterKeyInfo.item?.key_prefix || '',
-                  'master_token'
-                )
-              }
-            >
-              {copiedKey === 'master_token' ? (
-                <>
-                  <Check size={14} /> Скопировано!
-                </>
-              ) : (
-                <>
-                  <Copy size={14} /> Скопировать
-                </>
+          <div className="mcp-token-strip">
+            <div className="mcp-token-value-wrap">
+              <span className="mcp-token-prefix-label">TOKEN:</span>
+              <code className="mcp-token-text">
+                {showTokenText && masterKeyInfo.raw_api_key
+                  ? masterKeyInfo.raw_api_key
+                  : masterKeyInfo.item?.key_prefix || 'tl_admin_...'}
+              </code>
+            </div>
+            <div className="mcp-token-btn-group">
+              {masterKeyInfo.raw_api_key && (
+                <button
+                  type="button"
+                  className="mcp-token-icon-btn"
+                  title={showTokenText ? 'Скрыть токен' : 'Показать токен'}
+                  onClick={() => setShowTokenText(!showTokenText)}
+                >
+                  {showTokenText ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
               )}
+              <button
+                type="button"
+                className="mcp-copy-btn"
+                onClick={() =>
+                  handleCopy(
+                    masterKeyInfo.raw_api_key || masterKeyInfo.item?.key_prefix || '',
+                    'master_token'
+                  )
+                }
+              >
+                {copiedKey === 'master_token' ? (
+                  <>
+                    <Check size={13} /> <span>Скопировано</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={13} /> <span>Копировать</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {masterKeyInfo.item && (
+            <div className="mcp-compact-meta-row">
+              <span className="mcp-meta-pill">⚡ <strong>{masterKeyInfo.item.rate_limit_per_minute}</strong> req/min</span>
+              <span className="mcp-meta-pill emerald">🔒 <strong>Безлимитный доступ</strong></span>
+              <span className="mcp-meta-pill muted">
+                🕒 {masterKeyInfo.item.last_used_at ? new Date(masterKeyInfo.item.last_used_at).toLocaleDateString('ru-RU') : 'Не использовался'}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Quick Connect Tabs */}
+        <div className="mcp-compact-card">
+          <div className="mcp-card-title-row">
+            <div className="mcp-card-title-left">
+              <span className="mcp-icon-tag config"><Code2 size={16} /></span>
+              <div>
+                <h3>Подключение к AI-ассистентам (MCP)</h3>
+                <small>Конфигурации для Claude Desktop, Cursor, ChatGPT Codex</small>
+              </div>
+            </div>
+          </div>
+
+          <div className="mcp-tabs-pill-row">
+            <button
+              type="button"
+              className={`mcp-tab-pill ${activeConfigTab === 'claude' ? 'active' : ''}`}
+              onClick={() => setActiveConfigTab('claude')}
+            >
+              🍏 Claude Desktop
+            </button>
+            <button
+              type="button"
+              className={`mcp-tab-pill ${activeConfigTab === 'cursor' ? 'active' : ''}`}
+              onClick={() => setActiveConfigTab('cursor')}
+            >
+              ⚡ Cursor
+            </button>
+            <button
+              type="button"
+              className={`mcp-tab-pill ${activeConfigTab === 'codex' ? 'active' : ''}`}
+              onClick={() => setActiveConfigTab('codex')}
+            >
+              🤖 ChatGPT
+            </button>
+            <button
+              type="button"
+              className={`mcp-tab-pill ${activeConfigTab === 'python' ? 'active' : ''}`}
+              onClick={() => setActiveConfigTab('python')}
+            >
+              🐍 Python
+            </button>
+          </div>
+
+          <div className="mcp-compact-code-wrap">
+            <pre className="mcp-compact-pre">
+              {activeConfigTab === 'claude' && claudeConfigJson}
+              {activeConfigTab === 'cursor' && cursorConfigJson}
+              {activeConfigTab === 'codex' && codexInstructions}
+              {activeConfigTab === 'python' && pythonSnippet}
+            </pre>
+            <button
+              type="button"
+              className="mcp-code-copy-btn"
+              title="Скопировать конфигурацию"
+              onClick={() => {
+                const text =
+                  activeConfigTab === 'claude'
+                    ? claudeConfigJson
+                    : activeConfigTab === 'cursor'
+                    ? cursorConfigJson
+                    : activeConfigTab === 'codex'
+                    ? codexInstructions
+                    : pythonSnippet
+                handleCopy(text, 'snippet_cfg')
+              }}
+            >
+              {copiedKey === 'snippet_cfg' ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </div>
         </div>
-
-        {masterKeyInfo.item && (
-          <div className="master-meta-row">
-            <span>
-              ⚡ Лимит запросов: <strong>{masterKeyInfo.item.rate_limit_per_minute} req/min</strong>
-            </span>
-            <span>
-              🔒 Права: <strong>Безлимит на все модули</strong>
-            </span>
-            <span>
-              🕒 Последнее использование: <strong>{masterKeyInfo.item.last_used_at ? new Date(masterKeyInfo.item.last_used_at).toLocaleString('ru-RU') : 'Никогда'}</strong>
-            </span>
-          </div>
-        )}
       </div>
 
-      {/* 2. CONFIG & MCP INTEGRATION SNIPPETS */}
-      <div className="mcp-card">
-        <div className="mcp-card-header">
-          <div className="mcp-card-title-wrap">
-            <div className="mcp-icon-badge config">
-              <Code2 size={20} />
-            </div>
+      {/* 2. CLIENT API KEYS TABLE */}
+      <div className="mcp-compact-card">
+        <div className="mcp-card-title-row">
+          <div className="mcp-card-title-left">
+            <span className="mcp-icon-tag client"><KeyRound size={16} /></span>
             <div>
-              <h2>Подключение к AI-агентам и IDE (MCP / API)</h2>
-              <p>Готовые файлы конфигурации для мгновенного добавления TenderLex в ваш Claude Desktop, Cursor или Python-код.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="config-tabs-nav">
-          <button
-            type="button"
-            className={`config-tab-btn ${activeConfigTab === 'claude' ? 'active' : ''}`}
-            onClick={() => setActiveConfigTab('claude')}
-          >
-            🍏 Claude Desktop
-          </button>
-          <button
-            type="button"
-            className={`config-tab-btn ${activeConfigTab === 'cursor' ? 'active' : ''}`}
-            onClick={() => setActiveConfigTab('cursor')}
-          >
-            ⚡ Cursor / VS Code
-          </button>
-          <button
-            type="button"
-            className={`config-tab-btn ${activeConfigTab === 'codex' ? 'active' : ''}`}
-            onClick={() => setActiveConfigTab('codex')}
-          >
-            🤖 ChatGPT Codex
-          </button>
-          <button
-            type="button"
-            className={`config-tab-btn ${activeConfigTab === 'python' ? 'active' : ''}`}
-            onClick={() => setActiveConfigTab('python')}
-          >
-            🐍 Python / cURL
-          </button>
-        </div>
-
-        <div className="config-snippet-body">
-          {activeConfigTab === 'claude' && (
-            <div>
-              <p className="config-desc">
-                Вставьте этот блок в ваш файл <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (macOS) или <code>%APPDATA%\Claude\claude_desktop_config.json</code> (Windows):
-              </p>
-              <div className="snippet-code-wrap">
-                <pre>{claudeConfigJson}</pre>
-                <button
-                  type="button"
-                  className="snippet-copy-btn"
-                  onClick={() => handleCopy(claudeConfigJson, 'claude_cfg')}
-                >
-                  {copiedKey === 'claude_cfg' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {activeConfigTab === 'cursor' && (
-            <div>
-              <p className="config-desc">
-                Вставьте этот блок в ваш файл <code>.cursor/mcp.json</code> в корне проекта:
-              </p>
-              <div className="snippet-code-wrap">
-                <pre>{cursorConfigJson}</pre>
-                <button
-                  type="button"
-                  className="snippet-copy-btn"
-                  onClick={() => handleCopy(cursorConfigJson, 'cursor_cfg')}
-                >
-                  {copiedKey === 'cursor_cfg' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {activeConfigTab === 'codex' && (
-            <div>
-              <p className="config-desc">Параметры для добавления TenderLex в качестве Custom Action или вызова через REST API:</p>
-              <div className="snippet-code-wrap">
-                <pre>{codexInstructions}</pre>
-                <button
-                  type="button"
-                  className="snippet-copy-btn"
-                  onClick={() => handleCopy(codexInstructions, 'codex_cfg')}
-                >
-                  {copiedKey === 'codex_cfg' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {activeConfigTab === 'python' && (
-            <div>
-              <p className="config-desc">Пример прямого вызова API TenderLex на Python:</p>
-              <div className="snippet-code-wrap">
-                <pre>{pythonSnippet}</pre>
-                <button
-                  type="button"
-                  className="snippet-copy-btn"
-                  onClick={() => handleCopy(pythonSnippet, 'python_cfg')}
-                >
-                  {copiedKey === 'python_cfg' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 3. CLIENT API KEYS MANAGEMENT TABLE */}
-      <div className="mcp-card">
-        <div className="mcp-card-header">
-          <div className="mcp-card-title-wrap">
-            <div className="mcp-icon-badge client">
-              <KeyRound size={20} />
-            </div>
-            <div>
-              <h2>Клиентские и партнерские API-ключи ({keys.filter(k => !k.is_admin).length})</h2>
-              <p>Создание, продажа и управление доступом к API TenderLex для внешних клиентов, интеграторов и партнеров.</p>
+              <h3>Клиентские API-ключи ({keys.filter(k => !k.is_admin).length})</h3>
+              <small>Управление доступом и квотами для внешних интеграторов и клиентов</small>
             </div>
           </div>
           <button
             type="button"
-            className="primary"
+            className="primary small-text"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
             onClick={() => setShowCreateModal(true)}
           >
-            <Plus size={16} style={{ marginRight: 6 }} />
-            Создать API-ключ
+            <Plus size={15} />
+            <span>Создать API-ключ</span>
           </button>
         </div>
 
         {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
-            <Loader2 size={24} className="spin" style={{ margin: '0 auto 8px' }} />
-            Загрузка списка ключей...
+          <div style={{ textAlign: 'center', padding: '30px 0', color: '#64748b' }}>
+            <Loader2 size={20} className="spin" style={{ margin: '0 auto 6px' }} />
+            Загрузка ключей...
           </div>
         ) : keys.filter(k => !k.is_admin).length === 0 ? (
-          <div className="mcp-empty-state">
-            <KeyRound size={36} />
-            <p>У вас пока нет созданных клиентских ключей.</p>
-            <button
-              type="button"
-              className="primary small-text"
-              onClick={() => setShowCreateModal(true)}
-            >
-              + Создать первый клиентский ключ
-            </button>
+          <div className="mcp-empty-state-compact">
+            <p>Клиентских ключей пока нет. Создайте ключ для подключения партнера или внешней ERP.</p>
           </div>
         ) : (
-          <div className="mcp-table-responsive">
-            <table className="mcp-table">
+          <div className="mcp-table-wrap">
+            <table className="mcp-compact-table">
               <thead>
                 <tr>
                   <th>Название & Клиент</th>
                   <th>Префикс ключа</th>
-                  <th>Разрешенные модули & Остатки квот</th>
+                  <th>Модули & Квоты (Использовано / Лимит)</th>
                   <th>Статус</th>
                   <th>Использован</th>
                   <th style={{ textAlign: 'right' }}>Действия</th>
@@ -584,61 +523,57 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 {keys
                   .filter(k => !k.is_admin)
                   .map(k => (
-                    <tr key={k.id} className={!k.is_active ? 'row-disabled' : ''}>
+                    <tr key={k.id} className={!k.is_active ? 'row-inactive' : ''}>
                       <td>
-                        <strong style={{ fontSize: 14, color: '#0f172a' }}>{k.name}</strong>
+                        <strong className="key-name-cell">{k.name}</strong>
                         {k.client_name && (
-                          <div style={{ fontSize: 12, color: '#0f766e', marginTop: 2 }}>
-                            👤 Клиент: {k.client_name}
-                          </div>
+                          <div className="key-client-sub">👤 {k.client_name}</div>
                         )}
-                        {k.notes && <div style={{ fontSize: 11, color: '#64748b' }}>{k.notes}</div>}
+                        {k.notes && <div className="key-note-sub">{k.notes}</div>}
                       </td>
                       <td>
-                        <code style={{ background: '#f1f5f9', padding: '3px 8px', borderRadius: 4, fontSize: 12 }}>
-                          {k.key_prefix}
-                        </code>
+                        <code className="key-prefix-badge">{k.key_prefix}</code>
                       </td>
                       <td>
-                        <div className="quota-tags-list">
+                        <div className="mcp-quota-pills">
                           {k.allowed_supplier_search && (
-                            <span className="quota-tag suppliers" title="Поиск поставщиков">
-                              🔍 Поиск: <strong>{k.spent_supplier_search} / {k.quota_supplier_search}</strong>
+                            <span className="mcp-quota-badge search">
+                              🔍 Поиск: <strong>{k.spent_supplier_search}/{k.quota_supplier_search}</strong>
                             </span>
                           )}
                           {k.allowed_exact_product && (
-                            <span className="quota-tag exact" title="Подбор товара и аналогов">
-                              🔬 Аналоги: <strong>{k.spent_exact_product} / {k.quota_exact_product}</strong>
+                            <span className="mcp-quota-badge exact">
+                              🔬 Аналоги: <strong>{k.spent_exact_product}/{k.quota_exact_product}</strong>
                             </span>
                           )}
                           {k.allowed_procurement_report && (
-                            <span className="quota-tag audit" title="Анализ документации">
-                              📑 Анализ: <strong>{k.spent_procurement_report} / {k.quota_procurement_report}</strong>
+                            <span className="mcp-quota-badge audit">
+                              📑 Анализ: <strong>{k.spent_procurement_report}/{k.quota_procurement_report}</strong>
                             </span>
                           )}
                         </div>
                       </td>
                       <td>
                         {k.is_active ? (
-                          <span className="pill balance" style={{ fontSize: 11 }}>Активен</span>
+                          <span className="mcp-status-pill active">Активен</span>
                         ) : (
-                          <span className="pill warning" style={{ fontSize: 11 }}>Заблокирован</span>
+                          <span className="mcp-status-pill disabled">Отключен</span>
                         )}
                       </td>
                       <td>
-                        <small style={{ color: '#64748b' }}>
+                        <small style={{ color: '#64748b', fontSize: 12 }}>
                           {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString('ru-RU') : 'Никогда'}
                         </small>
                       </td>
                       <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: 6 }}>
+                        <div className="mcp-actions-row">
                           <button
                             type="button"
                             className="icon-button small"
                             title="Перегенерировать токен"
                             onClick={() => handleRegenerateKey(k)}
                           >
-                            <RefreshCw size={14} />
+                            <RefreshCw size={13} />
                           </button>
                           <button
                             type="button"
@@ -646,7 +581,7 @@ print("Точный товар и аналоги:", resp_exact.json())`
                             title="Редактировать квоты"
                             onClick={() => setEditingKey(k)}
                           >
-                            <Edit2 size={14} />
+                            <Edit2 size={13} />
                           </button>
                           <button
                             type="button"
@@ -654,7 +589,7 @@ print("Точный товар и аналоги:", resp_exact.json())`
                             title={k.is_active ? 'Заблокировать' : 'Активировать'}
                             onClick={() => handleToggleActive(k)}
                           >
-                            <Power size={14} />
+                            <Power size={13} />
                           </button>
                           <button
                             type="button"
@@ -662,7 +597,7 @@ print("Точный товар и аналоги:", resp_exact.json())`
                             title="Удалить"
                             onClick={() => handleDeleteKey(k)}
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={13} />
                           </button>
                         </div>
                       </td>
@@ -674,99 +609,99 @@ print("Точный товар и аналоги:", resp_exact.json())`
         )}
       </div>
 
-      {/* 4. INTERACTIVE LIVE TESTER CONSOLE */}
-      <div className="mcp-card">
-        <div className="mcp-card-header">
-          <div className="mcp-card-title-wrap">
-            <div className="mcp-icon-badge tester">
-              <Terminal size={20} />
-            </div>
+      {/* 3. LIVE TESTER CONSOLE (COMPACT 2-COLUMN) */}
+      <div className="mcp-compact-card">
+        <div className="mcp-card-title-row">
+          <div className="mcp-card-title-left">
+            <span className="mcp-icon-tag tester"><Terminal size={16} /></span>
             <div>
-              <h2>Тестирование инструментов MCP и API (Live Console)</h2>
-              <p>Мгновенная проверка работы модулей TenderLex в реальном времени прямо из панели управления.</p>
+              <h3>Тестирование инструментов API (Live Console)</h3>
+              <small>Живая проверка эндпоинтов в реальном времени</small>
             </div>
           </div>
         </div>
 
-        <div className="tester-grid">
-          <div>
-            <label className="field" style={{ marginBottom: 12 }}>
-              <span>Выберите инструмент для проверки:</span>
+        <div className="mcp-tester-split">
+          <div className="mcp-tester-form">
+            <div className="mcp-field-wrap">
+              <span className="mcp-label">Инструмент:</span>
               <select
                 value={testerTool}
                 onChange={e => setTesterTool(e.target.value as any)}
-                style={{ height: 38 }}
+                className="mcp-select"
               >
                 <option value="supplier_search">🔍 Поиск поставщиков (supplier_search)</option>
-                <option value="exact_product">🔬 Подбор товара и аналогов Форма 2 (exact_product)</option>
+                <option value="exact_product">🔬 Подбор товара и аналогов (exact_product)</option>
                 <option value="procurement_report">📑 Анализ документации и контракта (procurement_report)</option>
               </select>
-            </label>
+            </div>
 
-            <label className="field">
-              <span>Текст технического задания / спецификации:</span>
+            <div className="mcp-field-wrap">
+              <span className="mcp-label">Текст ТЗ / спецификации:</span>
               <textarea
-                rows={6}
+                rows={4}
+                className="mcp-textarea"
                 placeholder="Вставьте фрагмент ТЗ, наименование оборудования или проект контракта..."
                 value={testerQuery}
                 onChange={e => setTesterQuery(e.target.value)}
               />
-            </label>
-
-            <div style={{ marginTop: 14 }}>
-              <button
-                type="button"
-                className="primary"
-                disabled={testingRunning || !testerQuery.trim()}
-                onClick={() => void runLiveTest()}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-              >
-                {testingRunning ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
-                {testingRunning ? 'Выполняю поиск и аудит...' : 'Запустить тест'}
-              </button>
             </div>
+
+            <button
+              type="button"
+              className="primary small-text"
+              disabled={testingRunning || !testerQuery.trim()}
+              onClick={() => void runLiveTest()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 4 }}
+            >
+              {testingRunning ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
+              <span>{testingRunning ? 'Выполняю запрос...' : 'Запустить тест'}</span>
+            </button>
           </div>
 
-          <div className="tester-output-box">
-            <div className="tester-output-header">
-              <span>Результат выполнения (JSON Output):</span>
+          <div className="mcp-tester-output-card">
+            <div className="mcp-tester-out-head">
+              <span>Ответ API (JSON Output)</span>
               {testerResult && (
-                <span className="pill balance" style={{ fontSize: 11 }}>
-                  Время: {testerResult.duration_seconds} сек
+                <span className="mcp-timing-badge">
+                  ⏱️ {testerResult.duration_seconds} сек
                 </span>
               )}
             </div>
-            {testingRunning ? (
-              <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--muted)' }}>
-                <Loader2 size={28} className="spin" style={{ margin: '0 auto 12px', color: '#0f766e' }} />
-                Идет выполнение через реальный пайплайн TenderLex...
-              </div>
-            ) : testerError ? (
-              <div className="alert error" style={{ margin: 12 }}>
-                <XCircle size={18} />
-                {testerError}
-              </div>
-            ) : testerResult ? (
-              <pre className="tester-json">{JSON.stringify(testerResult, null, 2)}</pre>
-            ) : (
-              <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '60px 20px' }}>
-                Введите данные слева и нажмите «Запустить тест», чтобы увидеть живой ответ сервиса.
-              </div>
-            )}
+
+            <div className="mcp-tester-out-body">
+              {testingRunning ? (
+                <div className="mcp-tester-loading">
+                  <Loader2 size={22} className="spin" style={{ color: '#0f766e', marginBottom: 8 }} />
+                  <div>Запрос выполняется через реальный пайплайн...</div>
+                </div>
+              ) : testerError ? (
+                <div className="mcp-tester-err">
+                  <XCircle size={16} />
+                  <span>{testerError}</span>
+                </div>
+              ) : testerResult ? (
+                <pre className="mcp-tester-json">{JSON.stringify(testerResult, null, 2)}</pre>
+              ) : (
+                <div className="mcp-tester-placeholder">
+                  Введите данные слева и нажмите «Запустить тест» для просмотра ответа.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* CREATE KEY MODAL */}
+      {/* CREATE KEY MODAL (COMPACT & FIXED CHECKBOXES) */}
       {showCreateModal && (
         <div className="server-modal-backdrop" onClick={() => setShowCreateModal(false)}>
-          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
             <div className="server-modal-header">
-              <h3>Создание нового API-ключа</h3>
+              <h3 style={{ fontSize: 16 }}>Создание нового API-ключа</h3>
               <button className="server-modal-close" onClick={() => setShowCreateModal(false)}>✕</button>
             </div>
-            <form onSubmit={handleCreateKey} style={{ display: 'grid', gap: 14 }}>
-              <label className="field">
+            <form onSubmit={handleCreateKey} className="mcp-modal-form">
+              <label className="mcp-form-label">
                 <span>Название ключа / Партнер *</span>
                 <input
                   required
@@ -776,8 +711,8 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 />
               </label>
 
-              <label className="field">
-                <span>Привязать к существующему клиенту (опционально):</span>
+              <label className="mcp-form-label">
+                <span>Привязать к клиенту:</span>
                 <select
                   value={createForm.client_id}
                   onChange={e => setCreateForm({ ...createForm, client_id: e.target.value })}
@@ -791,78 +726,86 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 </select>
               </label>
 
-              <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                <strong style={{ display: 'block', fontSize: 13, marginBottom: 8, color: '#0f172a' }}>
-                  Разрешенные модули и лимиты (квоты):
-                </strong>
+              {/* MODULE QUOTAS BOX */}
+              <div className="mcp-modal-quotas-box">
+                <span className="mcp-modal-quotas-title">Разрешенные модули и квоты (лимиты):</span>
 
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={createForm.allowed_supplier_search}
-                        onChange={e => setCreateForm({ ...createForm, allowed_supplier_search: e.target.checked })}
-                      />
-                      🔍 Поиск поставщиков
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={createForm.allowed_supplier_search}
+                      onChange={e => setCreateForm({ ...createForm, allowed_supplier_search: e.target.checked })}
+                    />
+                    <span>🔍 Поиск поставщиков</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      placeholder="Квота"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={createForm.quota_supplier_search}
                       onChange={e => setCreateForm({ ...createForm, quota_supplier_search: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={createForm.allowed_exact_product}
-                        onChange={e => setCreateForm({ ...createForm, allowed_exact_product: e.target.checked })}
-                      />
-                      🔬 Подбор аналогов (Форма 2)
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={createForm.allowed_exact_product}
+                      onChange={e => setCreateForm({ ...createForm, allowed_exact_product: e.target.checked })}
+                    />
+                    <span>🔬 Подбор товара и аналогов</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      placeholder="Квота"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={createForm.quota_exact_product}
                       onChange={e => setCreateForm({ ...createForm, quota_exact_product: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={createForm.allowed_procurement_report}
-                        onChange={e => setCreateForm({ ...createForm, allowed_procurement_report: e.target.checked })}
-                      />
-                      📑 Анализ документации
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={createForm.allowed_procurement_report}
+                      onChange={e => setCreateForm({ ...createForm, allowed_procurement_report: e.target.checked })}
+                    />
+                    <span>📑 Анализ документации</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      placeholder="Квота"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={createForm.quota_procurement_report}
                       onChange={e => setCreateForm({ ...createForm, quota_procurement_report: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <label className="field">
+              <div className="mcp-modal-2col">
+                <label className="mcp-form-label">
                   <span>Лимит в минуту (Rate limit):</span>
                   <input
                     type="number"
+                    min={1}
+                    max={300}
                     value={createForm.rate_limit_per_minute}
                     onChange={e => setCreateForm({ ...createForm, rate_limit_per_minute: Number(e.target.value) })}
                   />
                 </label>
-                <label className="field">
+                <label className="mcp-form-label">
                   <span>Срок действия (дней):</span>
                   <input
                     type="number"
@@ -873,7 +816,7 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 </label>
               </div>
 
-              <label className="field">
+              <label className="mcp-form-label">
                 <span>Заметки / Примечания:</span>
                 <input
                   placeholder="Дополнительная информация"
@@ -882,7 +825,7 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 />
               </label>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+              <div className="mcp-modal-actions">
                 <button type="button" className="ghost" onClick={() => setShowCreateModal(false)}>
                   Отмена
                 </button>
@@ -898,13 +841,13 @@ print("Точный товар и аналоги:", resp_exact.json())`
       {/* EDIT KEY MODAL */}
       {editingKey && (
         <div className="server-modal-backdrop" onClick={() => setEditingKey(null)}>
-          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
             <div className="server-modal-header">
-              <h3>Редактирование API-ключа: {editingKey.name}</h3>
+              <h3 style={{ fontSize: 16 }}>Редактирование: {editingKey.name}</h3>
               <button className="server-modal-close" onClick={() => setEditingKey(null)}>✕</button>
             </div>
-            <form onSubmit={handleUpdateKey} style={{ display: 'grid', gap: 14 }}>
-              <label className="field">
+            <form onSubmit={handleUpdateKey} className="mcp-modal-form">
+              <label className="mcp-form-label">
                 <span>Название ключа *</span>
                 <input
                   required
@@ -913,75 +856,85 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 />
               </label>
 
-              <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                <strong style={{ display: 'block', fontSize: 13, marginBottom: 8, color: '#0f172a' }}>
-                  Квоты и разрешения:
-                </strong>
+              <div className="mcp-modal-quotas-box">
+                <span className="mcp-modal-quotas-title">Квоты и разрешения:</span>
 
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={editingKey.allowed_supplier_search}
-                        onChange={e => setEditingKey({ ...editingKey, allowed_supplier_search: e.target.checked })}
-                      />
-                      🔍 Поиск поставщиков (потрачено: {editingKey.spent_supplier_search})
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={editingKey.allowed_supplier_search}
+                      onChange={e => setEditingKey({ ...editingKey, allowed_supplier_search: e.target.checked })}
+                    />
+                    <span>🔍 Поиск (расход: {editingKey.spent_supplier_search})</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={editingKey.quota_supplier_search}
                       onChange={e => setEditingKey({ ...editingKey, quota_supplier_search: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={editingKey.allowed_exact_product}
-                        onChange={e => setEditingKey({ ...editingKey, allowed_exact_product: e.target.checked })}
-                      />
-                      🔬 Подбор аналогов (потрачено: {editingKey.spent_exact_product})
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={editingKey.allowed_exact_product}
+                      onChange={e => setEditingKey({ ...editingKey, allowed_exact_product: e.target.checked })}
+                    />
+                    <span>🔬 Аналоги (расход: {editingKey.spent_exact_product})</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={editingKey.quota_exact_product}
                       onChange={e => setEditingKey({ ...editingKey, quota_exact_product: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={editingKey.allowed_procurement_report}
-                        onChange={e => setEditingKey({ ...editingKey, allowed_procurement_report: e.target.checked })}
-                      />
-                      📑 Анализ документации (потрачено: {editingKey.spent_procurement_report})
-                    </label>
+                <div className="mcp-quota-row">
+                  <label className="mcp-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={editingKey.allowed_procurement_report}
+                      onChange={e => setEditingKey({ ...editingKey, allowed_procurement_report: e.target.checked })}
+                    />
+                    <span>📑 Анализ (расход: {editingKey.spent_procurement_report})</span>
+                  </label>
+                  <div className="mcp-quota-input-wrap">
                     <input
                       type="number"
-                      style={{ width: 90, height: 32, padding: '2px 8px' }}
+                      min={0}
+                      className="mcp-quota-input"
                       value={editingKey.quota_procurement_report}
                       onChange={e => setEditingKey({ ...editingKey, quota_procurement_report: Number(e.target.value) })}
                     />
+                    <small>запросов</small>
                   </div>
                 </div>
               </div>
 
-              <label className="field">
-                <span>Лимит запросов в минуту (Rate limit):</span>
+              <label className="mcp-form-label">
+                <span>Лимит в минуту (Rate limit):</span>
                 <input
                   type="number"
+                  min={1}
+                  max={300}
                   value={editingKey.rate_limit_per_minute}
                   onChange={e => setEditingKey({ ...editingKey, rate_limit_per_minute: Number(e.target.value) })}
                 />
               </label>
 
-              <label className="field">
+              <label className="mcp-form-label">
                 <span>Заметки:</span>
                 <input
                   value={editingKey.notes}
@@ -989,12 +942,12 @@ print("Точный товар и аналоги:", resp_exact.json())`
                 />
               </label>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+              <div className="mcp-modal-actions">
                 <button type="button" className="ghost" onClick={() => setEditingKey(null)}>
                   Отмена
                 </button>
                 <button type="submit" className="primary">
-                  Сохранить изменения
+                  Сохранить
                 </button>
               </div>
             </form>
@@ -1005,26 +958,26 @@ print("Точный товар и аналоги:", resp_exact.json())`
       {/* RAW SECRET KEY REVEAL MODAL */}
       {showRawKeyModal && (
         <div className="server-modal-backdrop" onClick={() => setShowRawKeyModal(null)}>
-          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+          <div className="server-modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
             <div className="server-modal-header">
-              <h3 style={{ color: '#047857', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <CheckCircle2 size={20} />
-                API-ключ успешно создан!
+              <h3 style={{ color: '#047857', display: 'flex', alignItems: 'center', gap: 8, fontSize: 16 }}>
+                <CheckCircle2 size={18} />
+                Ключ успешно сгенерирован!
               </h3>
               <button className="server-modal-close" onClick={() => setShowRawKeyModal(null)}>✕</button>
             </div>
             <div style={{ padding: '4px 0' }}>
-              <p style={{ fontSize: 13, color: '#334155', marginBottom: 12 }}>
+              <p style={{ fontSize: 13, color: '#475569', margin: '0 0 12px 0', lineHeight: 1.4 }}>
                 Скопируйте и сохраните этот ключ прямо сейчас. В целях безопасности открытый ключ больше <strong>никогда не будет показан</strong>.
               </p>
 
-              <div className="mcp-token-box" style={{ margin: '14px 0' }}>
-                <code className="token-code" style={{ wordBreak: 'break-all', fontSize: 13 }}>
+              <div className="mcp-token-strip" style={{ margin: '12px 0' }}>
+                <code className="mcp-token-text" style={{ wordBreak: 'break-all', fontSize: 13 }}>
                   {showRawKeyModal.token}
                 </code>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+              <div className="mcp-modal-actions" style={{ marginTop: 16 }}>
                 <button
                   type="button"
                   className="primary"
@@ -1032,8 +985,8 @@ print("Точный товар и аналоги:", resp_exact.json())`
                     handleCopy(showRawKeyModal.token, 'new_raw_key')
                   }}
                 >
-                  {copiedKey === 'new_raw_key' ? <Check size={16} /> : <Copy size={16} />}
-                  {copiedKey === 'new_raw_key' ? 'Скопировано!' : 'Скопировать ключ'}
+                  {copiedKey === 'new_raw_key' ? <Check size={15} /> : <Copy size={15} />}
+                  <span>{copiedKey === 'new_raw_key' ? 'Скопировано!' : 'Скопировать ключ'}</span>
                 </button>
                 <button type="button" className="ghost" onClick={() => setShowRawKeyModal(null)}>
                   Закрыть
