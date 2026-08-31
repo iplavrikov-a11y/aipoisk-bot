@@ -116,7 +116,7 @@ export default function PoiskPostavshchikovPage() {
                 href="/cabinet"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
-                <span>Найти поставщиков бесплатно (без привязки карты)</span>
+                <span>Найти поставщиков бесплатно</span>
               </a>
               <a
                 href="https://t.me/tenderlex_bot"

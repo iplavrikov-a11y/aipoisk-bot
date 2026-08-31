@@ -135,7 +135,7 @@ export default async function HomePage() {
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
-                Поиск надежных поставщиков и подбор аналогов по ТЗ за 2 минуты
+                Поиск надежных поставщиков и подбор аналогов
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
@@ -146,7 +146,7 @@ export default async function HomePage() {
               <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
                 <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
                   <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
-                    <span>Попробовать бесплатно (без привязки карты)</span>
+                    <span>Попробовать бесплатно</span>
                   </Link>
                 </Button>
                 <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">

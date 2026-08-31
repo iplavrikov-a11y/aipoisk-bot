@@ -162,7 +162,7 @@ export function ProcurementCalculator() {
             href="/cabinet"
             className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
           >
-            <span>Попробовать бесплатно (без привязки карты)</span>
+            <span>Попробовать бесплатно</span>
           </a>
         </div>
       </div>

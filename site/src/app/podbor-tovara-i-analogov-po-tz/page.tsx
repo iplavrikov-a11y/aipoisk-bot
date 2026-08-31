@@ -204,7 +204,7 @@ export default function PodborTovaraPage() {
                 href="/cabinet"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
-                <span>Подобрать товар и аналоги (от 99 ₽)</span>
+                <span>Подобрать товар и аналоги</span>
               </a>
               <a
                 href="https://t.me/tenderlex_bot"
@@ -372,7 +372,7 @@ export default function PodborTovaraPage() {
               <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-slate-600">
                 <span className="flex items-center gap-2">
                   <FileSpreadsheet size={16} className="text-teal-600" />
-                  <span>Отчет выгружается в фирменном оформлении Word (DOCX) и Excel (XLSX).</span>
+                  <span>Отчет выгружается в фирменном оформлении Word (DOCX).</span>
                 </span>
                 <a
                   href="/cabinet"

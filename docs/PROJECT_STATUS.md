@@ -12,6 +12,11 @@ Date: 2026-08-31
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Public Site UI & Landing Hero CTA Polish (2026-08):
+  - Button Copy Cleanliness: Removed redundant `(без привязки карты)` parenthesized suffix from hero CTA buttons across `site/src/app/page.tsx`, `site/src/components/procurement-calculator.tsx`, and `site/src/app/poisk-postavshchikov-po-tz/page.tsx`. Clean, professional action copy (`Попробовать бесплатно` / `Найти поставщиков бесплатно`).
+  - Clean Hero Heading: Removed temporal claims (`за 2 минуты`) from the main H1 heading on `site/src/app/page.tsx`. Heading is now clean and focused: «Поиск надежных поставщиков и подбор аналогов».
+  - Button Price Elimination: Removed inline price labels from CTA buttons (e.g. `Подобрать товар и аналоги (от 99 ₽)` -> `Подобрать товар и аналоги` on `site/src/app/podbor-tovara-i-analogov-po-tz/page.tsx`), keeping prices strictly in pricing table cards above action buttons.
+  - Exact Product Report Format Compliance: Aligned report format description in `site/src/app/podbor-tovara-i-analogov-po-tz/page.tsx` to strictly Word (DOCX) in accordance with project standards.
 - AI-Ready Resilient MCP API & Flexible Agent Payload Normalization (2026-08):
   - Intelligent Dynamic Field Mapping (`backend/app/mcp_api.py`): Implemented `@model_validator(mode="before")` request normalizers across all MCP endpoints (`/api/v1/mcp/suppliers/search`, `/api/v1/mcp/products/exact-analogs`, `/api/v1/mcp/procurements/analyze`), allowing external AI agent harnesses (Codex, Claude Desktop, ChatGPT, Cursor, Windsurf) to communicate naturally without requiring rigid internal schema field names or triggering `422 Unprocessable Entity` validation errors.
   - Structured Specification Synthesis: Automatically extracts and unifies separate fields (`product_name`, `okpd2`, `quantity`, `characteristics` list/dict, `query`, `text`, `tz`, `description`), converting structured parameter arrays (`[{"name": "...", "value": "..."}]`) into clean bulleted specification text (`• Параметр: Значение`).
