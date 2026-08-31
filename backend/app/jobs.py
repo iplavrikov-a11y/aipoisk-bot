@@ -1131,7 +1131,6 @@ def _build_registry_fallback_supplier_outputs(
         subject=subject,
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
-        quote_markdown=quote_markdown,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1318,7 +1317,6 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         subject=subject,
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
-        quote_markdown=quote_markdown,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1605,7 +1603,6 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             subject=subject,
             target=job.target_suppliers,
             policy=getattr(job, "supplier_search_policy", "") or "",
-            quote_markdown=quote_markdown,
         )
     output_files = [_output_artifact("analysis", "Анализ", docx_path, KIND_PROCUREMENT_REPORT)]
     if xlsx_path:

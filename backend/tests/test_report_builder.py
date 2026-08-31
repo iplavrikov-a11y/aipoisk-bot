@@ -183,9 +183,8 @@ class ReportBuilderTests(unittest.TestCase):
             headers = [cell.value for cell in ws[5]]
             values = [cell.value for cell in ws[6]]
             site_hyperlink = ws["B6"].hyperlink.target if ws["B6"].hyperlink else ""
-            self.assertIn("Запрос КП", wb.sheetnames)
-            ws_quote = wb["Запрос КП"]
-            quote_text = ws_quote["A3"].value
+            self.assertEqual(wb.sheetnames, ["Поставщики"])
+            self.assertNotIn("Запрос КП", wb.sheetnames)
             self.assertIsNone(ws.freeze_panes)
             self.assertFalse(ws.auto_filter.ref)
             wb.close()
@@ -193,10 +192,6 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertEqual(sheet_title, "Поставщики")
         self.assertIn("TenderLex", report_title)
         self.assertIn("Сварочный полуавтомат", report_title)
-        self.assertIn("Тема письма: Запрос коммерческого предложения", quote_text)
-        self.assertIn("Добрый день!\n\n", quote_text)
-        self.assertNotIn("отдел продаж", quote_text.lower())
-        self.assertIn("С уважением", quote_text)
         self.assertEqual(
             headers,
             [
@@ -561,25 +556,7 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertIn("• Длина шлангов: 12 м", cell_text)
             self.assertIn("\n", cell_text)
 
-    def test_supplier_xlsx_quote_request_sheet_contains_spec_table_and_conditions(self) -> None:
-        # Recreates the Screenshot 2 scenario: Excel must have items table, characteristics, and conditions
-        quote_markdown = """# ЗАПРОС КП
-
-Просим выставить счёт на поставку продукции:
-
-**Мобильный склад контейнерного типа**
-
-| № | Наименование | Характеристики | Ед.изм. | Кол-во |
-|---|---|---|---|---|
-| 1 | Мобильный склад контейнерного типа | • Габариты: 6000х2400х2600 мм<br>• Каркас: цельносварной металлический<br>• Утепление: минвата 100 мм | шт | 1 |
-
-### Условия поставки
-
-- **Срок поставки:** 30 календарных дней
-- **Город поставки:** г. Казань
-- **Условия оплаты:** 50% аванс
-- **Документы качества:** Паспорт качества, сертификат соответствия
-"""
+    def test_supplier_xlsx_has_single_suppliers_sheet_without_quote_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "suppliers.xlsx"
             write_supplier_xlsx(
@@ -588,27 +565,11 @@ class ReportBuilderTests(unittest.TestCase):
                 title="Мобильный склад",
                 subject="Мобильный склад контейнерного типа",
                 target=1,
-                quote_markdown=quote_markdown,
             )
 
             wb = load_workbook(path)
-            self.assertIn("Запрос КП", wb.sheetnames)
-            ws = wb["Запрос КП"]
-            quote_text = ws["A3"].value
-            self.assertIn("Мобильный склад контейнерного типа", quote_text)
-            self.assertIn("Габариты: 6000х2400х2600 мм", quote_text)
-            self.assertIn("30 календарных дней", quote_text)
-
-            # Specification table in Excel
-            spec_header = [cell.value for cell in ws[6]]
-            self.assertEqual(spec_header, ["№", "Наименование товара", "Характеристики и требования", "Ед. изм.", "Кол-во"])
-            row_data = [cell.value for cell in ws[7]]
-            self.assertEqual(row_data[0], "1")
-            self.assertEqual(row_data[1], "Мобильный склад контейнерного типа")
-            self.assertIn("Габариты: 6000х2400х2600 мм", row_data[2])
-            self.assertIn("Каркас: цельносварной металлический", row_data[2])
-            self.assertEqual(row_data[3], "шт")
-            self.assertEqual(row_data[4], "1")
+            self.assertEqual(wb.sheetnames, ["Поставщики"])
+            self.assertNotIn("Запрос КП", wb.sheetnames)
             wb.close()
 
 
