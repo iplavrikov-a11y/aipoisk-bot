@@ -4569,21 +4569,21 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             <div className="job-card-meta-line">
               <div className="job-meta-badges">
                 <span className={`badge-pill mode mode-${job.mode}`}>{job.mode_label || humanMode(job.mode)}</span>
-                {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
-                  <span
-                    className="badge-pill ai-model"
-                    title={`ИИ: ${job.ai_provider_name || job.ai_provider || 'Провайдер не указан'} · Модель: ${job.ai_model || 'не указана'}`}
-                  >
-                    <BrainCircuit size={12} />
-                    {job.ai_label || [job.ai_provider_name || job.ai_provider, job.ai_model].filter(Boolean).join(' · ')}
-                  </span>
-                )}
                 {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
                 {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
                 {fallbackStatusLabel && <span className="badge-pill supplier-policy registry-fallback">{fallbackStatusLabel}</span>}
                 {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
                 {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
                 {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
+                {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
+                  <span
+                    className="badge-pill ai-model"
+                    title={`ИИ: ${job.ai_provider_name || job.ai_provider || 'Провайдер не указан'} · Модель: ${job.ai_model || 'не указана'}`}
+                  >
+                    <BrainCircuit size={12} className="pill-icon" />
+                    <span className="pill-label">{job.ai_label || [job.ai_provider_name || job.ai_provider, job.ai_model].filter(Boolean).join(' · ')}</span>
+                  </span>
+                )}
                 <span className="badge-pill count">
                   {job.mode === 'procurement_report'
                     ? 'Анализ ТЗ'
@@ -4609,12 +4609,14 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                     onClick={() => void downloadInputFile(job, file)}
                     title={`Входной файл клиента: ${file.original_filename}`}
                   >
-                    <FileText size={12} /> {file.original_filename}
+                    <FileText size={12} className="pill-icon" />
+                    <span className="pill-filename">{file.original_filename}</span>
                   </button>
                 ))}
                 {inputSources.map(source => (
                   <span key={`src-${job.id}-${source.id}`} className="download-pill input-source" title={source.value}>
-                    <Globe size={11} /> {source.label || 'Ссылка'}: {source.value}
+                    <Globe size={11} className="pill-icon" />
+                    <span className="pill-label">{source.label || 'Ссылка'}: {source.value}</span>
                   </span>
                 ))}
                 {job.result_files && job.result_files.length > 0 && job.result_files.map(file => (
@@ -4624,7 +4626,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                     onClick={() => void download(job, file)}
                     title={file.filename}
                   >
-                    <Download size={12} />{file.label}
+                    <Download size={12} className="pill-icon" />
+                    <span className="pill-label">{file.label}</span>
                   </button>
                 ))}
               </div>
