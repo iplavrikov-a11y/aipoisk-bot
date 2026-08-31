@@ -2149,11 +2149,11 @@ def delete_client_telegram_account(
 @app.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
     include_internal: bool = False,
-    limit: int = 200,
+    limit: int = 2000,
     db: Session = Depends(db_session),
 ) -> list[dict]:
-    safe_limit = max(1, min(500, int(limit or 200)))
-    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 3).all()
+    safe_limit = max(1, min(10000, int(limit or 2000)))
+    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 2).all()
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job)]
     settings = get_or_create_settings(db)
     return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]

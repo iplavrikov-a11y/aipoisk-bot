@@ -1076,7 +1076,7 @@ export function App() {
       if (analyticsData) setAnalytics(analyticsData)
 
       // Fetch background / secondary data without delaying core view rendering
-      void api<Job[]>('/api/jobs?include_internal=true&limit=200')
+      void api<Job[]>('/api/jobs?include_internal=true&limit=2000')
         .then(jobsData => { if (jobsData) setJobs(jobsData) })
         .catch(() => {})
       void api<MinpromRegistryStatus>('/api/ops/minprom-registry')
@@ -1170,7 +1170,7 @@ export function App() {
         if (cancelled) return
         if (!document.hidden) {
           try {
-            const updatedJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=200')
+            const updatedJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=2000')
             if (!cancelled && updatedJobs) {
               setJobs(updatedJobs)
               const nowHasActive = updatedJobs.some(j => j.status === 'running' || j.status === 'pending')
@@ -1214,7 +1214,7 @@ export function App() {
 
     function handleVisibilityOrFocus() {
       if (!document.hidden && authenticated) {
-        void api<Job[]>('/api/jobs?include_internal=true&limit=200').then(updatedJobs => {
+        void api<Job[]>('/api/jobs?include_internal=true&limit=2000').then(updatedJobs => {
           if (!cancelled && updatedJobs) setJobs(updatedJobs)
         }).catch(() => {})
         void api<Client[]>('/api/clients').then(cData => {
@@ -4344,6 +4344,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
     .filter(job => {
       if (!normalizedQuery) return true
+      const inputNames = (job.input_files || []).map(f => f.original_filename)
+      const resultNames = (job.result_files || []).map(f => f.filename)
       return [
         job.human_title,
         job.title,
@@ -4353,8 +4355,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
-        supplierSearchPolicyLabel(job),
-        supplierRunTypeLabel(job),
+        ...inputNames,
+        ...resultNames,
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
     }), [jobs, showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / pageSize))
