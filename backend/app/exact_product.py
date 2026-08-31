@@ -2818,13 +2818,13 @@ def write_exact_product_xlsx(
     ws.title = "Подбор товара и аналоги"
 
     # Палитра
-    navy_dark = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
-    navy_pos = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-    slate_hdr = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
-    alt_hdr = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
-    card_bg = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
-    hint_bg = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-    zebra_bg = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    navy_dark = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
+    navy_pos = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
+    slate_hdr = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    alt_hdr = PatternFill(start_color="134E4A", end_color="134E4A", fill_type="solid")
+    card_bg = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
+    hint_bg = PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
+    zebra_bg = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
     white_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
     match_bg = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
@@ -2832,14 +2832,14 @@ def write_exact_product_xlsx(
     mismatch_bg = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
 
     # Шрифты
-    title_font = Font(name="Calibri", size=14, bold=True, color="0F172A")
-    sub_font = Font(name="Calibri", size=11, bold=True, color="334155")
-    sec_font = Font(name="Calibri", size=12, bold=True, color="0F172A")
+    title_font = Font(name="Calibri", size=14, bold=True, color="047857")
+    sub_font = Font(name="Calibri", size=11, bold=True, color="064E3B")
+    sec_font = Font(name="Calibri", size=12, bold=True, color="047857")
     white_bold_11 = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     white_bold_10 = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
     bold_10 = Font(name="Calibri", size=10, bold=True, color="0F172A")
     reg_10 = Font(name="Calibri", size=10, color="1E293B")
-    hint_font = Font(name="Calibri", size=10, color="334155")
+    hint_font = Font(name="Calibri", size=10, color="064E3B")
     green_bold = Font(name="Calibri", size=10, bold=True, color="15803D")
     amber_bold = Font(name="Calibri", size=10, bold=True, color="B45309")
     red_bold = Font(name="Calibri", size=10, bold=True, color="B91C1C")

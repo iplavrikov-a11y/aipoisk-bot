@@ -168,19 +168,19 @@ def _product_fit_badge(row: dict) -> tuple[str, Font, PatternFill]:
     if product_fit == "category":
         return (
             "Категория",
-            Font(name="Calibri", size=10, color="334155"),
-            PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"),
+            Font(name="Calibri", size=10, color="064E3B"),
+            PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid"),
         )
     if product_fit == "profile":
         return (
             "Профиль компании",
-            Font(name="Calibri", size=10, color="334155"),
-            PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid"),
+            Font(name="Calibri", size=10, color="064E3B"),
+            PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid"),
         )
     return (
         "Уточнить",
-        Font(name="Calibri", size=10, color="64748B"),
-        PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"),
+        Font(name="Calibri", size=10, color="0F766E"),
+        PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid"),
     )
 
 
@@ -195,7 +195,7 @@ def _registry_badge(row: dict) -> tuple[str, Font, PatternFill]:
         label = f"№ {reg_no} (ГИСП)" if reg_no else "Подтверждён (ГИСП)"
         return (
             label,
-            Font(name="Calibri", size=10, bold=True, color="15803D"),
+            Font(name="Calibri", size=10, bold=True, color="047857"),
             PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid"),
         )
     status = str(row.get("minprom_registry_status") or "").strip().lower()
@@ -204,8 +204,8 @@ def _registry_badge(row: dict) -> tuple[str, Font, PatternFill]:
     if status == "empty" or origin == "ordinary_fallback" or policy in ("minprom_registry_only", "minprom_registry_priority"):
         return (
             "Обычный поиск",
-            Font(name="Calibri", size=10, color="64748B"),
-            PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid"),
+            Font(name="Calibri", size=10, color="0F766E"),
+            PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid"),
         )
     return (
         "—",
@@ -235,11 +235,11 @@ def _write_quote_request_sheet(wb: Workbook, *, title: str, subject: str = "") -
 
     # Шапка
     ws.append(["TenderLex | ГОТОВЫЙ ТЕКСТ ЗАПРОСА КП ДЛЯ КОПИРОВАНИЯ (НАЖМИТЕ НА ЯЧЕЙКУ A3 И СКОПИРУЙТЕ CTRL+C)"])
-    _style_range(ws, 1, 1, 2, font=Font(name="Calibri", size=13, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    _style_range(ws, 1, 1, 2, font=Font(name="Calibri", size=13, bold=True, color="047857"), align=Alignment(vertical="center"))
     ws.row_dimensions[1].height = 26
 
     ws.append([f"Предмет закупки / номенклатура: {base_title}"])
-    _style_range(ws, 2, 1, 2, font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
+    _style_range(ws, 2, 1, 2, font=Font(name="Calibri", size=11, bold=True, color="064E3B"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
     # Скомпилированный текст в одной ячейке A3 для моментального копирования в Word / Email
@@ -262,9 +262,9 @@ def _write_quote_request_sheet(wb: Workbook, *, title: str, subject: str = "") -
     ws.append([quote_text])
     c = ws.cell(row=3, column=1)
     c.font = Font(name="Calibri", size=11, color="0F172A")
-    c.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    c.fill = PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
     c.border = Border(
-        left=Side(style="thin", color="CBD5E1"),
+        left=Side(style="thin", color="047857"),
         right=Side(style="thin", color="CBD5E1"),
         top=Side(style="thin", color="CBD5E1"),
         bottom=Side(style="thin", color="CBD5E1"),
@@ -285,14 +285,14 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     # 1. Шапка документа
     brand_title = f"TenderLex | {_supplier_report_heading(title, subject)}"
     ws.append([brand_title])
-    _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="0F172A"), align=Alignment(vertical="center"))
+    _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="047857"), align=Alignment(vertical="center"))
     ws.row_dimensions[1].height = 28
 
     # 2. Подзаголовок (ТЗ + Режим)
     policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
     item_title = _clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация"
     ws.append([f"Предмет закупки / ТЗ: {item_title} | {policy_label}"])
-    _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="334155"), align=Alignment(vertical="center"))
+    _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="064E3B"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
     # 3. Сводка / KPI (без лишней плашки "как работать")
@@ -301,8 +301,8 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     if is_fallback:
         summary = f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}"
     ws.append([summary])
-    summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
-    summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "1E293B")
+    summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
+    summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "064E3B")
     _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
     ws.row_dimensions[3].height = 36 if is_fallback else 24
 
@@ -313,7 +313,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     # 5. Заголовки таблицы: Компания, Сайт, Телефоны, Email, Комментарий, Реестр Минпромторга
     ws.append(SUPPLIER_HEADERS)
     header_row = 5
-    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    header_fill = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     for cell in ws[header_row]:
         cell.font = header_font
@@ -332,7 +332,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     data_start_row = header_row + 1
     for row_idx, row in enumerate(rows, start=data_start_row):
         is_even = (row_idx % 2 == 0)
-        base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
         
         company = str(row.get("company_name") or "").strip()
         reg_text, reg_font, reg_fill = _registry_badge(row)
