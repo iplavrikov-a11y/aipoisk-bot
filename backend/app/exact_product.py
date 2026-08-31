@@ -2376,6 +2376,42 @@ TEXT_MUTED = RGBColor(71, 85, 105)
 TEXT_GREEN = RGBColor(4, 120, 87)
 
 
+def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", underline=True):
+    """Добавляет интерактивную гиперссылку OpenXML в параграф Word."""
+    if not url or not str(url).strip():
+        r = paragraph.add_run(text)
+        return r
+    try:
+        from docx.opc.constants import RELATIONSHIP_TYPE
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        part = paragraph.part
+        r_id = part.relate_to(str(url).strip(), RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), r_id)
+
+        new_run = OxmlElement("w:r")
+        rPr = OxmlElement("w:rPr")
+        if color_hex:
+            c = OxmlElement("w:color")
+            c.set(qn("w:val"), color_hex)
+            rPr.append(c)
+        if underline:
+            u = OxmlElement("w:u")
+            u.set(qn("w:val"), "single")
+            rPr.append(u)
+        new_run.append(rPr)
+        new_run.text = text
+        hyperlink.append(new_run)
+        paragraph._p.append(hyperlink)
+        return hyperlink
+    except Exception as exc:
+        logger.debug("add_docx_hyperlink_error: %s", exc)
+        r = paragraph.add_run(text)
+        return r
+
+
 def write_exact_product_docx(
     path: str | Path,
     report: ExactProductReport,
@@ -2589,12 +2625,27 @@ def write_exact_product_docx(
             gisp_str = f"ГИСП № {pos.gisp_match.registry_number}"
             if pos.gisp_match.conclusion_number:
                 gisp_str += f" (Заключение № {pos.gisp_match.conclusion_number})"
-        src_tag = f" | Источник: {pos.source_url}" if pos.source_url else ""
         status_prefix = "" if conf_pct >= 60 else f"ВНИМАНИЕ — ОТКЛОНЕНИЕ ОТ ТЗ ({conf_pct}%): "
-        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}{src_tag}")
+        brun = bp.add_run(f"ПОЗИЦИЯ №{pos.position_no}: {pos.name_in_tz}\n{status_prefix}Товар: {pos.identified_brand} {pos.identified_model} ({pos.manufacturer})   |   {gisp_str}")
         brun.font.bold = True
         brun.font.size = Pt(9)
         brun.font.color.rgb = RGBColor(255, 255, 255)
+
+        if pos.source_url:
+            r_src = bp.add_run("   |   Источник: ")
+            r_src.font.bold = True
+            r_src.font.size = Pt(9)
+            r_src.font.color.rgb = RGBColor(255, 255, 255)
+
+            from urllib.parse import urlparse
+            parsed_u = urlparse(pos.source_url)
+            host = parsed_u.netloc or pos.source_url
+            path_part = parsed_u.path.strip("/").split("/")[0] if parsed_u.path else ""
+            anchor_label = f"{host}/{path_part} ↗" if path_part else f"{host} ↗"
+            if len(anchor_label) > 35:
+                anchor_label = f"{host} ↗"
+            _add_docx_hyperlink(bp, pos.source_url, anchor_label, color_hex="99F6E4", underline=True)
+
         _set_table_full_grid_borders(pos_banner, banner_bg)
 
         if pos.reasoning:
@@ -2902,7 +2953,27 @@ def write_exact_product_docx(
             cells[0].text = str(row_count)
             cells[1].text = "PDF Паспорт" if doc_item.get("type") == "pdf" else "Сайт завода"
             cells[2].text = str(doc_item.get("title") or "Техническая документация").strip()
-            cells[3].text = str(doc_item.get("url") or doc_item.get("domain") or "—").strip()
+
+            p3 = cells[3].paragraphs[0]
+            p3.text = ""
+            doc_url = str(doc_item.get("url") or doc_item.get("domain") or "").strip()
+            doc_domain = str(doc_item.get("domain") or "").strip()
+
+            if doc_url and doc_url.startswith("http"):
+                from urllib.parse import urlparse
+                parsed_u = urlparse(doc_url)
+                host = parsed_u.netloc or doc_domain or doc_url
+                if doc_item.get("type") == "pdf":
+                    anchor_text = f"📄 Скачать PDF-паспорт ({host}) ↗"
+                else:
+                    anchor_text = f"🌐 {host} ↗"
+                _add_docx_hyperlink(p3, doc_url, anchor_text, color_hex="0284C7", underline=True)
+            elif doc_domain:
+                anchor_text = f"🌐 {doc_domain} ↗"
+                full_link = f"https://{doc_domain}" if not doc_domain.startswith("http") else doc_domain
+                _add_docx_hyperlink(p3, full_link, anchor_text, color_hex="0284C7", underline=True)
+            else:
+                p3.add_run("—")
 
             fill_color = ZEBRA_MINT if row_count % 2 == 1 else "FFFFFF"
             for idx, c in enumerate(cells):
@@ -2924,8 +2995,12 @@ def write_exact_product_docx(
                 cells = row.cells
                 cells[0].text = str(s_idx)
                 cells[1].text = "Веб-поиск"
-                cells[2].text = f"Сайт производителя / поставщика: {src}"
-                cells[3].text = src
+                cells[2].text = f"Сайт производителя / поставщика"
+
+                p3 = cells[3].paragraphs[0]
+                p3.text = ""
+                src_url = src if src.startswith("http") else f"https://{src}"
+                _add_docx_hyperlink(p3, src_url, f"🌐 {src} ↗", color_hex="0284C7", underline=True)
 
                 fill_color = ZEBRA_MINT if s_idx % 2 == 1 else "FFFFFF"
                 for idx, c in enumerate(cells):
