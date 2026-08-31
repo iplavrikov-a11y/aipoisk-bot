@@ -412,12 +412,12 @@ def run_stdio_server():
 
 
 def main():
+    global DEFAULT_API_URL, API_KEY
     parser = argparse.ArgumentParser(description="TenderLex MCP Server")
     parser.add_argument("--api-url", default=DEFAULT_API_URL, help="TenderLex backend API base URL")
     parser.add_argument("--api-key", default=API_KEY, help="TenderLex API Key")
     args = parser.parse_args()
 
-    global DEFAULT_API_URL, API_KEY
     DEFAULT_API_URL = args.api_url.rstrip("/")
     if args.api_key:
         API_KEY = args.api_key
