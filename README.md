@@ -111,11 +111,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   and combined analysis plus supplier search. The task launch form uses a compact
   layout with a horizontal full-width file upload bar and action submit buttons
   aligned to the right of text/source input fields.
-- Completed supplier-search, procurement-analysis, and combined jobs can expose
-  a `Запрос КП` document generated from the original customer materials and
-  available analysis data. The customer can preview/copy it and download DOCX
-  from the website cabinet; Telegram receives it as an additional job output
-  when available.
+- Completed supplier-search, procurement-analysis, and combined jobs expose
+  a structured `Запрос КП` document generated from the customer materials and
+  AI extraction. It is delivered exclusively as a Word (`.docx`) file with
+  multiline bulleted characteristics, while Excel exports focus strictly on
+  verified supplier contacts. The customer can preview/copy the RFQ text
+  and download DOCX from the website cabinet and Telegram bot.
 - Public site data comes from `GET /api/public/site`; only active tariffs,
   safe contacts, free-period settings, and public copy are exposed.
 - Telegram links are intentionally split: `bot_telegram` is the bot used for Telegram work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.

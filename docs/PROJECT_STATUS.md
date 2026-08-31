@@ -12,6 +12,10 @@ Date: 2026-08-31
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Quote Request (Запрос КП) & Excel Single-Sheet Cleanliness (2026-08):
+  - Strict Table Filtering in Quote Request (`_is_non_product_row`, `NON_PRODUCT_PATTERNS`, `backend/app/quote_request.py`): Eliminated contract metadata sections («Заказчик», «Сведения о месте», «Сроки оказания услуг», «Цель выполнения») from being parsed as product items.
+  - Multiline Bulleted Characteristics Formatting (`_format_characteristics`): Formatted technical characteristics with clean bullet items (`• Параметр: значение`) rendered on individual lines in Word DOCX reports (`write_quote_request_docx`), eliminating unformatted text concatenation.
+  - Dedicated Word RFQ Output & Clean Excel Suppliers Sheet: Removed the redundant «Запрос КП» tab from Excel (`write_supplier_xlsx`), ensuring Excel files focus exclusively on supplier contacts and Minpromtorg registry status, while RFQ requests are generated cleanly in Word DOCX.
 - Smart Clarify Search Fallback, Kit Sub-Equipment Decomposition & Placeholder Brand Filtering (2026-08):
   - Placeholder Brand/Model Filtration (`_is_placeholder_brand_or_model`, `backend/app/exact_product.py`): Eliminated placeholder text («в открытой документации не указано», «требуется официальный паспорт завода», «не указано») from leaking into live search engine queries during Stage 2 parameter clarification.
   - Smart Query Fallback for Kit Sub-Equipment & Complex Assemblies: When complex modular systems or turnkey assemblies (e.g. mobile containers with built-in hydraulic baling presses and spill containment pallets, modular laboratories with centrifuges, transformer substations with breakers) contain distinct equipment sub-units, the query builder constructs high-precision targeted Yandex search queries directly from `name_in_tz` and numerical physical dimensions/ratings (`spec.tz_requirement`), without relying on unpopulated parent brand names.
