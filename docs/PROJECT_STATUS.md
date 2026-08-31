@@ -12,6 +12,11 @@ Date: 2026-08-31
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Interactive OpenXML Smart Hyperlinks in Word DOCX & Exact Product Polish (2026-08):
+  - Interactive OpenXML Smart Hyperlinks in Word DOCX (`_add_smart_hyperlink_run`, `write_exact_product_docx`, `backend/app/exact_product.py`): Integrated direct WordprocessingML relationship mapping (`w:hyperlink`, `r:id`, `RelationshipType.HYPERLINK`) in python-docx reports. Completely resolved domain and URL clipping in Word documents. Links in position banners, Table 3 (manufacturer website, download PDF passport) are 100% interactive, clickable, and preserve full URLs directly in Microsoft Word and LibreOffice.
+  - GISP Query Grid & Conclusion Metadata Parsing (`find_minprom_gisp_match`, `backend/app/exact_product.py`): Upgraded Minpromtorg GISP registry resolution with multi-query grid, exact conclusion numbers extraction, date ranges, and registry validation.
+  - Telegram Bot Exact Product Summary Card: Polished exact product summary card presentation in Telegram bot.
+  - Live Service Deployment Supervision: Verified live deployment pipeline and service status across `aipoisk-worker.service`, `aipoisk-bot.service`, `aipoisk-api.service`, and `tenderlex-site.service`.
 - Strict & Universal Minpromtorg Registry Filtration & Cabinet UX Polish (2026-08):
   - Domain-Agnostic Registry Candidate Evaluation (`filter_minprom_registry_entries_for_profile`, `backend/app/supplier_search.py`): Replaced category-wide loose matching with universal, industry-neutral evaluation based on functional conformity, standards (GOST, TU, OST), series, and nomenclature across all 99 commodity sectors, without hardcoding or task-specific bias.
   - Strict Registry Matching in «Только реестр» Policy (`_accepted_supplier_results`, `_supplier_minprom_registry_match`): In `minprom_registry_only` mode, strictly limits verified candidates to confirmed `exact` and valid `analog` matches. Completely eliminates false Minpromtorg registry numbers on unconfirmed category/profile candidates (`product_fit == "category"`).
