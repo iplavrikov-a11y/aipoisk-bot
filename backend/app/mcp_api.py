@@ -370,8 +370,8 @@ async def mcp_supplier_search(
         with supplier_search_job_context(f"mcp_{api_key.id[:8]}"):
             accepted_rows, evidence = await discover_suppliers(
                 settings=settings,
-                context_text=clean_context,
-                target_count=req.target_count,
+                context=clean_context,
+                target=req.target_count,
             )
     except Exception as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
@@ -860,8 +860,8 @@ async def test_api_tool(
         with supplier_search_job_context("admin_live_test"):
             accepted_rows, evidence = await discover_suppliers(
                 settings=settings,
-                context_text=clean_ctx,
-                target_count=3,
+                context=clean_ctx,
+                target=3,
             )
         duration = round(time.time() - start_time, 2)
         return {

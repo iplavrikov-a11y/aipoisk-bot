@@ -205,8 +205,9 @@ def test_admin_api_test_endpoint():
     admin_token = _admin_token()
     admin_headers = {"X-Admin-Token": admin_token}
 
+    mock_discover = AsyncMock(return_value=([{"company_name": "ООО СМЛ Тест", "inn": "7701234567"}], {}))
     with patch("app.mcp_api.extract_supplier_search_context", new=AsyncMock(return_value="СМЛ панели")), \
-         patch("app.mcp_api.discover_suppliers", new=AsyncMock(return_value=([{"company_name": "ООО СМЛ Тест", "inn": "7701234567"}], {}))):
+         patch("app.mcp_api.discover_suppliers", new=mock_discover):
         resp = client.post(
             "/api/admin/api-keys/test",
             json={"tool": "supplier_search", "query": "смл панели, стекломагниевые панели"},
@@ -218,4 +219,9 @@ def test_admin_api_test_endpoint():
         assert data["tool"] == "supplier_search"
         assert data["total_found"] == 1
         assert data["suppliers"][0]["company_name"] == "ООО СМЛ Тест"
+        mock_discover.assert_awaited_once()
+        _, kwargs = mock_discover.call_args
+        assert kwargs.get("context") == "СМЛ панели"
+        assert kwargs.get("target") == 3
+
 
