@@ -118,6 +118,7 @@ type CustomerJob = {
   id: string;
   mode: JobMode;
   mode_label: string;
+  supplier_search_policy?: string;
   status: string;
   status_label: string;
   progress: number;
@@ -1552,12 +1553,13 @@ export function CabinetClient() {
     }
   }
 
-  async function retryJob(job: CustomerJob) {
+  async function retryJob(job: CustomerJob, policy?: string) {
     try {
       setBusy(true);
       setError("");
       setMessage("");
-      const res = await fetch(`/api/customer/jobs/${job.id}/retry`, { method: "POST" });
+      const url = policy ? `/api/customer/jobs/${job.id}/retry?policy=${encodeURIComponent(policy)}` : `/api/customer/jobs/${job.id}/retry`;
+      const res = await fetch(url, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.detail || "Не удалось перезапустить задачу");
@@ -2348,9 +2350,9 @@ export function CabinetClient() {
 
         <div className="w-full space-y-3 font-sans">
           <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
-            <span className="col-span-4">Задача</span>
+            <span className="col-span-3">Задача</span>
             <span className="col-span-2">Режим</span>
-            <span className="col-span-1">Статус</span>
+            <span className="col-span-2">Статус</span>
             <span className="col-span-2">Прогресс</span>
             <span className="col-span-3 text-right">Результат</span>
           </div>
@@ -2379,7 +2381,7 @@ export function CabinetClient() {
                       : "bg-slate-50/60 hover:bg-slate-100/70 border-slate-200/80"
                   }`}
                 >
-                  <div className="col-span-12 md:col-span-4 flex flex-col gap-0.5 min-w-0">
+                  <div className="col-span-12 md:col-span-3 flex flex-col gap-0.5 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <strong className="font-bold text-xs text-slate-900 leading-snug break-words">{job.human_title}</strong>
                       {isUnviewed ? (
@@ -2398,9 +2400,9 @@ export function CabinetClient() {
                     {modeDisplayName(job)}
                   </div>
 
-                  <div className="col-span-6 md:col-span-1 flex flex-col gap-1">
+                  <div className="col-span-6 md:col-span-2 flex flex-col gap-1">
                     <span
-                      className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max ${
+                      className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
                         isFailed
                           ? "bg-rose-50 text-rose-700 border-rose-200"
                           : isPending
@@ -2412,7 +2414,7 @@ export function CabinetClient() {
                     >
                       {job.status_label}
                     </span>
-                    {job.error ? <small className="text-rose-600 text-[10px] block mt-0.5">{job.error}</small> : null}
+                    {job.error ? <small className="text-rose-600 text-[10px] block mt-0.5 break-words">{job.error}</small> : null}
                   </div>
 
                   <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600">
@@ -2428,18 +2430,35 @@ export function CabinetClient() {
 
                   <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end">
                     {isFailed ? (
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void retryJob(job);
-                        }}
-                        disabled={busy}
-                      >
-                        <RotateCcw size={15} aria-hidden="true" />
-                        <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
-                      </button>
+                      <>
+                        {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void retryJob(job, "normal");
+                            }}
+                            disabled={busy}
+                          >
+                            <Search size={15} aria-hidden="true" />
+                            <span>Найти обычным поиском</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void retryJob(job);
+                            }}
+                            disabled={busy}
+                          >
+                            <RotateCcw size={15} aria-hidden="true" />
+                            <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
+                          </button>
+                        )}
+                      </>
                     ) : null}
 
                     {job.awaiting_customer_confirmation ? (

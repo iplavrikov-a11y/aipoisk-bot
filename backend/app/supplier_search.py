@@ -1675,6 +1675,47 @@ async def _discover_suppliers_impl(
     else:
         minprom_context = MinpromRegistryContext(requirement=minprom_requirement, status="not_required")
     registry_unavailable = policy in {SUPPLIER_POLICY_MINPROM_ONLY, SUPPLIER_POLICY_MINPROM_PRIORITY} and minprom_context.status == "error"
+
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY and (minprom_context.status != "ok" or not minprom_context.entries):
+        await _emit_progress(progress_callback, 100, "В реестре Минпромторга записи не найдены")
+        evidence = {
+            "ai_required": False,
+            "ai_used": False,
+            "target": minimum_target,
+            "minimum_target": minimum_target,
+            "delivery_target": delivery_target,
+            "supplier_search_policy": policy,
+            "registry_unavailable_no_charge": bool(registry_unavailable),
+            "procurement_profile": _profile_to_dict(profile),
+            "minprom_registry": _minprom_context_to_dict(minprom_context),
+            "minprom_supplier_queries": [],
+            "search_provider": "none",
+            "search": {},
+            "candidate_rerank": {},
+            "review": {},
+            "recovery_rounds": [],
+            "candidate_source_counts": {},
+            "accepted_source_counts": {},
+            "queries": [],
+            "executed_queries": [],
+            "unreviewed_candidates": [],
+            "wave_index": wave_index,
+            "registry_result": {
+                "status": minprom_context.status or "empty",
+                "verified_count": 0,
+            },
+            "non_registry_alternative": {
+                "status": "not_searched",
+                "reason": "minprom_registry_only_strict_exit",
+                "rows": [],
+                "count": 0,
+            },
+            "candidates": [],
+            "accepted_count": 0,
+            "accepted": [],
+            "reviewed": [],
+        }
+        return [], evidence
     
     # Convert preloaded candidates from parent task if available
     preloaded_objs: list[Candidate] = []

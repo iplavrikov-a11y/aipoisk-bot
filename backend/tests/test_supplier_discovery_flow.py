@@ -995,16 +995,22 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(evidence["accepted"], [])
                 self.assertEqual(evidence["accepted_count"], 0)
                 self.assertEqual(evidence["registry_result"], {"status": registry_status, "verified_count": 0})
-                self.assertTrue(alternative["available"])
-                self.assertEqual(alternative["verified_count"], 3)
-                self.assertEqual(alternative["reason_code"], expected_reason)
-                self.assertEqual(alternative["verified_rows"], filtered_input)
-                self.assertTrue(
-                    all(row["supplier_search_origin"] == "ordinary_fallback" for row in alternative["verified_rows"])
-                )
+                if registry_status == "empty":
+                    self.assertEqual(alternative.get("status"), "not_searched")
+                    self.assertEqual(alternative.get("reason"), "minprom_registry_only_strict_exit")
+                    self.assertEqual(evidence["candidates"], [])
+                    self.assertEqual(evidence["queries"], [])
+                else:
+                    self.assertTrue(alternative["available"])
+                    self.assertEqual(alternative["verified_count"], 3)
+                    self.assertEqual(alternative["reason_code"], expected_reason)
+                    self.assertEqual(alternative["verified_rows"], filtered_input)
+                    self.assertTrue(
+                        all(row["supplier_search_origin"] == "ordinary_fallback" for row in alternative["verified_rows"])
+                    )
 
-                source_rows[0]["company_name"] = "Изменено после формирования evidence"
-                self.assertEqual(alternative["verified_rows"][0]["company_name"], "Поставщик 0")
+                    source_rows[0]["company_name"] = "Изменено после формирования evidence"
+                    self.assertEqual(alternative["verified_rows"][0]["company_name"], "Поставщик 0")
 
     async def test_strict_minprom_registry_error_never_enables_fallback_offer(self) -> None:
         rows = [{"company_name": "Поставщик", "site": "https://supplier.example"}]

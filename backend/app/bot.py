@@ -1047,6 +1047,16 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
             ]
         )
     if snapshot.status == "failed":
+        if "реестр" in (snapshot.error or "").lower() or "реестр" in (snapshot.message or "").lower():
+            return "\n".join(
+                [
+                    "📋 В реестре Минпромторга записи не найдены",
+                    "",
+                    "По вашей спецификации в реестре Минпромторга (ГИСП) подтверждённые производители отсутствуют.",
+                    "",
+                    "💳 Баланс не списан (0 ₽). Вы можете запустить обычный поиск поставщиков по открытому рынку.",
+                ]
+            )
         return "\n".join(
             [
                 _progress_heading(snapshot),
@@ -1321,6 +1331,13 @@ def _cancel_job_inline_keyboard(job_id: str) -> InlineKeyboardMarkup:
 def _progress_status_keyboard(snapshot: JobProgressSnapshot) -> InlineKeyboardMarkup | None:
     if snapshot.status in {"pending", "running"}:
         return _cancel_job_inline_keyboard(snapshot.id)
+    if snapshot.status == "failed" and ("реестр" in (snapshot.error or "").lower() or "реестр" in (snapshot.message or "").lower()):
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Найти обычным поиском", callback_data=f"retry_normal:{snapshot.id}")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+            ]
+        )
     return None
 
 
@@ -2272,6 +2289,36 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         "⛔ Задача отменена. Резерв возвращён, можно запустить новую обработку.",
         reply_markup=main_menu(),
     )
+
+
+@router.callback_query(F.data.startswith("retry_normal:"))
+async def retry_normal_callback(callback: CallbackQuery) -> None:
+    job_id = str(callback.data or "").split(":", 1)[1].strip()
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            await callback.message.answer("⚠️ Задача не найдена.")
+            return
+        job.supplier_search_policy = SUPPLIER_POLICY_NORMAL
+        job.status = "pending"
+        job.progress = 0
+        job.error = ""
+        job.message = "Запуск обычного поиска поставщиков"
+        job.updated_at = now_utc()
+        db.commit()
+        enqueue_job(job.id)
+        await callback.message.answer(
+            "🚀 Запустил обычный поиск поставщиков по открытому рынку.\n\n"
+            f"Статус задачи можно отслеживать кнопкой «{BUTTON_STATUS}».",
+            reply_markup=processing_menu(),
+        )
+    finally:
+        db.close()
 
 
 @router.message(F.text == BUTTON_CANCEL_BATCH)

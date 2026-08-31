@@ -19,7 +19,7 @@ import time
 import httpx
 import jwt
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import func, or_
@@ -949,25 +949,22 @@ def customer_job_detail_api(
 @app.post("/api/customer/jobs/{job_id}/retry")
 def customer_job_retry_api(
     job_id: str,
+    policy: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     job = _customer_job_or_404(db, job_id, context)
-    policy = getattr(job, "supplier_search_policy", "normal") or "normal"
-    policy_labels = {
-        "minprom_registry_only": "Только реестр",
-        "minprom_registry_priority": "Реестр в приоритете",
-        "normal": "Обычный"
-    }
-    label = policy_labels.get(policy, "Обычный")
+    if policy:
+        normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
+        job.supplier_search_policy = normalized
     job.status = "pending"
     job.progress = 0
     job.error = ""
-    job.message = "Повторный запуск задачи"
+    job.message = "Повторный запуск задачи" + (" (обычный поиск)" if getattr(job, "supplier_search_policy", "normal") == "normal" else "")
     job.updated_at = now_utc()
     db.commit()
     enqueue_job(job.id)
-    return {"ok": True, "message": "Задача успешно перезапущена в обычном режиме"}
+    return {"ok": True, "message": "Задача успешно перезапущена"}
 
 
 @app.get("/api/customer/jobs/{job_id}/download")
@@ -2216,10 +2213,12 @@ def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
-def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
+def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if policy:
+        job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
     job.status = "pending"
     job.progress = 0
     job.error = ""
