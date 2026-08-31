@@ -1961,105 +1961,109 @@ export function CabinetClient() {
 
       {/* Top Dashboard: Compact Header with Balance and All Buttons in 1 Continuous Row */}
       <section className="bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {/* Balance Badge */}
-          <div className="flex items-center gap-2 bg-gradient-to-r from-teal-700 to-teal-800 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
-            <Receipt size={15} className="text-teal-200" aria-hidden="true" />
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
-              <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap">
-                {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
-              </strong>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* Balance Badge */}
+            <div className="flex items-center gap-2 bg-gradient-to-r from-teal-700 to-teal-800 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
+              <Receipt size={15} className="text-teal-200" aria-hidden="true" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
+                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap">
+                  {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
+                </strong>
+              </div>
+              {session?.user?.is_trial ? (
+                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1">
+                  пробный доступ
+                </span>
+              ) : null}
             </div>
-            {session?.user?.is_trial ? (
-              <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1">
-                пробный доступ
-              </span>
+
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => setShowTariffs((v) => !v)}
+            >
+              <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>{showTariffs ? "Скрыть тарифы ▲" : "Тарифы и цены ▼"}</span>
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
+              onClick={() => {
+                if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
+                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
+                }
+                window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+              }}
+            >
+              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>Чат сайта</span>
+            </button>
+
+            {session?.contacts?.telegram_url ? (
+              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
+                <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
+                <span>Telegram</span>
+              </a>
             ) : null}
+
+            {session?.contacts?.email ? (
+              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
+                <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
+                <span>Email</span>
+              </a>
+            ) : null}
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowHistoryModal(true);
+                loadHistoryTransactions(1);
+              }}
+              title="История операций и списаний"
+            >
+              <History size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>История</span>
+            </button>
           </div>
 
-          {/* All buttons sequentially inline in 1 continuous tight row right next to balance */}
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-            onClick={() => setShowTariffs((v) => !v)}
-          >
-            <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-            <span>{showTariffs ? "Скрыть тарифы ▲" : "Тарифы и цены ▼"}</span>
-          </button>
+          {/* Right-aligned items: Function Guide and Notification Bell */}
+          <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
+              onClick={() => {
+                setHelpModalTab("workflow");
+                setShowHelpModal(true);
+              }}
+              title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
+            >
+              <BookOpen size={13} className="text-emerald-700 shrink-0" aria-hidden="true" />
+              <span>Справка по функциям</span>
+            </button>
 
-          <button
-            type="button"
-            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
-            onClick={() => {
-              if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
-                (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
-              }
-              window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
-            }}
-          >
-            <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-            <span>Чат сайта</span>
-          </button>
-
-          {session?.contacts?.telegram_url ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
-              <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
-              <span>Telegram</span>
-            </a>
-          ) : null}
-
-
-          {session?.contacts?.email ? (
-            <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
-              <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
-              <span>Email</span>
-            </a>
-          ) : null}
-
-          <button
-            type="button"
-            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-            onClick={() => {
-              setShowHistoryModal(true);
-              loadHistoryTransactions(1);
-            }}
-            title="История операций и списаний"
-          >
-            <History size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-            <span>История</span>
-          </button>
-
-          <button
-            type="button"
-            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
-            onClick={() => {
-              setHelpModalTab("workflow");
-              setShowHelpModal(true);
-            }}
-            title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
-          >
-            <BookOpen size={13} className="text-emerald-700 shrink-0" aria-hidden="true" />
-            <span>Справка по функциям</span>
-          </button>
-
-          <button
-            type="button"
-            className={`inline-flex items-center justify-center p-2 rounded-lg transition-all border cursor-pointer shrink-0 ${
-              notificationsEnabled
-                ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
-                : "bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-200"
-            }`}
-            onClick={toggleNotifications}
-            title={notificationsEnabled ? "Звуковые уведомления включены (нажмите, чтобы выключить)" : "Уведомления выключены (нажмите, чтобы включить)"}
-            aria-label={notificationsEnabled ? "Выключить звуковые уведомления" : "Включить звуковые уведомления"}
-          >
-            {notificationsEnabled ? (
-              <Bell size={13} className="text-teal-600" aria-hidden="true" />
-            ) : (
-              <BellOff size={13} className="text-slate-400" aria-hidden="true" />
-            )}
-          </button>
+            <button
+              type="button"
+              className={`inline-flex items-center justify-center p-2 rounded-lg transition-all border cursor-pointer shrink-0 ${
+                notificationsEnabled
+                  ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-200"
+              }`}
+              onClick={toggleNotifications}
+              title={notificationsEnabled ? "Звуковые уведомления включены (нажмите, чтобы выключить)" : "Уведомления выключены (нажмите, чтобы включить)"}
+              aria-label={notificationsEnabled ? "Выключить звуковые уведомления" : "Включить звуковые уведомления"}
+            >
+              {notificationsEnabled ? (
+                <Bell size={13} className="text-teal-600" aria-hidden="true" />
+              ) : (
+                <BellOff size={13} className="text-slate-400" aria-hidden="true" />
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
