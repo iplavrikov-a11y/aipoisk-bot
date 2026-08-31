@@ -675,6 +675,24 @@ async def fetch_batch_web_documents(urls: list[str], max_docs: int = 6) -> list[
 # Minpromtorg GISP Lookup
 # ---------------------------------------------------------------------------
 
+def _is_placeholder_brand_or_model(val: str) -> bool:
+    if not val:
+        return True
+    low = val.strip().lower()
+    placeholders = [
+        "в открытой документации не указано",
+        "требуется официальный паспорт",
+        "в открытом доступе не найдено",
+        "не указано",
+        "не определен",
+        "отечественный производитель",
+        "по спецификации",
+        "требуется паспорт",
+        "требуется уточнение",
+    ]
+    return any(p in low for p in placeholders) or len(low) < 2
+
+
 GENERIC_GISP_TERMS = {
     "модель", "товар", "образец", "серия", "аналог", "стандарт", "производитель",
     "завод", "предприятие", "компания", "по тз", "соответствует тз", "по спецификации",
@@ -1104,6 +1122,9 @@ RESOLVE_CLARIFY_PROMPT = """Ты — ведущий эксперт по стан
    - "product_fact": "точное значение из документа" (без слов 'не менее/не более', например: "1.6 МПа", "14 000 лм", "32 м3/ч", "1200 x 1200 dpi", "120 мм", "УХЛ1", "IP66")
    - "status": "match" (если значение укладывается в требование ТЗ) или "mismatch" (если фактическое значение отличается от ТЗ)
    - "comment": "краткое подтверждение со ссылкой на паспорт/каталог/документ/ГОСТ"
+   - "identified_brand": "реальный завод или бренд из найденного документа"
+   - "identified_model": "точная модель/серия/марка из документа (например: ПГП-4 (Мини), СПП-4)"
+   - "manufacturer": "завод-производитель (например: ООО «Прессмакс»)"
 3. Если значения НЕТ в тексте:
    - "found": false
    - "product_fact": "В открытой документации не указано (требуется официальный паспорт завода)"
@@ -1115,7 +1136,10 @@ RESOLVE_CLARIFY_PROMPT = """Ты — ведущий эксперт по стан
   "found": true,
   "product_fact": "...",
   "status": "match",
-  "comment": "..."
+  "comment": "...",
+  "identified_brand": "...",
+  "identified_model": "...",
+  "manufacturer": "..."
 }}
 """
 
@@ -1329,12 +1353,16 @@ async def resolve_clarify_parameters(
                 if excerpt:
                     combined_excerpt_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('title')})]:\n{excerpt}")
 
+            disp_brand = pos.identified_brand if not _is_placeholder_brand_or_model(pos.identified_brand) else pos.name_in_tz
+            disp_model = pos.identified_model if not _is_placeholder_brand_or_model(pos.identified_model) else ""
+            disp_manuf = pos.manufacturer if not _is_placeholder_brand_or_model(pos.manufacturer) else "Отечественный завод-изготовитель"
+
             if combined_excerpt_parts:
                 pre_doc_context = "\n\n".join(combined_excerpt_parts)[:20000]
                 prompt = RESOLVE_CLARIFY_PROMPT.format(
-                    brand=pos.identified_brand,
-                    model=pos.identified_model,
-                    manufacturer=pos.manufacturer,
+                    brand=disp_brand,
+                    model=disp_model,
+                    manufacturer=disp_manuf,
                     param_name=spec.param_name,
                     tz_requirement=spec.tz_requirement,
                     doc_text=pre_doc_context,
@@ -1360,6 +1388,16 @@ async def resolve_clarify_parameters(
                                 spec.status = "mismatch" if "mismatch" in new_status else "match"
                                 spec.comment = new_comment or "Подтверждено технической документацией"
                                 total_resolved += 1
+
+                                found_brand = str(parsed.get("identified_brand") or "").strip()
+                                found_model = str(parsed.get("identified_model") or "").strip()
+                                found_manuf = str(parsed.get("manufacturer") or "").strip()
+                                if _is_placeholder_brand_or_model(pos.identified_brand) and found_brand and not _is_placeholder_brand_or_model(found_brand):
+                                    pos.identified_brand = found_brand
+                                if _is_placeholder_brand_or_model(pos.identified_model) and found_model and not _is_placeholder_brand_or_model(found_model):
+                                    pos.identified_model = found_model
+                                if _is_placeholder_brand_or_model(pos.manufacturer) and found_manuf and not _is_placeholder_brand_or_model(found_manuf):
+                                    pos.manufacturer = found_manuf
                 except Exception as ex_err:
                     logger.debug("pre_doc_clarify_check_error for %s: %s", spec.param_name, ex_err)
 
@@ -1375,13 +1413,32 @@ async def resolve_clarify_parameters(
         if sub_queries_done >= max_sub_queries:
             break
 
-        clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip() if pos.identified_model else ""
+        has_real_brand = not _is_placeholder_brand_or_model(pos.identified_brand)
+        has_real_model = not _is_placeholder_brand_or_model(pos.identified_model)
+
         query_parts = []
-        if pos.identified_brand:
+        if has_real_brand and has_real_model:
             query_parts.append(f'"{pos.identified_brand}"')
-        if clean_m and len(clean_m) > 1:
-            query_parts.append(f'"{clean_m}"')
-        query_parts.append(f'"{spec.param_name}"')
+            clean_m = re.sub(r'\(.*?\)', '', pos.identified_model).strip()
+            if clean_m and len(clean_m) > 1:
+                query_parts.append(f'"{clean_m}"')
+        elif has_real_brand:
+            query_parts.append(f'"{pos.identified_brand}"')
+            clean_name = re.sub(r'\s+', ' ', re.sub(r'\(.*?\)', '', pos.name_in_tz)).strip()[:65]
+            if clean_name:
+                query_parts.append(clean_name)
+        else:
+            clean_name = re.sub(r'\s+', ' ', re.sub(r'\(.*?\)', '', pos.name_in_tz)).strip()[:65]
+            if clean_name:
+                query_parts.append(clean_name)
+
+        num_reqs = re.findall(r'\b\d+(?:[\.,xх\*]\d+)*(?:\s*(?:кВт|Вт|В|мм|см|м|кг|т|МПа|кПа|Па|бар|м3/ч|л/ч|об/мин|л))?\b', spec.tz_requirement)
+        clean_param = spec.param_name.strip()
+        if num_reqs:
+            query_parts.append(f'"{num_reqs[0]}"')
+        elif clean_param and clean_param.lower() not in ("параметр", "характеристика", "технический параметр"):
+            query_parts.append(f'"{clean_param}"')
+
         query_parts.append("(паспорт OR руководство OR характеристики OR каталог OR ТУ)")
 
         targeted_query = " ".join(query_parts)
@@ -1422,10 +1479,14 @@ async def resolve_clarify_parameters(
                 doc_text_parts.append(f"[ИСТОЧНИК #{d_idx} ({doc.get('type')}) - {doc.get('title')} - {doc.get('url')}]:\n{excerpt}\n")
             combined_doc_text = "\n".join(doc_text_parts)
 
+            disp_brand = pos.identified_brand if has_real_brand else pos.name_in_tz
+            disp_model = pos.identified_model if has_real_model else ""
+            disp_manuf = pos.manufacturer if not _is_placeholder_brand_or_model(pos.manufacturer) else "Отечественный завод-изготовитель"
+
             prompt = RESOLVE_CLARIFY_PROMPT.format(
-                brand=pos.identified_brand,
-                model=pos.identified_model,
-                manufacturer=pos.manufacturer,
+                brand=disp_brand,
+                model=disp_model,
+                manufacturer=disp_manuf,
                 param_name=spec.param_name,
                 tz_requirement=spec.tz_requirement,
                 doc_text=combined_doc_text,
@@ -1456,6 +1517,16 @@ async def resolve_clarify_parameters(
                         if new_docs:
                             spec.source_url = new_docs[0].get("url") or spec.source_url
                         total_resolved += 1
+
+                        found_brand = str(parsed.get("identified_brand") or "").strip()
+                        found_model = str(parsed.get("identified_model") or "").strip()
+                        found_manuf = str(parsed.get("manufacturer") or "").strip()
+                        if _is_placeholder_brand_or_model(pos.identified_brand) and found_brand and not _is_placeholder_brand_or_model(found_brand):
+                            pos.identified_brand = found_brand
+                        if _is_placeholder_brand_or_model(pos.identified_model) and found_model and not _is_placeholder_brand_or_model(found_model):
+                            pos.identified_model = found_model
+                        if _is_placeholder_brand_or_model(pos.manufacturer) and found_manuf and not _is_placeholder_brand_or_model(found_manuf):
+                            pos.manufacturer = found_manuf
                     else:
                         logger.debug("ungrounded_hallucination_skipped for %s: %s", spec.param_name, new_fact)
         except Exception as res_err:
@@ -1769,7 +1840,8 @@ async def plan_exact_product_search(
     prompt = f"""Ты — главный инженер и эксперт по промышленному оборудованию, медицинским изделиям, сложной технике, материалам и госзакупкам по 44-ФЗ/223-ФЗ.
 Проанализируй текст технического задания и составь точный поисковый план для нахождения заводских каталогов, спецификаций и PDF-паспортов в Яндексе:
 1. Предмет закупки / вид продукции: {item_name}. Выдели ключевой технологический товар/оборудование/материал, исключая монтажные работы, услуги и мелкий крепеж.
-2. Определи инженерную специфику:
+2. Если в ТЗ заложен сложный модульный комплекс / комплект (например, блочное здание/контейнер со встроенным оборудованием: прессом, станком, насосом, поддонами), обязательно сформируй поисковые запросы как по основному объекту, так и по ключевому встроенному оборудованию с его точными габаритами/мощностью из ТЗ.
+3. Определи инженерную специфику:
    - Стандартная продукция по ГОСТ/ТУ (металл, трубы, кабели, типовые РТИ, задвижки) -> ориентируй поиск на ГОСТ/ТУ и заводы РФ;
    - Заказное / сложное технологическое оборудование РФ -> ищи по типу агрегата, назначению и профильным заводам РФ;
    - Специализированная техника, иностранные стандарты (DIN/ISO/ASTM), спец. среды или импортные компоненты -> ищи точные инженерные индексы, рабочие среды, PDF-паспорта и каталоги дистрибьюторов без искусственного принуждения слов.
