@@ -12,6 +12,11 @@ Date: 2026-08-31
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Customer Expense History Modal, Split-Toolbar Cabinet Header & Admin Task Badge Hierarchy (2026-08):
+  - Customer Billing & Expense History Modal (`GET /api/customer/billing/transactions`, `site/src/app/cabinet/cabinet-client.tsx`, `backend/app/main.py`): Real-time financial ledger modal displaying customer task debits, top-ups, and refunds with server-side pagination (12 items per page). Dynamically extracts procurement file/subject titles (`human_job_title`), eliminates duplicate mode labels, and accurately calculates charges using individual client tariff overrides (`ClientTariffOverride`) without intimidating aggregate spend banners.
+  - Split-Toolbar Cabinet Header: Cleanly structured toolbar with left-aligned navigation & contact buttons (`[Баланс]`, `[Тарифы и цены ▼]`, `[Чат сайта]`, `[Telegram]`, `[Email]`, `[История]`) and right-aligned action tools (`[Справка по функциям]`, `[🔔]` compact notification icon toggle).
+  - Admin Panel Task Card Badge Hierarchy (`frontend/src/App.tsx`, `frontend/src/styles.css`): Structured badge sequence (1. Function mode -> 2. Policy / run mode -> 3. AI provider & model -> 4. Found items count -> 5. Search API request count & cost).
+  - Left-Aligned Customer Input File Download Pills: Fixed global center alignment issue on `.download-pill`, ensuring client filenames (`Приложение_№_1...`, `ТЗ...`) start cleanly from the first character with non-clipping text and smooth tail ellipsis.
 - Quote Request (Запрос КП) & Excel Single-Sheet Cleanliness (2026-08):
   - Strict Table Filtering in Quote Request (`_is_non_product_row`, `NON_PRODUCT_PATTERNS`, `backend/app/quote_request.py`): Eliminated contract metadata sections («Заказчик», «Сведения о месте», «Сроки оказания услуг», «Цель выполнения») from being parsed as product items.
   - Multiline Bulleted Characteristics Formatting (`_format_characteristics`): Formatted technical characteristics with clean bullet items (`• Параметр: значение`) rendered on individual lines in Word DOCX reports (`write_quote_request_docx`), eliminating unformatted text concatenation.
