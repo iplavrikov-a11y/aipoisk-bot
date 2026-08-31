@@ -796,27 +796,38 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
   flex-direction: column;
   gap: 6px;
   padding: 10px 14px 10px 12px;
-  border-left: 3.5px solid #cbd5e1;
+  border-left: 4px solid #cbd5e1;
   transition: border-color 0.15s ease;
 }
-.job-card.compact.completed {
+
+/* 1. Поиск поставщиков: Зеленый */
+.job-card.compact.mode-supplier_search {
   border-left-color: #16a34a;
 }
+
+/* 2. Подбор товара и аналогов: Фиолетовый */
+.job-card.compact.mode-exact_product {
+  border-left-color: #7c3aed;
+}
+
+/* 3. Анализ документации: Синий */
+.job-card.compact.mode-procurement_report {
+  border-left-color: #2563eb;
+}
+
+/* 4. Анализ + поиск: Двухцветная (синий + зеленый) */
+.job-card.compact.mode-analysis_and_suppliers {
+  border-left: 4px solid #2563eb;
+  border-image: linear-gradient(to bottom, #2563eb 50%, #16a34a 50%) 1 100%;
+}
+
+/* Ошибка перекрывает красным цветом */
+.job-card.compact.status-failed,
 .job-card.compact.failed {
-  border-left-color: #dc2626;
+  border-left: 4px solid #dc2626 !important;
+  border-image: none !important;
 }
-.job-card.compact.running {
-  border-left-color: #0284c7;
-}
-.job-card.compact.pending {
-  border-left-color: #f59e0b;
-}
-.job-card.compact.partial {
-  border-left-color: #8b5cf6;
-}
-.job-card.compact.cancelled {
-  border-left-color: #94a3b8;
-}
+
 .job-card.service { background: #f8fafc; }
 .job-card-top {
   display: flex;
@@ -880,6 +891,27 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .badge-pill.mode {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
+  font-weight: 700;
+}
+.badge-pill.mode.mode-supplier_search {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+.badge-pill.mode.mode-exact_product {
+  background: #f5f3ff;
+  color: #6b21a8;
+  border-color: #ddd6fe;
+}
+.badge-pill.mode.mode-procurement_report {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.badge-pill.mode.mode-analysis_and_suppliers {
+  background: #f0fdfa;
+  color: #0369a1;
+  border-color: #bae6fd;
 }
 .badge-pill.ai-model {
   display: inline-flex;

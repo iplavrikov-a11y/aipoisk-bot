@@ -4534,7 +4534,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           const hasInput = inputFiles.length > 0 || inputSources.length > 0 || job.file_count > 0
 
           return (
-          <article className={`job-card compact ${job.is_internal ? 'service' : ''} ${job.status}`} key={job.id}>
+          <article className={`job-card compact mode-${job.mode} status-${job.status} ${job.is_internal ? 'service' : ''}`} key={job.id}>
             <div className="job-card-top">
               <div className="job-title-group">
                 <div className="job-title-row">
@@ -4568,7 +4568,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
 
             <div className="job-card-meta-line">
               <div className="job-meta-badges">
-                <span className="badge-pill mode">{job.mode_label || humanMode(job.mode)}</span>
+                <span className={`badge-pill mode mode-${job.mode}`}>{job.mode_label || humanMode(job.mode)}</span>
                 {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
                   <span
                     className="badge-pill ai-model"
