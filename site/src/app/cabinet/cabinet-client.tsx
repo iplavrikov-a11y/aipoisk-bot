@@ -20,6 +20,7 @@ import {
   Eye,
   FileText,
   HelpCircle,
+  History,
   Layers,
   Loader2,
   LogOut,
@@ -172,6 +173,21 @@ type CustomerJobsResponse = {
   total: number;
   limit: number;
   offset: number;
+};
+
+type CustomerBillingTransaction = {
+  id: string;
+  job_id: string | null;
+  operation: string;
+  operation_label: string;
+  kind: string;
+  kind_label: string;
+  title: string;
+  note: string;
+  units: number;
+  amount_kopeks: number;
+  amount_rub: number;
+  created_at: string | null;
 };
 
 const DEFAULT_CUSTOMER_JOBS_PAGE_SIZE = 15;
@@ -857,6 +873,10 @@ export function CabinetClient() {
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyTransactions, setHistoryTransactions] = useState<CustomerBillingTransaction[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -914,6 +934,26 @@ export function CabinetClient() {
     }
     const payload = await readJson<SessionPayload>(response);
     setSession(payload.authenticated ? payload : null);
+  }
+
+  async function loadHistoryTransactions() {
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const response = await fetch("/api/customer/billing/transactions?limit=50", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error("Не удалось загрузить историю операций");
+      }
+      const data = await readJson<{ items: CustomerBillingTransaction[]; total: number }>(response);
+      setHistoryTransactions(Array.isArray(data?.items) ? data.items : []);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : "Ошибка загрузки истории операций");
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   async function loadJobs(
@@ -1972,6 +2012,32 @@ export function CabinetClient() {
 
           <button
             type="button"
+            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+            onClick={() => {
+              setShowHistoryModal(true);
+              loadHistoryTransactions();
+            }}
+            title="История операций и списаний"
+          >
+            <History size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+            <span>История</span>
+          </button>
+
+          <button
+            type="button"
+            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
+            onClick={() => {
+              setHelpModalTab("workflow");
+              setShowHelpModal(true);
+            }}
+            title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
+          >
+            <BookOpen size={13} className="text-emerald-700 shrink-0" aria-hidden="true" />
+            <span>Справка по функциям</span>
+          </button>
+
+          <button
+            type="button"
             className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 ${
               notificationsEnabled
                 ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
@@ -1987,19 +2053,6 @@ export function CabinetClient() {
               <BellOff size={13} className="text-slate-400 shrink-0" aria-hidden="true" />
             )}
             <span>{notificationsEnabled ? "Уведомления: вкл" : "Уведомления: выкл"}</span>
-          </button>
-
-          <button
-            type="button"
-            className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
-            onClick={() => {
-              setHelpModalTab("workflow");
-              setShowHelpModal(true);
-            }}
-            title="Справка: подробное описание 4 функций и пошаговый алгоритм работы"
-          >
-            <BookOpen size={13} className="text-emerald-700 shrink-0" aria-hidden="true" />
-            <span>Справка по функциям</span>
           </button>
         </div>
 
@@ -3524,6 +3577,148 @@ export function CabinetClient() {
                 Закрыть
               </button>
             </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {/* Expenses & Operations History Modal (Spacious, Clean, Slate/Teal/Emerald Branded, No Big Aggregated Spend) */}
+      {showHistoryModal ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowHistoryModal(false);
+          }}
+        >
+          <section
+            className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-7 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 max-h-[88vh] flex flex-col font-sans"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="history-modal-title"
+          >
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3.5 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                  <History size={18} aria-hidden="true" />
+                </div>
+                <div>
+                  <h2 id="history-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                    История операций
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Детализация списаний за задачи и пополнений счета
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer"
+                onClick={() => setShowHistoryModal(false)}
+                aria-label="Закрыть историю"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body / Transactions List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[220px]">
+              {historyLoading ? (
+                <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-2">
+                  <Loader2 size={24} className="animate-spin text-teal-600" />
+                  <span className="text-xs font-medium">Загрузка истории операций...</span>
+                </div>
+              ) : historyError ? (
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
+                  <span>{historyError}</span>
+                  <button
+                    type="button"
+                    onClick={loadHistoryTransactions}
+                    className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 text-rose-900 rounded-lg font-bold transition-colors cursor-pointer"
+                  >
+                    Повторить
+                  </button>
+                </div>
+              ) : historyTransactions.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <Receipt size={32} className="mx-auto text-slate-300" />
+                  <p className="text-sm font-semibold text-slate-600">История операций пока пуста</p>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    Здесь будут отображаться списания за выполненные задачи и история начислений
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {historyTransactions.map((tx) => {
+                    const isCharge = tx.operation === "charge" || tx.operation === "manual_debit";
+                    const isGrant = tx.operation === "grant";
+                    const isRelease = tx.operation === "release";
+
+                    return (
+                      <div
+                        key={tx.id}
+                        className="p-3 bg-slate-50/70 hover:bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between gap-3 transition-colors"
+                      >
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-900 truncate">
+                              {tx.kind_label || tx.operation_label}
+                            </span>
+                            <span className="text-[10px] font-medium text-slate-400 shrink-0">
+                              {formatDate(tx.created_at)}
+                            </span>
+                          </div>
+                          {tx.title && tx.title !== tx.kind_label ? (
+                            <p className="text-xs text-slate-600 truncate font-normal" title={tx.title}>
+                              {tx.title}
+                            </p>
+                          ) : tx.note ? (
+                            <p className="text-xs text-slate-500 truncate font-normal" title={tx.note}>
+                              {tx.note}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <span
+                            className={`text-xs sm:text-sm font-extrabold whitespace-nowrap ${
+                              isGrant
+                                ? "text-emerald-700"
+                                : isRelease
+                                ? "text-teal-700"
+                                : "text-slate-800"
+                            }`}
+                          >
+                            {isGrant
+                              ? `+${formatRubles(tx.amount_kopeks)}`
+                              : isRelease
+                              ? `+${formatRubles(tx.amount_kopeks)} (возврат)`
+                              : tx.amount_kopeks > 0
+                              ? `-${formatRubles(tx.amount_kopeks)}`
+                              : "0 ₽"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0">
+              <span className="text-[11px] text-slate-400 font-medium">
+                {historyTransactions.length > 0
+                  ? `Показано операций: ${historyTransactions.length}`
+                  : ""}
+              </span>
+              <button
+                type="button"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                onClick={() => setShowHistoryModal(false)}
+              >
+                Закрыть
+              </button>
+            </div>
           </section>
         </div>
       ) : null}

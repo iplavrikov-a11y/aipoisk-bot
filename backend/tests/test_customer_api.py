@@ -43,6 +43,7 @@ from app.main import (
     download_customer_job_api,
     download_customer_job_file_api,
     download_customer_quote_request_docx_api,
+    customer_billing_transactions_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, ClientTariffOverride, Job, JobFile, LegalAcceptance, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser, now_utc
@@ -1769,7 +1770,99 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    def test_customer_billing_transactions_api(self) -> None:
+        db = self.Session()
+        try:
+            client1 = Client(id="client-tx-1", telegram_id="web:tx1", money_balance_kopeks=50000)
+            user1 = WebUser(id="user-tx-1", client_id=client1.id, email="tx1@example.com", is_active=True, is_email_verified=True)
+
+            client2 = Client(id="client-tx-2", telegram_id="web:tx2", money_balance_kopeks=10000)
+            user2 = WebUser(id="user-tx-2", client_id=client2.id, email="tx2@example.com", is_active=True, is_email_verified=True)
+
+            job1 = Job(id="job-tx-1", client_id=client1.id, mode="exact_product", title="Поставка перчаток медицинских", status="completed")
+            job2 = Job(id="job-tx-2", client_id=client1.id, mode="supplier_search", title="Кабель силовой ВВГ", status="completed")
+
+            tx_grant = BillingTransaction(
+                id="tx-grant-1",
+                client_id=client1.id,
+                kind="money",
+                operation=OP_GRANT,
+                amount_kopeks=500000,
+                note="Пополнение баланса",
+            )
+            tx_charge1 = BillingTransaction(
+                id="tx-charge-1",
+                client_id=client1.id,
+                job_id=job1.id,
+                kind="exact_product",
+                operation=OP_CHARGE,
+                amount_kopeks=9900,
+                units=1,
+            )
+            tx_charge2 = BillingTransaction(
+                id="tx-charge-2",
+                client_id=client1.id,
+                job_id=job2.id,
+                kind="supplier_search",
+                operation=OP_CHARGE,
+                amount_kopeks=14900,
+                units=1,
+            )
+            tx_release = BillingTransaction(
+                id="tx-release-1",
+                client_id=client1.id,
+                kind="exact_product",
+                operation=OP_RELEASE,
+                amount_kopeks=9900,
+                note="Возврат резерва",
+            )
+            tx_reserve = BillingTransaction(
+                id="tx-reserve-1",
+                client_id=client1.id,
+                kind="supplier_search",
+                operation=OP_RESERVE,
+                amount_kopeks=14900,
+            )
+            tx_other_client = BillingTransaction(
+                id="tx-other-1",
+                client_id=client2.id,
+                kind="money",
+                operation=OP_GRANT,
+                amount_kopeks=100000,
+            )
+
+            db.add_all([client1, user1, client2, user2, job1, job2, tx_grant, tx_charge1, tx_charge2, tx_release, tx_reserve, tx_other_client])
+            db.commit()
+
+            context = WebAuthContext(user=user1, session=None)
+            response = Response()
+
+            # Call API
+            res = customer_billing_transactions_api(response=response, limit=50, offset=0, context=context, db=db)
+
+            # Assertions
+            self.assertEqual(res["total"], 4)
+            self.assertEqual(len(res["items"]), 4)
+
+            # Check that reserve and other client are NOT included
+            tx_ids = [item["id"] for item in res["items"]]
+            self.assertNotIn("tx-reserve-1", tx_ids)
+            self.assertNotIn("tx-other-1", tx_ids)
+            self.assertIn("tx-grant-1", tx_ids)
+            self.assertIn("tx-charge-1", tx_ids)
+
+            # Check item details
+            charge_item = next(item for item in res["items"] if item["id"] == "tx-charge-1")
+            self.assertEqual(charge_item["operation"], "charge")
+            self.assertEqual(charge_item["operation_label"], "Списание")
+            self.assertEqual(charge_item["amount_rub"], 99.0)
+            self.assertEqual(charge_item["amount_kopeks"], 9900)
+            self.assertIn("перчаток", charge_item["title"])
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

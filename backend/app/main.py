@@ -36,6 +36,11 @@ from .result_offers import (
 from .billing import (
     BillingError,
     KIND_MONEY,
+    OP_CHARGE,
+    OP_GRANT,
+    OP_MANUAL_DEBIT,
+    OP_RELEASE,
+    OP_RESERVE,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
     STATUS_CONFIRMATION_EXPIRED,
@@ -53,6 +58,7 @@ from .billing import (
     grant_money_balance,
     grant_package_units,
     invalidate_tariff_packages_cache,
+    operation_label,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -915,6 +921,48 @@ def customer_jobs_api(
     if include_pagination:
         return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
     return items
+
+
+@app.get("/api/customer/billing/transactions")
+def customer_billing_transactions_api(
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    kind: str = "",
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    _mark_no_store(response)
+    safe_limit = max(1, min(100, int(limit or 50)))
+    safe_offset = max(0, int(offset or 0))
+    client = context.user.client
+    if not client:
+        return {"items": [], "total": 0, "limit": safe_limit, "offset": safe_offset}
+
+    query = (
+        db.query(BillingTransaction)
+        .options(selectinload(BillingTransaction.job))
+        .filter(BillingTransaction.client_id == client.id)
+        .filter(BillingTransaction.operation.in_([OP_CHARGE, OP_GRANT, OP_RELEASE, OP_MANUAL_DEBIT]))
+    )
+    clean_kind = str(kind or "").strip()
+    if clean_kind:
+        query = query.filter(BillingTransaction.kind == clean_kind)
+
+    total = query.count()
+    rows = (
+        query
+        .order_by(BillingTransaction.created_at.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
+        .all()
+    )
+    return {
+        "items": [customer_billing_transaction_to_dict(row) for row in rows],
+        "total": total,
+        "limit": safe_limit,
+        "offset": safe_offset,
+    }
 
 
 @app.post("/api/customer/jobs")
@@ -3019,6 +3067,48 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }
+
+
+def customer_billing_transaction_to_dict(transaction: BillingTransaction) -> dict:
+    op = str(transaction.operation or "")
+    amount_kopeks = int(transaction.amount_kopeks or 0)
+    amount_rub = round(amount_kopeks / 100, 2)
+
+    job = transaction.job
+    if job:
+        title = human_job_title(job)
+        kind_label = mode_label(str(job.mode or "")) if getattr(job, "mode", None) else billing_kind_label(str(transaction.kind or ""))
+    else:
+        title = str(transaction.note or "").strip() or ("Пополнение баланса" if op == OP_GRANT else billing_kind_label(str(transaction.kind or "")))
+        kind_label = billing_kind_label(str(transaction.kind or ""))
+
+    if op == OP_CHARGE:
+        op_label = "Списание"
+    elif op == OP_GRANT:
+        op_label = "Пополнение"
+    elif op == OP_RELEASE:
+        op_label = "Возврат"
+    elif op == OP_MANUAL_DEBIT:
+        op_label = "Корректировка"
+    elif op == OP_RESERVE:
+        op_label = "Резерв"
+    else:
+        op_label = operation_label(op)
+
+    return {
+        "id": transaction.id,
+        "job_id": transaction.job_id,
+        "operation": op,
+        "operation_label": op_label,
+        "kind": str(transaction.kind or ""),
+        "kind_label": kind_label,
+        "title": title,
+        "note": str(transaction.note or ""),
+        "units": int(transaction.units or 0),
+        "amount_kopeks": amount_kopeks,
+        "amount_rub": amount_rub,
+        "created_at": transaction.created_at.isoformat() if transaction.created_at else None,
     }
 
 
