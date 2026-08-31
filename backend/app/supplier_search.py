@@ -577,13 +577,16 @@ async def filter_minprom_registry_entries_for_profile(
     ]
     prompt = f"""Ты эксперт по закупкам. Оцени кандидатов из официального реестра Минпромторга/ГИСП на соответствие предмету закупки.
 
-ГЛАВНОЕ ПРАВИЛО КАТЕГОРИЙНОГО СООТВЕТСТВИЯ:
-1. Выдели базовую сущность/вид продукции из закупки (например: насосы, кабель, трубы, задвижки, канаты, спецодежда, лабораторное оборудование, метизы, стройматериалы).
-2. ПРИНИМАЙ запись завода из ГИСП, если он является ПРОИЗВОДИТЕЛЕМ этой же базовой категории продукции.
-3. Различия в конкретных модификациях, ГОСТах, ТУ, марках, размерах, цветах, классах мощности или исполнения НЕ являются поводом для отсева (завод той же отрасли производит весь спектр модификаций своего типа продукции).
+ГЛАВНОЕ ПРАВИЛО СООТВЕТСТВИЯ:
+1. Выдели конкретную продукцию/оборудование из предмета закупки (например: станция просеивания металлических порошков для 3D-печати/аддитивных технологий, кабель ВВГнг, насос центробежный).
+2. ПРИНИМАЙ запись завода из ГИСП ТОЛЬКО ЕСЛИ наименование продукции в реестре является именно этим оборудованием или прямым технологическим аналогом.
+3. СТРОГО ОТКЛОНЯЙ:
+   - Совершенно другое оборудование (например, шкафы сухого хранения, буровые вибросита нефтегазовой очистки, ультразвуковые ванны, когда закупается станция просеивания металлопорошков).
+   - Вспомогательные/сопутствующие товары, не являющиеся целевым оборудованием.
+   - Записи, где завод производит продукцию другого назначения.
 
 Ответ строго JSON:
-{{"accepted_indexes":[{{"index":0,"reason":"производитель соответствующей категории продукции ГИСП"}}]}}
+{{"accepted_indexes":[{{"index":0,"reason":"производитель требуемого оборудования в ГИСП"}}]}}
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
@@ -1754,25 +1757,28 @@ async def _discover_suppliers_impl(
         }
         await _emit_progress(progress_callback, 50, f"Использую {len(preloaded_objs)} сохраненных сайтов из пула (0 ₽ за поиск)...")
     else:
-        try:
-            general_queries = await build_supplier_queries(
-                settings,
-                context,
-                minimum_target,
-                profile=profile,
-                is_extend=is_extend,
-                wave_index=wave_index,
-                executed_queries=executed_queries,
-                additional_prompt=additional_prompt,
-            )
-        except TypeError:
-            general_queries = await build_supplier_queries(
-                settings,
-                context,
-                minimum_target,
-                profile=profile,
-            )
-        minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context)
+        if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+            general_queries = []
+        else:
+            try:
+                general_queries = await build_supplier_queries(
+                    settings,
+                    context,
+                    minimum_target,
+                    profile=profile,
+                    is_extend=is_extend,
+                    wave_index=wave_index,
+                    executed_queries=executed_queries,
+                    additional_prompt=additional_prompt,
+                )
+            except TypeError:
+                general_queries = await build_supplier_queries(
+                    settings,
+                    context,
+                    minimum_target,
+                    profile=profile,
+                )
+        minprom_supplier_queries = _build_minprom_supplier_queries(profile, minprom_context, policy=policy)
         if registry_unavailable:
             queries = []
         elif policy == SUPPLIER_POLICY_MINPROM_ONLY:
@@ -1784,19 +1790,20 @@ async def _discover_suppliers_impl(
             50,
             f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {minimum_target}, целевой результат {delivery_target}",
         )
+        is_registry_only = policy == SUPPLIER_POLICY_MINPROM_ONLY
         discovered, search_meta = await discover_candidates(
             settings,
             queries,
-            max_results=max(delivery_target * 10, 120),
+            max_results=min(max(len(queries) * 2, 10), 30) if is_registry_only else max(delivery_target * 10, 120),
             excluded_domains=excluded_domains,
-            primary_candidate_floor=_primary_candidate_floor(delivery_target),
-            fallback_candidate_limit=_fallback_candidate_limit(delivery_target),
+            primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(delivery_target),
+            fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(delivery_target),
         )
         preloaded_domains = {p.domain for p in preloaded_objs}
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: 20 if is_registry_only else max(delivery_target * 5, 60)]
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
     candidates = rerank.candidates
@@ -1809,12 +1816,13 @@ async def _discover_suppliers_impl(
         delivery_target,
         profile=profile,
         registry_context=minprom_context,
+        policy=policy,
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
         progress_callback=progress_callback,
     )
     recovery_rounds: list[dict] = []
-    max_recovery_rounds = 1
+    max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else 1
     for recovery_attempt in range(max_recovery_rounds):
         # The client minimum is the completion guarantee. Extra verified rows come
         # from the first reviewed pool; do not spend another recovery pass solely
@@ -1871,6 +1879,7 @@ async def _discover_suppliers_impl(
                     max(1, minimum_target - len(accepted)),
                     profile=profile,
                     registry_context=minprom_context,
+                    policy=policy,
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
                     progress_callback=progress_callback,
@@ -1880,6 +1889,7 @@ async def _discover_suppliers_impl(
                     reviewed,
                     minimum_target,
                     profile=profile,
+                    policy=policy,
                     limit_to_target=False,
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
@@ -2229,7 +2239,11 @@ def _inject_unmatched_registry_stubs(
 def _filter_minprom_verified_suppliers(accepted: list[dict], registry_context: MinpromRegistryContext) -> list[dict]:
     if registry_context.status != "ok" or not registry_context.entries:
         return []
-    return [item for item in accepted if _supplier_minprom_registry_match(item, registry_context).get("matched")]
+    return [
+        item for item in accepted
+        if _supplier_minprom_registry_match(item, registry_context).get("matched")
+        and str(item.get("product_fit") or "").strip().lower() in {"exact", "analog"}
+    ]
 
 
 def _supplier_has_minprom_registry_evidence(item: dict, registry_context: MinpromRegistryContext) -> bool:
@@ -2277,6 +2291,9 @@ def _supplier_minprom_registry_match(item: dict, registry_context: MinpromRegist
         "evidence": "",
     }
     if registry_context.status != "ok" or not registry_context.entries:
+        return empty
+    product_fit = str(item.get("product_fit") or "").strip().lower()
+    if product_fit in {"category", "profile", "unrelated", "unmatched"}:
         return empty
     haystack = " ".join(
         str(item.get(key) or "")
@@ -2657,6 +2674,7 @@ def _build_minprom_supplier_queries(
     profile: ProcurementProfile,
     registry_context: MinpromRegistryContext,
     *,
+    policy: str = "",
     limit: int = 60,
 ) -> list[str]:
     if not registry_context.requirement.required:
@@ -2678,11 +2696,21 @@ def _build_minprom_supplier_queries(
             queries.extend(
                 [
                     f'"{clean_m}" официальный сайт',
-                    f'"{clean_m}" производитель',
+                    f'"{clean_m}" контакты',
                 ]
             )
             if product:
                 queries.append(f'"{clean_m}" {product[:35]}')
+        if registry_number:
+            queries.append(f'"{registry_number}" Минпромторг')
+
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        # In strict registry-only mode, search ONLY the specific confirmed registry manufacturers.
+        # Do not add generic market search queries.
+        return _clean_supplier_queries(queries)[:limit]
+
+    for entry in registry_context.entries[:20]:
+        product = _clean_minprom_query_term(entry.get("product"))
         if product:
             queries.extend(
                 [
@@ -2691,8 +2719,6 @@ def _build_minprom_supplier_queries(
                     f'"{product}" производитель',
                 ]
             )
-        if registry_number:
-            queries.append(f'"{registry_number}" Минпромторг')
 
     code_queries_inserted = False
     for term in _minprom_profile_query_terms(profile)[:8]:
@@ -3383,6 +3409,7 @@ async def _review_candidates_until_target(
     *,
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
+    policy: str = "",
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -3409,6 +3436,7 @@ async def _review_candidates_until_target(
             reviewed,
             target,
             profile=profile,
+            policy=policy,
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
@@ -3445,6 +3473,7 @@ async def _review_candidates_until_target(
             reviewed,
             target,
             profile=profile,
+            policy=policy,
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
@@ -3468,6 +3497,7 @@ async def _review_candidates_until_target(
         reviewed,
         target,
         profile=profile,
+        policy=policy,
         limit_to_target=False,
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
@@ -3489,6 +3519,7 @@ def _accepted_supplier_results(
     target: int,
     *,
     profile: ProcurementProfile | None = None,
+    policy: str = "",
     limit_to_target: bool = True,
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
@@ -3497,6 +3528,8 @@ def _accepted_supplier_results(
     seen_domains: set[str] = set(excluded_domains or set())
     seen_companies: set[str] = set(excluded_company_keys or set())
     verified = [item for item in reviewed if item.get("evidence_status") == "verified"]
+    if policy == SUPPLIER_POLICY_MINPROM_ONLY:
+        verified = [item for item in verified if str(item.get("product_fit") or "").strip().lower() in {"exact", "analog"}]
     sorted_verified = sorted(verified, key=_supplier_result_sort_key)
 
     def add_result(result: dict) -> bool:
