@@ -61,6 +61,17 @@ TOOLS_DEFINITIONS = [
                     "description": "Сформировать готовый текст официального запроса КП для рассылки поставщикам",
                     "default": True,
                 },
+                "search_policy": {
+                    "type": "string",
+                    "description": (
+                        "Режим поиска поставщиков: "
+                        "'normal' — обычный открытый поиск по рынку РФ (заводы, дилеры, дистрибьюторы); "
+                        "'minprom_registry_priority' — приоритет Реестра Минпромторга РФ (ГИСП) с добором с рынка; "
+                        "'minprom_registry_only' — СТРОГО только подтвержденные производители из Реестра Минпромторга (для нацрежима ПП 616 / 719)"
+                    ),
+                    "enum": ["normal", "minprom_registry_priority", "minprom_registry_only"],
+                    "default": "normal",
+                },
             },
             "required": ["specification"],
         },
@@ -174,6 +185,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
                     "target_count": int(arguments.get("target_count") or 5),
                     "city": str(arguments.get("city") or ""),
                     "include_quote_request": bool(arguments.get("include_quote_request", True)),
+                    "search_policy": str(arguments.get("search_policy") or "normal"),
                 },
             )
             suppliers = res.get("suppliers", [])

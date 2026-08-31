@@ -228,6 +228,10 @@ class McpSupplierSearchRequest(BaseModel):
     target_count: int = Field(default=5, ge=1, le=50, description="Желаемое количество поставщиков для поиска")
     city: str = Field(default="", max_length=120, description="Город или регион поставки (опционально)")
     include_quote_request: bool = Field(default=True, description="Сформировать готовый шаблон запроса КП")
+    search_policy: str = Field(
+        default="normal",
+        description="Режим поиска: 'normal' (обычный рынок РФ), 'minprom_registry_priority' (приоритет реестра Минпромторга / ГИСП), 'minprom_registry_only' (только производители из реестра Минпромторга РФ)"
+    )
 
 
 class McpSupplierItem(BaseModel):
@@ -365,6 +369,9 @@ async def mcp_supplier_search(
         spec_text = f"Регион поставки: {req.city.strip()}\n\n{spec_text}"
 
     clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
+    policy = req.search_policy.strip() if req.search_policy else "normal"
+    if policy not in {"normal", "minprom_registry_priority", "minprom_registry_only"}:
+        policy = "normal"
 
     try:
         with supplier_search_job_context(f"mcp_{api_key.id[:8]}"):
@@ -372,6 +379,7 @@ async def mcp_supplier_search(
                 settings=settings,
                 context=clean_context,
                 target=req.target_count,
+                supplier_search_policy=policy,
             )
     except Exception as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
@@ -639,6 +647,7 @@ class AdminUpdateApiKeyRequest(BaseModel):
 class AdminTestApiKeyRequest(BaseModel):
     tool: str = Field(..., description="supplier_search | exact_product | procurement_report")
     query: str = Field(..., min_length=3, max_length=50000)
+    search_policy: str = Field(default="normal", description="normal | minprom_registry_priority | minprom_registry_only")
 
 
 def _serialize_api_key_item(k: ApiKey, client_name: Optional[str] = None) -> AdminApiKeyItem:
@@ -869,16 +878,21 @@ async def test_api_tool(
 
     if req.tool == "supplier_search":
         clean_ctx = (await extract_supplier_search_context(settings, req.query)) or req.query[:10000]
+        policy = req.search_policy.strip() if req.search_policy else "normal"
+        if policy not in {"normal", "minprom_registry_priority", "minprom_registry_only"}:
+            policy = "normal"
         with supplier_search_job_context("admin_live_test"):
             accepted_rows, evidence = await discover_suppliers(
                 settings=settings,
                 context=clean_ctx,
                 target=3,
+                supplier_search_policy=policy,
             )
         duration = round(time.time() - start_time, 2)
         return {
             "ok": True,
             "tool": "supplier_search",
+            "search_policy": policy,
             "duration_seconds": duration,
             "total_found": len(accepted_rows),
             "suppliers": accepted_rows[:5],

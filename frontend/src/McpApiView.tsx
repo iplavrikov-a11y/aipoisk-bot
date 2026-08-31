@@ -82,6 +82,7 @@ export function McpApiView({ clients }: { clients: Client[] }) {
 
   // Live tester state
   const [testerTool, setTesterTool] = useState<'supplier_search' | 'exact_product' | 'procurement_report'>('supplier_search')
+  const [testerPolicy, setTesterPolicy] = useState<'normal' | 'minprom_registry_priority' | 'minprom_registry_only'>('normal')
   const [testerQuery, setTesterQuery] = useState('')
   const [testingRunning, setTestingRunning] = useState(false)
   const [testerResult, setTesterResult] = useState<any>(null)
@@ -254,7 +255,11 @@ export function McpApiView({ clients }: { clients: Client[] }) {
     try {
       const res = await fetchApi<any>('/api/admin/api-keys/test', {
         method: 'POST',
-        body: JSON.stringify({ tool: testerTool, query: testerQuery.trim() }),
+        body: JSON.stringify({
+          tool: testerTool,
+          query: testerQuery.trim(),
+          search_policy: testerTool === 'supplier_search' ? testerPolicy : 'normal',
+        }),
       })
       setTesterResult(res)
     } catch (err: any) {
@@ -306,8 +311,13 @@ Headers: Authorization: Bearer ${effectiveMasterToken}
 
 Эндпоинты:
 - POST /api/v1/mcp/suppliers/search (Поиск поставщиков)
-- POST /api/v1/mcp/products/exact-analogs (Подбор товара и аналогов)
-- POST /api/v1/mcp/procurements/analyze (Анализ документации)
+  Параметры:
+  - specification: текст ТЗ или номенклатура
+  - target_count: количество (от 1 до 50)
+  - city: город/регион поставки (опционально)
+  - search_policy: 'normal' (рынок РФ) | 'minprom_registry_priority' (приоритет реестра Минпромторга / ГИСП) | 'minprom_registry_only' (строго только реестр Минпромторга РФ)
+- POST /api/v1/mcp/products/exact-analogs (Подбор товара и эквивалентных аналогов по Форме 2)
+- POST /api/v1/mcp/procurements/analyze (Экспресс-аудит проекта контракта и рисков 44-ФЗ/223-ФЗ)
 - GET /api/v1/mcp/balance (Остатки квот)`
 
   const pythonSnippet = `import requests
@@ -316,10 +326,11 @@ API_KEY = "${effectiveMasterToken}"
 API_URL = "https://tenderlex.ru/api/v1/mcp"
 headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-# Поиск поставщиков по ТЗ
+# Поиск поставщиков (режимы: 'normal', 'minprom_registry_priority', 'minprom_registry_only')
 resp = requests.post(f"{API_URL}/suppliers/search", headers=headers, json={
     "specification": "Насос центробежный К 80-50-200",
-    "target_count": 5
+    "target_count": 5,
+    "search_policy": "minprom_registry_priority"  # или 'minprom_registry_only' / 'normal'
 })
 print(resp.json())`
 
@@ -635,6 +646,21 @@ print(resp.json())`
                 <option value="procurement_report">📑 Анализ документации и контракта (procurement_report)</option>
               </select>
             </div>
+
+            {testerTool === 'supplier_search' && (
+              <div className="mcp-field-wrap">
+                <span className="mcp-label">Режим поиска поставщиков:</span>
+                <select
+                  value={testerPolicy}
+                  onChange={e => setTesterPolicy(e.target.value as any)}
+                  className="mcp-select"
+                >
+                  <option value="normal">🌐 Обычный поиск по рынку РФ (заводы, дилеры, оптовики)</option>
+                  <option value="minprom_registry_priority">⭐ Приоритет Реестра Минпромторга (ГИСП) + добор</option>
+                  <option value="minprom_registry_only">🏛️ Строго только Реестр Минпромторга РФ (нацрежим)</option>
+                </select>
+              </div>
+            )}
 
             <div className="mcp-field-wrap">
               <span className="mcp-label">Текст ТЗ / спецификации:</span>
