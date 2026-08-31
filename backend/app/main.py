@@ -3077,11 +3077,25 @@ def customer_billing_transaction_to_dict(transaction: BillingTransaction) -> dic
 
     job = transaction.job
     if job:
-        title = human_job_title(job)
         kind_label = mode_label(str(job.mode or "")) if getattr(job, "mode", None) else billing_kind_label(str(transaction.kind or ""))
+        subject = _customer_job_subject_from_evidence(job) or _clean_customer_job_subject(str(job.title or ""))
+        if subject and subject.lower() not in {
+            "подбор товара и аналогов",
+            "поиск поставщиков",
+            "анализ документации",
+            "анализ + поиск",
+            "точный товар и аналоги",
+        }:
+            title = f"ТЗ: {subject}" if not subject.startswith("ТЗ:") else subject
+        else:
+            title = ""
     else:
-        title = str(transaction.note or "").strip() or ("Пополнение баланса" if op == OP_GRANT else billing_kind_label(str(transaction.kind or "")))
         kind_label = billing_kind_label(str(transaction.kind or ""))
+        raw_note = str(transaction.note or "").strip()
+        if raw_note.lower() in {"пополнение баланса", "резерв перед запуском задачи", "результат отправлен клиенту"}:
+            title = ""
+        else:
+            title = raw_note
 
     if op == OP_CHARGE:
         op_label = "Списание"
