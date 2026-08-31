@@ -455,8 +455,8 @@ class ReportBuilderTests(unittest.TestCase):
                 "Реестр Минпромторга",
             ],
         )
-        self.assertIn("Реестр ГИСП Минпромторга: запись № РПП-123", comment)
-        self.assertIn('АО "Завод"', comment)
+        self.assertNotIn("Реестр ГИСП Минпромторга", comment)
+        self.assertEqual(comment, "Точное соответствие: Насос центробежный.")
         self.assertIn("РПП-123", registry_cell)
 
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:

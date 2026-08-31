@@ -478,19 +478,8 @@ def _supplier_registry_note(row: dict) -> str:
         return ""
     match = row.get("minprom_registry_match") if isinstance(row.get("minprom_registry_match"), dict) else {}
     if match.get("matched"):
-        registry_number = _clean_comment_text(match.get("registry_number") or "")
-        manufacturer = _clean_comment_text(match.get("manufacturer") or "")
-        if not registry_number and match.get("evidence"):
-            ev_m = re.search(r"(?:заключение|срок действия/заключение|реестровый номер|первичный)[:\s]*([A-Z0-9/-]+)", str(match.get("evidence") or ""), re.I)
-            if ev_m:
-                registry_number = ev_m.group(1).strip()
-        if registry_number and manufacturer:
-            return f"Реестр ГИСП Минпромторга: запись № {registry_number}, производитель {manufacturer}."
-        if registry_number:
-            return f"Реестр ГИСП Минпромторга: запись № {registry_number}."
-        if manufacturer:
-            return f"Реестр ГИСП Минпромторга: подтверждён производитель {manufacturer}."
-        return "Реестр: запись подтверждена."
+        # Registry number is already displayed in the dedicated 'Реестр Минпромторга' column
+        return ""
     status = str(row.get("minprom_registry_status") or "").strip().lower()
     origin = str(row.get("supplier_search_origin") or "").strip()
     if status == "empty":
