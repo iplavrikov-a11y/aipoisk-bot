@@ -196,3 +196,26 @@ def test_admin_api_keys_management():
     del_resp = client.delete(f"/api/admin/api-keys/{key_id}", headers=admin_headers)
     assert del_resp.status_code == 200
     assert del_resp.json()["ok"] is True
+
+
+def test_admin_api_test_endpoint():
+    from unittest.mock import AsyncMock, patch
+    from app.security import _admin_token
+    client = TestClient(app)
+    admin_token = _admin_token()
+    admin_headers = {"X-Admin-Token": admin_token}
+
+    with patch("app.mcp_api.extract_supplier_search_context", new=AsyncMock(return_value="СМЛ панели")), \
+         patch("app.mcp_api.discover_suppliers", new=AsyncMock(return_value=([{"company_name": "ООО СМЛ Тест", "inn": "7701234567"}], {}))):
+        resp = client.post(
+            "/api/admin/api-keys/test",
+            json={"tool": "supplier_search", "query": "смл панели, стекломагниевые панели"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["tool"] == "supplier_search"
+        assert data["total_found"] == 1
+        assert data["suppliers"][0]["company_name"] == "ООО СМЛ Тест"
+

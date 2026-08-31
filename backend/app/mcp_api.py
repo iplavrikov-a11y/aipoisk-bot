@@ -364,7 +364,7 @@ async def mcp_supplier_search(
     if req.city:
         spec_text = f"Регион поставки: {req.city.strip()}\n\n{spec_text}"
 
-    clean_context = extract_supplier_search_context(spec_text) or spec_text[:20000]
+    clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
 
     try:
         with supplier_search_job_context(f"mcp_{api_key.id[:8]}"):
@@ -856,12 +856,13 @@ async def test_api_tool(
     start_time = time.time()
 
     if req.tool == "supplier_search":
-        clean_ctx = extract_supplier_search_context(req.query) or req.query[:10000]
-        accepted_rows, evidence = await discover_suppliers(
-            settings=settings,
-            context_text=clean_ctx,
-            target_count=3,
-        )
+        clean_ctx = (await extract_supplier_search_context(settings, req.query)) or req.query[:10000]
+        with supplier_search_job_context("admin_live_test"):
+            accepted_rows, evidence = await discover_suppliers(
+                settings=settings,
+                context_text=clean_ctx,
+                target_count=3,
+            )
         duration = round(time.time() - start_time, 2)
         return {
             "ok": True,
