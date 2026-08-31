@@ -372,6 +372,60 @@ def normalize_url(value: str) -> str:
     return value
 
 
+def build_universal_negative_keywords(clean_context: str) -> list[str]:
+    """
+    Системно строит список отрицательных ключевых слов для любого типа товара:
+    1. Общезакупочные исключения (ст. 33 44-ФЗ — запрет на б/у, восстановленный товар, уценку).
+    2. Бинарные отраслевые антитезы (автоматический/ручной, электрический/дизельный, стационарный/мобильный).
+    """
+    universal_disallowed = [
+        "б/у", "б.у.", "бывший в употреблении", "бывшие в употреблении",
+        "восстановленный", "восстановленные", "с хранения", "неликвид",
+        "неликвиды", "аренда", "с пробегом", "демонтаж", "после ремонта", "уценка",
+    ]
+    negatives = list(universal_disallowed)
+
+    ctx_lower = str(clean_context or "").lower()
+    antitheses = [
+        ("автоматическ", ["полуавтоматический", "полуавтомат", "ручной"]),
+        ("электрическ", ["дизельный", "бензиновый", "газовый"]),
+        ("стационарн", ["передвижной", "мобильный", "портативный", "переносной"]),
+        ("бесшовн", ["электросварной", "прямошовный", "шовный"]),
+        ("оцинкованн", ["черный", "неоцинкованный"]),
+        ("стерильн", ["нестерильный"]),
+        ("первичн", ["вторичный", "переработанный", "вторсырье"]),
+        ("оригинальн", ["реплика", "копия"]),
+    ]
+    for required_stem, prohibited_terms in antitheses:
+        if required_stem in ctx_lower and not any(p[:5] in ctx_lower for p in prohibited_terms):
+            negatives.extend(prohibited_terms)
+
+    return list(dict.fromkeys(negatives))
+
+
+def _is_grounded_in_text(fact: str, source_text: str) -> bool:
+    """
+    Проверяет, что ключевые числовые и маркировочные факты действительно присутствуют
+    в тексте первоисточника (защита от галлюцинаций).
+    """
+    if not fact or not source_text:
+        return True
+    norm_fact = re.sub(r"(\d)\s+(\d)", r"\1\2", fact)
+    norm_source = re.sub(r"(\d)\s+(\d)", r"\1\2", source_text).lower()
+    tokens = re.findall(r"\b\d+(?:[\.,]\d+)?\b|[A-Za-zА-Яа-я]+[-_]?\d+[A-Za-zА-Яа-я\d]*|\bIP\d{2}\b|\bУХЛ\d(?:\.\d)?\b", norm_fact)
+    if not tokens:
+        words = [w for w in re.findall(r"[\w]{4,}", norm_fact.lower()) if w not in ("соответствует", "согласно", "паспорту", "значение", "требованию", "фактическое", "данным", "поставщик", "продукция", "каталог")]
+        if words:
+            return any(w in norm_source for w in words)
+        return True
+    for tok in tokens:
+        c1 = tok.lower().replace(",", ".")
+        c2 = c1.replace(".", ",")
+        if c1 in norm_source or c2 in norm_source:
+            return True
+    return False
+
+
 async def assess_minprom_registry_requirement(settings: SystemSettings, context: str) -> MinpromRegistryRequirement:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for Minprom registry requirement analysis")
@@ -1483,6 +1537,8 @@ async def build_supplier_queries(
 {context[:6000]}"""
     else:
         system_prompt = "Ты закупочный исследователь. Формируешь только поисковые запросы."
+        universal_negatives = build_universal_negative_keywords(context)
+        neg_line = f"\n- СТРОГО исключай слова: {', '.join(universal_negatives[:8])}" if universal_negatives else ""
         prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
 
 Нужно искать не только точную строку из ТЗ, а компании, которые производят или поставляют нужную товарную группу/номенклатуру и могут дать КП по характеристикам ТЗ.
@@ -1491,7 +1547,7 @@ async def build_supplier_queries(
 - 40-60% запросов широкие по товарной группе/номенклатуре без точного размера, ГОСТ, марки или артикула;
 - 20-40% запросов с точными характеристиками из ТЗ;
 - отдельные запросы по "производитель", "завод", "поставщик", "дилер", "дистрибьютор", "оптом", "каталог";
-- если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.
+- если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.{neg_line}
 Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
 Если позиций несколько, запросы должны покрывать каждую позицию.
 Ответ строго JSON:
@@ -3607,10 +3663,10 @@ async def discover_candidates(
 def _provider_order(settings: SystemSettings) -> list[str]:
     configured = str(getattr(settings, "supplier_search_provider_order", "") or os.getenv("AIPOISK_SUPPLIER_SEARCH_PROVIDER_ORDER", ""))
     raw_items = [item.strip().lower() for item in configured.split(",") if item.strip()]
-    supported = {"yandex", "google", "tavily", "ddgs"}
+    supported = {"yandex", "google"}
     order = [item for item in raw_items if item in supported]
     if not order:
-        order = ["google", "tavily", "ddgs"]
+        order = ["yandex"]
     fallbacks = [item for item in order if item != PRIMARY_SUPPLIER_SEARCH_PROVIDER]
     return [PRIMARY_SUPPLIER_SEARCH_PROVIDER, *dict.fromkeys(fallbacks)]
 
@@ -4428,8 +4484,45 @@ async def collect_pages(url: str) -> list[dict]:
 async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
     try:
         response = await client.get(url)
-        ctype = response.headers.get("content-type", "")
-        if response.status_code >= 400 or "text/html" not in ctype:
+        if response.status_code >= 400:
+            return None
+        ctype = (response.headers.get("content-type") or "").lower()
+        url_lower = str(response.url).lower()
+        is_pdf = "application/pdf" in ctype or url_lower.endswith(".pdf") or response.content.startswith(b"%PDF-")
+        if is_pdf:
+            pdf_bytes = response.content
+            if len(pdf_bytes) > 20 * 1024 * 1024:
+                pdf_bytes = pdf_bytes[:20 * 1024 * 1024]
+            try:
+                import fitz
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                pages_text = []
+                for pno, page in enumerate(doc):
+                    page_parts = []
+                    try:
+                        tables = page.find_tables()
+                        for t_idx, tab in enumerate(tables):
+                            tab_md = tab.to_markdown()
+                            if tab_md and tab.row_count >= 2:
+                                page_parts.append(f"\n[ТАБЛИЦА НОМЕНКЛАТУРЫ (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n")
+                    except Exception:
+                        pass
+                    p_text = page.get_text("text").strip()
+                    if p_text:
+                        page_parts.append(p_text)
+                    if page_parts:
+                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n" + "\n".join(page_parts))
+                    if len("\n".join(pages_text)) > 30000:
+                        break
+                doc.close()
+                pdf_text = "\n".join(pages_text)
+                if len(pdf_text.strip()) > 50:
+                    return {"url": str(response.url), "html": "", "text": pdf_text[:80000]}
+            except Exception:
+                pass
+            return None
+
+        if "text/html" not in ctype and "text/plain" not in ctype:
             return None
         html_text = response.text[:300000]
     except Exception:
@@ -4439,19 +4532,47 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
 
 def html_text_to_page(html_text: str, url: str) -> dict | None:
     soup = BeautifulSoup(html_text, "html.parser")
-    for tag in soup(["script", "style", "noscript", "svg"]):
+    for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "aside", "form"]):
         tag.decompose()
-    text = unescape(soup.get_text("\n", strip=True))
+
+    text_blocks: list[str] = []
+
+    # 1. Извлечение структурированных таблиц характеристик и номенклатуры
+    tables = soup.find_all("table")
+    for t_idx, table in enumerate(tables[:8], start=1):
+        rows = []
+        for tr in table.find_all("tr"):
+            cells = [" ".join(c.get_text().split()) for c in tr.find_all(["th", "td"])]
+            if any(cells):
+                rows.append(" | ".join(cells))
+        if rows and len(rows) >= 2:
+            text_blocks.append(f"\n[ТАБЛИЦА ПРОДУКЦИИ/ХАРАКТЕРИСТИК #{t_idx}]:\n" + "\n".join(rows))
+
+    # 2. Извлечение списков параметров (dl / ul / div с характеристиками)
+    for dlist in soup.find_all(["dl", "ul", "div"], class_=re.compile(r"(?i)(spec|param|charact|feature|prop|tech|price|catalog)")):
+        d_text = " ".join(dlist.get_text(" ", strip=True).split())
+        if len(d_text) > 30 and len(d_text) < 4000:
+            text_blocks.append(f"[БЛОК ПАРАМЕТРОВ]: {d_text}")
+
+    # 3. Основной текст страницы
+    main_text = unescape(soup.get_text("\n", strip=True))
     href_contacts: list[str] = []
     for anchor in soup.find_all("a", href=True):
         href = str(anchor.get("href") or "").strip()
         if href.lower().startswith(("mailto:", "tel:")):
             href_contacts.append(href.replace("mailto:", "").replace("tel:", ""))
     if href_contacts:
-        text = f"{text}\n" + "\n".join(href_contacts)
-    if len(text.strip()) < 80:
+        main_text = f"{main_text}\n" + "\n".join(href_contacts)
+
+    if main_text:
+        text_blocks.append(main_text)
+
+    full_extracted = "\n\n".join(text_blocks)
+    clean_extracted = re.sub(r"\n{3,}", "\n\n", full_extracted).strip()
+
+    if len(clean_extracted) < 80:
         return None
-    return {"url": str(url), "html": html_text, "text": text[:80000]}
+    return {"url": str(url), "html": html_text, "text": clean_extracted[:80000]}
 
 
 def _browser_log_url(url: str) -> str:
@@ -4630,8 +4751,8 @@ def extract_internal_links(html_text: str, base_url_value: str) -> list[str]:
         score = 0
         if any(word in label for word in ["контакт", "contact", "отдел", "sales", "продаж", "связ", "requisite", "реквизит"]):
             score += 4
-        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog"]):
-            score += 3
+        if any(word in label for word in ["каталог", "product", "produk", "товар", "оборуд", "shop", "catalog", "номенклатур", "прайс", "price", "datasheet", "паспорт", ".pdf"]):
+            score += 4
         if any(word in label for word in ["о компании", "about", "производ", "завод", "company"]):
             score += 2
         if score:
@@ -5513,6 +5634,12 @@ def _candidate_score(candidate: Candidate, context: str) -> int:
         score += 2
     if any(word in text for word in ("контакт", "contact", "mail", "email")):
         score += 1
+    # Отрицательные ключевые слова и отраслевые антитезы
+    negatives = build_universal_negative_keywords(context)
+    for nkw in negatives:
+        clean_nkw = nkw.lower().strip()
+        if clean_nkw and len(clean_nkw) >= 3 and clean_nkw in text:
+            score -= 15
     return score
 
 

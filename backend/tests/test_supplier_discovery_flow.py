@@ -1274,26 +1274,26 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_discover_candidates_filters_previously_found_domains(self) -> None:
-        original_ddgs = supplier_search._search_with_ddgs
+        original_yandex = supplier_search._search_with_yandex
         captured: dict = {}
 
-        async def fake_ddgs(queries: list[str], max_results: int, *, existing_domains=None):
+        async def fake_yandex(settings, queries: list[str], max_results: int, *, existing_domains=None):
             captured["existing_domains"] = set(existing_domains or set())
             return [
-                Candidate(url="https://old.example/catalog", domain="old.example", title="old", source="ddgs", query=queries[0]),
-                Candidate(url="https://new.example/catalog", domain="new.example", title="new", source="ddgs", query=queries[0]),
-            ]
+                Candidate(url="https://old.example/catalog", domain="old.example", title="old", source="yandex", query=queries[0]),
+                Candidate(url="https://new.example/catalog", domain="new.example", title="new", source="yandex", query=queries[0]),
+            ], 1
 
-        supplier_search._search_with_ddgs = fake_ddgs
+        supplier_search._search_with_yandex = fake_yandex
         try:
             candidates, _meta = await supplier_search.discover_candidates(
-                SimpleNamespace(supplier_search_provider_order="ddgs"),
+                SimpleNamespace(supplier_search_provider_order="yandex"),
                 ["поставщик"],
                 max_results=10,
                 excluded_domains={"old.example"},
             )
         finally:
-            supplier_search._search_with_ddgs = original_ddgs
+            supplier_search._search_with_yandex = original_yandex
 
         self.assertIn("old.example", captured["existing_domains"])
         self.assertEqual([candidate.domain for candidate in candidates], ["new.example"])

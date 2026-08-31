@@ -73,7 +73,7 @@ def _ensure_schema() -> None:
         system_settings_existing = _existing_columns(inspector, "system_settings")
         system_settings_additions = {
             "document_settings_json": "TEXT DEFAULT '{}'",
-            "supplier_search_provider_order": "VARCHAR(255) DEFAULT 'yandex,google,tavily,ddgs'",
+            "supplier_search_provider_order": "VARCHAR(255) DEFAULT 'yandex'",
             "yandex_search_folder_id": "VARCHAR(255) DEFAULT ''",
             "yandex_search_api_key": "TEXT DEFAULT ''",
             "google_search_api_key": "TEXT DEFAULT ''",
@@ -205,10 +205,11 @@ def _ensure_schema() -> None:
                 text(
                     """
                     UPDATE system_settings
-                    SET supplier_search_provider_order = 'yandex,google,tavily,ddgs'
+                    SET supplier_search_provider_order = 'yandex'
                     WHERE supplier_search_provider_order IS NULL
                        OR TRIM(supplier_search_provider_order) = ''
-                       OR supplier_search_provider_order = 'tavily,ddgs'
+                       OR supplier_search_provider_order LIKE '%tavily%'
+                       OR supplier_search_provider_order LIKE '%ddgs%'
                     """
                 )
             )

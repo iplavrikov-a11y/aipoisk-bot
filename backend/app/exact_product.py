@@ -24,10 +24,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from .ai import call_llm
+from .dadata_client import enrich_company_by_inn
 from .models import SystemSettings
 from .supplier_search import (
     _minprom_registry_sqlite_path,
     _search_with_yandex,
+    candidate_domain_resolves_fast,
     _yandex_credentials,
     GISP_PRODUCT_REGISTRY_URL,
 )
@@ -77,6 +79,8 @@ class AlternativeProduct:
     gisp_match: Optional[GispRegistryMatch] = None
     source_url: str = ""
     datasheet_url: str = ""
+    inn: str = ""
+    region: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -99,6 +103,8 @@ class ExactProductPosition:
     gisp_match: Optional[GispRegistryMatch] = None
     source_url: str = ""
     datasheet_url: str = ""
+    inn: str = ""
+    region: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -584,6 +590,21 @@ async def fetch_web_or_pdf_document(
         full_extracted = "\n\n".join(text_blocks)
         clean_extracted = re.sub(r"\n{3,}", "\n\n", full_extracted).strip()
 
+        # 4. Поиск связанных ссылок на документацию / паспорта на этом же домене
+        sub_links: list[str] = []
+        for anchor in soup.find_all("a", href=True):
+            href_raw = str(anchor.get("href") or "").strip()
+            if not href_raw:
+                continue
+            from urllib.parse import urljoin
+            full_href = urljoin(str(response.url), href_raw)
+            parsed_href = urlsplit(full_href)
+            if domain in parsed_href.netloc.lower():
+                label = f"{anchor.get_text(' ', strip=True)} {full_href}".lower()
+                if any(w in label for w in [".pdf", "паспорт", "руководств", "datasheet", "характеристик", "каталог", "спецификаци"]):
+                    if full_href not in sub_links and full_href != str(response.url):
+                        sub_links.append(full_href)
+
         if len(clean_extracted) > 80:
             return {
                 "url": str(response.url),
@@ -591,6 +612,7 @@ async def fetch_web_or_pdf_document(
                 "type": "html",
                 "title": page_title,
                 "text": clean_extracted[:25000],
+                "sub_links": sub_links[:3],
             }
         else:
             return await _fetch_with_browser_fallback(url, domain)
@@ -607,15 +629,36 @@ async def fetch_batch_web_documents(urls: list[str], max_docs: int = 6) -> list[
     if not urls:
         return []
 
-    unique_urls = list(dict.fromkeys(urls))[:max_docs]
+    unique_urls = list(dict.fromkeys(urls))
+    valid_urls: list[str] = []
+    for u in unique_urls:
+        if await candidate_domain_resolves_fast(u):
+            valid_urls.append(u)
+        if len(valid_urls) >= max_docs:
+            break
+    if not valid_urls:
+        valid_urls = unique_urls[:max_docs]
+
     docs: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(timeout=14.0, follow_redirects=True) as client:
-        tasks = [fetch_web_or_pdf_document(client, u) for u in unique_urls]
+        tasks = [fetch_web_or_pdf_document(client, u) for u in valid_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        sub_link_tasks = []
         for res in results:
             if isinstance(res, dict) and res.get("text"):
                 docs.append(res)
+                # Скачиваем связанные паспорта/PDF если найдены
+                sub_links = res.get("sub_links") or []
+                for s_link in sub_links:
+                    if s_link not in valid_urls and len(sub_link_tasks) < 3:
+                        sub_link_tasks.append(fetch_web_or_pdf_document(client, s_link))
+
+        if sub_link_tasks:
+            sub_results = await asyncio.gather(*sub_link_tasks, return_exceptions=True)
+            for s_res in sub_results:
+                if isinstance(s_res, dict) and s_res.get("text"):
+                    docs.append(s_res)
 
     return docs
 
@@ -1764,15 +1807,16 @@ async def analyze_exact_product(
 
     await _notify_progress(progress_callback, 20, "Интеллектуальный анализ ТЗ и планирование поиска (ИИ)...")
 
-    folder_id, api_key = _yandex_credentials(settings)
-    if folder_id and api_key:
-        # ЭТАП 1: Интеллектуальное планирование поисковых запросов
-        search_plan = await plan_exact_product_search(settings, clean_context, item_name)
-        primary_queries = search_plan.get("search_queries", [])
+    search_plan = await plan_exact_product_search(settings, clean_context, item_name)
+    primary_queries = search_plan.get("search_queries", [])
+    candidate_urls: list[str] = []
+    candidates = []
 
-        if primary_queries:
-            try:
-                await _notify_progress(progress_callback, 35, f"Поиск технической документации в сети ({len(primary_queries)} запросов)...")
+    if primary_queries:
+        try:
+            await _notify_progress(progress_callback, 35, f"Поиск технической документации в сети ({len(primary_queries)} запросов)...")
+            folder_id, api_key = _yandex_credentials(settings)
+            if folder_id and api_key:
                 candidates, y_reqs = await _search_with_yandex(
                     settings,
                     primary_queries,
@@ -1782,37 +1826,39 @@ async def analyze_exact_product(
                 )
                 yandex_requests_count += y_reqs
 
-                # Определение целевых и отрицательных ключевых слов для ранжирования документов
-                target_kws = [item_name[:30]]
-                for kp in search_plan.get("key_parameters", [])[:4]:
-                    target_kws.append(str(kp).strip())
-                target_kws.extend(["паспорт", "каталог", "характеристики", "руководство"])
+            # Определение целевых и отрицательных ключевых слов для ранжирования документов
+            target_kws = [item_name[:30]]
+            for kp in search_plan.get("key_parameters", [])[:4]:
+                target_kws.append(str(kp).strip())
+            target_kws.extend(["паспорт", "каталог", "характеристики", "руководство"])
 
-                negative_kws = build_universal_negative_keywords(clean_context)
-                for neg in search_plan.get("negative_keywords", []):
-                    clean_neg = str(neg).strip().lower()
-                    if clean_neg and clean_neg not in negative_kws:
-                        negative_kws.append(clean_neg)
+            negative_kws = build_universal_negative_keywords(clean_context)
+            for neg in search_plan.get("negative_keywords", []):
+                clean_neg = str(neg).strip().lower()
+                if clean_neg and clean_neg not in negative_kws:
+                    negative_kws.append(clean_neg)
 
-                candidate_urls = _rank_search_candidates(candidates, target_kws, negative_kws)
-                for cand in candidates:
-                    if cand.domain and cand.domain not in web_sources:
-                        web_sources.append(cand.domain)
+            candidate_urls = _rank_search_candidates(candidates, target_kws, negative_kws)
+            for cand in candidates:
+                if cand.domain and cand.domain not in web_sources:
+                    web_sources.append(cand.domain)
 
-                # ЭТАП 2: Добор документации по ключевым параметрам и заводам-аналогам
-                key_params = search_plan.get("key_parameters", [])
-                manufacturers = search_plan.get("primary_manufacturers", [])
-                secondary_queries: list[str] = []
-                for kp in key_params[:2]:
-                    clean_kp = re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', str(kp)).strip()
-                    if clean_kp and len(clean_kp) >= 4:
-                        secondary_queries.append(f'"{item_name[:40]}" {clean_kp[:45]} паспорт')
-                for m in manufacturers[:2]:
-                    clean_m = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|ГК|НПК|НПО|ТД|«|»|")', '', str(m)).strip()
-                    if clean_m and len(clean_m) > 2:
-                        secondary_queries.append(f'"{clean_m}" "{item_name[:40]}" характеристики')
+            # ЭТАП 2: Добор документации по ключевым параметрам и заводам-аналогам
+            key_params = search_plan.get("key_parameters", [])
+            manufacturers = search_plan.get("primary_manufacturers", [])
+            secondary_queries: list[str] = []
+            for kp in key_params[:2]:
+                clean_kp = re.sub(r'[^а-яА-Яa-zA-Z0-9\s]', ' ', str(kp)).strip()
+                if clean_kp and len(clean_kp) >= 4:
+                    secondary_queries.append(f'"{item_name[:40]}" {clean_kp[:45]} паспорт')
+            for m in manufacturers[:2]:
+                clean_m = re.sub(r'(?i)(ООО|АО|ПАО|ЗАО|ГК|НПК|НПО|ТД|«|»|")', '', str(m)).strip()
+                if clean_m and len(clean_m) > 2:
+                    secondary_queries.append(f'"{clean_m}" "{item_name[:40]}" характеристики')
 
-                if secondary_queries:
+            if secondary_queries:
+                sec_candidates = []
+                if folder_id and api_key:
                     sec_candidates, sec_reqs = await _search_with_yandex(
                         settings,
                         secondary_queries[:3],
@@ -1821,44 +1867,45 @@ async def analyze_exact_product(
                         max_pages_per_query=1,
                     )
                     yandex_requests_count += sec_reqs
-                    sec_ranked = _rank_search_candidates(sec_candidates, target_kws, negative_kws)
-                    for sc_url in sec_ranked:
-                        if sc_url not in candidate_urls:
-                            candidate_urls.append(sc_url)
-                    for sc in sec_candidates:
-                        if sc.domain and sc.domain not in web_sources:
-                            web_sources.append(sc.domain)
 
-                unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
-                yandex_cost_rub = round(yandex_requests_count * unit_price, 2)
+                sec_ranked = _rank_search_candidates(sec_candidates, target_kws, negative_kws)
+                for sc_url in sec_ranked:
+                    if sc_url not in candidate_urls:
+                        candidate_urls.append(sc_url)
+                for sc in sec_candidates:
+                    if sc.domain and sc.domain not in web_sources:
+                        web_sources.append(sc.domain)
 
-                # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
-                await _notify_progress(progress_callback, 50, f"Скачивание паспортов и спецификаций ({len(candidate_urls[:6])} источников)...")
-                fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=6)
-                verified_docs = fetched_documents
+            unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+            yandex_cost_rub = round(yandex_requests_count * unit_price, 2)
 
-                doc_blocks: list[str] = ["\n\n=== ПРОВЕРЕННЫЕ ДОКУМЕНТЫ И ПАСПОРТА ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ В ИНТЕРНЕТЕ ==="]
-                for idx, doc in enumerate(fetched_documents, start=1):
-                    doc_blocks.append(f"\n[ИСТОЧНИК #{idx}]")
-                    doc_blocks.append(f"Тип: {'PDF-паспорт изделия' if doc.get('type') == 'pdf' else 'Веб-страница производителя'}")
-                    doc_blocks.append(f"Заголовок: {doc.get('title')}")
-                    doc_blocks.append(f"URL: {doc.get('url')}")
-                    doc_blocks.append(f"Фактическое содержимое документа:\n{doc.get('text')}\n")
+            # СКАЧИВАНИЕ И ИЗВЛЕЧЕНИЕ КОНТЕНТА РЕАЛЬНЫХ СТРАНИЦ И PDF-ПАСПОРТОВ
+            await _notify_progress(progress_callback, 50, f"Скачивание паспортов и спецификаций ({len(candidate_urls[:6])} источников)...")
+            fetched_documents = await fetch_batch_web_documents(candidate_urls, max_docs=6)
+            verified_docs = fetched_documents
 
-                if not fetched_documents:
-                    snippet_rows = ["\n\n=== ДАННЫЕ ИЗ ПОИСКОВОЙ ВЫДАЧИ ЯНДЕКС ==="]
-                    for c_idx, cand in enumerate(candidates[:8], start=1):
-                        snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
-                        if cand.domain:
-                            snippet_rows.append(f"   Сайт: {cand.domain} (URL: {cand.url})")
-                        if cand.snippet:
-                            snippet_rows.append(f"   Сниппет: {cand.snippet}")
-                    verified_docs_block = "\n".join(snippet_rows)
-                else:
-                    verified_docs_block = "\n".join(doc_blocks)
+            doc_blocks: list[str] = ["\n\n=== ПРОВЕРЕННЫЕ ДОКУМЕНТЫ И ПАСПОРТА ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ В ИНТЕРНЕТЕ ==="]
+            for idx, doc in enumerate(fetched_documents, start=1):
+                doc_blocks.append(f"\n[ИСТОЧНИК #{idx}]")
+                doc_blocks.append(f"Тип: {'PDF-паспорт изделия' if doc.get('type') == 'pdf' else 'Веб-страница производителя'}")
+                doc_blocks.append(f"Заголовок: {doc.get('title')}")
+                doc_blocks.append(f"URL: {doc.get('url')}")
+                doc_blocks.append(f"Фактическое содержимое документа:\n{doc.get('text')}\n")
 
-            except Exception as y_exc:
-                logger.warning("yandex_search_enrichment_failed_for_exact_product: %s", y_exc)
+            if not fetched_documents:
+                snippet_rows = ["\n\n=== ДАННЫЕ ИЗ ПОИСКОВОЙ ВЫДАЧИ ==="]
+                for c_idx, cand in enumerate(candidates[:8], start=1):
+                    snippet_rows.append(f"{c_idx}. Заголовок: {cand.title}")
+                    if cand.domain:
+                        snippet_rows.append(f"   Сайт: {cand.domain} (URL: {cand.url})")
+                    if cand.snippet:
+                        snippet_rows.append(f"   Сниппет: {cand.snippet}")
+                verified_docs_block = "\n".join(snippet_rows)
+            else:
+                verified_docs_block = "\n".join(doc_blocks)
+
+        except Exception as y_exc:
+            logger.warning("search_enrichment_failed_for_exact_product: %s", y_exc)
 
     prompt_text = header_context + clean_context + verified_docs_block
     await _notify_progress(progress_callback, 65, "Сопоставление ТЗ со спецификациями и каталогами (ИИ)...")
@@ -2031,6 +2078,22 @@ async def analyze_exact_product(
                     name_in_tz=name_in_tz,
                 )
 
+                alt_inn = alt_gisp_match.inn if (alt_gisp_match and alt_gisp_match.inn) else ""
+                alt_region = ""
+                if not alt_inn:
+                    alt_inn_found = re.findall(r"\b\d{10}\b|\b\d{12}\b", f"{a_manuf} {a_brand} {a_notes}")
+                    if alt_inn_found:
+                        alt_inn = alt_inn_found[0]
+                if alt_inn:
+                    try:
+                        alt_dadata = await enrich_company_by_inn(alt_inn)
+                        if alt_dadata:
+                            alt_region = str(alt_dadata.get("region") or "").strip()
+                            if not a_manuf or a_manuf == a_brand:
+                                a_manuf = str(alt_dadata.get("company_name") or a_manuf).strip()
+                    except Exception:
+                        pass
+
                 if a_brand or a_model:
                     alts_list.append(AlternativeProduct(
                         brand=a_brand or "Аналог",
@@ -2041,6 +2104,8 @@ async def analyze_exact_product(
                         specs_breakdown=alt_specs_list,
                         gisp_match=alt_gisp_match,
                         source_url=a_src_url,
+                        inn=alt_inn,
+                        region=alt_region,
                     ))
 
         # Поиск в реестре Минпромторга (ГИСП) с ИИ-проверкой совместимости
@@ -2051,6 +2116,22 @@ async def analyze_exact_product(
             model=model,
             name_in_tz=name_in_tz,
         )
+
+        pos_inn = gisp_match.inn if (gisp_match and gisp_match.inn) else ""
+        pos_region = ""
+        if not pos_inn:
+            pos_inn_found = re.findall(r"\b\d{10}\b|\b\d{12}\b", f"{manufacturer} {brand} {reasoning}")
+            if pos_inn_found:
+                pos_inn = pos_inn_found[0]
+        if pos_inn:
+            try:
+                pos_dadata = await enrich_company_by_inn(pos_inn)
+                if pos_dadata:
+                    pos_region = str(pos_dadata.get("region") or "").strip()
+                    if not manufacturer or manufacturer == brand:
+                        manufacturer = str(pos_dadata.get("company_name") or manufacturer).strip()
+            except Exception:
+                pass
 
         positions.append(ExactProductPosition(
             position_no=idx,
@@ -2064,6 +2145,8 @@ async def analyze_exact_product(
             alternative_brands=alts_list,
             gisp_match=gisp_match,
             source_url=pos_source_url,
+            inn=pos_inn,
+            region=pos_region,
         ))
 
     # ЛИМИТИРОВАНИЕ ПОЗИЦИЙ: максимум MAX_EXACT_POSITIONS_PER_JOB (3 позиции)

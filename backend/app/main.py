@@ -195,7 +195,6 @@ from .web_auth import (
 from .supplier_search import (
     _google_credentials,
     _provider_order,
-    _tavily_key_candidates,
     _yandex_credentials,
     get_minprom_registry_cache_status,
     store_minprom_registry_xlsx_cache,
@@ -4078,18 +4077,15 @@ def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[
 
 def supplier_search_ui(settings: SystemSettings) -> dict:
     provider_order = _provider_order(settings)
-    tavily_ready = bool(_tavily_key_candidates(settings))
     google_key, google_cse = _google_credentials(settings)
     yandex_folder, yandex_key = _yandex_credentials(settings)
     configured = {
-        "tavily": tavily_ready,
         "google": bool(google_key and google_cse),
         "yandex": bool(yandex_folder and yandex_key),
-        "ddgs": "ddgs" in provider_order,
     }
     active_provider = next((provider for provider in provider_order if configured.get(provider)), "")
     if not active_provider:
-        active_provider = provider_order[0] if provider_order else "tavily"
+        active_provider = provider_order[0] if provider_order else "yandex"
     active_ready = bool(configured.get(active_provider))
     return {
         "active_provider": active_provider,
@@ -4109,23 +4105,17 @@ def supplier_search_source_label(provider: str) -> str:
     labels = {
         "yandex": "Яндекс Поиск",
         "google": "Google Поиск",
-        "tavily": "Дополнительный поиск Tavily",
-        "ddgs": "Резерв DuckDuckGo",
     }
     return labels.get(provider, "Источник поиска")
 
 
 def supplier_search_active_note(provider: str, ready: bool) -> str:
     if not ready:
-        return "Первый источник в порядке поиска не настроен. Добавьте ключи Яндекса или Google в расширенных параметрах."
+        return "Основной поиск через Яндекс не настроен. Добавьте ключи Яндекса в расширенных параметрах."
     if provider == "yandex":
         return "Основной поиск через Яндекс подключён."
     if provider == "google":
-        return "Основной поиск через Google подключён."
-    if provider == "tavily":
-        return "Работает дополнительный источник Tavily."
-    if provider == "ddgs":
-        return "Работает резервный поиск без ключа."
+        return "Поиск через Google подключён."
     return "Источник поиска подключён."
 
 

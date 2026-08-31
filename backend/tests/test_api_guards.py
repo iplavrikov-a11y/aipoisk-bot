@@ -1153,12 +1153,12 @@ class ApiGuardTests(unittest.TestCase):
         self.assertEqual({item["id"] for item in all_jobs}, {"job-1", "job-2"})
 
     def test_settings_public_payload_includes_supplier_search_ui_contract(self) -> None:
-        settings = SystemSettings(id=1, supplier_search_provider_order="ddgs")
+        settings = SystemSettings(id=1, supplier_search_provider_order="yandex", yandex_search_folder_id="fld", yandex_search_api_key="key")
 
         payload = settings_to_public_dict(settings)
 
-        self.assertEqual(payload["supplier_search_ui"]["active_provider"], "ddgs")
-        self.assertEqual(payload["supplier_search_ui"]["active_label"], "Резерв DuckDuckGo")
+        self.assertEqual(payload["supplier_search_ui"]["active_provider"], "yandex")
+        self.assertEqual(payload["supplier_search_ui"]["active_label"], "Яндекс Поиск")
         self.assertTrue(payload["supplier_search_ui"]["has_active_source"])
         self.assertIn("technical_sources", payload["supplier_search_ui"])
 

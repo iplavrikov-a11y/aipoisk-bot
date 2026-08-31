@@ -35,7 +35,7 @@ class AppConfig(BaseSettings):
     default_supplier_search_adapter_base_url: str = ""
     default_supplier_search_adapter_api_key: str = ""
     default_supplier_search_adapter_model: str = ""
-    default_supplier_search_provider_order: str = "yandex,google,tavily,ddgs"
+    default_supplier_search_provider_order: str = "yandex"
     default_yandex_search_folder_id: str = ""
     default_yandex_search_api_key: str = ""
     default_yandex_max_pages_per_query: int = 3

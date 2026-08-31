@@ -64,7 +64,7 @@ class SystemSettings(Base):
     supplier_search_adapter_base_url: Mapped[str] = mapped_column(Text, default="")
     supplier_search_adapter_api_key: Mapped[str] = mapped_column(Text, default="")
     supplier_search_adapter_model: Mapped[str] = mapped_column(String(160), default="")
-    supplier_search_provider_order: Mapped[str] = mapped_column(String(255), default="yandex,google,tavily,ddgs")
+    supplier_search_provider_order: Mapped[str] = mapped_column(String(255), default="yandex")
     yandex_search_folder_id: Mapped[str] = mapped_column(String(255), default="")
     yandex_search_api_key: Mapped[str] = mapped_column(Text, default="")
     google_search_api_key: Mapped[str] = mapped_column(Text, default="")

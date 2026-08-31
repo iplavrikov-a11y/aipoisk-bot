@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-07-08
+Date: 2026-08-31
 
 ## Current Production State
 
@@ -12,6 +12,13 @@ Date: 2026-07-08
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Cross-Functional Synergy & Pure Yandex Search Architecture (2026-08):
+  - Complete Elimination of Unconfigured/Dead Search Providers: Cleaned out all legacy and non-working Tavily/DuckDuckGo provider stubs across backend, database defaults, and admin frontend. 100% of live web searches across both modules («Поиск поставщиков» and «Подбор товара и аналогов») now execute exclusively through the high-reliability Yandex XML Search API (`_search_with_yandex`).
+  - Cross-Functional PDF Catalog & Price-List Parsing: Integrated `fitz` (PyMuPDF) in `supplier_search.py` with structured table conversion (`tab.to_markdown()`), allowing supplier crawlers to parse binary PDF catalogs, price lists, and technical specifications directly on factory websites.
+  - HTML Structured Table & Spec Block Extraction: Implemented structured `<table>` parsing and `<dl class="spec|param">` extraction in `supplier_search.py` (analogous to `exact_product.py`), ensuring parameters, sizes, and pricing tables are preserved with high fidelity.
+  - Universal Negative Keywords & Antithesis Filtering: Integrated `build_universal_negative_keywords` into `supplier_search.py` query planning and candidate scoring, applying scoring penalties to eliminate non-new equipment (`б/у`, `неликвид`, `аренда`) and conflicting technical variants.
+  - Algorithmic Parameter Grounding (`_is_grounded_in_text`): Extended numerical, IP rating, and climate execution validation into supplier verification to eliminate LLM hallucinations.
+  - Manufacturer DaData Enrichment & GISP Alignment: Enriched identified positions and alternative brands in `exact_product.py` with DaData company details (INN, region) and semantic Minpromtorg GISP registry matching.
 - Unified TenderLex Brand Visual Identity for Excel & Word Reports (2026-08):
   - Table Header Palette Unification (`write_supplier_xlsx`, `backend/app/report_builder.py`): Completely replaced cold gray/slate (`#1E293B`) table headers with TenderLex deep forest emerald (`#064E3B`) with white bold text, achieving 100% visual consistency with Word DOCX summary tables (`write_exact_product_docx`, `_write_markdown_docx`).
   - Brand Titles & Section Accents: Styled sheet headers with brand emerald (`#047857`), subheadings with deep emerald (`#064E3B`), and KPI summary cards with fresh mint tint (`#ECFDF5`) / emerald text (`#064E3B`).

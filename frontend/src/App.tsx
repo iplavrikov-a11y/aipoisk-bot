@@ -4739,7 +4739,7 @@ function SettingsView({
       supplier_search_adapter_api_key: adapterKey,
       yandex_search_api_key: yandexKey,
       google_search_api_key: googleKey,
-      supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex,google,tavily,ddgs',
+      supplier_search_provider_order: draft.supplier_search_provider_order || 'yandex',
     }
     await api('/api/settings', {
       method: 'PATCH',
@@ -4825,7 +4825,7 @@ function SettingsView({
             </div>
           )}
         </div>
-        <p className="field-help">Приоритет поиска: Яндекс, Google, затем вспомогательные источники. Tavily используется как запасной источник.</p>
+        <p className="field-help">Поиск выполняется в реальном времени через Яндекс XML Search API.</p>
         <div className={minpromRegistry?.sqlite_ready ? 'registry-panel ready' : 'registry-panel warning'}>
           <div className="registry-heading">
             <div>
@@ -4860,20 +4860,14 @@ function SettingsView({
               <SecretField label="Ключ API Яндекс Search" value={yandexKey} onChange={setYandexKey} />
             </div>
             <div className="provider-config primary">
-              <h3>Google Поиск</h3>
+              <h3>Google Поиск (Резерв)</h3>
               <TextField label="ID поисковой системы Google" value={draft.google_search_cse_id} onChange={value => setDraft({ ...draft, google_search_cse_id: value })} />
               <SecretField label="Ключ API Google Custom Search" value={googleKey} onChange={setGoogleKey} />
             </div>
             <div className="provider-config auxiliary">
-              <h3>Дополнительный Tavily</h3>
-              <TextField label="Адрес Tavily API" value={draft.supplier_search_adapter_base_url} onChange={value => setDraft({ ...draft, supplier_search_adapter_base_url: value })} />
-              <TextField label="Метка Tavily" value={draft.supplier_search_adapter_model} onChange={value => setDraft({ ...draft, supplier_search_adapter_model: value })} />
-              <SecretField label="Ключ Tavily API" value={adapterKey} onChange={setAdapterKey} />
-            </div>
-            <div className="provider-config auxiliary">
               <h3>Порядок источников</h3>
               <TextField label="Порядок поиска" value={draft.supplier_search_provider_order} onChange={value => setDraft({ ...draft, supplier_search_provider_order: value })} />
-              <p className="field-help">Обычный порядок: yandex,google,tavily,ddgs.</p>
+              <p className="field-help">Основной порядок: yandex.</p>
             </div>
           </div>
         </details>

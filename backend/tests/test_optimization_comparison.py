@@ -417,7 +417,7 @@ class TestProviderOrderComparison(unittest.TestCase):
     def test_yandex_only_skips_fallback_providers(self):
         """When only yandex is configured, fallback providers are skipped."""
         settings_yandex_only = _make_settings(supplier_search_provider_order="yandex")
-        settings_full = _make_settings(supplier_search_provider_order="yandex,google,tavily,ddgs")
+        settings_full = _make_settings(supplier_search_provider_order="yandex,google")
 
         order_yandex_only = _provider_order(settings_yandex_only)
         order_full = _provider_order(settings_full)
@@ -428,7 +428,7 @@ class TestProviderOrderComparison(unittest.TestCase):
         print(f"Yandex-only has {len(order_yandex_only)} providers, full has {len(order_full)} providers")
 
         self.assertEqual(order_yandex_only, ["yandex"])
-        self.assertEqual(order_full, ["yandex", "google", "tavily", "ddgs"])
+        self.assertEqual(order_full, ["yandex", "google"])
 
     def test_yandex_only_would_make_fewer_search_calls(self):
         """With yandex-only, no fallback search calls are made."""
