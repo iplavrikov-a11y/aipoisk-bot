@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-08-31
+Date: 2026-09-01
 
 ## Current Production State
 
@@ -12,6 +12,11 @@ Date: 2026-08-31
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Test Database Isolation & Bot User Mock Sanitization (2026-09):
+  - Test Suite SQLite Isolation (`backend/tests/conftest.py`): Introduced global session-scoped temporary SQLite database isolation for all `pytest` runs, preventing automated test executions and deploy checks from mutating or inserting test records into the live production database (`data/aipoisk.db`).
+  - Telegram Bot User Field Sanitization (`_clean_telegram_user_field`, `backend/app/bot.py`): Implemented strict sanitization for incoming Telegram and callback user profile fields (`first_name`, `last_name`, `username`, `id`), guarding against `MagicMock`/`Mock` stringification leaks (`<MagicMock name='mock.from_user...'>`) and non-string types.
+  - Test Cleanup & Default Settings Auto-Seeding (`backend/app/repository.py`, `backend/app/db.py`, `backend/tests/test_bot_exact_product.py`, `backend/tests/test_outreach.py`): Guaranteed default system settings (trial configuration and tariff seeding) when fresh test databases are initialized, added explicit teardown in bot tests, and stabilized spintax outreach test sample size to eliminate flakiness.
+  - Production Database Cleanup: Purged stale mock client records and associated journey events from the live SQLite database. All 652 backend tests passing and live deployment verified.
 - Public Site UI & Landing Hero CTA Polish (2026-08):
   - Button Copy Cleanliness: Removed redundant `(без привязки карты)` parenthesized suffix from hero CTA buttons across `site/src/app/page.tsx`, `site/src/components/procurement-calculator.tsx`, and `site/src/app/poisk-postavshchikov-po-tz/page.tsx`. Clean, professional action copy (`Попробовать бесплатно` / `Найти поставщиков бесплатно`).
   - Clean Hero Heading: Removed temporal claims (`за 2 минуты`) from the main H1 heading on `site/src/app/page.tsx`. Heading is now clean and focused: «Поиск надежных поставщиков и подбор аналогов».
