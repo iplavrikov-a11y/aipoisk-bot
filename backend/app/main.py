@@ -4363,6 +4363,11 @@ def api_service_statuses(settings: SystemSettings, yandex_balance: float | None 
     
     yandex_configured = bool(yandex_folder and yandex_key)
     yandex_warning = not yandex_configured or (yandex_balance is not None and yandex_balance < 100.0)
+    yandex_url = (
+        f"https://console.yandex.cloud/folders/{yandex_folder}/dashboard"
+        if yandex_folder
+        else "https://console.yandex.cloud/folders/b1gmnp1u8urslual8ht8/dashboard"
+    )
 
     services = [
         {
@@ -4376,6 +4381,7 @@ def api_service_statuses(settings: SystemSettings, yandex_balance: float | None 
             "balance_label": f"{yandex_balance:.2f} ₽" if yandex_balance is not None else "н/д",
             "warning": yandex_warning,
             "note": "Основной источник поиска поставщиков.",
+            "url": yandex_url,
         },
         {
             "id": "google",
@@ -4387,6 +4393,7 @@ def api_service_statuses(settings: SystemSettings, yandex_balance: float | None 
             "balance_label": "подключено",
             "warning": not bool(google_key and google_cse),
             "note": "Основной источник поиска поставщиков.",
+            "url": "https://programmablesearchengine.google.com/",
         },
         {
             "id": "ai",
@@ -4398,6 +4405,7 @@ def api_service_statuses(settings: SystemSettings, yandex_balance: float | None 
             "balance_label": "подключено",
             "warning": not (bool(configured_ai) or settings.has_active_ai_provider),
             "note": "Используются для анализа и ранжирования.",
+            "url": "https://openrouter.ai/settings/credits",
         },
     ]
     return services

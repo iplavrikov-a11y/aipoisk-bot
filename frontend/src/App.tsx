@@ -13,6 +13,7 @@ import {
   CreditCard,
   Database,
   Download,
+  ExternalLink,
   FileText,
   Globe,
   HardDrive,
@@ -494,6 +495,7 @@ type OpsStatus = {
     balance_label: string
     warning?: boolean
     note: string
+    url?: string
   }>
   warnings: string[]
 }
@@ -1423,20 +1425,38 @@ export function App() {
 
               <div className="server-api-section-title">API СЕРВИСЫ</div>
 
-              {opsStatus.services.map(svc => (
-                <div key={svc.id} className={`server-api-card ${svc.warning ? 'warning' : ''}`}>
-                  <div className="server-api-card-info">
-                    <div className="server-api-card-icon">
-                      {svc.id === 'yandex' ? <Search size={16} /> : <Bot size={16} />}
+              {opsStatus.services.map(svc => {
+                const targetUrl = svc.url || (svc.id === 'yandex' ? 'https://console.yandex.cloud/folders/b1gmnp1u8urslual8ht8/dashboard' : undefined)
+                const CardTag = targetUrl ? 'a' : 'div'
+                const cardProps = targetUrl ? {
+                  href: targetUrl,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                  title: `Перейти в ${svc.label} (${svc.detail})`,
+                } : {}
+
+                return (
+                  <CardTag
+                    key={svc.id}
+                    className={`server-api-card ${svc.warning ? 'warning' : ''} ${targetUrl ? 'interactive' : ''}`}
+                    {...cardProps}
+                  >
+                    <div className="server-api-card-info">
+                      <div className="server-api-card-icon">
+                        {svc.id === 'yandex' ? <Search size={16} /> : <Bot size={16} />}
+                      </div>
+                      <div>
+                        <div className="server-api-card-name">
+                          <span>{svc.label}</span>
+                          {targetUrl && <ExternalLink size={12} className="server-api-card-link-icon" />}
+                        </div>
+                        <div className="server-api-card-sub">{svc.detail}</div>
+                      </div>
                     </div>
-                    <div>
-                      <div className="server-api-card-name">{svc.label}</div>
-                      <div className="server-api-card-sub">{svc.detail}</div>
-                    </div>
-                  </div>
-                  <div className="server-api-card-val">{svc.balance_label}</div>
-                </div>
-              ))}
+                    <div className="server-api-card-val">{svc.balance_label}</div>
+                  </CardTag>
+                )
+              })}
             </div>
           </div>
         )}
@@ -3335,18 +3355,36 @@ function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
         </div>
       )}
       <div className="api-service-list">
-        {opsStatus.services.map(service => (
-          <div className={service.configured ? 'api-service-row configured' : 'api-service-row'} key={service.id}>
-            <div>
-              <strong>{service.label}</strong>
-              <small>{service.detail} · {service.note}</small>
-            </div>
-            <div>
-              <span>{service.status_label}</span>
-              <small>{service.balance_label}</small>
-            </div>
-          </div>
-        ))}
+        {opsStatus.services.map(service => {
+          const targetUrl = service.url || (service.id === 'yandex' ? 'https://console.yandex.cloud/folders/b1gmnp1u8urslual8ht8/dashboard' : undefined)
+          const RowTag = targetUrl ? 'a' : 'div'
+          const rowProps = targetUrl ? {
+            href: targetUrl,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            title: `Перейти в ${service.label} (${service.detail})`,
+          } : {}
+
+          return (
+            <RowTag
+              key={service.id}
+              className={`${service.configured ? 'api-service-row configured' : 'api-service-row'} ${targetUrl ? 'interactive' : ''}`}
+              {...rowProps}
+            >
+              <div>
+                <strong>
+                  <span>{service.label}</span>
+                  {targetUrl && <ExternalLink size={11} className="api-service-row-link-icon" />}
+                </strong>
+                <small>{service.detail} · {service.note}</small>
+              </div>
+              <div>
+                <span>{service.status_label}</span>
+                <small>{service.balance_label}</small>
+              </div>
+            </RowTag>
+          )
+        })}
       </div>
     </div>
   )
