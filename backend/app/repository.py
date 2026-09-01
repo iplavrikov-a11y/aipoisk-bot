@@ -65,6 +65,10 @@ def get_or_create_settings(db: Session) -> SystemSettings:
         google_search_cse_id=config.default_google_search_cse_id,
         document_settings_json=config.default_document_settings_json,
         payment_instructions=DEFAULT_PAYMENT_INSTRUCTIONS,
+        trial_enabled=True,
+        trial_supplier_search_limit=2,
+        trial_procurement_report_limit=2,
+        trial_file_limit=10,
     )
     db.add(settings)
     db.commit()
