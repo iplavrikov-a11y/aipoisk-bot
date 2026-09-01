@@ -12,6 +12,11 @@ Date: 2026-09-01
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Admin Server Status & API Service Direct Dashboards (2026-09):
+  - Clickable API Services & Balance Dashboards (`backend/app/main.py`, `frontend/src/App.tsx`, `frontend/src/styles.css`):
+    - Added direct URL links to service statuses (`api_service_statuses` in `backend/app/main.py`), linking Yandex Search directly to the active Yandex Cloud console dashboard (`https://console.yandex.cloud/folders/{folder_id}/dashboard`), Google Search to programmable search engine console, and AI providers to OpenRouter credits.
+    - Updated TenderLex Admin Server Status modal (`showServerModal`) and Main Dashboard system status panel (`SystemStatusPanel`): cards for «Поиск Яндекс», «Google Поиск», and «Нейросети AI» are now interactive external links (`<a>`) featuring `ExternalLink` icons, clean hover animations, and direct 1-click navigation for account top-up and management.
+    - Full test suite verified (652/652 passing tests) and live production deployment completed via `./scripts/deploy_tenderlex_live.sh`.
 - Test Database Isolation & Bot User Mock Sanitization (2026-09):
   - Test Suite SQLite Isolation (`backend/tests/conftest.py`): Introduced global session-scoped temporary SQLite database isolation for all `pytest` runs, preventing automated test executions and deploy checks from mutating or inserting test records into the live production database (`data/aipoisk.db`).
   - Telegram Bot User Field Sanitization (`_clean_telegram_user_field`, `backend/app/bot.py`): Implemented strict sanitization for incoming Telegram and callback user profile fields (`first_name`, `last_name`, `username`, `id`), guarding against `MagicMock`/`Mock` stringification leaks (`<MagicMock name='mock.from_user...'>`) and non-string types.
