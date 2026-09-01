@@ -482,7 +482,7 @@ def test_spintax_rendering():
     # Nested spintax with template variables
     complex_tpl = "{Здравствуйте|Добрый день}, {company}! {Мы создали {сервис|платформу}|Предлагаем решение} TenderLex."
     lead = OutreachLead(company_name="ООО Вектор")
-    results = [render_template_text(complex_tpl, lead) for _ in range(20)]
+    results = [render_template_text(complex_tpl, lead) for _ in range(100)]
     assert any("сервис" in r for r in results)
     assert any("платформу" in r for r in results)
     assert all("ООО Вектор" in r for r in results)
