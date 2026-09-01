@@ -569,15 +569,26 @@ def _supplier_multi_job_specs(pending: PendingBatch) -> list[tuple[str, list[tup
     ]
 
 
+def _clean_telegram_user_field(val: object) -> str:
+    if val is None or not isinstance(val, (str, int, float)):
+        return ""
+    s = str(val).strip()
+    if s.startswith(("<MagicMock", "<Mock", "<AsyncMock", "<unittest.mock")):
+        return ""
+    return s
+
+
 def _telegram_user_fields(message: Message) -> tuple[str, str, str]:
     user = message.from_user
-    telegram_id = str(user.id if user else "")
-    username = str(getattr(user, "username", "") or "")
+    if not user:
+        return "", "", ""
+    telegram_id = _clean_telegram_user_field(getattr(user, "id", ""))
+    username = _clean_telegram_user_field(getattr(user, "username", ""))
     name = " ".join(
         item
         for item in [
-            str(getattr(user, "first_name", "") or "").strip(),
-            str(getattr(user, "last_name", "") or "").strip(),
+            _clean_telegram_user_field(getattr(user, "first_name", "")),
+            _clean_telegram_user_field(getattr(user, "last_name", "")),
         ]
         if item
     )
@@ -1762,13 +1773,15 @@ def _find_more_suppliers_confirmation_keyboard(job_id: str) -> InlineKeyboardMar
 
 def _callback_user_fields(callback: CallbackQuery) -> tuple[str, str, str]:
     user = callback.from_user
-    telegram_id = str(user.id if user else "")
-    username = str(getattr(user, "username", "") or "")
+    if not user:
+        return "", "", ""
+    telegram_id = _clean_telegram_user_field(getattr(user, "id", ""))
+    username = _clean_telegram_user_field(getattr(user, "username", ""))
     name = " ".join(
         item
         for item in [
-            str(getattr(user, "first_name", "") or "").strip(),
-            str(getattr(user, "last_name", "") or "").strip(),
+            _clean_telegram_user_field(getattr(user, "first_name", "")),
+            _clean_telegram_user_field(getattr(user, "last_name", "")),
         ]
         if item
     )

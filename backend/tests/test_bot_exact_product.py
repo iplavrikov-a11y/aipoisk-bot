@@ -50,6 +50,8 @@ async def test_handle_document_in_exact_product_scenario(monkeypatch):
     message.chat.id = chat_id
     message.from_user.id = chat_id
     message.from_user.username = "testuser"
+    message.from_user.first_name = "Test"
+    message.from_user.last_name = "User"
     message.from_user.full_name = "Test User"
     message.caption = None
     message.document.file_name = "tz.docx"
@@ -75,12 +77,23 @@ async def test_handle_document_in_exact_product_scenario(monkeypatch):
     finally:
         db.close()
 
-    await handle_document(message, bot)
+    try:
+        await handle_document(message, bot)
 
-    assert message.answer.called
-    pending = PENDING_UPLOADS.get(chat_id)
-    assert pending is not None
-    assert pending.mode == MODE_EXACT_PRODUCT
-    assert len(pending.files) == 1
-    assert pending.files[0][0] == "tz.docx"
+        assert message.answer.called
+        pending = PENDING_UPLOADS.get(chat_id)
+        assert pending is not None
+        assert pending.mode == MODE_EXACT_PRODUCT
+        assert len(pending.files) == 1
+        assert pending.files[0][0] == "tz.docx"
+    finally:
+        PENDING_MODES.pop(chat_id, None)
+        PENDING_UPLOADS.pop(chat_id, None)
+        db = SessionLocal()
+        try:
+            db.query(Client).filter(Client.telegram_id == str(chat_id)).delete()
+            db.commit()
+        finally:
+            db.close()
+
 

@@ -358,42 +358,67 @@ def _ensure_default_tariffs() -> None:
     db = Session()
     try:
         has_tariffs = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search").first()
-        if has_tariffs:
-            extra_exists = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search_extra").first()
-            if not extra_exists:
+        if not has_tariffs:
+            default_packages = [
+                ("supplier_search", "1 поиск поставщиков", 1, 9900, 1),
+                ("supplier_search", "5 поисков поставщиков", 5, 49000, 2),
+                ("supplier_search", "10 поисков поставщиков", 10, 89000, 3),
+                ("supplier_search", "25 поисков поставщиков", 25, 199000, 4),
+                ("supplier_search", "50 поисков поставщиков", 50, 379000, 5),
+                ("procurement_report", "1 анализ документации", 1, 14900, 1),
+                ("procurement_report", "5 анализов документации", 5, 69000, 2),
+                ("procurement_report", "10 анализов документации", 10, 129000, 3),
+                ("procurement_report", "25 анализов документации", 25, 299000, 4),
+                ("procurement_report", "50 анализов документации", 50, 549000, 5),
+            ]
+            for kind, name, units, price, order in default_packages:
                 db.add(
                     TariffPackage(
-                        kind="supplier_search_extra",
-                        name="1 добор поставщиков (по тому же ТЗ)",
-                        units=1,
-                        price_kopeks=4900,
-                        sort_order=10,
+                        kind=kind,
+                        name=name,
+                        units=units,
+                        price_kopeks=price,
+                        sort_order=order,
                         is_active=True,
                     )
                 )
-                db.commit()
+            db.commit()
 
-            exact_product_exists = db.query(TariffPackage).filter(TariffPackage.kind == "exact_product").first()
-            if not exact_product_exists:
-                exact_defaults = [
-                    ("1 подбор товара и аналогов", 1, 9900, 1),
-                    ("5 подборов товара и аналогов", 5, 49000, 2),
-                    ("10 подборов товара и аналогов", 10, 89000, 3),
-                    ("25 подборов товара и аналогов", 25, 199000, 4),
-                    ("50 подборов товара и аналогов", 50, 379000, 5),
-                ]
-                for name, units, price, order in exact_defaults:
-                    db.add(
-                        TariffPackage(
-                            kind="exact_product",
-                            name=name,
-                            units=units,
-                            price_kopeks=price,
-                            sort_order=order,
-                            is_active=True,
-                        )
+        extra_exists = db.query(TariffPackage).filter(TariffPackage.kind == "supplier_search_extra").first()
+        if not extra_exists:
+            db.add(
+                TariffPackage(
+                    kind="supplier_search_extra",
+                    name="1 добор поставщиков (по тому же ТЗ)",
+                    units=1,
+                    price_kopeks=4900,
+                    sort_order=10,
+                    is_active=True,
+                )
+            )
+            db.commit()
+
+        exact_product_exists = db.query(TariffPackage).filter(TariffPackage.kind == "exact_product").first()
+        if not exact_product_exists:
+            exact_defaults = [
+                ("1 подбор товара и аналогов", 1, 9900, 1),
+                ("5 подборов товара и аналогов", 5, 49000, 2),
+                ("10 подборов товара и аналогов", 10, 89000, 3),
+                ("25 подборов товара и аналогов", 25, 199000, 4),
+                ("50 подборов товара и аналогов", 50, 379000, 5),
+            ]
+            for name, units, price, order in exact_defaults:
+                db.add(
+                    TariffPackage(
+                        kind="exact_product",
+                        name=name,
+                        units=units,
+                        price_kopeks=price,
+                        sort_order=order,
+                        is_active=True,
                     )
-                db.commit()
+                )
+            db.commit()
     finally:
         db.close()
 
