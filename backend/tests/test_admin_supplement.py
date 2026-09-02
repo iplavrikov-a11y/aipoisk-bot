@@ -131,3 +131,51 @@ async def test_admin_supplement_workflow(db):
                 Path(job.admin_supplement_path).unlink()
             except Exception:
                 pass
+
+
+@pytest.mark.asyncio
+async def test_admin_supplement_from_existing_job_result(db, tmp_path):
+    client = Client(name="Test Company 2", telegram_id="111222333")
+    db.add(client)
+    db.flush()
+
+    job = Job(
+        client_id=client.id,
+        created_by_telegram_id="111222333",
+        mode="supplier_search",
+        status="completed",
+        title="Сэндвич-панель для чистых помещений",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Create dummy output file in job evidence/output
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    supplier_file = out_dir / "suppliers_sandwich.xlsx"
+    supplier_file.write_bytes(b"Fresh suppliers from rerun")
+
+    mock_items = [{"kind": "suppliers", "label": "Поставщики", "path": str(supplier_file)}]
+
+    with patch("app.main.package_job_output_items", return_value=mock_items):
+        with patch("app.bot.send_admin_supplement_telegram", new_callable=AsyncMock) as mock_tg:
+            mock_tg.return_value = True
+
+            res = await upload_admin_supplement(
+                job_id=job.id,
+                file=None,
+                comment="Автоматический комментарий эксперта.",
+                notify_telegram=True,
+                source_mode="job_file",
+                file_kind="suppliers",
+                db=db,
+            )
+
+            assert res["success"] is True
+            assert res["job"]["has_admin_supplement"] is True
+            assert res["job"]["admin_supplement_name"] == "suppliers_sandwich.xlsx"
+            assert res["job"]["admin_comment"] == "Автоматический комментарий эксперта."
+            db.refresh(job)
+            assert Path(job.admin_supplement_path).read_bytes() == b"Fresh suppliers from rerun"
+

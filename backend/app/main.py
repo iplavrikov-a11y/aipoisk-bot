@@ -2372,6 +2372,8 @@ async def upload_admin_supplement(
     file: UploadFile | None = File(default=None),
     comment: str = Form(default=""),
     notify_telegram: bool = Form(default=True),
+    source_mode: str = Form(default="upload"),
+    file_kind: str = Form(default=""),
     db: Session = Depends(db_session),
 ) -> dict:
     job = db.get(Job, job_id)
@@ -2382,7 +2384,29 @@ async def upload_admin_supplement(
     supplement_path = None
     original_filename = ""
 
-    if file and file.filename:
+    if (source_mode == "job_file" or file_kind) and not (file and file.filename):
+        normalized_kind = str(file_kind or "").strip()
+        matched_item = None
+        output_items = package_job_output_items(job)
+        for item in output_items:
+            k = str(item.get("kind") or "").strip()
+            p = Path(str(item.get("path") or ""))
+            if k == normalized_kind or p.name == normalized_kind or not normalized_kind:
+                matched_item = item
+                break
+        if matched_item:
+            source_file = Path(str(matched_item.get("path") or ""))
+            if source_file.is_file():
+                target_dir = job_dir(job.id) / "supplement"
+                target_dir.mkdir(parents=True, exist_ok=True)
+                original_filename = source_file.name
+                dest = target_dir / f"supplement_{original_filename}"
+                shutil.copy2(source_file, dest)
+                supplement_path = dest
+        if not supplement_path and not clean_comment:
+            raise HTTPException(status_code=400, detail="Файл из результатов задачи не найден.")
+
+    elif file and file.filename:
         content = await file.read()
         if content:
             target_dir = job_dir(job.id) / "supplement"
@@ -2393,7 +2417,7 @@ async def upload_admin_supplement(
             dest.write_bytes(content)
             supplement_path = dest
 
-    if not clean_comment and not supplement_path:
+    if not clean_comment and not supplement_path and not getattr(job, "admin_supplement_path", ""):
         raise HTTPException(status_code=400, detail="Укажите комментарий или прикрепите файл.")
 
     if supplement_path:

@@ -4730,6 +4730,21 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   )
 }
 
+function defaultAdminComment(job: Job): string {
+  if (job.admin_comment) return job.admin_comment
+  const title = job.human_title || job.title || 'задаче'
+  if (job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') {
+    return `Наши специалисты вручную проверили и расширили выборку поставщиков по задаче «${title}». В прикрепленном файле — дополненная база с прямыми контактами производителей и отделами продаж.`
+  }
+  if (job.mode === 'exact_product') {
+    return `Эксперты TenderLex провели расширенный подбор товара и аналогов по позиции «${title}». В отчете сформирован перечень производителей и эквивалентов с подтвержденными параметрами.`
+  }
+  if (job.mode === 'procurement_report') {
+    return `Специалисты TenderLex дополнительно проанализировали документацию закупки «${title}». В отчете выделены ключевые требования, риски и рекомендации.`
+  }
+  return `Специалисты TenderLex вручную проверили и дополнили результаты по вашей задаче «${title}». Обновленный отчет прикреплен к задаче.`
+}
+
 function AdminSupplementModal({
   job,
   onClose,
@@ -4739,7 +4754,11 @@ function AdminSupplementModal({
   onClose: () => void
   onSuccess: () => Promise<void>
 }) {
-  const [comment, setComment] = useState(job.admin_comment || '')
+  const [comment, setComment] = useState(() => defaultAdminComment(job))
+  const availableResultFiles = useMemo(() => (job.result_files || []).filter(f => f.kind !== 'admin_supplement'), [job.result_files])
+  const primaryResultFile = useMemo(() => availableResultFiles.find(f => f.kind !== 'quote_request') || availableResultFiles[0], [availableResultFiles])
+  const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>(() => availableResultFiles.length > 0 ? 'job_file' : 'upload')
+  const [selectedJobFileKind, setSelectedJobFileKind] = useState<string>(() => primaryResultFile?.kind || '')
   const [file, setFile] = useState<File | null>(null)
   const [notifyTelegram, setNotifyTelegram] = useState(true)
   const [loading, setLoading] = useState(false)
@@ -4747,7 +4766,7 @@ function AdminSupplementModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!comment.trim() && !file && !job.has_admin_supplement) {
+    if (!comment.trim() && !file && !selectedJobFileKind && !job.has_admin_supplement) {
       setError('Укажите комментарий или выберите файл.')
       return
     }
@@ -4755,7 +4774,12 @@ function AdminSupplementModal({
     setError('')
     try {
       const formData = new FormData()
-      if (file) formData.append('file', file)
+      formData.append('source_mode', sourceMode)
+      if (sourceMode === 'upload' && file) {
+        formData.append('file', file)
+      } else if (sourceMode === 'job_file' && selectedJobFileKind) {
+        formData.append('file_kind', selectedJobFileKind)
+      }
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
 
@@ -4780,7 +4804,7 @@ function AdminSupplementModal({
 
   return (
     <div className="server-modal-backdrop" onClick={onClose}>
-      <div className="server-modal-card" style={{ maxWidth: 540 }} onClick={e => e.stopPropagation()}>
+      <div className="server-modal-card" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
           <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
           <button className="server-modal-close" onClick={onClose}>
@@ -4795,36 +4819,113 @@ function AdminSupplementModal({
               Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
             </div>
             {job.admin_supplement_name && (
-              <div style={{ marginTop: 6, fontSize: 12, color: '#0f766e', fontWeight: 500 }}>
-                📎 Текущий файл эксперта: {job.admin_supplement_name}
+              <div style={{ marginTop: 6, fontSize: 12, color: '#0f766e', fontWeight: 600 }}>
+                ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
               </div>
             )}
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 6 }}>
-              Прикрепить файл отчета (XLSX или DOCX)
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
+              Источник файла отчета:
             </label>
-            <input
-              type="file"
-              accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
-              onChange={e => setFile(e.target.files?.[0] || null)}
-              style={{ fontSize: 13, width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
-            />
-            <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
-              Файл появится в личном кабинете клиента как дополнительный отчет от экспертов TenderLex.
-            </small>
+
+            {availableResultFiles.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="source_mode"
+                    checked={sourceMode === 'job_file'}
+                    onChange={() => setSourceMode('job_file')}
+                  />
+                  <span>Использовать файл из задачи (после Play / перезапуска)</span>
+                </label>
+
+                {sourceMode === 'job_file' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 24, padding: '8px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                    {availableResultFiles.map(rf => {
+                      const isSelected = selectedJobFileKind === rf.kind
+                      return (
+                        <label
+                          key={rf.kind}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            padding: '8px 12px',
+                            border: `1px solid ${isSelected ? '#0d9488' : '#cbd5e1'}`,
+                            borderRadius: 6,
+                            background: isSelected ? '#f0fdfa' : '#fff',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <input
+                            type="radio"
+                            name="selected_job_file"
+                            checked={isSelected}
+                            onChange={() => setSelectedJobFileKind(rf.kind)}
+                          />
+                          <FileText size={16} color={isSelected ? '#0d9488' : '#64748b'} />
+                          <div style={{ fontSize: 13 }}>
+                            <strong style={{ color: isSelected ? '#0f766e' : '#1e293b' }}>{rf.label || rf.filename}</strong>
+                            <span style={{ color: '#64748b', fontSize: 12, marginLeft: 6 }}>({rf.filename})</span>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="source_mode"
+                  checked={sourceMode === 'upload'}
+                  onChange={() => setSourceMode('upload')}
+                />
+                <span>Загрузить отредактированный файл с компьютера</span>
+              </label>
+
+              {sourceMode === 'upload' && (
+                <div style={{ marginLeft: 24, marginTop: 4 }}>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
+                    onChange={e => setFile(e.target.files?.[0] || null)}
+                    style={{ fontSize: 13, width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
+                  />
+                  <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
+                    Поддерживаются форматы XLSX, DOCX, ZIP.
+                  </small>
+                </div>
+              )}
+            </div>
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 6 }}>
-              Комментарий клиенту
-            </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>
+                Комментарий клиенту
+              </label>
+              <button
+                type="button"
+                className="ghost small-text"
+                style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#0d9488' }}
+                onClick={() => setComment(defaultAdminComment(job))}
+              >
+                Восстановить автотекст
+              </button>
+            </div>
             <textarea
               rows={4}
               value={comment}
               onChange={e => setComment(e.target.value)}
-              placeholder="Например: Вручную расширили базу поставщиков — добавили 7 проверенных заводов с прямыми контактами ОМТС и ценами..."
+              placeholder="Укажите комментарий эксперта..."
               style={{ width: '100%', padding: '10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
             />
             <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
