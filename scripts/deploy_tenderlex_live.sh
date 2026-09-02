@@ -249,6 +249,12 @@ promote_site_release() {
   site_next_promoted=1
   mv "$site_release_dir/.next" "$SITE_DIR/.next"
   log "site build promoted; previous build retained at $site_next_backup"
+
+  # Retain only 3 newest site backups
+  (
+    cd "$BACKUP_DIR/tenderlex-site"
+    ls -dt .next-* 2>/dev/null | tail -n +4 | xargs -r rm -rf --
+  ) || true
 }
 
 export AIPOISK_SITE_API_BASE_URL="${AIPOISK_SITE_API_BASE_URL:-http://127.0.0.1:8088}"
@@ -293,6 +299,14 @@ if [[ "$deploy_scope" != "site" && -f "$DB_PATH" ]]; then
     exit 1
   fi
   log "sqlite backup verified"
+
+  # Retain only 5 newest sqlite backups
+  (
+    cd "$BACKUP_DIR"
+    ls -dt aipoisk-before-live-deploy-*.db 2>/dev/null | tail -n +6 | while IFS= read -r f; do
+      rm -f -- "$f" "$f-shm" "$f-wal"
+    done
+  ) || true
 fi
 
 if [[ "$deploy_scope" == "site" ]]; then
