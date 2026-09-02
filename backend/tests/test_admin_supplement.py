@@ -257,6 +257,27 @@ async def test_admin_rerun_all_modes(db, tmp_path):
         db.commit()
         db.refresh(job)
 
+        dummy_file = tmp_path / f"input_{mode}.docx"
+        dummy_file.write_bytes(b"Dummy input TZ")
+        jf = JobFile(
+            job_id=job.id,
+            original_filename=f"input_{mode}.docx",
+            stored_path=str(dummy_file),
+            parse_status="parsed",
+            extracted_chars=120,
+        )
+        js = JobSource(
+            job_id=job.id,
+            kind="procurement_url",
+            label="Ссылка",
+            value="https://zakupki.gov.ru/test",
+            parse_status="parsed",
+        )
+        db.add(jf)
+        db.add(js)
+        db.commit()
+        db.refresh(job)
+
         with patch("app.main.enqueue_job") as mock_enqueue:
             res = admin_rerun_job(job_id=job.id, policy=None, db=db)
             assert res["success"] is True
@@ -265,6 +286,12 @@ async def test_admin_rerun_all_modes(db, tmp_path):
             assert res["job"]["parent_job_id"] == job.id
             assert res["parent_job_id"] == job.id
             mock_enqueue.assert_called_once_with(res["job"]["id"])
+
+            new_job_record = db.get(Job, res["job"]["id"])
+            assert len(new_job_record.files) == 1
+            assert new_job_record.files[0].original_filename == f"input_{mode}.docx"
+            assert len(new_job_record.sources) == 1
+            assert new_job_record.sources[0].value == "https://zakupki.gov.ru/test"
 
             # Verify the original job was NOT modified or overwritten!
             db.refresh(job)

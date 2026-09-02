@@ -2381,16 +2381,29 @@ def admin_rerun_job(
 
     parent_input_dir = parent_dir / "input"
     new_input_dir = new_dir / "input"
+    new_input_dir.mkdir(parents=True, exist_ok=True)
     if parent_input_dir.exists():
         shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
 
     for pf in parent_job.files:
+        src_p = Path(pf.stored_path) if pf.stored_path else None
+        dest_stored_path = ""
+        if src_p and src_p.exists():
+            dest_file = new_input_dir / src_p.name
+            if not dest_file.exists():
+                shutil.copy2(src_p, dest_file)
+            dest_stored_path = str(dest_file)
+        elif src_p:
+            dest_stored_path = str(new_input_dir / src_p.name)
+
         new_file = JobFile(
             id=new_id(),
             job_id=new_job.id,
-            filename=pf.filename,
-            path=str(new_input_dir / Path(pf.path).name) if pf.path else "",
-            size_bytes=pf.size_bytes,
+            original_filename=pf.original_filename,
+            stored_path=dest_stored_path,
+            parse_status="pending",
+            extracted_chars=pf.extracted_chars or 0,
+            error="",
         )
         db.add(new_file)
 
@@ -2398,10 +2411,13 @@ def admin_rerun_job(
         new_source = JobSource(
             id=new_id(),
             job_id=new_job.id,
-            source_type=ps.source_type,
-            url=ps.url,
-            title=ps.title,
-            content=ps.content,
+            kind=ps.kind,
+            label=ps.label,
+            value=ps.value,
+            parse_status="pending",
+            context_path="",
+            extracted_chars=ps.extracted_chars or 0,
+            error="",
         )
         db.add(new_source)
 
