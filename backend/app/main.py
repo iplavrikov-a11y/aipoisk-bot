@@ -2908,7 +2908,10 @@ async def test_ai(data: AiTestRequest, db: Session = Depends(db_session)) -> dic
             tier="light",
             routing_key=data.routing_key,
             override=override,
-            timeout_seconds=45,
+            timeout_seconds=10.0,
+            total_timeout_seconds=12.0,
+            max_retries=0,
+            limiter_timeout_seconds=5.0,
             metadata=metadata,
         )
     except Exception as exc:

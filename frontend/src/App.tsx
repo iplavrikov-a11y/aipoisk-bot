@@ -1102,7 +1102,7 @@ export function App() {
       if (analyticsData) setAnalytics(analyticsData)
 
       // Fetch background / secondary data without delaying core view rendering
-      void api<Job[]>('/api/jobs?include_internal=true&limit=2000')
+      void api<Job[]>('/api/jobs?include_internal=true&limit=100')
         .then(jobsData => { if (jobsData) setJobs(jobsData) })
         .catch(() => {})
       void api<MinpromRegistryStatus>('/api/ops/minprom-registry')
@@ -1402,7 +1402,7 @@ export function App() {
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
-        {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} />}
+        {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
 
         {showServerModal && opsStatus && (
@@ -5462,7 +5462,15 @@ function SettingsView({
   )
 }
 
-const AiView = memo(function AiView({ settings, onChange }: { settings: SettingsPayload; onChange: () => Promise<void> }) {
+const AiView = memo(function AiView({
+  settings,
+  onChange,
+  onSettingsUpdated,
+}: {
+  settings: SettingsPayload
+  onChange?: () => Promise<void>
+  onSettingsUpdated?: (settings: SettingsPayload) => void
+}) {
   const [savedModels, setSavedModels] = useState<SavedModel[]>(() => parseJson(settings.saved_models_json, []))
   const [providers, setProviders] = useState<CustomProvider[]>(() => ensureModelProviders(parseJson(settings.custom_ai_providers_json, []), parseJson(settings.saved_models_json, [])))
   const [functionModels, setFunctionModels] = useState<Record<string, string>>(() => parseJson(settings.ai_function_models_json, {}))
@@ -5476,6 +5484,7 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
   const [supplierFallback, setSupplierFallback] = useState<FallbackEntry[]>(() => parseJson(settings.ai_supplier_fallback_json, []))
   const [testResults, setTestResults] = useState<Record<string, AiTestState>>({})
   const [saveStatus, setSaveStatus] = useState<Record<string, string>>({})
+  const [savingSection, setSavingSection] = useState<string | null>(null)
 
   useEffect(() => {
     const parsedModels = parseJson<SavedModel[]>(settings.saved_models_json, [])
@@ -5722,12 +5731,23 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
     clearSaveStatuses('models', 'global', 'supplier')
   }
   async function saveSection(section: string, payload: Partial<SettingsPayload>) {
-    await api('/api/settings', {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    })
-    setSaveStatus(current => ({ ...current, [section]: 'Сохранено' }))
-    await onChange()
+    setSavingSection(section)
+    try {
+      const res = await api<{ success: boolean; settings: SettingsPayload }>('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      setSaveStatus(current => ({ ...current, [section]: 'Сохранено' }))
+      if (res?.settings && onSettingsUpdated) {
+        onSettingsUpdated(res.settings)
+      } else if (onChange) {
+        await onChange()
+      }
+    } catch (err) {
+      setSaveStatus(current => ({ ...current, [section]: `Ошибка: ${formatError(err)}` }))
+    } finally {
+      setSavingSection(null)
+    }
   }
   async function saveFunctionModelSettings() {
     await saveSection('functions', { ai_function_models_json: stringify(explicitFunctionModels()) })
@@ -5795,11 +5815,15 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
         message: `Проверяю: ${selectedModelSummary(provider, model)}`,
       },
     }))
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 12000)
     try {
       const result = await api<{ response: string; provider_name?: string; model?: string }>('/api/ai/test', {
         method: 'POST',
+        signal: controller.signal,
         body: JSON.stringify({ provider, model }),
       })
+      clearTimeout(timeoutId)
       setTestResults(current => ({
         ...current,
         [slot]: {
@@ -5809,12 +5833,15 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
           model: result.model || model,
         },
       }))
-    } catch (err) {
+    } catch (err: unknown) {
+      clearTimeout(timeoutId)
+      const isTimeout =
+        err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('aborted'))
       setTestResults(current => ({
         ...current,
         [slot]: {
           status: 'error',
-          message: formatError(err),
+          message: isTimeout ? 'Превышен лимит времени проверки модели (12 сек)' : formatError(err),
           providerName: providerDisplayName(provider),
           model,
         },
@@ -5889,7 +5916,10 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
             {renderFallbackEditor(analysisFallback, setAnalysisFallback, 'global')}
           </div>
           <div className="section-actions">
-            <button onClick={() => void saveGlobalModelSettings()}><Save size={16} />Сохранить анализ</button>
+            <button onClick={() => void saveGlobalModelSettings()} disabled={savingSection !== null}>
+              {savingSection === 'global' ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingSection === 'global' ? 'Сохранение...' : 'Сохранить анализ'}
+            </button>
             {sectionSaveStatus('global')}
           </div>
         </details>
@@ -5914,7 +5944,10 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
             {renderFallbackEditor(supplierFallback, setSupplierFallback, 'supplier')}
           </div>
           <div className="section-actions">
-            <button onClick={() => void saveSupplierModelSettings()}><Save size={16} />Сохранить поиск</button>
+            <button onClick={() => void saveSupplierModelSettings()} disabled={savingSection !== null}>
+              {savingSection === 'supplier' ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingSection === 'supplier' ? 'Сохранение...' : 'Сохранить поиск'}
+            </button>
             {sectionSaveStatus('supplier')}
           </div>
         </details>
@@ -5937,7 +5970,10 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
             })}
           </div>
           <div className="section-actions">
-            <button onClick={() => void saveFunctionModelSettings()}><Save size={16} />Сохранить маршруты</button>
+            <button onClick={() => void saveFunctionModelSettings()} disabled={savingSection !== null}>
+              {savingSection === 'functions' ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingSection === 'functions' ? 'Сохранение...' : 'Сохранить маршруты'}
+            </button>
             {sectionSaveStatus('functions')}
           </div>
       </details>
@@ -5963,7 +5999,10 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
             </div>
           ))}
           <div className="section-actions">
-            <button onClick={() => void saveProviderSettings()}><Save size={16} />Сохранить провайдеров</button>
+            <button onClick={() => void saveProviderSettings()} disabled={savingSection !== null}>
+              {savingSection === 'providers' ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingSection === 'providers' ? 'Сохранение...' : 'Сохранить провайдеров'}
+            </button>
             {sectionSaveStatus('providers')}
           </div>
         </div>
@@ -5998,7 +6037,10 @@ const AiView = memo(function AiView({ settings, onChange }: { settings: Settings
             )
           })}
           <div className="section-actions">
-            <button onClick={() => void saveModelListSettings()}><Save size={16} />Сохранить модели</button>
+            <button onClick={() => void saveModelListSettings()} disabled={savingSection !== null}>
+              {savingSection === 'models' ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingSection === 'models' ? 'Сохранение...' : 'Сохранить модели'}
+            </button>
             {sectionSaveStatus('models')}
           </div>
         </div>

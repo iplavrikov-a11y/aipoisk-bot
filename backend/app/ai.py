@@ -107,8 +107,11 @@ class _ProcessLLMLimiter:
             self._active += 1
             return True
 
-    async def acquire(self) -> None:
+    async def acquire(self, timeout: float | None = None) -> None:
+        started = time.monotonic()
         while not self._try_acquire():
+            if timeout is not None and (time.monotonic() - started) >= timeout:
+                raise TimeoutError("LLM limiter concurrency capacity exhausted")
             await asyncio.sleep(0.025)
 
     def release(self) -> None:
@@ -547,6 +550,8 @@ async def _post_llm_request(
     attempt_budget: _RequestAttemptBudget | None = None,
     request_metadata: dict[str, Any] | None = None,
     deadline_monotonic: float | None = None,
+    max_retries: int | None = None,
+    limiter_timeout_seconds: float | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "model": selection.model,
@@ -561,8 +566,9 @@ async def _post_llm_request(
     last_error: LLMError | None = None
     if request_metadata is not None:
         request_metadata.update({"request_attempts": 0, "retry_count": 0, "last_status": None})
+    effective_retries = _MAX_RETRIES if max_retries is None else max(0, int(max_retries))
     async with httpx.AsyncClient(timeout=_httpx_timeout(timeout_seconds)) as client:
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(effective_retries + 1):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 raise TimeoutError("LLM overall deadline exceeded")
             if attempt_budget is not None and not attempt_budget.consume():
@@ -575,7 +581,7 @@ async def _post_llm_request(
             if request_metadata is not None:
                 request_metadata["request_attempts"] = int(request_metadata["request_attempts"]) + 1
                 request_metadata["retry_count"] = attempt
-            await _process_llm_limiter.acquire()
+            await _process_llm_limiter.acquire(timeout=limiter_timeout_seconds)
             try:
                 try:
                     response = await client.post(selection.base_url, headers=headers, json=payload)
@@ -593,7 +599,7 @@ async def _post_llm_request(
                     provider=selection.provider_id,
                     model=selection.model,
                 )
-                if attempt < _MAX_RETRIES:
+                if attempt < effective_retries:
                     await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
@@ -611,7 +617,7 @@ async def _post_llm_request(
                     provider=selection.provider_id,
                     model=selection.model,
                 )
-                if retriable and attempt < _MAX_RETRIES:
+                if retriable and attempt < effective_retries:
                     await _sleep_before_retry(_retry_delay(attempt, response), deadline_monotonic)
                     continue
                 raise last_error
@@ -626,7 +632,7 @@ async def _post_llm_request(
                     provider=selection.provider_id,
                     model=selection.model,
                 )
-                if attempt < _MAX_RETRIES:
+                if attempt < effective_retries:
                     await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
@@ -645,7 +651,7 @@ async def _post_llm_request(
                     provider=selection.provider_id,
                     model=selection.model,
                 )
-                if retriable and attempt < _MAX_RETRIES:
+                if retriable and attempt < effective_retries:
                     await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
@@ -658,7 +664,7 @@ async def _post_llm_request(
                     provider=selection.provider_id,
                     model=selection.model,
                 )
-                if attempt < _MAX_RETRIES:
+                if attempt < effective_retries:
                     await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
@@ -679,6 +685,8 @@ async def call_llm(
     metadata: dict[str, Any] | None = None,
     response_validator: Callable[[str], None] | None = None,
     total_timeout_seconds: float | None = None,
+    max_retries: int | None = None,
+    limiter_timeout_seconds: float | None = None,
 ) -> str:
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -725,6 +733,8 @@ async def call_llm(
                     attempt_budget=request_budget,
                     request_metadata=request_metadata,
                     deadline_monotonic=deadline,
+                    max_retries=max_retries,
+                    limiter_timeout_seconds=limiter_timeout_seconds,
                 ),
                 timeout=selection_timeout,
             )
