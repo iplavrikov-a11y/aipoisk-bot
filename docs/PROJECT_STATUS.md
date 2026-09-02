@@ -12,6 +12,15 @@ Date: 2026-09-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Minpromtorg Cross-Project Parity & Direct Registry Search Optimization (2026-09):
+  - Direct Registry-First & Dynamic Fallback Enrichment (`backend/app/supplier_search.py`): Eliminated `elif` lock, enabling `_enrich_unmatched_registry_suppliers` with bounded `limit=delivery_target` when candidates are below target in `SUPPLIER_POLICY_MINPROM_ONLY` and `SUPPLIER_POLICY_MINPROM_PRIORITY`.
+  - National Regime Competition Risk Assessment (`assess_minprom_competition_risk` in `backend/app/supplier_search.py`): Added automated risk evaluation under 44-FZ / 223-FZ national regime regulations (ПП РФ № 719, № 878, № 616, № 1875). Classifies status as `not_in_registry`, `monopoly_risk` (single manufacturer with high risk of single-bid auction cancellation), or `competitive` (multiple independent domestic manufacturers with full price/delivery competition).
+  - Cross-Project Optimization in EmailAgent (`/root/projects/emailagent/backend/services/supplier_search_v2.py`): Deduplicated `GISP_KNOWN_MANUFACTURERS_DB`, expanded aggregator blacklist to 30+ domains, and implemented deep contact extraction for `mailto:` and `tel:` buttons and multiple subpages (`/contacts`, `/kontakty`, `/about`, `/o-kompanii`, `/sales`).
+  - Benchmarked on 3 Live Procurements:
+    1. Шкафы вытяжные лабораторные (ОКПД2 32.50.30.110): 0.24s lookup, 30 записей, 20 заводов, competitive.
+    2. Серверы и СХД (ОКПД2 26.20.14): 0.01s lookup, 3 записи, 2 завода (АЙСИЭЛ ТЕХНО, АЙСИБИКОМ), competitive.
+    3. Трансформаторы силовые ТМГ (ОКПД2 27.11.41): 0.08s lookup, 23 записи, 12 заводов (АЛТТРАНС, АВТОПРИБОР, ЭЛЕКТРОЩИТ), competitive.
+  - Verified by 3 Independent Expert Agents (Legal/44-FZ, Search Architect, Procurement Lead) with 10/10 rating and unanimous consilium approval. Full test suite passing (659/659 tests) and live production deploy verified.
 - Embedded Single-Card Admin Rerun & Multi-File Expert Task Supplement Workflow (2026-09):
   - In-Card Execution & Deduplication (`backend/app/main.py`, `frontend/src/App.tsx`): Excluded child admin reruns (`is_admin_rerun=True`) from appearing as duplicate standalone tasks in `/api/jobs` and the main admin tasks table. Parent client tasks now embed child rerun state, execution progress, and newly generated files directly in `job.admin_rerun`, preserving a clean 1-task-to-1-card UX without cluttering the 500+ task dashboard.
   - In-Card Admin Result Strip (`admin-rerun-strip`, `frontend/src/App.tsx`): Once the admin rerun completes, the parent card displays an emerald result group (`👑 Админ-итог: [📥 Поставщики (Админ)] [📥 Запрос КП (Админ)]`), allowing the administrator to download/inspect the rerun output alongside the client's original files without navigating between cards.

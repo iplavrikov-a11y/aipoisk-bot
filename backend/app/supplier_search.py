@@ -1932,7 +1932,12 @@ async def _discover_suppliers_impl(
         accepted = _filter_minprom_verified_suppliers(accepted, minprom_context)
     elif minprom_context.status == "ok" and minprom_context.entries:
         await _emit_progress(progress_callback, 90, "Обогащаю контакты и реквизиты реестра через DaData и поиск")
-        accepted = await _enrich_unmatched_registry_suppliers(settings, accepted, minprom_context)
+        accepted = await _enrich_unmatched_registry_suppliers(
+            settings,
+            accepted,
+            minprom_context,
+            limit=delivery_target,
+        )
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
@@ -1940,6 +1945,8 @@ async def _discover_suppliers_impl(
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
         accepted.sort(key=lambda item: 0 if (item.get("minprom_registry_match") or {}).get("matched") else 1)
     await _emit_progress(progress_callback, 94, f"Готовлю результат: подтверждено {len(accepted)}")
+
+    competition_risk = assess_minprom_competition_risk(minprom_context, accepted)
 
     evidence = {
         "ai_required": True,
@@ -1965,6 +1972,7 @@ async def _discover_suppliers_impl(
         },
         "procurement_profile": _profile_to_dict(profile),
         "minprom_registry": _minprom_context_to_dict(minprom_context),
+        "minprom_competition_risk": competition_risk,
         "minprom_supplier_queries": minprom_supplier_queries,
         "search_provider": "yandex_primary",
         "search": search_meta,
@@ -2027,6 +2035,7 @@ async def _enrich_unmatched_registry_suppliers(
     settings: SystemSettings,
     accepted: list[dict],
     registry_context: MinpromRegistryContext,
+    limit: int = 15,
 ) -> list[dict]:
     """Ensures ALL GISP registry entries appear in results and enriches them via DaData + targeted search."""
     if registry_context.status != "ok" or not registry_context.entries:
@@ -2066,6 +2075,9 @@ async def _enrich_unmatched_registry_suppliers(
 
     if not unmatched_entries:
         return accepted
+
+    if limit and limit > 0:
+        unmatched_entries = unmatched_entries[:limit]
 
     semaphore = asyncio.Semaphore(3)
 
@@ -2125,7 +2137,7 @@ async def _enrich_unmatched_registry_suppliers(
                     valid_candidates = []
                     for c in candidates:
                         cand_domain = base_domain(c.url)
-                        if is_blocked(c.url) or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                        if is_blocked(c.url) or is_blocked(cand_domain) or cand_domain in EXTRA_AGGREGATOR_DOMAINS or cand_domain in BLOCKED_DOMAINS:
                             continue
                         valid_candidates.append(c)
 
@@ -6140,43 +6152,56 @@ def important_terms(context: str) -> list[str]:
             break
     return result
 
-async def _discover_minprom_registry_candidates(
-    settings: SystemSettings,
-    registry_context: MinpromRegistryContext,
-    excluded_domains: set[str],
-) -> list[Candidate]:
-    if registry_context.status != "ok" or not registry_context.entries:
-        return []
+def assess_minprom_competition_risk(
+    minprom_context: MinpromRegistryContext | None,
+    accepted_suppliers: list[dict] | None = None,
+) -> dict[str, Any]:
+    """
+    Assess National Regime (ПП РФ № 719, № 878, № 616, № 1875) competition risks.
+    Calculates whether there is a monopoly risk or a healthy competitive environment
+    for 44-FZ 'Third Odd Man Out' (Третий лишний) or 'Second Odd Man Out' (Второй лишний) rules.
+    """
+    entries = list(minprom_context.entries) if minprom_context and minprom_context.entries else []
+    matched_inns: set[str] = set()
+    matched_mfrs: set[str] = set()
+    if accepted_suppliers:
+        for s in accepted_suppliers:
+            m = s.get("minprom_registry_match") or {}
+            if m.get("matched"):
+                inn = re.sub(r"\D+", "", str(m.get("inn") or s.get("inn") or ""))
+                mfr = str(m.get("manufacturer") or s.get("company_name") or "").strip().lower()
+                if inn:
+                    matched_inns.add(inn)
+                elif mfr:
+                    matched_mfrs.add(mfr)
 
-    candidates: list[Candidate] = []
-    seen_inns_or_names: set[str] = set()
+    unique_plants_count = max(
+        len({re.sub(r"\D+", "", str(e.get("inn") or "")) or str(e.get("manufacturer") or "").lower() for e in entries}),
+        len(matched_inns) + len(matched_mfrs),
+    )
 
-    for entry in registry_context.entries:
-        inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
-        mfr = str(entry.get("manufacturer") or "").strip()
-        key = inn if inn else _normalize_company_key(mfr)
-        if not key or key in seen_inns_or_names:
-            continue
-        seen_inns_or_names.add(key)
+    if unique_plants_count == 0:
+        return {
+            "status": "not_in_registry",
+            "risk_level": "info",
+            "unique_manufacturers_count": 0,
+            "rule_applicable": None,
+            "conclusion": "Продукция отсутствует в реестре Минпромторга / ГИСП. Закупка возможна на общих основаниях (без ограничений нацрежима либо требуется согласование Минпромторга на закупку иностранного товара).",
+        }
+    elif unique_plants_count == 1:
+        return {
+            "status": "monopoly_risk",
+            "risk_level": "high",
+            "unique_manufacturers_count": 1,
+            "rule_applicable": "Монопольный производитель",
+            "conclusion": "В реестре Минпромторга найден только 1 производитель. Высокий риск срыва торгов по правилу «Второй лишний» (ПП РФ № 878 / № 1875) или монопольного ценообразования. Рекомендуется запросить ТКП напрямую у завода.",
+        }
+    else:
+        return {
+            "status": "competitive",
+            "risk_level": "low",
+            "unique_manufacturers_count": unique_plants_count,
+            "rule_applicable": "Конкурентная среда (ПП РФ № 719 / № 878 / № 616)",
+            "conclusion": f"В реестре Минпромторга подтверждена конкурентная среда ({unique_plants_count} независимых производителей). Заявки с реестровыми выписками имеют безусловный приоритет по нацрежиму (правило «Третий / Второй лишний»).",
+        }
 
-        queries = [
-            f'ИНН {inn} официальный сайт' if inn else f'"{mfr}" официальный сайт',
-            f'ИНН {inn} производитель контакты' if inn else f'"{mfr}" дилер официальный сайт'
-        ]
-        found_cands, _ = await discover_candidates(
-            settings,
-            queries,
-            max_results=6,
-            excluded_domains=excluded_domains,
-            primary_candidate_floor=2,
-            fallback_candidate_limit=3,
-        )
-        added_for_entry = 0
-        if found_cands:
-            for cand in found_cands:
-                if cand.domain and not is_blocked(cand.domain) and cand.domain not in excluded_domains:
-                    candidates.append(cand)
-                    added_for_entry += 1
-                    if added_for_entry >= 3:
-                        break
-    return candidates
