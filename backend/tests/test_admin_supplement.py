@@ -179,3 +179,60 @@ async def test_admin_supplement_from_existing_job_result(db, tmp_path):
             db.refresh(job)
             assert Path(job.admin_supplement_path).read_bytes() == b"Fresh suppliers from rerun"
 
+
+@pytest.mark.asyncio
+async def test_admin_supplement_multi_files(db, tmp_path):
+    client = Client(name="Test Company 3", telegram_id="555666777")
+    db.add(client)
+    db.flush()
+
+    job = Job(
+        client_id=client.id,
+        created_by_telegram_id="555666777",
+        mode="supplier_search",
+        status="completed",
+        title="Стеклянная магниевая сэндвич-панель",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    out_dir = tmp_path / "output2"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    f1 = out_dir / "suppliers.xlsx"
+    f1.write_bytes(b"File 1 XLSX content")
+    f2 = out_dir / "quote_request.docx"
+    f2.write_bytes(b"File 2 DOCX content")
+
+    mock_items = [
+        {"kind": "suppliers", "label": "Поставщики", "path": str(f1)},
+        {"kind": "quote_request", "label": "Запрос КП", "path": str(f2)},
+    ]
+
+    with patch("app.main.package_job_output_items", return_value=mock_items):
+        with patch("app.bot.send_admin_supplement_telegram", new_callable=AsyncMock) as mock_tg:
+            mock_tg.return_value = True
+
+            res = await upload_admin_supplement(
+                job_id=job.id,
+                file=None,
+                comment="Отправляем оба отчета: поставщиков и запрос КП.",
+                notify_telegram=True,
+                source_mode="job_file",
+                file_kinds="suppliers,quote_request",
+                db=db,
+            )
+
+            assert res["success"] is True
+            assert res["job"]["has_admin_supplement"] is True
+            assert "suppliers.xlsx" in res["job"]["admin_supplement_name"]
+            assert "quote_request.docx" in res["job"]["admin_supplement_name"]
+
+            db.refresh(job)
+            cust_files = customer_job_result_files(job)
+            admin_supps = [f for f in cust_files if f.get("is_admin_supplement")]
+            assert len(admin_supps) == 2
+            assert any(f["kind"] == "admin_supplement_0" and f["filename"] == "suppliers.xlsx" for f in admin_supps)
+            assert any(f["kind"] == "admin_supplement_1" and f["filename"] == "quote_request.docx" for f in admin_supps)
+
+

@@ -412,6 +412,8 @@ class Job(Base):
     admin_supplement_path: Mapped[str] = mapped_column(Text, default="")
     admin_supplement_name: Mapped[str] = mapped_column(Text, default="")
     admin_supplement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    parent_job_id: Mapped[str] = mapped_column(String(32), default="")
+    is_admin_rerun: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)

@@ -143,6 +143,8 @@ def _ensure_schema() -> None:
             "admin_supplement_path": "TEXT DEFAULT ''",
             "admin_supplement_name": "TEXT DEFAULT ''",
             "admin_supplement_at": "DATETIME NULL",
+            "parent_job_id": "VARCHAR(32) DEFAULT ''",
+            "is_admin_rerun": "BOOLEAN DEFAULT 0",
         }
         billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
         client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")

@@ -2231,19 +2231,65 @@ def download_job(job_id: str, db: Session = Depends(db_session)):
     return FileResponse(output, filename=output.name)
 
 
+def get_job_admin_supplements(job: Job) -> list[dict]:
+    raw_path = getattr(job, "admin_supplement_path", "") or ""
+    if not raw_path:
+        return []
+    raw_path = raw_path.strip()
+    if raw_path.startswith("[") and raw_path.endswith("]"):
+        try:
+            data = json.loads(raw_path)
+            if isinstance(data, list):
+                res = []
+                for idx, item in enumerate(data):
+                    if isinstance(item, dict) and item.get("path"):
+                        p = Path(str(item["path"]))
+                        if p.is_file():
+                            label = item.get("label") or ("Дополнительный отчет (эксперт)" if len(data) == 1 else f"Дополнительный отчет {idx + 1} (эксперт)")
+                            res.append({
+                                "path": str(p),
+                                "name": item.get("name") or p.name,
+                                "label": label,
+                                "kind": "admin_supplement" if len(data) == 1 else f"admin_supplement_{idx}",
+                            })
+                if res:
+                    return res
+        except Exception:
+            pass
+    p = Path(raw_path)
+    if p.is_file():
+        name = getattr(job, "admin_supplement_name", "") or p.name
+        return [{
+            "path": str(p),
+            "name": name,
+            "label": "Дополнительный отчет (эксперт)",
+            "kind": "admin_supplement",
+        }]
+    return []
+
+
 @app.get("/api/jobs/{job_id}/download/{file_kind}", dependencies=[Depends(require_admin)])
 def download_job_file(job_id: str, file_kind: str, db: Session = Depends(db_session)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     normalized_kind = str(file_kind or "").strip()
-    if normalized_kind in {"admin_supplement", "admin-supplement"}:
-        supp_path_str = getattr(job, "admin_supplement_path", "")
-        if not supp_path_str or not Path(supp_path_str).is_file():
+    if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        supplements = get_job_admin_supplements(job)
+        if not supplements:
             raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
-        supp_path = Path(supp_path_str)
-        fname = getattr(job, "admin_supplement_name", "") or supp_path.name
-        return FileResponse(supp_path, filename=fname)
+        if "_" in normalized_kind and normalized_kind.split("_")[-1].isdigit():
+            idx = int(normalized_kind.split("_")[-1])
+            if idx < 0 or idx >= len(supplements):
+                raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+            target_supp = supplements[idx]
+        else:
+            target_supp = supplements[0]
+        supp_path = Path(target_supp["path"])
+        if not supp_path.is_file():
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден на сервере.")
+        return FileResponse(supp_path, filename=target_supp["name"])
+
     output = None
     for item in package_job_output_items(job):
         if str(item.get("kind") or "") == normalized_kind:
@@ -2292,6 +2338,125 @@ def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": job_to_dict(job)}
+
+
+@app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
+def admin_rerun_job(
+    job_id: str,
+    policy: str | None = Query(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    parent_job = db.get(Job, job_id)
+    if not parent_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    new_job_id = new_id()
+    orig_title = parent_job.title or ""
+    clean_title = orig_title.replace("[Админ] ", "").strip()
+    admin_title = f"[Админ] {clean_title}"
+
+    root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
+
+    new_job = Job(
+        id=new_job_id,
+        client_id=parent_job.client_id,
+        created_by_telegram_id="",
+        mode=parent_job.mode,
+        supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+        title=admin_title,
+        status="pending",
+        progress=0,
+        message="Экспертный перезапуск администратора",
+        parent_job_id=root_parent_id,
+        is_admin_rerun=True,
+        target_suppliers=parent_job.target_suppliers,
+    )
+    db.add(new_job)
+    db.flush()
+
+    parent_dir = job_dir(parent_job.id)
+    new_dir = job_dir(new_job.id)
+    new_dir.mkdir(parents=True, exist_ok=True)
+
+    parent_input_dir = parent_dir / "input"
+    new_input_dir = new_dir / "input"
+    if parent_input_dir.exists():
+        shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
+
+    for pf in parent_job.files:
+        new_file = JobFile(
+            id=new_id(),
+            job_id=new_job.id,
+            filename=pf.filename,
+            path=str(new_input_dir / Path(pf.path).name) if pf.path else "",
+            size_bytes=pf.size_bytes,
+        )
+        db.add(new_file)
+
+    for ps in parent_job.sources:
+        new_source = JobSource(
+            id=new_id(),
+            job_id=new_job.id,
+            source_type=ps.source_type,
+            url=ps.url,
+            title=ps.title,
+            content=ps.content,
+        )
+        db.add(new_source)
+
+    db.commit()
+    enqueue_job(new_job.id)
+    return {
+        "success": True,
+        "job": job_to_dict(new_job, db=db),
+        "parent_job_id": root_parent_id,
+    }
+
+
+@app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
+def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
+
+    related_jobs = db.query(Job).filter(
+        or_(
+            Job.id == root_id,
+            Job.parent_job_id == root_id,
+            Job.id == job.id,
+        )
+    ).order_by(Job.created_at.desc()).all()
+
+    candidates: list[dict] = []
+    seen_paths = set()
+
+    for rj in related_jobs:
+        is_rerun = bool(getattr(rj, "is_admin_rerun", False) or getattr(rj, "parent_job_id", "") or "[Админ]" in (rj.title or ""))
+        for item in package_job_output_items(rj):
+            p = Path(str(item.get("path") or ""))
+            if p.is_file() and str(p) not in seen_paths:
+                seen_paths.add(str(p))
+                k = str(item.get("kind") or p.stem).strip()
+                prefix = "👑 " if is_rerun else "📄 "
+                suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
+                candidates.append({
+                    "kind": k,
+                    "composite_id": f"{rj.id}:{k}",
+                    "label": f"{prefix}{item.get('label') or k}{suffix}",
+                    "filename": p.name,
+                    "job_id": rj.id,
+                    "is_admin_rerun": is_rerun,
+                    "created_at": rj.created_at.isoformat() if rj.created_at else None,
+                })
+
+    return {
+        "success": True,
+        "job_id": job.id,
+        "root_job_id": root_id,
+        "candidates": candidates,
+    }
 
 
 @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
@@ -2369,10 +2534,12 @@ def resolve_single_job(job_id: str, db: Session = Depends(db_session)) -> dict:
 @app.post("/api/jobs/{job_id}/admin-supplement", dependencies=[Depends(require_admin)])
 async def upload_admin_supplement(
     job_id: str,
+    files: list[UploadFile] = File(default=[]),
     file: UploadFile | None = File(default=None),
     comment: str = Form(default=""),
     notify_telegram: bool = Form(default=True),
     source_mode: str = Form(default="upload"),
+    file_kinds: str = Form(default=""),
     file_kind: str = Form(default=""),
     db: Session = Depends(db_session),
 ) -> dict:
@@ -2380,49 +2547,67 @@ async def upload_admin_supplement(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    clean_comment = str(comment or "").strip()
-    supplement_path = None
-    original_filename = ""
+    clean_comment = str(comment if isinstance(comment, str) else "").strip()
+    supplement_items: list[dict] = []
 
-    if (source_mode == "job_file" or file_kind) and not (file and file.filename):
-        normalized_kind = str(file_kind or "").strip()
-        matched_item = None
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    file_kinds_str = file_kinds if isinstance(file_kinds, str) else ""
+    file_kind_str = file_kind if isinstance(file_kind, str) else ""
+    raw_kinds = [k.strip() for k in (file_kinds_str or file_kind_str).split(",") if k.strip()]
+
+    target_dir = job_dir(job.id) / "supplement"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if (source_mode == "job_file" or raw_kinds) and not all_uploads:
         output_items = package_job_output_items(job)
-        for item in output_items:
-            k = str(item.get("kind") or "").strip()
-            p = Path(str(item.get("path") or ""))
-            if k == normalized_kind or p.name == normalized_kind or not normalized_kind:
-                matched_item = item
-                break
-        if matched_item:
-            source_file = Path(str(matched_item.get("path") or ""))
-            if source_file.is_file():
-                target_dir = job_dir(job.id) / "supplement"
-                target_dir.mkdir(parents=True, exist_ok=True)
-                original_filename = source_file.name
-                dest = target_dir / f"supplement_{original_filename}"
-                shutil.copy2(source_file, dest)
-                supplement_path = dest
-        if not supplement_path and not clean_comment:
-            raise HTTPException(status_code=400, detail="Файл из результатов задачи не найден.")
+        for target_kind in raw_kinds:
+            for item in output_items:
+                k = str(item.get("kind") or "").strip()
+                p = Path(str(item.get("path") or ""))
+                if k == target_kind or p.name == target_kind:
+                    if p.is_file():
+                        dest = target_dir / f"supplement_{p.name}"
+                        shutil.copy2(p, dest)
+                        supplement_items.append({
+                            "path": str(dest),
+                            "name": p.name,
+                            "label": item.get("label") or _customer_result_file_label(k, f"Дополнительный отчет ({p.name})"),
+                        })
+                    break
+        if not supplement_items and not clean_comment:
+            raise HTTPException(status_code=400, detail="Файлы из результатов задачи не найдены.")
 
-    elif file and file.filename:
-        content = await file.read()
-        if content:
-            target_dir = job_dir(job.id) / "supplement"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            original_filename = file.filename
-            safe_name = f"supplement_{Path(original_filename).name}"
-            dest = target_dir / safe_name
-            dest.write_bytes(content)
-            supplement_path = dest
+    elif all_uploads:
+        for uf in all_uploads:
+            if not uf.filename:
+                continue
+            content = await uf.read()
+            if content:
+                original_filename = uf.filename
+                dest = target_dir / f"supplement_{Path(original_filename).name}"
+                dest.write_bytes(content)
+                supplement_items.append({
+                    "path": str(dest),
+                    "name": original_filename,
+                    "label": f"Дополнительный отчет ({original_filename})",
+                })
 
-    if not clean_comment and not supplement_path and not getattr(job, "admin_supplement_path", ""):
-        raise HTTPException(status_code=400, detail="Укажите комментарий или прикрепите файл.")
+    if not clean_comment and not supplement_items and not getattr(job, "admin_supplement_path", ""):
+        raise HTTPException(status_code=400, detail="Укажите комментарий или прикрепите хотя бы один файл.")
 
-    if supplement_path:
-        job.admin_supplement_path = str(supplement_path)
-        job.admin_supplement_name = original_filename
+    if supplement_items:
+        if len(supplement_items) == 1:
+            job.admin_supplement_path = supplement_items[0]["path"]
+            job.admin_supplement_name = supplement_items[0]["name"]
+        else:
+            job.admin_supplement_path = json.dumps(supplement_items, ensure_ascii=False)
+            job.admin_supplement_name = ", ".join(item["name"] for item in supplement_items)
+
     if clean_comment:
         job.admin_comment = clean_comment
     job.admin_supplement_at = now_utc()
@@ -2436,14 +2621,13 @@ async def upload_admin_supplement(
             try:
                 from .bot import send_admin_supplement_telegram
 
-                supp_path = Path(job.admin_supplement_path) if job.admin_supplement_path else None
+                supp_list = get_job_admin_supplements(job)
                 tg_sent = await send_admin_supplement_telegram(
                     telegram_id=target_tg_id,
                     job_title=human_job_title(job) or job.title,
                     job_id=job.id,
                     comment=job.admin_comment,
-                    file_path=supp_path,
-                    file_name=job.admin_supplement_name,
+                    files=supp_list,
                 )
             except Exception as exc:
                 logger.warning("Error notifying telegram in admin-supplement: %s", exc)
@@ -3297,17 +3481,15 @@ def customer_job_result_files(job: Job) -> list[dict]:
                 "filename": path.name,
             }
         )
-    if getattr(job, "admin_supplement_path", ""):
-        supp_path = Path(job.admin_supplement_path)
-        if supp_path.is_file():
-            result.append(
-                {
-                    "kind": "admin_supplement",
-                    "label": "Дополнительный отчет (эксперт)",
-                    "filename": getattr(job, "admin_supplement_name", "") or supp_path.name,
-                    "is_admin_supplement": True,
-                }
-            )
+    for supp in get_job_admin_supplements(job):
+        result.append(
+            {
+                "kind": supp["kind"],
+                "label": supp["label"],
+                "filename": supp["name"],
+                "is_admin_supplement": True,
+            }
+        )
     return result
 
 
@@ -3489,13 +3671,21 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
     normalized_kind = str(file_kind or "").strip()
-    if normalized_kind in {"admin_supplement", "admin-supplement"}:
-        supp_path_str = getattr(job, "admin_supplement_path", "")
-        if not supp_path_str or not Path(supp_path_str).is_file():
+    if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        supplements = get_job_admin_supplements(job)
+        if not supplements:
             raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
-        supp_path = Path(supp_path_str)
-        fname = getattr(job, "admin_supplement_name", "") or supp_path.name
-        return FileResponse(supp_path, filename=fname)
+        if "_" in normalized_kind and normalized_kind.split("_")[-1].isdigit():
+            idx = int(normalized_kind.split("_")[-1])
+            if idx < 0 or idx >= len(supplements):
+                raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+            target_supp = supplements[idx]
+        else:
+            target_supp = supplements[0]
+        supp_path = Path(target_supp["path"])
+        if not supp_path.is_file():
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден на сервере.")
+        return FileResponse(supp_path, filename=target_supp["name"])
     output = None
     billing_kind = None
     for item in package_job_output_items(job):
@@ -4474,8 +4664,10 @@ def read_cpu_totals(path: Path = Path("/proc/stat")) -> tuple[int, int] | None:
 
 
 def api_service_statuses(settings: SystemSettings, yandex_balance: float | None = None) -> list[dict]:
-    yandex_folder, yandex_key = _yandex_credentials(settings)
-    google_key, google_cse = _google_credentials(settings)
+    yandex_folder = str(getattr(settings, "yandex_search_folder_id", "") or "").strip()
+    yandex_key = str(getattr(settings, "yandex_search_api_key", "") or "").strip()
+    google_key = str(getattr(settings, "google_search_api_key", "") or "").strip()
+    google_cse = str(getattr(settings, "google_search_cse_id", "") or "").strip()
     configured_ai = [
         item
         for item in parse_json_list(settings.custom_ai_providers_json)
@@ -4685,6 +4877,8 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "parent_job_id": getattr(job, "parent_job_id", "") or "",
+        "is_admin_rerun": bool(getattr(job, "is_admin_rerun", False) or (getattr(job, "title", "") or "").startswith("[Админ]")),
         "input_files": [file_to_dict(item) for item in job.files],
         "sources": [source_to_dict(item) for item in job.sources],
     }
@@ -4707,17 +4901,15 @@ def admin_job_result_files(job: Job) -> list[dict]:
                     "filename": path.name,
                 }
             )
-    if getattr(job, "admin_supplement_path", ""):
-        supp_path = Path(job.admin_supplement_path)
-        if supp_path.is_file():
-            result.append(
-                {
-                    "kind": "admin_supplement",
-                    "label": "Дополнительный отчет (эксперт)",
-                    "filename": getattr(job, "admin_supplement_name", "") or supp_path.name,
-                    "is_admin_supplement": True,
-                }
-            )
+    for supp in get_job_admin_supplements(job):
+        result.append(
+            {
+                "kind": supp["kind"],
+                "label": supp["label"],
+                "filename": supp["name"],
+                "is_admin_supplement": True,
+            }
+        )
     return result
 
 

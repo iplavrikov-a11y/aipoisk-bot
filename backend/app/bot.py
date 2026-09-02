@@ -3917,6 +3917,7 @@ async def send_admin_supplement_telegram(
     comment: str = "",
     file_path: Path | None = None,
     file_name: str | None = None,
+    files: list[dict] | None = None,
 ) -> bool:
     if not config.bot_token or not telegram_id:
         return False
@@ -3928,9 +3929,19 @@ async def send_admin_supplement_telegram(
             header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{comment}"
         header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{job_id}\">Открыть задачу в личном кабинете</a>"
 
-        if file_path and file_path.is_file():
-            doc = FSInputFile(file_path, filename=file_name or file_path.name)
-            if len(header) <= 1024:
+        file_list: list[tuple[Path, str]] = []
+        if files:
+            for item in files:
+                p = Path(str(item.get("path") or ""))
+                if p.is_file():
+                    name = str(item.get("name") or p.name)
+                    file_list.append((p, name))
+        elif file_path and file_path.is_file():
+            file_list.append((file_path, file_name or file_path.name))
+
+        if file_list:
+            if len(file_list) == 1 and len(header) <= 1024:
+                doc = FSInputFile(file_list[0][0], filename=file_list[0][1])
                 await bot.send_document(
                     chat_id=telegram_id,
                     document=doc,
@@ -3943,11 +3954,13 @@ async def send_admin_supplement_telegram(
                     text=header,
                     parse_mode="HTML",
                 )
-                await bot.send_document(
-                    chat_id=telegram_id,
-                    document=doc,
-                    caption=f"📎 Дополнительный отчёт: {file_name or file_path.name}",
-                )
+                for p, fname in file_list:
+                    doc = FSInputFile(p, filename=fname)
+                    await bot.send_document(
+                        chat_id=telegram_id,
+                        document=doc,
+                        caption=f"📎 Дополнительный отчёт: {fname}",
+                    )
         else:
             await bot.send_message(
                 chat_id=telegram_id,

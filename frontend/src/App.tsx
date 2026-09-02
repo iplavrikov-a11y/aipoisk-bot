@@ -43,6 +43,7 @@ import {
   TrendingDown,
   Activity,
   Calendar,
+  Crown,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
@@ -235,6 +236,8 @@ type Job = {
   yandex_cost_label?: string
   input_files?: JobInputFile[]
   sources?: JobSource[]
+  parent_job_id?: string
+  is_admin_rerun?: boolean
 }
 
 type JobResultOffer = {
@@ -4453,9 +4456,13 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
     setPage(1)
   }, [showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
-  async function retry(job: Job) {
-    await api(`/api/jobs/${job.id}/retry`, { method: 'POST' })
-    await onChange()
+  async function adminRerun(job: Job) {
+    try {
+      await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
+      await onChange()
+    } catch (err: any) {
+      alert(err.message || 'Ошибка перезапуска задачи')
+    }
   }
   async function resolveJob(job: Job) {
     await api(`/api/jobs/${job.id}/resolve`, { method: 'POST' })
@@ -4621,13 +4628,29 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                   >
                     <MessageSquarePlus size={13} />
                   </button>
-                  <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
+                  <button
+                    className="icon-button small"
+                    onClick={() => void adminRerun(job)}
+                    title="Экспертный перезапуск администратора (создает новую доработанную задачу без затирания исходного отчета клиента)"
+                  >
+                    <Play size={13} />
+                  </button>
                 </div>
               </div>
             </div>
 
             <div className="job-card-meta-line">
               <div className="job-meta-badges">
+                {(job.is_admin_rerun || (job.title && job.title.startsWith('[Админ]')) || Boolean(job.parent_job_id)) && (
+                  <span
+                    className="badge-pill"
+                    style={{ background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d', fontWeight: 700 }}
+                    title="Задача создана администратором для экспертной доработки"
+                  >
+                    <Crown size={12} className="pill-icon" />
+                    Админ-доработка
+                  </span>
+                )}
                 <span className={`badge-pill mode mode-${job.mode}`}>{job.mode_label || humanMode(job.mode)}</span>
                 {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
                 {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
@@ -4730,8 +4753,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   )
 }
 
-function defaultAdminComment(job: Job): string {
-  if (job.admin_comment) return job.admin_comment
+function generateDefaultComment(job: Job): string {
   const title = job.human_title || job.title || 'задаче'
   if (job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') {
     return `Наши специалисты вручную проверили и расширили выборку поставщиков по задаче «${title}». В прикрепленном файле — дополненная база с прямыми контактами производителей и отделами продаж.`
@@ -4745,6 +4767,21 @@ function defaultAdminComment(job: Job): string {
   return `Специалисты TenderLex вручную проверили и дополнили результаты по вашей задаче «${title}». Обновленный отчет прикреплен к задаче.`
 }
 
+function defaultAdminComment(job: Job): string {
+  if (job.admin_comment) return job.admin_comment
+  return generateDefaultComment(job)
+}
+
+type SupplementCandidate = {
+  kind: string
+  composite_id: string
+  label: string
+  filename: string
+  job_id: string
+  is_admin_rerun: boolean
+  created_at?: string | null
+}
+
 function AdminSupplementModal({
   job,
   onClose,
@@ -4755,19 +4792,71 @@ function AdminSupplementModal({
   onSuccess: () => Promise<void>
 }) {
   const [comment, setComment] = useState(() => defaultAdminComment(job))
-  const availableResultFiles = useMemo(() => (job.result_files || []).filter(f => f.kind !== 'admin_supplement'), [job.result_files])
-  const primaryResultFile = useMemo(() => availableResultFiles.find(f => f.kind !== 'quote_request') || availableResultFiles[0], [availableResultFiles])
-  const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>(() => availableResultFiles.length > 0 ? 'job_file' : 'upload')
-  const [selectedJobFileKind, setSelectedJobFileKind] = useState<string>(() => primaryResultFile?.kind || '')
-  const [file, setFile] = useState<File | null>(null)
+  const [candidates, setCandidates] = useState<SupplementCandidate[]>([])
+  const [loadingCandidates, setLoadingCandidates] = useState(true)
+  const [sourceMode, setSourceMode] = useState<'job_file' | 'upload'>('job_file')
+  const [selectedJobFileKinds, setSelectedJobFileKinds] = useState<string[]>([])
+  const [files, setFiles] = useState<File[]>([])
   const [notifyTelegram, setNotifyTelegram] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  useEffect(() => {
+    let active = true
+    async function loadCandidates() {
+      try {
+        const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
+        const res = await fetch(`/api/jobs/${job.id}/supplement-candidates`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (active && data.candidates && Array.isArray(data.candidates)) {
+            const list: SupplementCandidate[] = data.candidates
+            setCandidates(list)
+            if (list.length > 0) {
+              const rerunIds = list.filter(c => c.is_admin_rerun).map(c => c.composite_id)
+              if (rerunIds.length > 0) {
+                setSelectedJobFileKinds(rerunIds)
+              } else {
+                setSelectedJobFileKinds(list.map(c => c.composite_id))
+              }
+              setSourceMode('job_file')
+            } else {
+              setSourceMode('upload')
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load supplement candidates:', err)
+      } finally {
+        if (active) setLoadingCandidates(false)
+      }
+    }
+    loadCandidates()
+    return () => {
+      active = false
+    }
+  }, [job.id])
+
+  function toggleJobFileKind(compositeId: string) {
+    setSelectedJobFileKinds(prev =>
+      prev.includes(compositeId) ? prev.filter(k => k !== compositeId) : [...prev, compositeId]
+    )
+  }
+
+  function selectAllJobFiles() {
+    setSelectedJobFileKinds(candidates.map(f => f.composite_id))
+  }
+
+  function unselectAllJobFiles() {
+    setSelectedJobFileKinds([])
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!comment.trim() && !file && !selectedJobFileKind && !job.has_admin_supplement) {
-      setError('Укажите комментарий или выберите файл.')
+    if (!comment.trim() && files.length === 0 && selectedJobFileKinds.length === 0 && !job.has_admin_supplement) {
+      setError('Укажите комментарий или выберите хотя бы один файл.')
       return
     }
     setLoading(true)
@@ -4775,10 +4864,12 @@ function AdminSupplementModal({
     try {
       const formData = new FormData()
       formData.append('source_mode', sourceMode)
-      if (sourceMode === 'upload' && file) {
-        formData.append('file', file)
-      } else if (sourceMode === 'job_file' && selectedJobFileKind) {
-        formData.append('file_kind', selectedJobFileKind)
+      if (sourceMode === 'upload') {
+        files.forEach(f => formData.append('files', f))
+        if (files[0]) formData.append('file', files[0])
+      } else if (sourceMode === 'job_file' && selectedJobFileKinds.length > 0) {
+        formData.append('file_kinds', selectedJobFileKinds.join(','))
+        formData.append('file_kind', selectedJobFileKinds[0])
       }
       formData.append('comment', comment.trim())
       formData.append('notify_telegram', String(notifyTelegram))
@@ -4804,7 +4895,7 @@ function AdminSupplementModal({
 
   return (
     <div className="server-modal-backdrop" onClick={onClose}>
-      <div className="server-modal-card" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
+      <div className="server-modal-card" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
           <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
           <button className="server-modal-close" onClick={onClose}>
@@ -4827,10 +4918,10 @@ function AdminSupplementModal({
 
           <div>
             <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
-              Источник файла отчета:
+              Источник файлов отчета:
             </label>
 
-            {availableResultFiles.length > 0 && (
+            {(candidates.length > 0 || loadingCandidates) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
                   <input
@@ -4839,42 +4930,110 @@ function AdminSupplementModal({
                     checked={sourceMode === 'job_file'}
                     onChange={() => setSourceMode('job_file')}
                   />
-                  <span>Использовать файл из задачи (после Play / перезапуска)</span>
+                  <span>Использовать файлы из задачи (исходные или после Play / перезапуска)</span>
                 </label>
 
                 {sourceMode === 'job_file' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 24, padding: '8px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                    {availableResultFiles.map(rf => {
-                      const isSelected = selectedJobFileKind === rf.kind
-                      return (
-                        <label
-                          key={rf.kind}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 10,
-                            padding: '8px 12px',
-                            border: `1px solid ${isSelected ? '#0d9488' : '#cbd5e1'}`,
-                            borderRadius: 6,
-                            background: isSelected ? '#f0fdfa' : '#fff',
-                            cursor: 'pointer',
-                            transition: 'all 0.15s ease',
-                          }}
-                        >
-                          <input
-                            type="radio"
-                            name="selected_job_file"
-                            checked={isSelected}
-                            onChange={() => setSelectedJobFileKind(rf.kind)}
-                          />
-                          <FileText size={16} color={isSelected ? '#0d9488' : '#64748b'} />
-                          <div style={{ fontSize: 13 }}>
-                            <strong style={{ color: isSelected ? '#0f766e' : '#1e293b' }}>{rf.label || rf.filename}</strong>
-                            <span style={{ color: '#64748b', fontSize: 12, marginLeft: 6 }}>({rf.filename})</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginLeft: 24, padding: '12px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                    {loadingCandidates ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#64748b', padding: '12px 0' }}>
+                        <Loader2 size={16} className="spin" />
+                        <span>Поиск файлов задачи и экспертных перезапусков...</span>
+                      </div>
+                    ) : candidates.length === 0 ? (
+                      <div style={{ fontSize: 13, color: '#64748b' }}>Нет готовых файлов в задаче. Загрузите файл с компьютера.</div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, color: '#64748b' }}>Выберите файлы для отправки клиенту:</span>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              className="ghost small-text"
+                              style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#0d9488' }}
+                              onClick={selectAllJobFiles}
+                            >
+                              Выбрать все
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost small-text"
+                              style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#64748b' }}
+                              onClick={unselectAllJobFiles}
+                            >
+                              Снять все
+                            </button>
                           </div>
-                        </label>
-                      )
-                    })}
+                        </div>
+                        {candidates.map(cand => {
+                          const isChecked = selectedJobFileKinds.includes(cand.composite_id)
+                          return (
+                            <div
+                              key={cand.composite_id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 10,
+                                padding: '8px 12px',
+                                border: `1px solid ${isChecked ? '#0d9488' : '#cbd5e1'}`,
+                                borderRadius: 6,
+                                background: isChecked ? '#f0fdfa' : '#fff',
+                                transition: 'all 0.15s ease',
+                              }}
+                            >
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flex: 1, minWidth: 0 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => toggleJobFileKind(cand.composite_id)}
+                                />
+                                <FileText size={18} color={isChecked ? '#0d9488' : '#64748b'} style={{ flexShrink: 0 }} />
+                                <div style={{ fontSize: 13, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <strong style={{ color: isChecked ? '#0f766e' : '#1e293b' }}>{cand.label}</strong>
+                                    {cand.is_admin_rerun && (
+                                      <span style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
+                                        👑 Доработка
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>{cand.filename}</div>
+                                </div>
+                              </label>
+
+                              <button
+                                type="button"
+                                className="ghost small-text"
+                                style={{
+                                  flexShrink: 0,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  padding: '4px 10px',
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  color: '#0d9488',
+                                  border: '1px solid #99f6e4',
+                                  background: '#fff',
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  window.open(`/api/jobs/${cand.job_id}/download/${cand.kind}`, '_blank')
+                                }}
+                                title="Скачать и открыть файл для проверки"
+                              >
+                                <Download size={13} />
+                                <span>Открыть</span>
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -4888,19 +5047,33 @@ function AdminSupplementModal({
                   checked={sourceMode === 'upload'}
                   onChange={() => setSourceMode('upload')}
                 />
-                <span>Загрузить отредактированный файл с компьютера</span>
+                <span>Загрузить отредактированные файлы с компьютера</span>
               </label>
 
               {sourceMode === 'upload' && (
                 <div style={{ marginLeft: 24, marginTop: 4 }}>
                   <input
                     type="file"
+                    multiple
                     accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
-                    onChange={e => setFile(e.target.files?.[0] || null)}
+                    onChange={e => {
+                      if (e.target.files) {
+                        setFiles(Array.from(e.target.files))
+                      }
+                    }}
                     style={{ fontSize: 13, width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
                   />
+                  {files.length > 0 && (
+                    <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {files.map((f, i) => (
+                        <span key={i} style={{ fontSize: 12, background: '#f0fdfa', border: '1px solid #99f6e4', color: '#0f766e', padding: '2px 8px', borderRadius: 4 }}>
+                          📎 {f.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
-                    Поддерживаются форматы XLSX, DOCX, ZIP.
+                    Можно выбрать несколько файлов (XLSX, DOCX, ZIP, PDF).
                   </small>
                 </div>
               )}
@@ -4915,8 +5088,8 @@ function AdminSupplementModal({
               <button
                 type="button"
                 className="ghost small-text"
-                style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#0d9488' }}
-                onClick={() => setComment(defaultAdminComment(job))}
+                style={{ fontSize: 11, padding: '2px 8px', height: 'auto', color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, cursor: 'pointer' }}
+                onClick={() => setComment(generateDefaultComment(job))}
               >
                 Восстановить автотекст
               </button>
