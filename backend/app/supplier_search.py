@@ -139,6 +139,14 @@ BLOCKED_DOMAINS = {
     "bicotender.ru",
     "oborudunion.ru",
     "sudact.ru",
+    # Aggregator, tax, and company registry spam
+    "checko.ru", "list-org.com", "nalog.ru", "egrul.nalog.ru", "edolgi.ru", "xfirm.ru",
+    "calc.ru", "prima-inform.ru", "seolik.ru", "nomer-inn.ru", "spark-interfax.ru",
+    "zachestnyibiznes.ru", "testfirm.ru", "companies.rbc.ru", "k-agent.ru",
+    "b2b-project.ru", "comreport.ru", "check-pro.ru", "vsem-podryad.ru", "licexpert.ru",
+    "trudvsem.ru", "star-pro.ru", "rospravosudie.com", "kartoteka.ru",
+    "reestr-doverennostey.ru", "fedresurs.ru", "mebeloptovik.ru", "100best.ru",
+    "focus.kontur.ru", "vbankcenter.ru", "zakupki.kontur.ru", "audit-it.ru",
     # Banks & Financial Brokers
     "sberbank.ru", "sber.ru", "vtb.ru", "alfabank.ru", "tbank.ru", "tinkoff.ru", "gazprombank.ru",
     "psbank.ru", "lockobank.ru", "open.ru", "sovcombank.ru", "raiffeisen.ru", "mkb.ru", "rshb.ru",
@@ -150,7 +158,7 @@ BLOCKED_DOMAINS = {
     "taxnet.ru", "e-dis.ru", "ecplegko.ru", "ed-sro.ru",
     # Additional Aggregators & Brokers
     "klerk.ru", "leboard.ru", "profi.ru", "kwork.ru", "youla.ru", "hh.ru", "superjob.ru",
-    "zakon.guru", "garant.ru", "audit-it.ru", "vc.ru", "journal.tinkoff.ru",
+    "zakon.guru", "garant.ru", "vc.ru", "journal.tinkoff.ru",
     "seldon-pro.ru", "seldon.ru", "sberbank-ast.ru", "roseltorg.ru", "etp-ets.ru",
     "gz-spb.ru", "zakazrf.ru", "lot-online.ru", "etp-gpb.ru",
     "tendergo.pro", "izhtender.ru", "bidexpert.ru", "tenderopora.ru", "tendercorp.ru", "tendercapital.ru",
@@ -1796,7 +1804,7 @@ async def _discover_suppliers_impl(
         discovered, search_meta = await discover_candidates(
             settings,
             queries,
-            max_results=min(max(len(queries) * 2, 10), 30) if is_registry_only else max(delivery_target * 10, 120),
+            max_results=max(len(queries) * 4, 60) if is_registry_only else max(delivery_target * 10, 120),
             excluded_domains=excluded_domains,
             primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(delivery_target),
             fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(delivery_target),
@@ -1805,7 +1813,7 @@ async def _discover_suppliers_impl(
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: 20 if is_registry_only else max(delivery_target * 5, 60)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
     candidates = rerank.candidates
@@ -2672,6 +2680,17 @@ def _build_minprom_supplier_code_queries(profile: ProcurementProfile, *, limit: 
     return _clean_supplier_queries(queries)[:limit]
 
 
+def _clean_org_name_for_query(name: str) -> str:
+    cleaned = str(name or "").strip("\"' ")
+    cleaned = re.sub(
+        r"^(?:ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ|АКЦИОНЕРНОЕ ОБЩЕСТВО|ЗАКРЫТОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО|ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО|ООО|АО|ЗАО|ПАО|НПО|НПП|ПК)\s+",
+        "",
+        cleaned,
+        flags=re.I,
+    )
+    return cleaned.strip("\"' ")
+
+
 def _build_minprom_supplier_queries(
     profile: ProcurementProfile,
     registry_context: MinpromRegistryContext,
@@ -2682,39 +2701,62 @@ def _build_minprom_supplier_queries(
     if not registry_context.requirement.required:
         return []
 
-    queries: list[str] = []
-    for entry in registry_context.entries[:20]:
-        manufacturer = _clean_minprom_query_term(entry.get("manufacturer"))
+    # Group registry entries by unique manufacturer / INN to ensure fair query distribution
+    unique_mfrs: dict[str, dict] = {}
+    for entry in registry_context.entries:
+        raw_mfr = str(entry.get("manufacturer") or "").strip()
+        inn = re.sub(r"\D+", "", str(entry.get("inn") or ""))
+        key = inn or _normalize_company_key(raw_mfr)
+        if not key:
+            continue
+        if key not in unique_mfrs:
+            unique_mfrs[key] = {
+                "raw_manufacturer": raw_mfr,
+                "clean_name": _clean_org_name_for_query(raw_mfr),
+                "inn": inn,
+                "products": [],
+                "registry_numbers": [],
+            }
         product = _clean_minprom_query_term(entry.get("product"))
-        registry_number = _clean_minprom_query_term(entry.get("registry_number"))
-        inn = _clean_minprom_query_term(entry.get("inn"))
-        if inn:
-            queries.extend([
-                f'ИНН {inn} официальный сайт',
-                f'ИНН {inn} контакты отдел продаж',
-            ])
-        if manufacturer:
-            clean_m = manufacturer.replace('"', '').strip()
-            queries.extend(
-                [
-                    f'"{clean_m}" официальный сайт',
-                    f'"{clean_m}" контакты',
-                ]
-            )
-            if product:
-                queries.append(f'"{clean_m}" {product[:35]}')
-        if registry_number:
-            queries.append(f'"{registry_number}" Минпромторг')
+        if product and product not in unique_mfrs[key]["products"]:
+            unique_mfrs[key]["products"].append(product)
+        reg_num = _clean_minprom_query_term(entry.get("registry_number"))
+        if reg_num and reg_num not in unique_mfrs[key]["registry_numbers"]:
+            unique_mfrs[key]["registry_numbers"].append(reg_num)
+
+    primary_queries: list[str] = []
+    secondary_queries: list[str] = []
+    tertiary_queries: list[str] = []
+
+    for m_data in unique_mfrs.values():
+        clean_m = m_data["clean_name"]
+        inn = m_data["inn"]
+        prod_hint = m_data["products"][0][:30] if m_data["products"] else ""
+
+        if clean_m:
+            primary_queries.append(f'"{clean_m}" официальный сайт')
+            if prod_hint:
+                primary_queries.append(f'"{clean_m}" официальный сайт {prod_hint}')
+            secondary_queries.append(f'"{clean_m}" контакты отдел продаж')
+            if inn:
+                tertiary_queries.append(f'"{clean_m}" ИНН {inn}')
+        elif inn:
+            primary_queries.append(f'ИНН {inn} официальный сайт')
+
+        for reg_num in m_data["registry_numbers"][:1]:
+            tertiary_queries.append(f'"{reg_num}" Минпромторг')
+
+    ordered_queries = [*primary_queries, *secondary_queries, *tertiary_queries]
 
     if policy == SUPPLIER_POLICY_MINPROM_ONLY:
         # In strict registry-only mode, search ONLY the specific confirmed registry manufacturers.
         # Do not add generic market search queries.
-        return _clean_supplier_queries(queries)[:limit]
+        return _clean_supplier_queries(ordered_queries)[:limit]
 
     for entry in registry_context.entries[:20]:
         product = _clean_minprom_query_term(entry.get("product"))
         if product:
-            queries.extend(
+            ordered_queries.extend(
                 [
                     f'"{product}" реестр Минпромторга',
                     f'"{product}" ГИСП поставщик',
@@ -2724,7 +2766,7 @@ def _build_minprom_supplier_queries(
 
     code_queries_inserted = False
     for term in _minprom_profile_query_terms(profile)[:8]:
-        queries.extend(
+        ordered_queries.extend(
             [
                 f'"{term}" "реестр Минпромторга" производитель',
                 f'"{term}" "реестровая запись" производитель',
@@ -2734,11 +2776,11 @@ def _build_minprom_supplier_queries(
             ]
         )
         if not code_queries_inserted:
-            queries.extend(_build_minprom_supplier_code_queries(profile))
+            ordered_queries.extend(_build_minprom_supplier_code_queries(profile))
             code_queries_inserted = True
     if not code_queries_inserted:
-        queries.extend(_build_minprom_supplier_code_queries(profile))
-    return _clean_supplier_queries(queries)[:limit]
+        ordered_queries.extend(_build_minprom_supplier_code_queries(profile))
+    return _clean_supplier_queries(ordered_queries)[:limit]
 
 
 def _merge_supplier_query_tracks(general_queries: list[str], minprom_queries: list[str]) -> list[str]:
@@ -3753,7 +3795,7 @@ def _provider_query_limit(settings: SystemSettings, provider: str) -> int:
     try:
         return max(1, min(48, int(configured)))
     except ValueError:
-        return 14 if provider == "google" else 12
+        return 16 if provider == "google" else 24
 
 
 def _yandex_max_pages_per_query(settings: SystemSettings) -> int:
