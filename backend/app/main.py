@@ -2207,7 +2207,7 @@ def list_jobs(
 ) -> list[dict]:
     safe_limit = max(1, min(10000, int(limit or 2000)))
     jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 2).all()
-    visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job)]
+    visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
     settings = get_or_create_settings(db)
     return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
 
@@ -4926,6 +4926,29 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "input_files": [file_to_dict(item) for item in job.files],
         "sources": [source_to_dict(item) for item in job.sources],
     }
+    if db and not getattr(job, "is_admin_rerun", False):
+        child_rerun = (
+            db.query(Job)
+            .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        if child_rerun:
+            child_files = admin_job_result_files(child_rerun)
+            data["admin_rerun"] = {
+                "id": child_rerun.id,
+                "status": child_rerun.status,
+                "progress": child_rerun.progress,
+                "message": child_rerun.message,
+                "files": child_files,
+                "yandex_requests_count": getattr(child_rerun, "yandex_requests_count", 0) or 0,
+                "yandex_cost_rub": getattr(child_rerun, "yandex_cost_rub", 0.0) or 0.0,
+                "created_at": child_rerun.created_at.isoformat() if child_rerun.created_at else None,
+            }
+        else:
+            data["admin_rerun"] = None
+    else:
+        data["admin_rerun"] = None
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
         data["suppliers"] = [supplier_to_dict(item) for item in job.suppliers]

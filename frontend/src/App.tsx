@@ -238,6 +238,16 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
+  admin_rerun?: {
+    id: string
+    status: string
+    progress: number
+    message: string
+    files: JobResultFile[]
+    yandex_requests_count?: number
+    yandex_cost_rub?: number
+    created_at?: string | null
+  } | null
 }
 
 type JobResultOffer = {
@@ -4718,8 +4728,37 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                     <span className="pill-label">{file.label}</span>
                   </button>
                 ))}
+                {job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files && job.admin_rerun.files.length > 0 && (
+                  <div className="admin-rerun-strip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid #cbd5e1' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#047857', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                      <Crown size={12} /> Админ-итог:
+                    </span>
+                    {job.admin_rerun.files.map(file => (
+                      <button
+                        key={`rerun-${job.admin_rerun!.id}-${file.kind}`}
+                        className="download-pill result-file"
+                        style={{ background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46', fontWeight: 600 }}
+                        onClick={() => void download({ id: job.admin_rerun!.id } as Job, file)}
+                        title={`Скачать/открыть свежий экспертный результат: ${file.filename}`}
+                      >
+                        <Download size={12} className="pill-icon" />
+                        <span className="pill-label">{file.label} (Админ)</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
+
+            {job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running') && (
+              <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
+                <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Loader2 size={13} className="spin" />
+                  <span>Идет экспертный админ-перерасчет ({job.admin_rerun.progress}%): {job.admin_rerun.message || humanStatus(job.admin_rerun.status)}</span>
+                </div>
+                <Progress value={job.admin_rerun.progress} note={job.admin_rerun.message || humanStatus(job.admin_rerun.status)} />
+              </div>
+            )}
 
             {showProgress && (
               <div className="job-progress-compact">

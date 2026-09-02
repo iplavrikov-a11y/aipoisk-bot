@@ -385,5 +385,49 @@ def test_exact_product_title_and_human_title(db):
     assert human_job_title(job_admin) == "[Админ] Подбор товаров: Шкаф вытяжной химический"
 
 
+def test_admin_rerun_embedded_in_parent_job_to_dict(db, tmp_path):
+    client = Client(name="Test Company Embedded", telegram_id="555666777")
+    db.add(client)
+    db.flush()
+
+    orig_job = Job(
+        client_id=client.id,
+        created_by_telegram_id="555666777",
+        mode="supplier_search",
+        status="completed",
+        title="Сэндвич-панели",
+    )
+    db.add(orig_job)
+    db.commit()
+    db.refresh(orig_job)
+
+    # Initial state: no rerun
+    d1 = job_to_dict(orig_job, db=db)
+    assert d1["admin_rerun"] is None
+
+    # Trigger admin rerun
+    with patch("app.main.enqueue_job"):
+        rerun_res = admin_rerun_job(orig_job.id, db=db)
+        rerun_id = rerun_res["job"]["id"]
+
+    rerun_job = db.get(Job, rerun_id)
+    rerun_job.status = "completed"
+    rerun_job.progress = 100
+    rerun_job.message = "Завершено"
+    rerun_job.yandex_requests_count = 12
+    rerun_job.yandex_cost_rub = 0.48
+    db.commit()
+
+    # Now parent job_to_dict contains admin_rerun data
+    d2 = job_to_dict(orig_job, db=db)
+    assert d2["admin_rerun"] is not None
+    assert d2["admin_rerun"]["id"] == rerun_id
+    assert d2["admin_rerun"]["status"] == "completed"
+    assert d2["admin_rerun"]["progress"] == 100
+    assert d2["admin_rerun"]["yandex_requests_count"] == 12
+    assert d2["admin_rerun"]["yandex_cost_rub"] == 0.48
+
+
+
 
 
