@@ -10,12 +10,15 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import (
+    _clean_customer_job_subject,
+    _customer_job_title_for_subject,
     admin_rerun_job,
     customer_job_result_files,
     customer_job_to_dict,
     download_customer_job_file_api,
     download_job_file,
     get_job_supplement_candidates,
+    human_job_title,
     job_to_dict,
     upload_admin_supplement,
 )
@@ -354,6 +357,33 @@ async def test_admin_rerun_supplement_candidates(db, tmp_path):
         rerun_cands = [c for c in cand_res["candidates"] if c["is_admin_rerun"]]
         assert len(rerun_cands) == 1
         assert rerun_cands[0]["job_id"] == rerun_id
+
+
+def test_exact_product_title_and_human_title(db):
+    # Test cleaning subject
+    assert _clean_customer_job_subject("Точный товар и аналоги: [Админ] Подбор товара и аналогов") == ""
+    assert _clean_customer_job_subject("[Админ] Шкаф вытяжной химический") == "Шкаф вытяжной химический"
+    assert _clean_customer_job_subject("ТЗ: Стеклянная магниевая сэндвич-панель.docx") == "Стеклянная магниевая сэндвич-панель"
+
+    # Test title formatting
+    assert _customer_job_title_for_subject("exact_product", "Шкаф вытяжной") == "Подбор товаров: Шкаф вытяжной"
+    assert _customer_job_title_for_subject("supplier_search", "Шкаф вытяжной") == "ТЗ: Шкаф вытяжной"
+
+    # Test Job human_title
+    job = Job(
+        mode="exact_product",
+        title="Шкаф вытяжной химический",
+    )
+    assert human_job_title(job) == "Подбор товаров: Шкаф вытяжной химический"
+
+    # Test Admin rerun title
+    job_admin = Job(
+        mode="exact_product",
+        title="[Админ] Шкаф вытяжной химический",
+        is_admin_rerun=True,
+    )
+    assert human_job_title(job_admin) == "[Админ] Подбор товаров: Шкаф вытяжной химический"
+
 
 
 

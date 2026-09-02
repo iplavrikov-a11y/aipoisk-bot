@@ -4753,18 +4753,28 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   )
 }
 
+function cleanItemNameForComment(rawTitle: string): string {
+  let text = (rawTitle || '').trim()
+  text = text.replace(/\[\s*админ\s*\]/gi, '').trim()
+  text = text.replace(/^(?:точный\s+товар\s+и\s+аналоги|подбор\s+товар(?:а|ов)(?:\s+и\s+аналогов)?|анализ\s+(?:закупки|документации|\+\s*поиск)|тз|техническое\s+задание)\s*[-:—–]\s*/gi, '').trim()
+  text = text.replace(/\.(?:docx?|xlsx?|pdf|zip|rar|7z|rtf|txt)$/gi, '').trim()
+  text = text.replace(/^[:\s"'«»]+|[:\s"'«»]+$/g, '').trim()
+  return text || 'позиции'
+}
+
 function generateDefaultComment(job: Job): string {
-  const title = job.human_title || job.title || 'задаче'
-  if (job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') {
-    return `Наши специалисты вручную проверили и расширили выборку поставщиков по задаче «${title}». В прикрепленном файле — дополненная база с прямыми контактами производителей и отделами продаж.`
-  }
+  const rawTitle = job.human_title || job.title || ''
+  const item = cleanItemNameForComment(rawTitle)
   if (job.mode === 'exact_product') {
-    return `Эксперты TenderLex провели расширенный подбор товара и аналогов по позиции «${title}». В отчете сформирован перечень производителей и эквивалентов с подтвержденными параметрами.`
+    return `Эксперты TenderLex провели расширенный подбор товаров и аналогов позиции «${item}».`
+  }
+  if (job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') {
+    return `Эксперты TenderLex провели дополнительный поиск поставщиков и производителей по позиции «${item}».`
   }
   if (job.mode === 'procurement_report') {
-    return `Специалисты TenderLex дополнительно проанализировали документацию закупки «${title}». В отчете выделены ключевые требования, риски и рекомендации.`
+    return `Эксперты TenderLex подготовили дополнительный анализ документации по закупке «${item}».`
   }
-  return `Специалисты TenderLex вручную проверили и дополнили результаты по вашей задаче «${title}». Обновленный отчет прикреплен к задаче.`
+  return `Эксперты TenderLex провели расширенную доработку по позиции «${item}».`
 }
 
 function defaultAdminComment(job: Job): string {

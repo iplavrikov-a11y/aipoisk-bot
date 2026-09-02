@@ -4341,16 +4341,21 @@ def human_job_title(job: Job | object) -> str:
     if is_internal_job(job):
         return "Служебная проверка"
     mode = str(getattr(job, "mode", "") or "")
+    is_admin = bool(getattr(job, "is_admin_rerun", False) or str(getattr(job, "title", "") or "").startswith("[Админ]"))
     subject = _customer_job_subject_from_evidence(job)
     if subject:
-        return _customer_job_title_for_subject(mode, subject)
+        title = _customer_job_title_for_subject(mode, subject)
+        return f"[Админ] {title}" if is_admin else title
     raw = str(getattr(job, "title", "") or "").strip()
     if not raw:
-        return mode_label(mode)
+        lbl = mode_label(mode)
+        return f"[Админ] {lbl}" if is_admin else lbl
     cleaned = _clean_customer_job_subject(raw)
     if not cleaned or _looks_like_hash(cleaned):
-        return mode_label(mode)
-    return _customer_job_title_for_subject(mode, cleaned)
+        lbl = mode_label(mode)
+        return f"[Админ] {lbl}" if is_admin else lbl
+    title = _customer_job_title_for_subject(mode, cleaned)
+    return f"[Админ] {title}" if is_admin else title
 
 
 def _customer_job_subject_from_evidence(job: Job | object) -> str:
@@ -4361,6 +4366,24 @@ def _customer_job_subject_from_evidence(job: Job | object) -> str:
             payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
         except Exception:
             payload = {}
+
+    if isinstance(payload, dict) and "exact_product_report" in payload:
+        ep_rep = payload.get("exact_product_report")
+        if isinstance(ep_rep, dict):
+            ep_title = ep_rep.get("procurement_title")
+            if ep_title:
+                ep_clean = _clean_customer_job_subject(ep_title)
+                if ep_clean:
+                    return ep_clean
+            positions = ep_rep.get("positions")
+            if isinstance(positions, list) and positions:
+                first_pos = positions[0]
+                if isinstance(first_pos, dict):
+                    pos_name = first_pos.get("name_in_tz") or first_pos.get("identified_model") or ""
+                    ep_clean = _clean_customer_job_subject(pos_name)
+                    if ep_clean:
+                        return ep_clean
+
     subject = _clean_customer_job_subject(payload.get("subject") if payload else "")
     if subject:
         return subject
@@ -4391,13 +4414,17 @@ def _customer_job_title_for_subject(mode: str, subject: str) -> str:
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return f"Анализ + поиск: {value}"
     if mode == MODE_EXACT_PRODUCT:
-        return f"Точный товар и аналоги: {value}"
+        return f"Подбор товаров: {value}"
     return value
 
 
 def _clean_customer_job_subject(value: object) -> str:
     cleaned = " ".join(str(value or "").replace("_", " ").split()).strip(" .,:;\"'")
     cleaned = re.sub(r"\.(?:docx?|xlsx?|pdf|zip|rar|7z|rtf|txt)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"(?i)\[\s*админ\s*\]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^точный\s+товар\s+и\s+аналоги\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^подбор\s+товар(?:а|ов)\s*(?:и\s+аналогов)?\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^анализ\s+(?:закупки|документации|\+\s*поиск)\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^техническое\s+задание\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^тз\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^тз(?=[A-ZА-ЯЁ])", "", cleaned).strip()

@@ -977,6 +977,8 @@ def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
         job.title = f"Анализ + поиск: {item}"
     elif job.mode == MODE_SUPPLIER_SEARCH:
         job.title = f"ТЗ: {item}"
+    elif job.mode == MODE_EXACT_PRODUCT:
+        job.title = f"Подбор товаров: {item}"
 
 
 def _result_stem(job: Job, subject: str) -> str:
@@ -1460,12 +1462,24 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     )
     _check_cancelled(job.id)
     _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
+    extracted_subj = (
+        report.procurement_title
+        or (report.positions[0].name_in_tz if report.positions else "")
+        or (report.positions[0].identified_model if report.positions else "")
+        or job.title
+        or "Спецификация ТЗ"
+    )
+    clean_subj = _clean_label(extracted_subj)
+    if not clean_subj or clean_subj.lower() in {"подбор товара и аналогов", "подбор товаров", "точный товар и аналоги"}:
+        clean_subj = _source_title(job) or "Спецификация ТЗ"
+    subject = clean_subj
+
     out_dir = job_dir(job.id) / "output"
     stem = _result_stem(job, subject)
     docx_path = write_exact_product_docx(
         out_dir / _result_filename("exact_product", stem, ".docx"),
         report,
-        title=job.title or "Подбор товара, характеристики и аналоги",
+        title=f"Подбор товаров: {subject}" if subject else "Подбор товара, характеристики и аналоги",
     )
     output_files = [
         _output_artifact("exact_product", "Подбор товара и аналоги", docx_path, KIND_EXACT_PRODUCT),
