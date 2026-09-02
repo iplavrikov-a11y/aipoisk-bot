@@ -146,7 +146,12 @@ type CustomerJob = {
     kind: string;
     label: string;
     filename: string;
+    is_admin_supplement?: boolean;
   }>;
+  has_admin_supplement?: boolean;
+  admin_comment?: string;
+  admin_supplement_name?: string;
+  admin_supplement_at?: string | null;
   awaiting_customer_confirmation: boolean;
   error: string;
   created_at: string | null;
@@ -2492,6 +2497,12 @@ export function CabinetClient() {
                           Новая
                         </span>
                       ) : null}
+                      {job.has_admin_supplement ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-emerald-600 text-white shadow-2xs shrink-0">
+                          <Sparkles size={10} aria-hidden="true" />
+                          Дополнено экспертом
+                        </span>
+                      ) : null}
                     </div>
                     <span className="text-[11px] font-medium text-slate-400 block mt-0.5">
                       {formatDate(job.created_at)}{formatJobDuration(job, nowTs) ? ` · ${formatJobDuration(job, nowTs)}` : ""} · файлов: {job.file_count}
@@ -2623,12 +2634,15 @@ export function CabinetClient() {
                         {job.result_files?.length ? (
                           job.result_files.map((file) => {
                             const isQuoteRequest = file.kind === "quote_request";
+                            const isAdminSupplement = file.kind === "admin_supplement" || file.is_admin_supplement;
                             return (
                               <button
                                 key={`${job.id}-${file.kind}`}
                                 type="button"
                                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all shadow-2xs cursor-pointer shrink-0 border ${
-                                  isUnviewed
+                                  isAdminSupplement
+                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-extrabold shadow-emerald-600/20"
+                                    : isUnviewed
                                     ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse shadow-teal-600/30 font-extrabold"
                                     : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300 font-bold"
                                 }`}
@@ -2709,6 +2723,15 @@ export function CabinetClient() {
                       </>
                     )}
                   </div>
+                  {job.admin_comment ? (
+                    <div className="col-span-12 mt-2 p-3 rounded-xl bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
+                      <div className="flex items-center gap-1.5 font-bold text-teal-900 mb-1">
+                        <Sparkles size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+                        <span>Комментарий специалистов TenderLex:</span>
+                      </div>
+                      <p className="whitespace-pre-wrap text-slate-700 leading-relaxed font-normal">{job.admin_comment}</p>
+                    </div>
+                  ) : null}
                 </article>
               );
             })

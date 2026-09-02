@@ -1,0 +1,133 @@
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastapi import UploadFile
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db import Base
+from app.main import (
+    customer_job_result_files,
+    customer_job_to_dict,
+    download_customer_job_file_api,
+    download_job_file,
+    job_to_dict,
+    upload_admin_supplement,
+)
+from app.models import Client, Job, WebUser
+from app.web_auth import WebAuthContext
+
+
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_supplement_workflow(db):
+    client = Client(name="Test Company", telegram_id="999888777")
+    db.add(client)
+    db.flush()
+
+    user = WebUser(
+        client_id=client.id,
+        email="client@example.com",
+        password_hash="hash",
+        is_email_verified=True,
+    )
+    db.add(user)
+    db.flush()
+
+    job = Job(
+        client_id=client.id,
+        created_by_telegram_id="999888777",
+        mode="supplier_search",
+        status="completed",
+        title="Шкаф вытяжной химический",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # 1. Upload admin supplement
+    comment_text = "Вручную нашли 5 прямых заводов-производителей."
+    file_bytes = b"Mock XLSX content for supplementary suppliers"
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+        tf.write(file_bytes)
+        tf_path = Path(tf.name)
+
+    try:
+        with tf_path.open("rb") as f:
+            upload_file = UploadFile(file=f, filename="extended_suppliers.xlsx")
+
+            with patch("app.bot.send_admin_supplement_telegram", new_callable=AsyncMock) as mock_tg:
+                mock_tg.return_value = True
+
+                res = await upload_admin_supplement(
+                    job_id=job.id,
+                    file=upload_file,
+                    comment=comment_text,
+                    notify_telegram=True,
+                    db=db,
+                )
+
+                assert res["success"] is True
+                assert res["telegram_notified"] is True
+                assert res["job"]["has_admin_supplement"] is True
+                assert res["job"]["admin_comment"] == comment_text
+                assert res["job"]["admin_supplement_name"] == "extended_suppliers.xlsx"
+                assert any(f["kind"] == "admin_supplement" for f in res["job"]["result_files"])
+
+        # 2. Check customer serialization
+        db.refresh(job)
+        cust_dict = customer_job_to_dict(job, db=db)
+        assert cust_dict["has_admin_supplement"] is True
+        assert cust_dict["admin_comment"] == comment_text
+        assert cust_dict["admin_supplement_name"] == "extended_suppliers.xlsx"
+
+        cust_files = customer_job_result_files(job)
+        assert any(f["kind"] == "admin_supplement" and f["filename"] == "extended_suppliers.xlsx" for f in cust_files)
+
+        # 3. Test customer download
+        auth_context = WebAuthContext(
+            user=user,
+            session=None,
+        )
+
+        response = download_customer_job_file_api(
+            job_id=job.id,
+            file_kind="admin_supplement",
+            context=auth_context,
+            db=db,
+        )
+        assert response.filename == "extended_suppliers.xlsx"
+        assert Path(response.path).read_bytes() == file_bytes
+
+        # 4. Test admin download
+        admin_response = download_job_file(
+            job_id=job.id,
+            file_kind="admin_supplement",
+            db=db,
+        )
+        assert admin_response.filename == "extended_suppliers.xlsx"
+        assert Path(admin_response.path).read_bytes() == file_bytes
+
+    finally:
+        if tf_path.exists():
+            tf_path.unlink()
+        if job.admin_supplement_path and Path(job.admin_supplement_path).exists():
+            try:
+                Path(job.admin_supplement_path).unlink()
+            except Exception:
+                pass

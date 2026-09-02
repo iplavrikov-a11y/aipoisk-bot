@@ -3910,9 +3910,62 @@ async def configure_bot_profile(bot: Bot) -> None:
     await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
 
 
+async def send_admin_supplement_telegram(
+    telegram_id: str | int,
+    job_title: str,
+    job_id: str,
+    comment: str = "",
+    file_path: Path | None = None,
+    file_name: str | None = None,
+) -> bool:
+    if not config.bot_token or not telegram_id:
+        return False
+    bot = Bot(token=config.bot_token)
+    try:
+        title = job_title or "Задача"
+        header = f"✨ <b>Отчёт по вашей задаче дополнен экспертами TenderLex</b>\n\n📌 <b>Задача:</b> {title}"
+        if comment:
+            header += f"\n\n💬 <b>Комментарий эксперта:</b>\n{comment}"
+        header += f"\n\n🌐 <a href=\"https://tenderlex.ru/cabinet#job-{job_id}\">Открыть задачу в личном кабинете</a>"
+
+        if file_path and file_path.is_file():
+            doc = FSInputFile(file_path, filename=file_name or file_path.name)
+            if len(header) <= 1024:
+                await bot.send_document(
+                    chat_id=telegram_id,
+                    document=doc,
+                    caption=header,
+                    parse_mode="HTML",
+                )
+            else:
+                await bot.send_message(
+                    chat_id=telegram_id,
+                    text=header,
+                    parse_mode="HTML",
+                )
+                await bot.send_document(
+                    chat_id=telegram_id,
+                    document=doc,
+                    caption=f"📎 Дополнительный отчёт: {file_name or file_path.name}",
+                )
+        else:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=header,
+                parse_mode="HTML",
+            )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to send admin supplement telegram notification to %s: %s", telegram_id, exc)
+        return False
+    finally:
+        await bot.session.close()
+
+
 def main() -> None:
     asyncio.run(run_bot())
 
 
 if __name__ == "__main__":
     main()
+

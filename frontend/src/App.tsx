@@ -37,6 +37,8 @@ import {
   Users,
   XCircle,
   Mail,
+  MessageSquarePlus,
+  Send,
   TrendingUp,
   TrendingDown,
   Activity,
@@ -216,6 +218,10 @@ type Job = {
   has_result: boolean
   result_files: JobResultFile[]
   has_evidence: boolean
+  has_admin_supplement?: boolean
+  admin_comment?: string
+  admin_supplement_name?: string
+  admin_supplement_at?: string | null
   error: string
   ai_provider?: string
   ai_provider_name?: string
@@ -4350,6 +4356,7 @@ function fallbackDownloadName(job: Job, extension: string) {
 function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
+  const [supplementModalJob, setSupplementModalJob] = useState<Job | null>(null)
   useEffect(() => {
     const timer = setInterval(() => setNowTs(Date.now()), 1000)
     return () => clearInterval(timer)
@@ -4606,6 +4613,14 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                   {job.status === 'failed' && (
                     <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
                   )}
+                  <button
+                    className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
+                    style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
+                    onClick={() => setSupplementModalJob(job)}
+                    title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
+                  >
+                    <MessageSquarePlus size={13} />
+                  </button>
                   <button className="icon-button small" onClick={() => void retry(job)} title="Перезапустить"><Play size={13} /></button>
                 </div>
               </div>
@@ -4617,6 +4632,11 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
                 {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
                 {fallbackStatusLabel && <span className="badge-pill supplier-policy registry-fallback">{fallbackStatusLabel}</span>}
+                {job.has_admin_supplement && (
+                  <span className="badge-pill" style={{ background: '#ccfbf1', color: '#0f766e', borderColor: '#99f6e4', fontWeight: 600 }} title={job.admin_comment || 'Дополнено администратором'}>
+                    ✨ Дополнено{job.admin_supplement_name ? `: ${job.admin_supplement_name}` : ''}
+                  </span>
+                )}
                 {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
                 {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
                 {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
@@ -4699,7 +4719,146 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
           <button className="ghost small-text" onClick={() => setPage(value => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>Вперёд</button>
         </div>
       )}
+      {supplementModalJob && (
+        <AdminSupplementModal
+          job={supplementModalJob}
+          onClose={() => setSupplementModalJob(null)}
+          onSuccess={onChange}
+        />
+      )}
     </section>
+  )
+}
+
+function AdminSupplementModal({
+  job,
+  onClose,
+  onSuccess,
+}: {
+  job: Job
+  onClose: () => void
+  onSuccess: () => Promise<void>
+}) {
+  const [comment, setComment] = useState(job.admin_comment || '')
+  const [file, setFile] = useState<File | null>(null)
+  const [notifyTelegram, setNotifyTelegram] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!comment.trim() && !file && !job.has_admin_supplement) {
+      setError('Укажите комментарий или выберите файл.')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const formData = new FormData()
+      if (file) formData.append('file', file)
+      formData.append('comment', comment.trim())
+      formData.append('notify_telegram', String(notifyTelegram))
+
+      const token = localStorage.getItem('tenderlex_admin_token') || sessionStorage.getItem('tenderlex_admin_token') || ''
+      const res = await fetch(`/api/jobs/${job.id}/admin-supplement`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      })
+      if (!res.ok) {
+        const errText = await res.text()
+        throw new Error(errText || 'Ошибка отправки')
+      }
+      await onSuccess()
+      onClose()
+    } catch (err: any) {
+      setError(err.message || 'Не удалось отправить дополнение')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="server-modal-backdrop" onClick={onClose}>
+      <div className="server-modal-card" style={{ maxWidth: 540 }} onClick={e => e.stopPropagation()}>
+        <div className="server-modal-header">
+          <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
+          <button className="server-modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
+            <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>{job.human_title || job.title}</div>
+            <div style={{ color: '#64748b', fontSize: 12 }}>
+              Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
+            </div>
+            {job.admin_supplement_name && (
+              <div style={{ marginTop: 6, fontSize: 12, color: '#0f766e', fontWeight: 500 }}>
+                📎 Текущий файл эксперта: {job.admin_supplement_name}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 6 }}>
+              Прикрепить файл отчета (XLSX или DOCX)
+            </label>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
+              onChange={e => setFile(e.target.files?.[0] || null)}
+              style={{ fontSize: 13, width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
+            />
+            <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
+              Файл появится в личном кабинете клиента как дополнительный отчет от экспертов TenderLex.
+            </small>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 6 }}>
+              Комментарий клиенту
+            </label>
+            <textarea
+              rows={4}
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              placeholder="Например: Вручную расширили базу поставщиков — добавили 7 проверенных заводов с прямыми контактами ОМТС и ценами..."
+              style={{ width: '100%', padding: '10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
+            />
+            <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
+              Этот комментарий будет отображаться в личном кабинете на карточке задачи и отправлен в сообщении Telegram.
+            </small>
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#334155', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={notifyTelegram}
+              onChange={e => setNotifyTelegram(e.target.checked)}
+            />
+            <span>Отправить уведомление и файл в Telegram бот клиенту</span>
+          </label>
+
+          {error && (
+            <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '8px 12px', borderRadius: 6, fontSize: 13 }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+            <button type="button" className="ghost" onClick={onClose} disabled={loading}>
+              Отмена
+            </button>
+            <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488' }}>
+              {loading ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+              <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }
 
