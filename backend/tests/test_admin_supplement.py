@@ -10,14 +10,16 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import (
+    admin_rerun_job,
     customer_job_result_files,
     customer_job_to_dict,
     download_customer_job_file_api,
     download_job_file,
+    get_job_supplement_candidates,
     job_to_dict,
     upload_admin_supplement,
 )
-from app.models import Client, Job, WebUser
+from app.models import Client, Job, JobFile, JobSource, WebUser
 from app.web_auth import WebAuthContext
 
 
@@ -234,5 +236,97 @@ async def test_admin_supplement_multi_files(db, tmp_path):
             assert len(admin_supps) == 2
             assert any(f["kind"] == "admin_supplement_0" and f["filename"] == "suppliers.xlsx" for f in admin_supps)
             assert any(f["kind"] == "admin_supplement_1" and f["filename"] == "quote_request.docx" for f in admin_supps)
+
+
+@pytest.mark.asyncio
+async def test_admin_rerun_all_modes(db, tmp_path):
+    client = Client(name="Test Company Rerun", telegram_id="999111222")
+    db.add(client)
+    db.flush()
+
+    modes = ["exact_product", "supplier_search", "procurement_report", "analysis_and_suppliers"]
+    for mode in modes:
+        job = Job(
+            client_id=client.id,
+            created_by_telegram_id="999111222",
+            mode=mode,
+            status="completed",
+            title=f"Тестовая задача {mode}",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        with patch("app.main.enqueue_job") as mock_enqueue:
+            res = admin_rerun_job(job_id=job.id, policy=None, db=db)
+            assert res["success"] is True
+            assert res["job"]["title"] == f"[Админ] Тестовая задача {mode}"
+            assert res["job"]["is_admin_rerun"] is True
+            assert res["job"]["parent_job_id"] == job.id
+            assert res["parent_job_id"] == job.id
+            mock_enqueue.assert_called_once_with(res["job"]["id"])
+
+            # Verify the original job was NOT modified or overwritten!
+            db.refresh(job)
+            assert job.status == "completed"
+            assert not job.title.startswith("[Админ]")
+
+
+@pytest.mark.asyncio
+async def test_admin_rerun_supplement_candidates(db, tmp_path):
+    client = Client(name="Test Company Candidates", telegram_id="444555666")
+    db.add(client)
+    db.flush()
+
+    orig_job = Job(
+        client_id=client.id,
+        created_by_telegram_id="444555666",
+        mode="exact_product",
+        status="completed",
+        title="Шкаф вытяжной химический",
+    )
+    db.add(orig_job)
+    db.commit()
+    db.refresh(orig_job)
+
+    out_orig = tmp_path / "orig_out"
+    out_orig.mkdir(parents=True, exist_ok=True)
+    f_orig = out_orig / "exact_product_orig.docx"
+    f_orig.write_bytes(b"Original docx")
+
+    with patch("app.main.package_job_output_items") as mock_pkg:
+        # 1. Candidate lookup on original job
+        mock_pkg.return_value = [{"kind": "exact_product", "label": "Подбор товара и аналогов", "path": str(f_orig)}]
+        res = get_job_supplement_candidates(orig_job.id, db=db)
+        assert res["success"] is True
+        assert len(res["candidates"]) == 1
+        assert res["candidates"][0]["is_admin_rerun"] is False
+
+        # 2. Admin reruns job
+        with patch("app.main.enqueue_job"):
+            rerun_res = admin_rerun_job(orig_job.id, db=db)
+            rerun_id = rerun_res["job"]["id"]
+
+        rerun_job = db.get(Job, rerun_id)
+        out_rerun = tmp_path / "rerun_out"
+        out_rerun.mkdir(parents=True, exist_ok=True)
+        f_rerun = out_rerun / "exact_product_admin.docx"
+        f_rerun.write_bytes(b"Admin improved docx")
+
+        def side_effect_pkg(j):
+            if j.id == rerun_id:
+                return [{"kind": "exact_product", "label": "Подбор товара и аналогов", "path": str(f_rerun)}]
+            return [{"kind": "exact_product", "label": "Подбор товара и аналогов", "path": str(f_orig)}]
+
+        mock_pkg.side_effect = side_effect_pkg
+
+        # 3. Candidate lookup on orig_job now sees BOTH rerun and original files
+        cand_res = get_job_supplement_candidates(orig_job.id, db=db)
+        assert cand_res["success"] is True
+        assert len(cand_res["candidates"]) == 2
+        rerun_cands = [c for c in cand_res["candidates"] if c["is_admin_rerun"]]
+        assert len(rerun_cands) == 1
+        assert rerun_cands[0]["job_id"] == rerun_id
+
 
 

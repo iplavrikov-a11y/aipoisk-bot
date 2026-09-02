@@ -119,6 +119,7 @@ from .models import (
     WebRegistrationAttempt,
     WebSession,
     WebUser,
+    new_id,
     now_utc,
     parse_json_dict,
     parse_json_list,
