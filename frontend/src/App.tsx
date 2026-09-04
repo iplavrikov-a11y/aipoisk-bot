@@ -326,6 +326,7 @@ type SettingsPayload = {
   trial_file_limit: number
   onboarding_reminders_enabled: boolean
   onboarding_reminders_rollout_at: string
+  reengagement_reminders_enabled: boolean
   primary_provider: string
   primary_model: string
   light_provider: string
@@ -5370,11 +5371,13 @@ function SettingsView({
       <div className="form-panel">
         <h2>Бесплатный доступ</h2>
         <label className="switch-row"><input type="checkbox" checked={draft.trial_enabled} onChange={e => setDraft({ ...draft, trial_enabled: e.target.checked })} />Включить бесплатный период для новых Telegram-аккаунтов</label>
-        <NumberField label="Бесплатных отчётов по поставщикам" value={draft.trial_supplier_search_limit} onChange={value => setDraft({ ...draft, trial_supplier_search_limit: value })} />
-        <NumberField label="Бесплатных анализов документации" value={draft.trial_procurement_report_limit} onChange={value => setDraft({ ...draft, trial_procurement_report_limit: value })} />
-        <p className="field-help">В бесплатном периоде недоступна массовая обработка нескольких ТЗ. Комбинированный сценарий использует один поиск и один анализ.</p>
-        <label className="switch-row"><input type="checkbox" checked={draft.onboarding_reminders_enabled} onChange={e => setDraft({ ...draft, onboarding_reminders_enabled: e.target.checked, onboarding_reminders_rollout_at: e.target.checked && !draft.onboarding_reminders_rollout_at ? new Date().toISOString() : draft.onboarding_reminders_rollout_at })} />Одна подсказка новым пользователям без запусков через 24 часа</label>
-        <p className="field-help">Работает только для пользователей, открывших бота после даты включения; повторные сообщения исключены.</p>
+        <NumberField label="Стартовых поисков поставщиков (входит в стартовый баланс)" value={draft.trial_supplier_search_limit} onChange={value => setDraft({ ...draft, trial_supplier_search_limit: value })} />
+        <NumberField label="Стартовых анализов документации (входит в стартовый баланс)" value={draft.trial_procurement_report_limit} onChange={value => setDraft({ ...draft, trial_procurement_report_limit: value })} />
+        <p className="field-help">Эти два числа задают размер стартового баланса: (поиски + анализы) × цена задачи из тарифов. Дальше пользователь тратит баланс на что угодно. Массовая обработка нескольких ТЗ в бесплатном периоде недоступна.</p>
+        <label className="switch-row"><input type="checkbox" checked={draft.onboarding_reminders_enabled} onChange={e => setDraft({ ...draft, onboarding_reminders_enabled: e.target.checked, onboarding_reminders_rollout_at: e.target.checked && !draft.onboarding_reminders_rollout_at ? new Date().toISOString() : draft.onboarding_reminders_rollout_at })} />Автонапоминания новым пользователям (цепочка)</label>
+        <p className="field-help">Цепочка: подсказка через 1–5 дней без запусков → последнее напоминание через 14+ дней молчания → подсказка про возможности после 1–3 задач → предложение лимитов после 4+ задач. Каждое сообщение один раз, с кнопкой отписки. Только рабочие часы 9:00–20:00 МСК. Действует для тех, кто открыл бота после даты включения.</p>
+        <label className="switch-row"><input type="checkbox" checked={draft.reengagement_reminders_enabled} onChange={e => setDraft({ ...draft, reengagement_reminders_enabled: e.target.checked })} />Вернуть остывших: одно сообщение тем, кто работал и исчез (10+ дней)</label>
+        <p className="field-help">Одно сообщение за всё время пользователю, который делал задачи и пропал. По умолчанию выключено.</p>
       </div>
       <div className="form-panel">
         <h2>Отчёты</h2>
@@ -5454,7 +5457,6 @@ function SettingsView({
           <summary>Расширенные настройки отчётов и сообщений</summary>
           <TextArea label="Отчёты" value={draft.report_settings_json} onChange={value => setDraft({ ...draft, report_settings_json: value })} />
           <TextArea label="Документы" value={draft.document_settings_json} onChange={value => setDraft({ ...draft, document_settings_json: value })} />
-          <TextArea label="Сообщения бота" value={draft.bot_messages_json} onChange={value => setDraft({ ...draft, bot_messages_json: value })} />
         </details>
       </div>
       <div className="savebar"><button onClick={() => void save()}><CheckCircle2 size={16} />Сохранить настройки</button></div>

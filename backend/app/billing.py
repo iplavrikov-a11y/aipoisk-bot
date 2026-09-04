@@ -12,7 +12,7 @@ from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
 from .config import config
-from .models import BillingTransaction, Client, ClientTariffOverride, Job, TariffPackage, now_utc
+from .models import BillingTransaction, Client, ClientTariffOverride, Job, SystemSettings, TariffPackage, now_utc
 
 KIND_SUPPLIER_SEARCH = "supplier_search"
 KIND_PROCUREMENT_REPORT = "procurement_report"
@@ -270,6 +270,38 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
     if kind == KIND_EXACT_PRODUCT:
         return DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS
     return 0
+
+
+def trial_grant_summary_text(db: Session, client: Client | None) -> str:
+    """Человеческое описание стартового триал-баланса, например '4 бесплатные задачи (396 ₽)'.
+
+    Считается из лимитов настроек и цен тарифов, чтобы тексты не протухали
+    при смене лимитов/цен. Если данных нет — нейтральная формулировка.
+    """
+    settings = db.query(SystemSettings).first()
+    if settings is None:
+        return "бесплатные задачи"
+    units_search = max(int(settings.trial_supplier_search_limit or 0), 0)
+    units_report = max(int(settings.trial_procurement_report_limit or 0), 0)
+    total_units = units_search + units_report
+    if total_units <= 0:
+        return "бесплатные задачи"
+
+    if total_units % 100 in (11, 12, 13, 14):
+        tasks_word = "задач"
+    elif total_units % 10 == 1:
+        tasks_word = "задача"
+    elif total_units % 10 in (2, 3, 4):
+        tasks_word = "задачи"
+    else:
+        tasks_word = "задач"
+
+    price_search = effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH)
+    price_report = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT)
+    total_kopeks = units_search * price_search + units_report * price_report
+    if total_kopeks > 0:
+        return f"{total_units} {tasks_word} ({total_kopeks // 100} ₽)"
+    return f"{total_units} {tasks_word}"
 
 
 def invalidate_tariff_packages_cache(db: Session | None = None) -> None:

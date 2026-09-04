@@ -336,8 +336,9 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 # Content Generators
 # =========================================================================
 
-def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru") -> tuple[str, str]:
+def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
     unsub_token = generate_unsubscribe_token(client_id, email)
+    grant_text = trial_summary or "бесплатные задачи"
     unsub_link = html_lib.escape(f"{base_url}/api/customer/auth/unsubscribe?token={unsub_token}", quote=True)
     cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
     article_link = html_lib.escape(f"{base_url}/baza-znaniy/kak-naiti-postavshchika-po-tz", quote=True)
@@ -353,7 +354,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            'На вашем балансе в <b>TenderLex</b> активен тестовый доступ на <b>4 бесплатные задачи (396 ₽)</b>.'
+            f'На вашем балансе в <b>TenderLex</b> активен тестовый доступ на <b>{grant_text}</b>.'
             '<br><br>'
             'Чтобы проверить работу сервиса, не нужно ничего настраивать — просто вставьте номер закупки ЕИС или прикрепите файл ТЗ (Word/PDF/Excel). '
             'Сервис за 2 минуты подберёт поставщиков с проверенными контактами и выделит ключевые риски.'
@@ -380,7 +381,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            'Напоминаем последний раз: на вашем балансе в <b>TenderLex</b> всё ещё активен тестовый доступ на <b>4 бесплатные задачи (396 ₽)</b>.'
+            f'Напоминаем последний раз: на вашем балансе в <b>TenderLex</b> всё ещё активен тестовый доступ на <b>{grant_text}</b>.'
             '<br><br>'
             'Чтобы попробовать, достаточно вставить номер закупки ЕИС или прикрепить файл ТЗ (Word/PDF/Excel) — сервис за 2 минуты подберёт поставщиков.'
             '<br><br>'
@@ -486,11 +487,12 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
     return subject, html
 
 
-def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderlex.ru") -> tuple[str, list[list[dict[str, str]]]]:
+def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, list[list[dict[str, str]]]]:
+    grant_text = trial_summary or "бесплатные задачи"
     if step == "step1":
         text = (
             "👋 <b>Здравствуйте!</b>\n\n"
-            "На вашем балансе в TenderLex активен стартовый доступ на <b>4 бесплатные задачи</b> (396 ₽).\n\n"
+            f"На вашем балансе в TenderLex активен стартовый доступ на <b>{grant_text}</b>.\n\n"
             "Чтобы протестировать сервис, не нужно ничего настраивать — просто отправьте в чат <b>номер закупки ЕИС</b> или прикрепите <b>файл ТЗ</b> (Word/PDF/Excel).\n\n"
             "📖 <i>Полезный материал:</i> <a href=\"https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz\">Как найти прямых поставщиков и производителей по ТЗ</a>"
         )
@@ -501,7 +503,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
     elif step == "step1_final":
         text = (
             "👋 <b>Здравствуйте!</b>\n\n"
-            "Напоминаем последний раз: на вашем балансе в TenderLex всё ещё активен стартовый доступ на <b>4 бесплатные задачи</b> (396 ₽).\n\n"
+            f"Напоминаем последний раз: на вашем балансе в TenderLex всё ещё активен стартовый доступ на <b>{grant_text}</b>.\n\n"
             "Чтобы попробовать, достаточно отправить в чат <b>номер закупки ЕИС</b> или прикрепить <b>файл ТЗ</b>.\n\n"
             "Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, просто нажмите «Отписаться» ниже."
         )
@@ -545,6 +547,8 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
 
 
 async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidate, bot: Any = None) -> bool:
+    from .billing import trial_grant_summary_text
+
     reminder = claim_nurturing_step(db, candidate.client_id, candidate.channel, candidate.step)
     if not reminder:
         return False
@@ -553,6 +557,7 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
     failure_reason = ""
 
     try:
+        trial_summary = trial_grant_summary_text(db, candidate.client)
         if candidate.channel == "telegram":
             if not bot:
                 reminder.status = "failed"
@@ -563,7 +568,7 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
 
             from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-            text, button_rows = build_nurturing_telegram_message(candidate.step)
+            text, button_rows = build_nurturing_telegram_message(candidate.step, trial_summary=trial_summary)
             inline_keyboard = [
                 [InlineKeyboardButton(text=btn["text"], url=btn.get("url"), callback_data=btn.get("callback_data")) for btn in row]
                 for row in button_rows
@@ -580,7 +585,9 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
             success = True
 
         elif candidate.channel == "email":
-            subject, html_body = build_nurturing_email_html(candidate.step, candidate.client_id, candidate.recipient)
+            subject, html_body = build_nurturing_email_html(
+                candidate.step, candidate.client_id, candidate.recipient, trial_summary=trial_summary
+            )
             relay_url = str(config.email_relay_url or "").strip()
             web_user = db.query(WebUser).filter(WebUser.client_id == candidate.client_id).first()
             if not web_user:

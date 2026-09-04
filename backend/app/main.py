@@ -398,7 +398,14 @@ def _send_customer_verification_email(db: Session, user: WebUser, request: Reque
     settings = get_or_create_settings(db)
     token, _record = create_email_verification_token(db, user, request=request)
     try:
-        return send_email_verification(user, token, public_base_url=settings.public_base_url)
+        from .billing import trial_grant_summary_text
+
+        return send_email_verification(
+            user,
+            token,
+            public_base_url=settings.public_base_url,
+            trial_summary=trial_grant_summary_text(db, user.client if user.client_id else None),
+        )
     except Exception:
         return False
 

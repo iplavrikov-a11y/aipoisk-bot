@@ -237,13 +237,13 @@ def _verification_sender_email() -> str:
     return str(config.email_from_email or config.smtp_from or config.smtp_username or "").strip()
 
 
-def _verification_email_text(link: str) -> str:
+def _verification_email_text(link: str, grant_text: str = "бесплатные задачи") -> str:
     return "\n".join(
         [
             "Здравствуйте!",
             "",
             "Вы создали личный кабинет в сервисе TenderLex.",
-            "Подтвердите email для активации тестового доступа на 4 задачи (396 ₽):",
+            f"Подтвердите email для активации тестового доступа на {grant_text}:",
             link,
             "",
             "Ссылка действительна в течение 24 часов.",
@@ -254,7 +254,7 @@ def _verification_email_text(link: str) -> str:
     )
 
 
-def _verification_email_html(link: str) -> str:
+def _verification_email_html(link: str, grant_text: str = "бесплатные задачи") -> str:
     safe_link = html_lib.escape(link, quote=True)
     return (
         '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
@@ -276,7 +276,7 @@ def _verification_email_html(link: str) -> str:
         '</td></tr>'
         '<tr><td style="padding-bottom:18px;">'
         '<div style="font-size:14px;line-height:1.5;color:#334155;">Вы создали личный кабинет в сервисе <b>TenderLex</b>. '
-        'Подтвердите email для активации тестового доступа на 4 задачи (396 ₽):</div>'
+        f'Подтвердите email для активации тестового доступа на {grant_text}:</div>'
         '</td></tr>'
         '<tr><td align="center" style="padding-bottom:18px;">'
         '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -371,11 +371,18 @@ def _send_email_verification_via_smtp(user: WebUser, subject: str, text_body: st
     return True
 
 
-def send_email_verification(user: WebUser, token: str, *, public_base_url: str = "") -> bool:
+def send_email_verification(
+    user: WebUser,
+    token: str,
+    *,
+    public_base_url: str = "",
+    trial_summary: str = "",
+) -> bool:
     link = email_verification_url(token, public_base_url=public_base_url)
+    grant_text = trial_summary or "бесплатные задачи"
     subject = "Подтверждение email TenderLex"
-    text_body = _verification_email_text(link)
-    html_body = _verification_email_html(link)
+    text_body = _verification_email_text(link, grant_text)
+    html_body = _verification_email_html(link, grant_text)
     if _send_email_verification_via_relay(user, subject, html_body):
         return True
     return _send_email_verification_via_smtp(user, subject, text_body, html_body)
