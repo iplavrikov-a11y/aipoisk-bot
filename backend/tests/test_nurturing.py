@@ -329,3 +329,155 @@ async def test_dispatch_nurturing_candidate_telegram(db_session: Session):
     )
     assert reminder is not None
     assert reminder.status == "sent"
+
+
+def _make_tg_client(db_session: Session, telegram_id: str, created_at) -> Client:
+    client = Client(
+        telegram_id=telegram_id,
+        name=f"Клиент {telegram_id}",
+        is_active=True,
+        marketing_unsubscribed=False,
+        created_at=created_at,
+    )
+    db_session.add(client)
+    db_session.flush()
+    db_session.add(ClientTelegramAccount(client_id=client.id, telegram_id=telegram_id, is_active=True))
+    return client
+
+
+def test_nurturing_step1_final_candidates(db_session: Session):
+    now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+    settings = db_session.query(SystemSettings).first() or SystemSettings(id=1)
+    settings.onboarding_reminders_enabled = True
+    settings.onboarding_reminders_rollout_at = (now - timedelta(days=30)).isoformat()
+    db_session.add(settings)
+
+    t1, t2, t3, t4 = (str(uuid.uuid4().int)[:10] for _ in range(4))
+
+    # Client A: 15 days old, 0 jobs, step1 sent -> candidate for step1_final
+    client_a = _make_tg_client(db_session, t1, now - timedelta(days=15))
+    db_session.flush()
+    db_session.add(
+        OnboardingReminder(client_id=client_a.id, channel="telegram", step="step1", status="sent", sent_at=now - timedelta(days=13))
+    )
+
+    # Client B: 15 days old, 0 jobs, but step1 never sent -> no final call
+    client_b = _make_tg_client(db_session, t2, now - timedelta(days=15))
+
+    # Client C: 15 days old, 0 jobs, step1 sent, but final already sent -> no repeat
+    client_c = _make_tg_client(db_session, t3, now - timedelta(days=15))
+    db_session.flush()
+    db_session.add(
+        OnboardingReminder(client_id=client_c.id, channel="telegram", step="step1", status="sent", sent_at=now - timedelta(days=13))
+    )
+    db_session.add(
+        OnboardingReminder(client_id=client_c.id, channel="telegram", step="step1_final", status="sent", sent_at=now - timedelta(days=1))
+    )
+
+    # Client D: 15 days old, step1 sent, but created a job since -> converted, no final call
+    client_d = _make_tg_client(db_session, t4, now - timedelta(days=15))
+    db_session.flush()
+    db_session.add(
+        OnboardingReminder(client_id=client_d.id, channel="telegram", step="step1", status="sent", sent_at=now - timedelta(days=13))
+    )
+    db_session.add(Job(client_id=client_d.id, status="completed"))
+
+    db_session.commit()
+
+    candidates = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
+    final_ids = [c.client_id for c in candidates if c.step == "step1_final"]
+
+    assert client_a.id in final_ids
+    assert client_b.id not in final_ids
+    assert client_c.id not in final_ids
+    assert client_d.id not in final_ids
+
+    # Text and buttons present
+    text, buttons = build_nurturing_telegram_message("step1_final")
+    assert "последнее напоминание" in text.lower()
+    assert any("nurturing_unsubscribe" in btn.get("callback_data", "") for row in buttons for btn in row)
+    subject, html = build_nurturing_email_html("step1_final", "cid", "a@b.ru")
+    assert "Последнее напоминание" in subject
+
+
+def test_nurturing_step4_reengage_candidates(db_session: Session):
+    now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+    settings = db_session.query(SystemSettings).first() or SystemSettings(id=1)
+    settings.onboarding_reminders_enabled = True
+    settings.reengagement_reminders_enabled = True
+    settings.onboarding_reminders_rollout_at = (now - timedelta(days=60)).isoformat()
+    db_session.add(settings)
+
+    t1, t2, t3, t4, t5 = (str(uuid.uuid4().int)[:10] for _ in range(5))
+
+    # Client A: completed job 12 days ago, no active jobs -> reengage candidate
+    client_a = _make_tg_client(db_session, t1, now - timedelta(days=40))
+    db_session.add(Job(client_id=client_a.id, status="completed", created_at=now - timedelta(days=12)))
+
+    # Client B: completed 12 days ago too — valid candidate when the global flag is on
+    client_b = _make_tg_client(db_session, t2, now - timedelta(days=40))
+    db_session.add(Job(client_id=client_b.id, status="completed", created_at=now - timedelta(days=12)))
+
+    # Client C: completed only 5 days ago (within step2 window) -> excluded
+    client_c = _make_tg_client(db_session, t3, now - timedelta(days=40))
+    db_session.add(Job(client_id=client_c.id, status="completed", created_at=now - timedelta(days=5)))
+
+    # Client D: completed 12 days ago but has a running job -> excluded
+    client_d = _make_tg_client(db_session, t4, now - timedelta(days=40))
+    db_session.add(Job(client_id=client_d.id, status="completed", created_at=now - timedelta(days=12)))
+    db_session.add(Job(client_id=client_d.id, status="running", created_at=now - timedelta(days=1)))
+
+    # Client E: completed 12 days ago, reengage already sent -> excluded
+    client_e = _make_tg_client(db_session, t5, now - timedelta(days=40))
+    db_session.add(Job(client_id=client_e.id, status="completed", created_at=now - timedelta(days=12)))
+    db_session.flush()
+    db_session.add(
+        OnboardingReminder(client_id=client_e.id, channel="telegram", step="step4_reengage", status="sent", sent_at=now - timedelta(days=2))
+    )
+
+    # Flag off applies globally: temporarily disable
+    settings.reengagement_reminders_enabled = False
+    db_session.commit()
+    candidates_off = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
+    assert all(c.step != "step4_reengage" for c in candidates_off)
+
+    settings.reengagement_reminders_enabled = True
+    db_session.commit()
+    candidates = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
+    reengage_ids = [c.client_id for c in candidates if c.step == "step4_reengage"]
+
+    assert client_a.id in reengage_ids
+    assert client_b.id in reengage_ids
+    assert client_c.id not in reengage_ids
+    assert client_d.id not in reengage_ids
+    assert client_e.id not in reengage_ids
+
+    text, _ = build_nurturing_telegram_message("step4_reengage")
+    assert "давно не виделись" in text.lower()
+
+
+def test_nurturing_funnel_stats(db_session: Session):
+    now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+    settings = db_session.query(SystemSettings).first() or SystemSettings(id=1)
+    settings.onboarding_reminders_enabled = True
+    settings.onboarding_reminders_rollout_at = (now - timedelta(days=30)).isoformat()
+    db_session.add(settings)
+
+    t1, t2 = (str(uuid.uuid4().int)[:10] for _ in range(2))
+    client_a = _make_tg_client(db_session, t1, now - timedelta(days=20))
+    client_b = _make_tg_client(db_session, t2, now - timedelta(days=20))
+    db_session.flush()
+    db_session.add(
+        OnboardingReminder(client_id=client_a.id, channel="telegram", step="step1", status="sent", sent_at=now - timedelta(days=19))
+    )
+    db_session.add(Job(client_id=client_a.id, status="completed"))
+    db_session.commit()
+
+    from app.nurturing import get_nurturing_funnel_stats
+
+    stats = get_nurturing_funnel_stats(db_session, settings)
+    assert stats["registered_since_rollout"] >= 2
+    assert stats["steps"]["step1"]["sent"] >= 1
+    assert stats["steps"]["step1"]["converted_to_first_job"] >= 1
+    assert stats["funnel"]["activated_created_job"] >= 1
+    assert stats["funnel"]["activation_rate"] is not None

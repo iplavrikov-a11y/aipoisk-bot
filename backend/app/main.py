@@ -1389,6 +1389,15 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     return {"success": True, "settings": settings_to_public_dict(settings)}
 
 
+@app.get("/api/nurturing/stats", dependencies=[Depends(require_admin)])
+def nurturing_stats_api(db: Session = Depends(db_session)) -> dict:
+    """Воронка напоминаний: отправки по шагам и конверсия в первую задачу."""
+    from .nurturing import get_nurturing_funnel_stats
+
+    settings = get_or_create_settings(db)
+    return get_nurturing_funnel_stats(db, settings)
+
+
 @app.get("/api/tariffs", dependencies=[Depends(require_admin)])
 def list_tariffs_api(active_only: bool = False, db: Session = Depends(db_session)) -> list[dict]:
     return [tariff_to_dict(item) for item in list_tariffs(db, active_only=active_only)]

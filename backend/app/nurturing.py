@@ -126,7 +126,7 @@ class NurturingCandidate:
     client_id: str
     channel: str  # "telegram" | "email"
     recipient: str  # telegram_id or email
-    step: str  # "step1" | "step2" | "step3"
+    step: str  # "step1" | "step2" | "step3" | "step1_final" | "step4_reengage"
     name: str
     client: Client
 
@@ -217,6 +217,28 @@ def get_due_nurturing_candidates(
                 )
                 continue
 
+        # Step 1 Final Check: registered >= 14 days ago, 0 jobs, step1 was sent.
+        # Последнее касание для тех, кто проигнорировал step1 — после него тишина навсегда.
+        step1_reminder = existing_reminders.get("step1")
+        if (
+            "step1_final" not in existing_reminders
+            and step1_reminder is not None
+            and step1_reminder.status == "sent"
+            and len(jobs) == 0
+            and (now - client_created).total_seconds() >= 14 * 86400.0
+        ):
+            results.append(
+                NurturingCandidate(
+                    client_id=client.id,
+                    channel=channel,
+                    recipient=recipient,
+                    step="step1_final",
+                    name=client.name or "Пользователь",
+                    client=client,
+                )
+            )
+            continue
+
         # Step 2 Check: Completed >= 1 job, < 4 completed jobs, latest completed job >= 48h ago
         if "step2" not in existing_reminders and len(completed_jobs) in (1, 2, 3) and len(pending_or_running_jobs) == 0:
             latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
@@ -245,6 +267,28 @@ def get_due_nurturing_candidates(
                         channel=channel,
                         recipient=recipient,
                         step="step3",
+                        name=client.name or "Пользователь",
+                        client=client,
+                    )
+                )
+                continue
+
+        # Step 4 Re-engage Check (opt-in flag): had >= 1 completed job, no active jobs,
+        # silent for >= 10 days (past step2's 240h window). One message ever.
+        if (
+            bool(getattr(settings, "reengagement_reminders_enabled", False))
+            and "step4_reengage" not in existing_reminders
+            and len(completed_jobs) >= 1
+            and len(pending_or_running_jobs) == 0
+        ):
+            latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
+            if (now - latest_completed).total_seconds() >= 10 * 86400.0:
+                results.append(
+                    NurturingCandidate(
+                        client_id=client.id,
+                        channel=channel,
+                        recipient=recipient,
+                        step="step4_reengage",
                         name=client.name or "Пользователь",
                         client=client,
                     )
@@ -325,6 +369,29 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             f'<a href="{article_link}" target="_blank" style="color:#0f766e;font-size:12px;line-height:1.4;font-weight:bold;text-decoration:underline;">Как быстро найти прямых производителей по ТЗ и ГОСТам</a>'
             '</div></td></tr>'
         )
+    elif step == "step1_final":
+        subject = "Последнее напоминание: ваш тестовый доступ TenderLex ещё активен"
+        body_content = (
+            '<tr><td style="padding-top:16px;padding-bottom:8px;">'
+            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Ваш тестовый доступ всё ещё активен</div>'
+            '</td></tr>'
+            '<tr><td style="padding-bottom:10px;">'
+            '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
+            '</td></tr>'
+            '<tr><td style="padding-bottom:16px;">'
+            '<div style="font-size:14px;line-height:1.5;color:#334155;">'
+            'Напоминаем последний раз: на вашем балансе в <b>TenderLex</b> всё ещё активен тестовый доступ на <b>4 бесплатные задачи (396 ₽)</b>.'
+            '<br><br>'
+            'Чтобы попробовать, достаточно вставить номер закупки ЕИС или прикрепить файл ТЗ (Word/PDF/Excel) — сервис за 2 минуты подберёт поставщиков.'
+            '<br><br>'
+            '<i>Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, просто нажмите «Отписаться» ниже.</i>'
+            '</div></td></tr>'
+            '<tr><td align="center" style="padding-bottom:18px;">'
+            '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
+            '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
+            f'<a href="{cabinet_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Запустить первую задачу</a>'
+            '</td></tr></table></td></tr>'
+        )
     elif step == "step2":
         subject = "3 полезные функции TenderLex, которые экономят часы работы снабженца"
         body_content = (
@@ -348,6 +415,27 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
             '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
             f'<a href="{cabinet_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Перейти в личный кабинет</a>'
+            '</td></tr></table></td></tr>'
+        )
+    elif step == "step4_reengage":
+        subject = "Давно не виделись: TenderLex готов помочь с подбором поставщиков"
+        body_content = (
+            '<tr><td style="padding-top:16px;padding-bottom:8px;">'
+            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Мы готовы продолжить работу</div>'
+            '</td></tr>'
+            '<tr><td style="padding-bottom:10px;">'
+            '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
+            '</td></tr>'
+            '<tr><td style="padding-bottom:16px;">'
+            '<div style="font-size:14px;line-height:1.5;color:#334155;">'
+            'Вы уже работали с TenderLex, а мы как раз можем помочь с подбором поставщиков и аудитом ТЗ под 44-ФЗ / 223-ФЗ.'
+            '<br><br>'
+            'Если остались вопросы или нужны дополнительные лимиты для теста — просто ответьте на это письмо, поможем.'
+            '</div></td></tr>'
+            '<tr><td align="center" style="padding-bottom:18px;">'
+            '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
+            '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
+            f'<a href="{cabinet_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Открыть кабинет TenderLex</a>'
             '</td></tr></table></td></tr>'
         )
     else:  # step3
@@ -410,6 +498,17 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
+    elif step == "step1_final":
+        text = (
+            "👋 <b>Здравствуйте!</b>\n\n"
+            "Напоминаем последний раз: на вашем балансе в TenderLex всё ещё активен стартовый доступ на <b>4 бесплатные задачи</b> (396 ₽).\n\n"
+            "Чтобы попробовать, достаточно отправить в чат <b>номер закупки ЕИС</b> или прикрепить <b>файл ТЗ</b>.\n\n"
+            "Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, просто нажмите «Отписаться» ниже."
+        )
+        buttons = [
+            [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
+            [{"text": "🔕 Не напоминать больше", "callback_data": "nurturing_unsubscribe"}],
+        ]
     elif step == "step2":
         text = (
             "💡 <b>3 полезные возможности TenderLex для работы с ТЗ:</b>\n\n"
@@ -427,6 +526,16 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
             "🏁 <b>Тестовые задачи успешно выполнены!</b>\n\n"
             "Вы использовали стартовые задачи TenderLex. Надеемся, отчёты помогли сэкономить время при подборе поставщиков и анализе документации.\n\n"
             "Если вам или отделу снабжения требуются дополнительные лимиты для тестирования, либо корпоративный тариф — напишите нам, начислим задачи или подготовим счёт."
+        )
+        buttons = [
+            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+        ]
+
+    if step == "step4_reengage":
+        text = (
+            "👋 <b>Давно не виделись!</b>\n\n"
+            "Вы уже работали с TenderLex, а мы как раз можем помочь с подбором поставщиков и аудитом ТЗ под 44-ФЗ / 223-ФЗ.\n\n"
+            "Если остались вопросы или нужны дополнительные лимиты для теста — просто напишите нам в ответ, поможем."
         )
         buttons = [
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
@@ -508,3 +617,73 @@ async def dispatch_nurturing_candidate(db: Session, candidate: NurturingCandidat
         reminder.failure_code = failure_reason or "UnknownError"
         db.commit()
         return False
+
+
+# =========================================================================
+# Funnel Analytics (P3)
+# =========================================================================
+
+NURTURING_STEPS = ("step1", "step1_final", "step2", "step3", "step4_reengage")
+
+
+def get_nurturing_funnel_stats(db: Session, settings: SystemSettings) -> dict:
+    """Конверсия воронки напоминаний: регистрации → задачи, отправки по шагам."""
+    rollout_at = _parse_rollout_at(settings.onboarding_reminders_rollout_at)
+
+    clients_q = db.query(Client).filter(Client.is_active.is_(True))
+    if rollout_at is not None:
+        clients_q = clients_q.filter(Client.created_at >= rollout_at)
+    clients = clients_q.all()
+    client_ids = [c.id for c in clients]
+
+    stats: dict[str, Any] = {
+        "registered_since_rollout": len(clients),
+        "unsubscribed": sum(1 for c in clients if c.marketing_unsubscribed),
+        "steps": {},
+        "funnel": {},
+    }
+
+    # Отправки по шагам + конверсия каждого шага в первую задачу
+    sent_reminders = (
+        db.query(OnboardingReminder)
+        .filter(
+            OnboardingReminder.status == "sent",
+            OnboardingReminder.step.in_(NURTURING_STEPS),
+            OnboardingReminder.client_id.in_(client_ids),
+        )
+        .all()
+        if client_ids
+        else []
+    )
+    sent_by_step: dict[str, list[str]] = {}
+    for reminder in sent_reminders:
+        sent_by_step.setdefault(reminder.step, []).append(reminder.client_id)
+
+    clients_with_jobs = (
+        {
+            row[0]
+            for row in db.query(Job.client_id)
+            .filter(Job.client_id.in_(client_ids))
+            .distinct()
+            .all()
+        }
+        if client_ids
+        else set()
+    )
+
+    for step in NURTURING_STEPS:
+        sent_ids = sent_by_step.get(step, [])
+        converted = sum(1 for cid in sent_ids if cid in clients_with_jobs)
+        stats["steps"][step] = {
+            "sent": len(sent_ids),
+            "converted_to_first_job": converted,
+            "conversion_rate": round(converted / len(sent_ids), 3) if sent_ids else None,
+        }
+
+    activated = sum(1 for cid in client_ids if cid in clients_with_jobs)
+    stats["funnel"] = {
+        "registered": len(clients),
+        "activated_created_job": activated,
+        "activation_rate": round(activated / len(clients), 3) if clients else None,
+    }
+    return stats

@@ -48,6 +48,7 @@ class SystemSettings(Base):
     trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
     onboarding_reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     onboarding_reminders_rollout_at: Mapped[str] = mapped_column(String(40), default="")
+    reengagement_reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     primary_provider: Mapped[str] = mapped_column(String(80), default="")
     primary_model: Mapped[str] = mapped_column(String(160), default="")
@@ -105,6 +106,7 @@ class SystemSettings(Base):
             "trial_file_limit": self.trial_file_limit,
             "onboarding_reminders_enabled": self.onboarding_reminders_enabled,
             "onboarding_reminders_rollout_at": self.onboarding_reminders_rollout_at,
+            "reengagement_reminders_enabled": self.reengagement_reminders_enabled,
             "primary_provider": self.primary_provider,
             "primary_model": self.primary_model,
             "light_provider": self.light_provider,

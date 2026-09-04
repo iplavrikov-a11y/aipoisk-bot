@@ -3885,6 +3885,8 @@ async def _send_due_onboarding_reminders(bot: Bot) -> int:
             ok = await dispatch_nurturing_candidate(db, candidate, bot=bot)
             if ok:
                 sent += 1
+            # Anti-burst: держимся ниже лимита Telegram ~30 msg/s
+            await asyncio.sleep(0.05)
     except Exception as exc:
         logger.exception("Error in onboarding/nurturing reminder loop: %s", exc)
     finally:

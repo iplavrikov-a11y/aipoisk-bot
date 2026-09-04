@@ -19,6 +19,7 @@ class SettingsPatch(BaseModel):
     trial_file_limit: int | None = Field(default=None, ge=0, le=100000)
     onboarding_reminders_enabled: bool | None = None
     onboarding_reminders_rollout_at: str | None = None
+    reengagement_reminders_enabled: bool | None = None
     primary_provider: str | None = None
     primary_model: str | None = None
     light_provider: str | None = None

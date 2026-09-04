@@ -85,6 +85,7 @@ def _ensure_schema() -> None:
             "trial_file_limit": "INTEGER DEFAULT 10",
             "onboarding_reminders_enabled": "BOOLEAN DEFAULT 0",
             "onboarding_reminders_rollout_at": "VARCHAR(40) DEFAULT ''",
+            "reengagement_reminders_enabled": "BOOLEAN DEFAULT 0",
             "bot_telegram": "VARCHAR(255) DEFAULT '@tenderlex_bot'",
             "contact_email": "VARCHAR(255) DEFAULT ''",
             "contact_telegram": "VARCHAR(255) DEFAULT ''",
