@@ -9,8 +9,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .config import config
@@ -93,15 +95,72 @@ def unsubscribe_client(db: Session, client_id: str, reason: str = "user_request"
     return True
 
 
+def _sync_hh_agent_unsubscribe(email: str) -> None:
+    if not email or "@" not in email:
+        return
+    try:
+        import os
+        import sqlite3
+        hh_db_path = "/root/projects/hh-agent/agent.db"
+        if os.path.exists(hh_db_path):
+            with sqlite3.connect(hh_db_path) as con:
+                con.execute(
+                    "UPDATE vacancies SET outreach_status = 'unsubscribed', followup_status = 'unsubscribed' WHERE LOWER(contacts_email) = ?",
+                    (email.strip().lower(),),
+                )
+                con.commit()
+    except Exception as exc:
+        logger.warning("hh_agent_unsubscribe_sync_failed email=%s: %s", email, exc)
+
+
 def unsubscribe_by_token(db: Session, token: str) -> tuple[bool, str]:
     verified = verify_unsubscribe_token(token)
     if not verified:
         return False, "Недействительная или устаревшая ссылка отписки."
-    client_id, _ = verified
+    client_id, email = verified
     ok = unsubscribe_client(db, client_id, reason="email_link")
     if ok:
+        if email:
+            _sync_hh_agent_unsubscribe(email)
         return True, "Вы успешно отписались от уведомлений и рассылок TenderLex."
     return False, "Клиент не найден."
+
+
+def unsubscribe_by_email(db: Session, email: str) -> tuple[bool, str]:
+    clean_email = str(email or "").strip().lower()
+    if not clean_email or "@" not in clean_email or "." not in clean_email.split("@")[-1]:
+        return False, "Некорректный адрес электронной почты."
+
+    unsubscribed_any = False
+    # 1. TenderLex WebUsers & associated clients
+    web_users = db.query(WebUser).filter(func.lower(WebUser.email) == clean_email).all()
+    for wu in web_users:
+        wu.marketing_unsubscribed = True
+        if wu.client:
+            wu.client.marketing_unsubscribed = True
+            record_journey_event(
+                db,
+                wu.client.id,
+                channel="email",
+                event_name="marketing_unsubscribed",
+                outcome="success",
+                reason_code="email_unsubscribe_direct",
+            )
+        unsubscribed_any = True
+
+    # 2. Clients created via web auth
+    clients = db.query(Client).filter(func.lower(Client.telegram_id) == f"web:{clean_email}").all()
+    for c in clients:
+        c.marketing_unsubscribed = True
+        unsubscribed_any = True
+
+    if unsubscribed_any:
+        db.commit()
+
+    # 3. Propagate to HH-Agent
+    _sync_hh_agent_unsubscribe(clean_email)
+
+    return True, "Вы успешно отписались от уведомлений и рассылок TenderLex."
 
 
 def unsubscribe_by_telegram_id(db: Session, telegram_id: str | int) -> bool:
@@ -369,142 +428,134 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 # =========================================================================
 
 def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
-    unsub_token = generate_unsubscribe_token(client_id, email)
-    unsub_link = html_lib.escape(f"{base_url}/api/customer/auth/unsubscribe?token={unsub_token}", quote=True)
+    if email:
+        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?email={quote(email)}", quote=True)
+    else:
+        unsub_token = generate_unsubscribe_token(client_id, email)
+        unsub_link = html_lib.escape(f"{base_url}/unsubscribe?token={unsub_token}", quote=True)
     cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
-    article_link = html_lib.escape(f"{base_url}/baza-znaniy/kak-naiti-postavshchika-po-tz", quote=True)
 
     # 3 core platform modules in strict order (matching hh-agent visual card):
     # 1. Поиск поставщиков (более 50 контактов в Excel)
     # 2. Подбор товара и аналогов (выгрузка в Word .docx exclusively)
     # 3. Анализ документации любого формата
     modules_card_html = (
-        '<div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px;">'
-        '<div style="margin-bottom: 8px;">'
-        '<div style="font-weight: 700; color: #0f766e; margin-bottom: 2px;">1. Поиск поставщиков (более 50 контактов в Excel)</div>'
-        '<div style="color: #334155; font-size: 13px; line-height: 1.45;">'
-        'Сервис в реальном времени сканирует сеть по позициям и характеристикам из вашего ТЗ, отбирает действующие заводы-изготовители и официальных дилеров. На выходе — таблица: более 50 прямых e-mail и телефонов отделов сбыта со статусом в реестре Минпромторга.'
-        '</div>'
-        '</div>'
-        '<div style="margin-bottom: 8px;">'
-        '<div style="font-weight: 700; color: #0f766e; margin-bottom: 2px;">2. Подбор товара и аналогов</div>'
-        '<div style="color: #334155; font-size: 13px; line-height: 1.45;">'
-        'Идентифицирует заложенного заказчиком производителя по параметрам спецификации и подбирает российские аналоги из реестра Минпромторга с подтвержденными заводскими показателями. Выгрузка в Word (.docx).'
-        '</div>'
-        '</div>'
-        '<div>'
-        '<div style="font-weight: 700; color: #0f766e; margin-bottom: 2px;">3. Анализ документации любого формата</div>'
-        '<div style="color: #334155; font-size: 13px; line-height: 1.45;">'
-        'Принимает номер извещения ЕИС, файлы Excel, Word, PDF, сканы или текст. Формирует чистую таблицу номенклатуры, оценивает вес и объем партии для логистики, проверяет условия авансирования, нацрежим и готовит файл официального Запроса КП.'
-        '</div>'
-        '</div>'
-        '</div>'
+        '  <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">\n'
+        '    <div style="margin-bottom: 12px;">\n'
+        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">1. Поиск поставщиков (более 50 контактов в Excel)</div>\n'
+        '      <div style="color: #334155; font-size: 15px; line-height: 1.55;">\n'
+        '        Сервис в реальном времени сканирует сеть по позициям и характеристикам из вашего ТЗ, отбирает действующие заводы-изготовители и официальных дилеров. На выходе — таблица: более 50 прямых e-mail и телефонов отделов сбыта со статусом в реестре Минпромторга.\n'
+        '      </div>\n'
+        '    </div>\n'
+        '    <div style="margin-bottom: 12px;">\n'
+        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">2. Определение точного товара и аналогов</div>\n'
+        '      <div style="color: #334155; font-size: 15px; line-height: 1.55;">\n'
+        '        Идентифицирует заложенного заказчиком производителя по параметрам спецификации и подбирает российские аналоги из реестра Минпромторга с подтвержденными заводскими показателями. Выгрузка в Word (.docx).\n'
+        '      </div>\n'
+        '    </div>\n'
+        '    <div>\n'
+        '      <div style="font-weight: 700; color: #0f766e; font-size: 16px; margin-bottom: 4px;">3. Анализ документации любого формата</div>\n'
+        '      <div style="color: #334155; font-size: 15px; line-height: 1.55;">\n'
+        '        Принимает номер извещения ЕИС, файлы Excel, Word, PDF, сканы или текст. Формирует чистую таблицу номенклатуры, оценивает вес и объем партии для логистики, проверяет условия авансирования, нацрежим и готовит файл официального Запроса КП.\n'
+        '      </div>\n'
+        '    </div>\n'
+        '  </div>'
     )
 
     if step == "step1":
-        subject = "Ваш пробный доступ в TenderLex: как запустить первый расчет по ТЗ"
+        subject = "TenderLex: Реестр заводов и спецификация для закупки"
         intro_html = (
-            '<p style="margin: 0 0 6px 0;">Здравствуйте!</p>'
-            f'<p style="margin: 0 0 6px 0;">На вашем балансе в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> активен <strong>бесплатный пробный доступ</strong> (без привязки карты).</p>'
-            '<p style="margin: 0 0 8px 0;">Отечественная платформа <strong>TenderLex</strong> берет на себя рутину снабжения и расчетов под 44-ФЗ и 223-ФЗ:</p>'
+            '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
+            f'  <p style="margin: 0 0 12px 0;">Вы ранее знакомились с сервисом автоматизации снабжения <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> под 44-ФЗ и 223-ФЗ. Сервис берёт на себя рутину снабжения и расчетов:</p>'
         )
-        badge_text = "Новым пользователям открыт бесплатный пробный доступ:"
+        badge_text = "Протестируйте расчеты на вашей закупке:"
         button_text = "Запустить первую задачу"
         closing_html = (
-            '<p style="margin: 0 0 8px 0; color: #475569; font-size: 13px; line-height: 1.45;">'
-            'Чтобы протестировать на вашей закупке, просто загрузите файл ТЗ или укажите номер ЕИС в личном кабинете. Также можете отправить спецификацию в ответ на это письмо — бесплатно подготовим демонстрационный расчет.'
-            '</p>'
-            f'<p style="margin: 0 0 8px 0; font-size: 12px;"><a href="{article_link}" target="_blank" style="color: #0f766e; text-decoration: underline;">📖 Как быстро найти прямых производителей по ТЗ и ГОСТам &rarr;</a></p>'
+            '  <p style="margin: 0 0 12px 0; color: #475569; font-size: 15px; line-height: 1.55;">\n'
+            '    Либо просто отправьте файл спецификации или номер закупки ответным письмом — подготовим расчет и пришлем готовый реестр заводов.\n'
+            '  </p>'
         )
     elif step == "step1_final":
-        subject = "Последнее напоминание: ваш пробный доступ в TenderLex сохранен"
+        subject = "TenderLex: Последнее напоминание о расчете спецификации и контактах заводов"
         intro_html = (
-            '<p style="margin: 0 0 6px 0;">Здравствуйте!</p>'
-            f'<p style="margin: 0 0 6px 0;">Напоминаем: на вашем балансе в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> сохранен <strong>бесплатный пробный доступ</strong>.</p>'
-            '<p style="margin: 0 0 8px 0;">Если у вас прямо сейчас в работе есть спецификация или расчет к закупке 44-ФЗ / 223-ФЗ — загрузите ТЗ в личный кабинет. Сервис за 2–3 минуты выполнит ключевые расчеты:</p>'
+            '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
+            f'  <p style="margin: 0 0 12px 0;">Напоминаем: в сервисе <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> сохранена возможность протестировать расчет спецификаций под 44-ФЗ и 223-ФЗ. Если у вас в работе есть расчет к закупке — сервис выполнит ключевые этапы за 2–3 минуты:</p>'
         )
-        badge_text = "Пробный доступ сохранен на вашем аккаунте:"
-        button_text = "Запустить первую задачу"
+        badge_text = "Доступ к расчетам сохранен на платформе:"
+        button_text = "Перейти к расчету ТЗ"
         closing_html = (
-            '<p style="margin: 0 0 8px 0; color: #475569; font-size: 13px; line-height: 1.45;">'
-            'Это последнее напоминание — больше не побеспокоим. Если автоматизация снабжения сейчас не актуальна, вы можете отписаться по ссылке внизу письма.'
-            '</p>'
+            '  <p style="margin: 0 0 12px 0; color: #475569; font-size: 15px; line-height: 1.55;">\n'
+            '    Это последнее напоминание. Если автоматизация снабжения сейчас не актуальна, вы можете отписаться по ссылке внизу письма.\n'
+            '  </p>'
         )
     elif step == "step2":
-        subject = "3 ключевые возможности TenderLex для экономии времени снабжения"
+        subject = "TenderLex: 3 ключевых инструмента экономии времени снабжения по 44-ФЗ и 223-ФЗ"
         intro_html = (
-            '<p style="margin: 0 0 6px 0;">Здравствуйте!</p>'
-            f'<p style="margin: 0 0 6px 0;">Вы уже запустили первые расчеты в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>.</p>'
-            '<p style="margin: 0 0 8px 0;">Напоминаем о трех ключевых инструментах сервиса под 44-ФЗ и 223-ФЗ, где снабженцы и тендерные специалисты экономят часы рутины:</p>'
+            '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
+            f'  <p style="margin: 0 0 12px 0;">Вы уже запустили первые расчеты в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>. Напоминаем о ключевых инструментах сервиса под 44-ФЗ и 223-ФЗ, где снабженцы и тендерные специалисты экономят часы рутины:</p>'
         )
-        badge_text = "На вашем балансе ещё есть средства — протестируйте остальные сценарии:"
+        badge_text = "Протестируйте остальные сценарии на ваших закупках:"
         button_text = "Перейти в личный кабинет"
         closing_html = (
-            '<p style="margin: 0 0 8px 0; color: #475569; font-size: 13px; line-height: 1.45;">'
-            'Списание средств происходит только после успешной выдачи готового результата. Если возникнут вопросы по сложной спецификации — просто ответьте на это письмо.'
-            '</p>'
+            '  <p style="margin: 0 0 12px 0; color: #475569; font-size: 15px; line-height: 1.55;">\n'
+            '    Сервис выполняет поиск производителей и подбор аналогов в реальном времени. Если возникнут вопросы по сложной спецификации — просто ответьте на это письмо.\n'
+            '  </p>'
         )
     elif step == "step4_reengage":
-        subject = "Помощь с поиском заводов и расчетом ТЗ: TenderLex на связи"
+        subject = "TenderLex: Помощь с поиском заводов и сложными спецификациями"
         intro_html = (
-            '<p style="margin: 0 0 6px 0;">Здравствуйте!</p>'
-            f'<p style="margin: 0 0 6px 0;">Давно не виделись — <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> на связи. Вы ранее рассчитывали задачи в сервисе.</p>'
-            '<p style="margin: 0 0 8px 0;">Если прямо сейчас у вас в работе появились новые сложные спецификации по 44-ФЗ / 223-ФЗ, горят сроки подачи или требуется срочно выйти на прямых изготовителей — сервис готов подключиться:</p>'
+            '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
+            f'  <p style="margin: 0 0 12px 0;">Давно не виделись — <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong> на связи. Если прямо сейчас у вас в работе появились новые сложные спецификации по 44-ФЗ / 223-ФЗ, горят сроки или нужно срочно выйти на прямых изготовителей — сервис готов подключиться:</p>'
         )
         badge_text = "Платформа готова к новым расчетам:"
         button_text = "Открыть кабинет TenderLex"
         closing_html = (
-            '<p style="margin: 0 0 8px 0; color: #475569; font-size: 13px; line-height: 1.45;">'
-            'Просто загрузите файл спецификации или номер ЕИС в кабинет — результат будет готов за 2–3 минуты. Если для отдела снабжения нужны тестовые лимиты — ответьте на это письмо, поможем!'
-            '</p>'
+            '  <p style="margin: 0 0 12px 0; color: #475569; font-size: 15px; line-height: 1.55;">\n'
+            '    Просто загрузите файл спецификации или номер ЕИС в кабинет — результат будет готов за 2–3 минуты. Если для отдела снабжения нужны лимиты — ответьте на это письмо, поможем!\n'
+            '  </p>'
         )
     else:  # step3
-        subject = "Тестовые расчеты в TenderLex выполнены: как подключить регулярный доступ"
+        subject = "TenderLex: Регулярный доступ к модулям снабжения и расчету спецификаций"
         intro_html = (
-            '<p style="margin: 0 0 6px 0;">Здравствуйте!</p>'
-            f'<p style="margin: 0 0 6px 0;">Вы использовали стартовый баланс в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>.</p>'
-            '<p style="margin: 0 0 8px 0;">Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к постоянной работе:</p>'
+            '  <p style="margin: 0 0 10px 0;">Здравствуйте!</p>\n'
+            f'  <p style="margin: 0 0 12px 0;">Вы завершили тестовые расчеты в <strong><a href="{cabinet_link}" style="color: #0f766e; text-decoration: none;">TenderLex</a></strong>. Надеемся, сервис сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации. Все модули готовы к постоянной работе:</p>'
         )
-        badge_text = "Выберите подходящий тариф для регулярной работы без пауз:"
+        badge_text = "Выберите подходящий тариф для постоянной работы:"
         button_text = "Выбрать тариф в кабинете"
         closing_html = (
-            '<p style="margin: 0 0 8px 0; color: #475569; font-size: 13px; line-height: 1.45;">'
-            'Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО).'
-            '</p>'
+            '  <p style="margin: 0 0 12px 0; color: #475569; font-size: 15px; line-height: 1.55;">\n'
+            '    Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО).\n'
+            '  </p>'
         )
 
     callout_html = (
-        '<div style="background-color: #f0fdf4; border: 1px solid #86efac; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px;">'
-        f'<div style="font-weight: 600; color: #166534; font-size: 13px; margin-bottom: 8px;">🎁 {badge_text}</div>'
-        '<div>'
-        f'<a href="{cabinet_link}" style="background-color: #0f766e; color: #ffffff; font-size: 13px; font-weight: 600; text-decoration: none; padding: 7px 16px; border-radius: 4px; display: inline-block;">{button_text}</a>'
-        '<span style="margin-left: 10px; font-size: 13px; color: #334155;">или в Telegram: <a href="https://t.me/tenderlex_bot" style="color: #0f766e; text-decoration: underline; font-weight: 500;">@tenderlex_bot</a></span>'
-        '</div>'
-        '</div>'
+        '  <div style="background-color: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">\n'
+        f'    <div style="font-weight: 600; color: #166534; font-size: 15px; margin-bottom: 10px;">🎁 {badge_text}</div>\n'
+        '    <div>\n'
+        f'      <a href="{cabinet_link}" style="background-color: #0f766e; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; padding: 10px 22px; border-radius: 6px; display: inline-block;">{button_text}</a>\n'
+        '      <span style="margin-left: 12px; font-size: 15px; color: #334155;">или в Telegram: <a href="https://t.me/tenderlex_bot" style="color: #0f766e; text-decoration: underline; font-weight: 500;">@tenderlex_bot</a></span>\n'
+        '    </div>\n'
+        '  </div>'
     )
 
     html = (
-        '<!DOCTYPE html>'
-        '<html>'
-        '<head><meta charset="utf-8"></head>'
-        '<body style="margin: 0; padding: 10px 0; background-color: #ffffff;">'
-        '<div style="max-width: 580px; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #1e293b; font-size: 14px; line-height: 1.45;">'
-        '<div style="margin-bottom: 8px;">'
-        '<strong style="font-size: 16px; color: #0f766e; letter-spacing: -0.2px;">TenderLex</strong>'
-        '<span style="font-size: 12px; color: #64748b; margin-left: 6px;">· сервис автоматизации снабжения</span>'
-        '</div>'
-        f'{intro_html}'
-        f'{modules_card_html}'
-        f'{callout_html}'
-        f'{closing_html}'
-        '<div style="border-top: 1px solid #e2e8f0; padding-top: 6px; color: #64748b; font-size: 12px; line-height: 1.45;">'
-        f'<div>С уважением, <strong>Команда TenderLex</strong> &middot; <a href="{base_url}" style="color: #0f766e; text-decoration: none;">tenderlex.ru</a> &middot; info@tenderlex.ru</div>'
-        '<div style="margin-top: 5px; font-size: 11px; color: #94a3b8;">'
-        f'Вы получили это письмо как зарегистрированный пользователь TenderLex. <a href="{unsub_link}" target="_blank" style="color: #94a3b8; text-decoration: underline;">Отписаться от рассылки</a>'
-        '</div>'
-        '</div>'
-        '</div>'
-        '</body>'
+        '<!DOCTYPE html>\n'
+        '<html>\n'
+        '<head><meta charset="utf-8"></head>\n'
+        '<body style="margin: 0; padding: 12px 0; background-color: #ffffff;">\n'
+        '<div style="max-width: 680px; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #1e293b; font-size: 16px; line-height: 1.6;">\n'
+        f'{intro_html}\n'
+        f'{modules_card_html}\n'
+        f'{callout_html}\n'
+        f'{closing_html}\n'
+        '  <div style="border-top: 1px solid #e2e8f0; padding-top: 10px; color: #64748b; font-size: 13px; line-height: 1.5;">\n'
+        f'    <div>С уважением, <strong>Команда TenderLex</strong> &middot; <a href="{base_url}" style="color: #0f766e; text-decoration: none;">tenderlex.ru</a> &middot; info@tenderlex.ru</div>\n'
+        '    <div style="margin-top: 6px; font-size: 12px; color: #94a3b8;">\n'
+        f'      Если предложение не актуально, вы можете <a href="{unsub_link}" target="_blank" style="color: #94a3b8; text-decoration: underline;">отписаться от рассылки</a>.\n'
+        '    </div>\n'
+        '  </div>\n'
+        '</div>\n'
+        '</body>\n'
         '</html>'
     )
     return subject, html
@@ -514,7 +565,7 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
     if step == "step1":
         text = (
             "👋 <b>Здравствуйте!</b>\n\n"
-            "На вашем балансе в <b>TenderLex</b> активен <b>бесплатный пробный доступ</b> (без привязки карты).\n\n"
+            "На вашем балансе в <b>TenderLex</b> активен <b>бесплатный пробный доступ</b>.\n\n"
             "Сервис автоматизирует ключевую рутину снабжения и расчетов под 44-ФЗ и 223-ФЗ:\n\n"
             "1️⃣ <b>Поиск поставщиков по ТЗ:</b>\n"
             "• Разбирает спецификации любого формата: Word, Excel, PDF, сканы — извлекая ГОСТы и маркоразмеры;\n"

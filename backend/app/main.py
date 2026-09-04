@@ -778,10 +778,16 @@ def customer_email_verification_confirm_link(token: str):
 
 
 @app.get("/api/customer/auth/unsubscribe")
-def customer_unsubscribe_api(token: str = "", db: Session = Depends(db_session)):
-    from .nurturing import unsubscribe_by_token
+def customer_unsubscribe_api(token: str = "", email: str = "", db: Session = Depends(db_session)):
+    from .nurturing import unsubscribe_by_email, unsubscribe_by_token
 
-    success, message = unsubscribe_by_token(db, token)
+    if token:
+        success, message = unsubscribe_by_token(db, token)
+    elif email:
+        success, message = unsubscribe_by_email(db, email)
+    else:
+        success, message = False, "Недействительная ссылка отписки: не указан токен или email."
+
     status_title = "Вы успешно отписались" if success else "Ошибка отписки"
     status_desc = (
         "Вы успешно отписались от уведомлений и обучающих рассылок TenderLex. Мы больше не будем присылать вам автоматические письма."
@@ -798,12 +804,12 @@ def customer_unsubscribe_api(token: str = "", db: Session = Depends(db_session))
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>{status_title} — TenderLex</title>
 </head>
-<body style="margin:0;padding:40px 16px;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#1e293b;display:flex;justify-content:center;align-items:center;min-height:80vh;">
-  <div style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px 28px;text-align:center;box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);box-sizing:border-box;">
-    <div style="font-size:36px;margin-bottom:12px;">{icon}</div>
-    <h1 style="font-size:20px;font-weight:bold;color:#0f172a;margin:0 0 10px 0;">{status_title}</h1>
-    <p style="font-size:14px;line-height:1.6;color:#475569;margin:0 0 24px 0;">{status_desc}</p>
-    <a href="https://tenderlex.ru" style="display:inline-block;background:{badge_color};color:#ffffff;text-decoration:none;font-weight:bold;font-size:14px;padding:11px 24px;border-radius:8px;">На главную TenderLex</a>
+<body style="margin:0;padding:40px 16px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;color:#1e293b;display:flex;justify-content:center;align-items:center;min-height:80vh;">
+  <div style="max-width:540px;width:100%;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:36px 32px;text-align:center;box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);box-sizing:border-box;">
+    <div style="font-size:42px;margin-bottom:16px;">{icon}</div>
+    <h1 style="font-size:24px;font-weight:bold;color:#0f172a;margin:0 0 12px 0;">{status_title}</h1>
+    <p style="font-size:16px;line-height:1.65;color:#475569;margin:0 0 28px 0;">{status_desc}</p>
+    <a href="https://tenderlex.ru" style="display:inline-block;background:{badge_color};color:#ffffff;text-decoration:none;font-weight:bold;font-size:16px;padding:12px 28px;border-radius:8px;">На главную TenderLex</a>
   </div>
 </body>
 </html>"""

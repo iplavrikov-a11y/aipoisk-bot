@@ -121,6 +121,40 @@ def test_unsubscribe_by_token_and_api_endpoint(db_session: Session, test_client:
     assert "Ошибка отписки" in bad_resp.text
 
 
+def test_unsubscribe_by_email(db_session: Session, test_client):
+    email = f"direct_unsub_{uuid.uuid4().hex[:6]}@example.com"
+    client = Client(
+        telegram_id=f"web:{email}",
+        name="ООО Директ Клиент",
+        is_active=True,
+        marketing_unsubscribed=False,
+    )
+    db_session.add(client)
+    db_session.flush()
+
+    web_user = WebUser(
+        client_id=client.id,
+        email=email,
+        name="Директ Пользователь",
+        is_active=True,
+        marketing_unsubscribed=False,
+    )
+    db_session.add(web_user)
+    db_session.commit()
+
+    resp = test_client.get(f"/api/customer/auth/unsubscribe?email={email}")
+    assert resp.status_code == 200
+    assert "Вы успешно отписались" in resp.text
+
+    db_session.refresh(client)
+    db_session.refresh(web_user)
+    assert client.marketing_unsubscribed is True
+    assert web_user.marketing_unsubscribed is True
+
+    bad_resp = test_client.get("/api/customer/auth/unsubscribe?email=notanemail")
+    assert bad_resp.status_code == 400
+
+
 def test_unsubscribe_by_telegram_id(db_session: Session):
     tg_id = str(uuid.uuid4().int)[:10]
     client = Client(
@@ -279,13 +313,12 @@ def test_nurturing_content_builders():
         subject, html = build_nurturing_email_html(step, "cid-123", "user@example.com")
         assert subject
         assert "TenderLex" in html
-        assert "сервис автоматизации снабжения" in html
         assert "1. Поиск поставщиков" in html
-        assert "2. Подбор товара и аналогов" in html
+        assert "2. Определение точного товара и аналогов" in html
         assert "3. Анализ документации" in html
         assert "@tenderlex_bot" in html
-        assert "api/customer/auth/unsubscribe?token=" in html
-        assert "Отписаться от рассылки" in html
+        assert "unsubscribe?" in html
+        assert "отписаться от рассылки" in html.lower()
         assert "\n\n\n" not in html  # no massive empty newline blocks
 
     # Telegram message builder

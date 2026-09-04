@@ -64,7 +64,7 @@ class AppConfig(BaseSettings):
     email_relay_url: str = ""
     email_relay_api_key: str = ""
     email_from_name: str = "TenderLex"
-    email_from_email: str = ""
+    email_from_email: str = "info@tenderlex.ru"
     customer_email_verification_hours: int = 24
     yandex_oauth_client_id: str = ""
     yandex_oauth_client_secret: str = ""

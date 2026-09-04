@@ -239,7 +239,7 @@ def _verification_sender_name() -> str:
 
 
 def _verification_sender_email() -> str:
-    return str(config.email_from_email or config.smtp_from or config.smtp_username or "").strip()
+    return str(config.email_from_email or config.smtp_from or config.smtp_username or "info@tenderlex.ru").strip()
 
 
 def _verification_email_text(link: str, grant_text: str = "бесплатные задачи") -> str:
