@@ -275,16 +275,21 @@ def test_nurturing_step2_and_step3_candidates(db_session: Session):
 
 def test_nurturing_content_builders():
     # Email HTML builder
-    for step in ("step1", "step2", "step3"):
+    for step in ("step1", "step1_final", "step2", "step3", "step4_reengage"):
         subject, html = build_nurturing_email_html(step, "cid-123", "user@example.com")
         assert subject
         assert "TenderLex" in html
+        assert "сервис автоматизации снабжения" in html
+        assert "1. Поиск поставщиков" in html
+        assert "2. Подбор товара и аналогов" in html
+        assert "3. Анализ документации" in html
+        assert "@tenderlex_bot" in html
         assert "api/customer/auth/unsubscribe?token=" in html
         assert "Отписаться от рассылки" in html
         assert "\n\n\n" not in html  # no massive empty newline blocks
 
     # Telegram message builder
-    for step in ("step1", "step2", "step3"):
+    for step in ("step1", "step1_final", "step2", "step3", "step4_reengage"):
         text, buttons = build_nurturing_telegram_message(step)
         assert text
         assert "TenderLex" in text
@@ -481,3 +486,124 @@ def test_nurturing_funnel_stats(db_session: Session):
     assert stats["steps"]["step1"]["converted_to_first_job"] >= 1
     assert stats["funnel"]["activated_created_job"] >= 1
     assert stats["funnel"]["activation_rate"] is not None
+
+
+def test_nurturing_email_channel_priority_and_web_users(db_session: Session):
+    now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+    settings = db_session.query(SystemSettings).first() or SystemSettings(id=1)
+    settings.onboarding_reminders_enabled = True
+    settings.onboarding_reminders_rollout_at = (now - timedelta(days=30)).isoformat()
+    db_session.add(settings)
+
+    # 1. Pure Web User (registered via website/Yandex, 0 jobs, 26h ago)
+    client_web = Client(
+        telegram_id=f"web:{uuid.uuid4().hex[:12]}",
+        name="ООО Веб Клиент",
+        is_active=True,
+        marketing_unsubscribed=False,
+        created_at=now - timedelta(hours=26),
+    )
+    db_session.add(client_web)
+    db_session.flush()
+    web_user = WebUser(
+        client_id=client_web.id,
+        email="client_web@tenderlex.ru",
+        name="ООО Веб Клиент",
+        is_active=True,
+        is_email_verified=True,
+        marketing_unsubscribed=False,
+    )
+    db_session.add(web_user)
+
+    # 2. Dual-channel User who works in Web cabinet (created job via web cabinet, no created_by_telegram_id)
+    t_dual_web = str(uuid.uuid4().int)[:10]
+    client_dual_web = Client(
+        telegram_id=f"web:{uuid.uuid4().hex[:12]}",
+        name="ООО Веб И ТГ",
+        is_active=True,
+        marketing_unsubscribed=False,
+        money_balance_kopeks=20000,
+        created_at=now - timedelta(days=4),
+    )
+    db_session.add(client_dual_web)
+    db_session.flush()
+    db_session.add(ClientTelegramAccount(client_id=client_dual_web.id, telegram_id=t_dual_web, is_active=True))
+    db_session.add(
+        WebUser(
+            client_id=client_dual_web.id,
+            email="dual_web@tenderlex.ru",
+            name="Иван",
+            is_active=True,
+            is_email_verified=True,
+            marketing_unsubscribed=False,
+        )
+    )
+    # Completed job created in web cabinet (created_by_telegram_id is empty) 50h ago
+    db_session.add(Job(client_id=client_dual_web.id, status="completed", created_by_telegram_id="", created_at=now - timedelta(hours=50)))
+
+    # 3. Dual-channel User who works in Telegram bot (created job via bot, created_by_telegram_id is numeric)
+    t_dual_tg = str(uuid.uuid4().int)[:10]
+    client_dual_tg = Client(
+        telegram_id=t_dual_tg,
+        name="ООО ТГ Юзер",
+        is_active=True,
+        marketing_unsubscribed=False,
+        money_balance_kopeks=20000,
+        created_at=now - timedelta(days=4),
+    )
+    db_session.add(client_dual_tg)
+    db_session.flush()
+    db_session.add(ClientTelegramAccount(client_id=client_dual_tg.id, telegram_id=t_dual_tg, is_active=True))
+    db_session.add(
+        WebUser(
+            client_id=client_dual_tg.id,
+            email="dual_tg@tenderlex.ru",
+            name="Петр",
+            is_active=True,
+            is_email_verified=True,
+            marketing_unsubscribed=False,
+        )
+    )
+    # Completed job created in Telegram bot
+    db_session.add(Job(client_id=client_dual_tg.id, status="completed", created_by_telegram_id=t_dual_tg, created_at=now - timedelta(hours=50)))
+
+    db_session.commit()
+
+    candidates = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
+
+    # Check 1: Web-only user receives email
+    web_candidates = [c for c in candidates if c.client_id == client_web.id]
+    assert len(web_candidates) == 1
+    assert web_candidates[0].channel == "email"
+    assert web_candidates[0].recipient == "client_web@tenderlex.ru"
+    assert web_candidates[0].step == "step1"
+
+    # Check 2: Dual user working in Web cabinet prioritizes email
+    dual_web_candidates = [c for c in candidates if c.client_id == client_dual_web.id]
+    assert len(dual_web_candidates) == 1
+    assert dual_web_candidates[0].channel == "email"
+    assert dual_web_candidates[0].recipient == "dual_web@tenderlex.ru"
+    assert dual_web_candidates[0].step == "step2"
+
+    # Check 3: Dual user working in Telegram prioritizes telegram
+    dual_tg_candidates = [c for c in candidates if c.client_id == client_dual_tg.id]
+    assert len(dual_tg_candidates) == 1
+    assert dual_tg_candidates[0].channel == "telegram"
+    assert dual_tg_candidates[0].recipient == t_dual_tg
+    assert dual_tg_candidates[0].step == "step2"
+
+    # Check 4: Anti-spam — once a step is claimed or sent, no duplicate sending on either channel
+    db_session.add(
+        OnboardingReminder(
+            client_id=client_web.id,
+            channel="email",
+            step="step1",
+            status="sent",
+            sent_at=now - timedelta(hours=1),
+        )
+    )
+    db_session.commit()
+
+    candidates_after = get_due_nurturing_candidates(db_session, settings, current_time=now, enforce_work_hours=False)
+    assert not any(c.client_id == client_web.id and c.step == "step1" for c in candidates_after)
+
