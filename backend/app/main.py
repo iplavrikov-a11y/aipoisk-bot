@@ -1389,6 +1389,10 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
+    if "onboarding_reminders_enabled" in payload:
+        enabled = bool(payload["onboarding_reminders_enabled"])
+        settings.onboarding_reminders_enabled = enabled
+        settings.reengagement_reminders_enabled = enabled
     if "trial_balance_rub" in payload and payload["trial_balance_rub"] is not None:
         rub = max(0, int(payload["trial_balance_rub"]))
         if "trial_supplier_search_limit" not in payload:
