@@ -12,6 +12,20 @@ Date: 2026-09-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Omnichannel Email & Telegram Auto-Reminders with Channel Affinity (2026-09):
+  - Omnichannel Dispatch for Web Registrations (`backend/app/nurturing.py`): Extended onboarding and reengagement reminder sequence to web-registered customers (Email/password and Yandex ID OAuth).
+  - Activity-Based Channel Priority & Anti-Spam: When both Telegram and Web channels are known for a customer, the pipeline automatically detects where the user actively works:
+    - If tasks are submitted via Telegram bot (`created_by_telegram_id`) &rarr; dispatches via Telegram.
+    - If tasks are submitted via Web cabinet &rarr; dispatches via Email (`web_user.email`).
+    - If 0 tasks exist &rarr; prioritizes channel based on registration origin (`web:*` &rarr; Email, numeric ID &rarr; Telegram).
+    - Prevents cross-channel spam: reminder status is tracked strictly per step per client, guaranteeing that each onboarding stage is dispatched at most once across all channels.
+  - Modern Card-Based Email Redesign: Refactored all 5 email templates (`step1`, `step1_final`, `step2`, `step3`, `step4_reengage`) to match the high-converting visual layout from `hh-agent` (`outreach.py`):
+    - Branded header `TenderLex · сервис автоматизации снабжения` (#0f766e);
+    - Light gray feature card box (`#f8fafc`, border `#cbd5e1`, 6px radius) presenting the 3 modules in strict order: 1. Поиск поставщиков (email сбыта, телефоны, Запрос КП, ГИСП), 2. Подбор товара и аналогов (исключительно Word .docx), 3. Анализ документации (штрафы, риски, нацрежим);
+    - Mint CTA action box (`#f0fdf4`, border `#86efac`, 6px radius) with button and `@tenderlex_bot` link;
+    - Clean footer with HMAC-signed unsubscribe link (`/api/customer/auth/unsubscribe?token=...`).
+  - HH-Agent Outreach Unsubscribe Parity (`hh-agent/outreach.py`): Added unsubscribe mailto link and reply "Стоп" / "Отписаться" option to cold outreach and follow-up email footers, and sanitized stale "4 бесплатных поиска" copy to dynamic trial access.
+  - Comprehensive Test Suite Verification: 11 passing nurturing tests (`backend/tests/test_nurturing.py`), 8 passing outreach tests (`hh-agent`), 663 full backend tests passing, and live production deployment verified via `./scripts/deploy_tenderlex_live.sh`.
 - Dynamic Trial Balance (495 ₽) & Full Price Sanitization (2026-09):
   - Upgraded starter trial balance to 495 ₽ (5 tasks @ 99 ₽) in settings, models fallback, and db default migration.
   - Fully sanitized user-facing copy: removed all hardcoded ruble prices (e.g. 390 ₽, 396 ₽) from website, Telegram bot, and nurturing templates to keep the trial balance purely dynamic and easily adjustable by the owner at any time.
