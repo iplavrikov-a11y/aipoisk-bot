@@ -3279,7 +3279,7 @@ def public_site_payload(db: Session) -> dict:
         },
         "trial": {
             "enabled": bool(settings.trial_enabled),
-            "balance_rub": max(0, int(getattr(settings, "trial_balance_rub", 396) or 0)),
+            "balance_rub": max(0, int(getattr(settings, "trial_balance_rub", 495) or 0)),
             "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
             "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
             "file_limit": max(0, int(settings.trial_file_limit or 0)),

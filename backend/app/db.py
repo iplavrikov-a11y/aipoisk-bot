@@ -83,7 +83,7 @@ def _ensure_schema() -> None:
             "trial_supplier_search_limit": "INTEGER DEFAULT 2",
             "trial_procurement_report_limit": "INTEGER DEFAULT 2",
             "trial_file_limit": "INTEGER DEFAULT 10",
-            "trial_balance_rub": "INTEGER DEFAULT 396",
+            "trial_balance_rub": "INTEGER DEFAULT 495",
             "onboarding_reminders_enabled": "BOOLEAN DEFAULT 0",
             "onboarding_reminders_rollout_at": "VARCHAR(40) DEFAULT ''",
             "reengagement_reminders_enabled": "BOOLEAN DEFAULT 0",

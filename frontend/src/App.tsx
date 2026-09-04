@@ -5299,9 +5299,6 @@ function SettingsView({
   const [adapterKey, setAdapterKey] = useState('')
   const [yandexKey, setYandexKey] = useState('')
   const [googleKey, setGoogleKey] = useState('')
-  const [registryFile, setRegistryFile] = useState<File | null>(null)
-  const [registryUploadBusy, setRegistryUploadBusy] = useState(false)
-  const [registryUploadMessage, setRegistryUploadMessage] = useState('')
   const searchUi = draft.supplier_search_ui
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
@@ -5331,26 +5328,6 @@ function SettingsView({
     })
     await onChange()
   }
-  async function uploadMinpromRegistry() {
-    if (!registryFile) return
-    setRegistryUploadBusy(true)
-    setRegistryUploadMessage('')
-    try {
-      const form = new FormData()
-      form.append('file', registryFile)
-      const status = await api<MinpromRegistryStatus>('/api/ops/minprom-registry/upload', {
-        method: 'POST',
-        body: form,
-      })
-      setRegistryUploadMessage(`Загружено: ${new Intl.NumberFormat('ru-RU').format(status.sqlite_entry_count || status.sqlite_count || 0)} записей.`)
-      setRegistryFile(null)
-      await onChange()
-    } catch (err) {
-      setRegistryUploadMessage(formatError(err))
-    } finally {
-      setRegistryUploadBusy(false)
-    }
-  }
   return (
     <section className="settings-grid">
       <div className="form-panel full">
@@ -5377,12 +5354,12 @@ function SettingsView({
       <div className="form-panel">
         <h2>Бесплатный доступ</h2>
         <label className="switch-row"><input type="checkbox" checked={draft.trial_enabled} onChange={e => setDraft({ ...draft, trial_enabled: e.target.checked })} />Включить бесплатный период для новых пользователей (Telegram и Web)</label>
-        <NumberField label="Стартовый баланс триала, ₽" value={draft.trial_balance_rub ?? 396} onChange={value => setDraft({ ...draft, trial_balance_rub: value })} />
+        <NumberField label="Стартовый баланс триала, ₽" value={draft.trial_balance_rub ?? 495} onChange={value => setDraft({ ...draft, trial_balance_rub: value })} />
         <p className="field-help">Сумма в рублях, которая начисляется на баланс новым пользователям при регистрации. Пользователь может свободно расходовать этот баланс на любые сценарии: поиск поставщиков, подбор товара и аналогов или анализ документации по действующим тарифам.</p>
         <label className="switch-row"><input type="checkbox" checked={draft.onboarding_reminders_enabled} onChange={e => setDraft({ ...draft, onboarding_reminders_enabled: e.target.checked, onboarding_reminders_rollout_at: e.target.checked && !draft.onboarding_reminders_rollout_at ? new Date().toISOString() : draft.onboarding_reminders_rollout_at })} />Автонапоминания новым пользователям (цепочка)</label>
         <p className="field-help">Цепочка: подсказка через 1–5 дней без запусков → последнее напоминание через 14+ дней молчания → подсказка про возможности после 1–3 задач → предложение лимитов после 4+ задач. Каждое сообщение один раз, с кнопкой отписки. Только рабочие часы 9:00–20:00 МСК. Действует для тех, кто открыл бота после даты включения.</p>
-        <label className="switch-row"><input type="checkbox" checked={draft.reengagement_reminders_enabled} onChange={e => setDraft({ ...draft, reengagement_reminders_enabled: e.target.checked })} />Вернуть остывших: одно сообщение тем, кто работал и исчез (10+ дней)</label>
-        <p className="field-help">Одно сообщение за всё время пользователю, который делал задачи и пропал. По умолчанию выключено.</p>
+        <label className="switch-row"><input type="checkbox" checked={draft.reengagement_reminders_enabled} onChange={e => setDraft({ ...draft, reengagement_reminders_enabled: e.target.checked, onboarding_reminders_enabled: e.target.checked || draft.onboarding_reminders_enabled, onboarding_reminders_rollout_at: e.target.checked && !draft.onboarding_reminders_rollout_at ? new Date().toISOString() : draft.onboarding_reminders_rollout_at })} />Вернуть остывших: одно сообщение тем, кто работал и исчез (10+ дней)</label>
+        <p className="field-help">Одно сообщение за всё время пользователю, который делал задачи и пропал. Включает фоновую отправку для возврата клиентов.</p>
       </div>
       <div className="form-panel">
         <h2>Отчёты</h2>
@@ -5430,36 +5407,9 @@ function SettingsView({
             <div><span>JSONL</span><strong>{formatBytes(minpromRegistry?.index_size_bytes || 0)}</strong></div>
             <div><span>SQLite</span><strong>{formatBytes(minpromRegistry?.sqlite_size_bytes || 0)}</strong></div>
           </div>
-          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(0,0,0,0.06)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 12px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', fontSize: 13, fontWeight: 500, color: '#334155' }}>
-              <Upload size={14} />
-              <span>{registryFile ? registryFile.name : 'Выбрать XLSX файл'}</span>
-              <input
-                type="file"
-                accept=".xlsx"
-                style={{ display: 'none' }}
-                onChange={e => {
-                  const file = e.target.files?.[0]
-                  if (file) setRegistryFile(file)
-                }}
-              />
-            </label>
-            <button
-              type="button"
-              className="primary small"
-              disabled={!registryFile || registryUploadBusy}
-              onClick={() => void uploadMinpromRegistry()}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              {registryUploadBusy ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}
-              {registryUploadBusy ? 'Загрузка и индексация...' : 'Загрузить и обновить базу'}
-            </button>
-            {registryUploadMessage && (
-              <span style={{ fontSize: 13, color: registryUploadMessage.includes('Ошибка') ? '#dc2626' : '#059669', fontWeight: 500 }}>
-                {registryUploadMessage}
-              </span>
-            )}
-          </div>
+          <p className="field-help" style={{ marginTop: 10, marginBottom: 0 }}>
+            Единый реестр ГИСП управляется и обновляется в сервисе EmailAgent. В TenderLex используется общая актуальная база.
+          </p>
         </div>
         <details className="service-panel">
           <summary>Расширенные параметры источников</summary>

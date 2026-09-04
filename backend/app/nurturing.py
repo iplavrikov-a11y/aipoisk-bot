@@ -138,7 +138,9 @@ def get_due_nurturing_candidates(
     current_time: datetime | None = None,
     enforce_work_hours: bool = True,
 ) -> list[NurturingCandidate]:
-    if not bool(settings.onboarding_reminders_enabled):
+    onboarding_active = bool(settings.onboarding_reminders_enabled)
+    reengage_active = bool(getattr(settings, "reengagement_reminders_enabled", False))
+    if not onboarding_active and not reengage_active:
         return []
     rollout_at = _parse_rollout_at(settings.onboarding_reminders_rollout_at)
     if rollout_at is None:
@@ -201,82 +203,83 @@ def get_due_nurturing_candidates(
 
         client_created = _ensure_utc(client.created_at)
 
-        # Step 1 Check: Registered >= 24h ago, <= 120h ago, 0 jobs created
-        if "step1" not in existing_reminders:
-            age_hours = (now - client_created).total_seconds() / 3600.0
-            if 24.0 <= age_hours <= 120.0 and len(jobs) == 0:
+        if onboarding_active:
+            # Step 1 Check: Registered >= 24h ago, <= 120h ago, 0 jobs created
+            if "step1" not in existing_reminders:
+                age_hours = (now - client_created).total_seconds() / 3600.0
+                if 24.0 <= age_hours <= 120.0 and len(jobs) == 0:
+                    results.append(
+                        NurturingCandidate(
+                            client_id=client.id,
+                            channel=channel,
+                            recipient=recipient,
+                            step="step1",
+                            name=client.name or "Пользователь",
+                            client=client,
+                        )
+                    )
+                    continue
+
+            # Step 1 Final Check: registered >= 14 days ago, 0 jobs, step1 was sent.
+            # Последнее касание для тех, кто проигнорировал step1 — после него тишина навсегда.
+            step1_reminder = existing_reminders.get("step1")
+            if (
+                "step1_final" not in existing_reminders
+                and step1_reminder is not None
+                and step1_reminder.status == "sent"
+                and len(jobs) == 0
+                and (now - client_created).total_seconds() >= 14 * 86400.0
+            ):
                 results.append(
                     NurturingCandidate(
                         client_id=client.id,
                         channel=channel,
                         recipient=recipient,
-                        step="step1",
+                        step="step1_final",
                         name=client.name or "Пользователь",
                         client=client,
                     )
                 )
                 continue
 
-        # Step 1 Final Check: registered >= 14 days ago, 0 jobs, step1 was sent.
-        # Последнее касание для тех, кто проигнорировал step1 — после него тишина навсегда.
-        step1_reminder = existing_reminders.get("step1")
-        if (
-            "step1_final" not in existing_reminders
-            and step1_reminder is not None
-            and step1_reminder.status == "sent"
-            and len(jobs) == 0
-            and (now - client_created).total_seconds() >= 14 * 86400.0
-        ):
-            results.append(
-                NurturingCandidate(
-                    client_id=client.id,
-                    channel=channel,
-                    recipient=recipient,
-                    step="step1_final",
-                    name=client.name or "Пользователь",
-                    client=client,
-                )
-            )
-            continue
-
-        # Step 2 Check: Completed >= 1 job, < 4 completed jobs, latest completed job >= 48h ago
-        if "step2" not in existing_reminders and len(completed_jobs) in (1, 2, 3) and len(pending_or_running_jobs) == 0:
-            latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
-            job_age_hours = (now - latest_completed).total_seconds() / 3600.0
-            if 48.0 <= job_age_hours <= 240.0:
-                results.append(
-                    NurturingCandidate(
-                        client_id=client.id,
-                        channel=channel,
-                        recipient=recipient,
-                        step="step2",
-                        name=client.name or "Пользователь",
-                        client=client,
+            # Step 2 Check: Completed >= 1 job, < 4 completed jobs, latest completed job >= 48h ago
+            if "step2" not in existing_reminders and len(completed_jobs) in (1, 2, 3) and len(pending_or_running_jobs) == 0:
+                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
+                job_age_hours = (now - latest_completed).total_seconds() / 3600.0
+                if 48.0 <= job_age_hours <= 240.0:
+                    results.append(
+                        NurturingCandidate(
+                            client_id=client.id,
+                            channel=channel,
+                            recipient=recipient,
+                            step="step2",
+                            name=client.name or "Пользователь",
+                            client=client,
+                        )
                     )
-                )
-                continue
+                    continue
 
-        # Step 3 Check: Completed >= 4 jobs, trial exhausted (balance < 99 RUB / 9900 kopeks)
-        if "step3" not in existing_reminders and len(completed_jobs) >= 4 and client.money_balance_kopeks < 9900:
-            latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
-            completion_age_hours = (now - latest_completed).total_seconds() / 3600.0
-            if 2.0 <= completion_age_hours <= 168.0:
-                results.append(
-                    NurturingCandidate(
-                        client_id=client.id,
-                        channel=channel,
-                        recipient=recipient,
-                        step="step3",
-                        name=client.name or "Пользователь",
-                        client=client,
+            # Step 3 Check: Completed >= 4 jobs, trial exhausted (balance < 99 RUB / 9900 kopeks)
+            if "step3" not in existing_reminders and len(completed_jobs) >= 4 and client.money_balance_kopeks < 9900:
+                latest_completed = max((_ensure_utc(j.created_at) for j in completed_jobs), default=client_created)
+                completion_age_hours = (now - latest_completed).total_seconds() / 3600.0
+                if 2.0 <= completion_age_hours <= 168.0:
+                    results.append(
+                        NurturingCandidate(
+                            client_id=client.id,
+                            channel=channel,
+                            recipient=recipient,
+                            step="step3",
+                            name=client.name or "Пользователь",
+                            client=client,
+                        )
                     )
-                )
-                continue
+                    continue
 
         # Step 4 Re-engage Check (opt-in flag): had >= 1 completed job, no active jobs,
         # silent for >= 10 days (past step2's 240h window). One message ever.
         if (
-            bool(getattr(settings, "reengagement_reminders_enabled", False))
+            reengage_active
             and "step4_reengage" not in existing_reminders
             and len(completed_jobs) >= 1
             and len(pending_or_running_jobs) == 0
@@ -338,26 +341,33 @@ def claim_nurturing_step(db: Session, client_id: str, channel: str, step: str) -
 
 def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, str]:
     unsub_token = generate_unsubscribe_token(client_id, email)
-    grant_text = trial_summary or "бесплатные задачи"
     unsub_link = html_lib.escape(f"{base_url}/api/customer/auth/unsubscribe?token={unsub_token}", quote=True)
     cabinet_link = html_lib.escape(f"{base_url}/cabinet", quote=True)
     article_link = html_lib.escape(f"{base_url}/baza-znaniy/kak-naiti-postavshchika-po-tz", quote=True)
 
     if step == "step1":
-        subject = "Ваш тестовый доступ в TenderLex: как запустить первый поиск за 1 минуту"
+        subject = "Ваш пробный доступ в TenderLex: как запустить первый расчет за 1 минуту"
         body_content = (
             '<tr><td style="padding-top:16px;padding-bottom:8px;">'
-            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Как запустить первый поиск по вашему ТЗ</div>'
+            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Как запустить первый расчет по вашему ТЗ</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:10px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            f'На вашем балансе в <b>TenderLex</b> активен тестовый доступ на <b>{grant_text}</b>.'
+            'Если вы участвуете в госзакупках или рассчитываете спецификации по 44-ФЗ и 223-ФЗ, то знаете главную сложность — оперативно найти прямых производителей оборудования и материалов без лишних наценок посредников, когда сроки подачи горят.'
             '<br><br>'
-            'Чтобы проверить работу сервиса, не нужно ничего настраивать — просто вставьте номер закупки ЕИС или прикрепите файл ТЗ (Word/PDF/Excel). '
-            'Сервис за 2 минуты подберёт поставщиков с проверенными контактами и выделит ключевые риски.'
+            'На вашем балансе в <b>TenderLex</b> активен <b>бесплатный пробный доступ</b> (без привязки карты).'
+            '<br><br>'
+            'Сервис берет на себя рутину снабжения и тендерного расчета:<br>'
+            '• <b>Разбирает спецификации любого формата:</b> Word, Excel, PDF, сканы — извлекает ГОСТы, маркоразмеры и характеристики;<br>'
+            '• <b>За 2–3 минуты находит прямые контакты отделов сбыта:</b> email, телефоны, сайты заводов РФ и дилеров, сверяя продукцию с Реестром Минпромторга (ГИСП, ПП 616/617);<br>'
+            '• <b>Формирует официальный Запрос КП:</b> готовый файл DOCX для отправки поставщикам одним кликом;<br>'
+            '• <b>Подбирает товар и аналоги:</b> находит эквиваленты с обоснованием соответствия параметрам ТЗ заказчика;<br>'
+            '• <b>Проводит экспресс-аудит документации:</b> выявляет скрытые штрафы, риски и нереалистичные сроки поставки.'
+            '<br><br>'
+            'Чтобы проверить сервис на реальной задаче, просто прикрепите файл ТЗ или укажите номер закупки ЕИС в личном кабинете.'
             '</div></td></tr>'
             '<tr><td align="center" style="padding-bottom:18px;">'
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -371,21 +381,21 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</div></td></tr>'
         )
     elif step == "step1_final":
-        subject = "Последнее напоминание: ваш тестовый доступ TenderLex ещё активен"
+        subject = "Последнее напоминание: ваш пробный доступ в TenderLex ещё активен"
         body_content = (
             '<tr><td style="padding-top:16px;padding-bottom:8px;">'
-            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Ваш тестовый доступ всё ещё активен</div>'
+            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Ваш пробный доступ всё ещё активен</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:10px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            f'Напоминаем последний раз: на вашем балансе в <b>TenderLex</b> всё ещё активен тестовый доступ на <b>{grant_text}</b>.'
+            'Напоминаем, что на вашем балансе в <b>TenderLex</b> сохранен <b>бесплатный пробный доступ</b>.'
             '<br><br>'
-            'Чтобы попробовать, достаточно вставить номер закупки ЕИС или прикрепить файл ТЗ (Word/PDF/Excel) — сервис за 2 минуты подберёт поставщиков.'
+            'Если у вас прямо сейчас в работе есть спецификация, тендер 44-ФЗ / 223-ФЗ или расчет проекта — загрузите файл ТЗ. Сервис за пару минут соберет прямые контакты заводов, подготовит официальный Запрос КП, подберет аналоги или проверит проект контракта на скрытые риски.'
             '<br><br>'
-            '<i>Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, просто нажмите «Отписаться» ниже.</i>'
+            '<i>Это последнее напоминание — больше не побеспокоим. Если автоматизация снабжения сейчас не актуальна, просто нажмите «Отписаться» ниже.</i>'
             '</div></td></tr>'
             '<tr><td align="center" style="padding-bottom:18px;">'
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -394,7 +404,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr></table></td></tr>'
         )
     elif step == "step2":
-        subject = "3 полезные функции TenderLex, которые экономят часы работы снабженца"
+        subject = "3 ключевые возможности TenderLex для экономии времени тендерного отдела"
         body_content = (
             '<tr><td style="padding-top:16px;padding-bottom:8px;">'
             '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Возможности TenderLex для работы с закупками</div>'
@@ -404,13 +414,13 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            'Вы уже протестировали первую задачу в TenderLex. Знаете ли вы, что сервис также умеет:'
+            'Вы уже запустили первые расчеты в TenderLex. Напоминаем о трех ключевых инструментах сервиса, где снабженцы и тендерные специалисты экономят часы рутины:'
             '<br><br>'
-            '1️⃣ <b>Искать прямых поставщиков</b> с проверенными контактами и выгрузкой в Excel / Запросом КП (DOCX).<br>'
-            '2️⃣ <b>Подбирать товар и аналоги</b> по техническим параметрам ТЗ и сверять с Реестром Минпромторга (ГИСП).<br>'
-            '3️⃣ <b>Проводить экспресс-аудит документации</b> — находить скрытые штрафы и ловушки в закупках 44-ФЗ / 223-ФЗ.'
+            '1️⃣ <b>Поиск прямых производителей и дилеров:</b> сбор прямых email отделов сбыта, телефонов, сайтов, проверка по Реестру Минпромторга (ГИСП) и готовый файл Запроса КП (DOCX).<br>'
+            '2️⃣ <b>Подбор товара и аналогов по ТЗ:</b> точный подбор моделей и эквивалентов по техническим характеристикам с формированием обоснования для заказчика (выгрузка в DOCX).<br>'
+            '3️⃣ <b>Экспресс-аудит документации:</b> выявление кабальных штрафов, скрытых обязательств, нереалистичных сроков и требований нацрежима в проектах контрактов 44-ФЗ / 223-ФЗ.'
             '<br><br>'
-            'На вашем балансе ещё есть средства для проверки любых задач!'
+            'На вашем балансе ещё есть средства — протестируйте эти возможности на ваших текущих закупках.'
             '</div></td></tr>'
             '<tr><td align="center" style="padding-bottom:18px;">'
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -419,19 +429,21 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr></table></td></tr>'
         )
     elif step == "step4_reengage":
-        subject = "Давно не виделись: TenderLex готов помочь с подбором поставщиков"
+        subject = "Помощь с поиском заводов и расчетом ТЗ: TenderLex на связи"
         body_content = (
             '<tr><td style="padding-top:16px;padding-bottom:8px;">'
-            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Мы готовы продолжить работу</div>'
+            '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Нужна помощь с текущими закупками?</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:10px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            'Вы уже работали с TenderLex, а мы как раз можем помочь с подбором поставщиков и аудитом ТЗ под 44-ФЗ / 223-ФЗ.'
+            'Вы ранее рассчитывали задачи в TenderLex. Если прямо сейчас у вас в работе появились новые сложные спецификации, закупки по 44-ФЗ / 223-ФЗ или требуется срочно выйти на прямых изготовителей — сервис готов подключиться.'
             '<br><br>'
-            'Если остались вопросы или нужны дополнительные лимиты для теста — просто ответьте на это письмо, поможем.'
+            'Загрузите ТЗ в личный кабинет: сервис за пару минут соберет контакты отделов сбыта заводов, сформирует Запрос КП, подберет аналоги или проверит проект контракта.'
+            '<br><br>'
+            'Если требуется разобрать нестандартную спецификацию или предоставить тестовые лимиты отделу снабжения — просто ответьте на это письмо.'
             '</div></td></tr>'
             '<tr><td align="center" style="padding-bottom:18px;">'
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
@@ -440,7 +452,7 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr></table></td></tr>'
         )
     else:  # step3
-        subject = "Тестовые задачи TenderLex выполнены: как получить больше лимитов"
+        subject = "Тестовые расчеты в TenderLex выполнены: как подключить регулярный доступ"
         body_content = (
             '<tr><td style="padding-top:16px;padding-bottom:8px;">'
             '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Тестовый доступ успешно завершён</div>'
@@ -450,14 +462,14 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
             '</td></tr>'
             '<tr><td style="padding-bottom:16px;">'
             '<div style="font-size:14px;line-height:1.5;color:#334155;">'
-            'Вы использовали стартовый баланс в TenderLex. Надеемся, результаты помогли сэкономить время при подборе поставщиков, аналогов и анализе документации.'
+            'Вы использовали стартовый баланс в TenderLex. Надеемся, сервис помог оперативно найти прямые заводы, подобрать эквиваленты и защитить контракт от скрытых рисков.'
             '<br><br>'
-            'Если вашей компании требуются дополнительные лимиты для тестирования или корпоративный тариф для отдела снабжения — ответьте на это письмо или напишите нам в Telegram.'
+            'Чтобы продолжить работу без пауз, выберите подходящий пакет в личном кабинете. А если требуется подключение для тендерного отдела или отдела снабжения — мы оперативно подготовим договор и счет для юрлица со всеми закрывающими документами (УПД/ЭДО).'
             '</div></td></tr>'
             '<tr><td align="center" style="padding-bottom:18px;">'
             '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
             '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
-            f'<a href="{cabinet_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Открыть кабинет TenderLex</a>'
+            f'<a href="{cabinet_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Выбрать тариф в кабинете</a>'
             '</td></tr></table></td></tr>'
         )
 
@@ -488,13 +500,23 @@ def build_nurturing_email_html(step: str, client_id: str, email: str, base_url: 
 
 
 def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderlex.ru", trial_summary: str = "") -> tuple[str, list[list[dict[str, str]]]]:
-    grant_text = trial_summary or "бесплатные задачи"
     if step == "step1":
         text = (
             "👋 <b>Здравствуйте!</b>\n\n"
-            f"На вашем балансе в TenderLex активен стартовый доступ на <b>{grant_text}</b>.\n\n"
-            "Чтобы протестировать сервис, не нужно ничего настраивать — просто отправьте в чат <b>номер закупки ЕИС</b> или прикрепите <b>файл ТЗ</b> (Word/PDF/Excel).\n\n"
-            "📖 <i>Полезный материал:</i> <a href=\"https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz\">Как найти прямых поставщиков и производителей по ТЗ</a>"
+            "На вашем балансе в <b>TenderLex</b> активен <b>бесплатный пробный доступ</b> (без привязки карты).\n\n"
+            "Сервис автоматизирует ключевую рутину снабжения и расчетов под 44-ФЗ и 223-ФЗ:\n\n"
+            "1️⃣ <b>Поиск поставщиков по ТЗ:</b>\n"
+            "• Разбирает спецификации любого формата: Word, Excel, PDF, сканы — извлекая ГОСТы и маркоразмеры;\n"
+            "• За 2–3 минуты находит прямые контакты отделов сбыта заводов РФ и дилеров (email, телефоны, сайты);\n"
+            "• Формирует готовый официальный Запрос КП (.docx) для оперативной отправки поставщикам;\n"
+            "• Проверяет номенклатуру по реестру Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "2️⃣ <b>Подбор товара и аналогов:</b>\n"
+            "• Точный подбор моделей и российских эквивалентов по характеристикам ТЗ с выгрузкой в Word (.docx).\n\n"
+            "3️⃣ <b>Анализ документации:</b>\n"
+            "• Экспресс-аудит проектов контрактов на кабальные штрафы, скрытые риски и нереалистичные сроки.\n\n"
+            "👉 Чтобы протестировать на вашей закупке, отправьте в этот чат <b>номер закупки ЕИС</b> или прикрепите <b>файл ТЗ</b>.\n\n"
+            "💳 <i>Списание средств происходит только после успешной выдачи готового результата.</i>\n\n"
+            "📖 <i>Статья из Базы знаний:</i> <a href=\"https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz\">Как быстро найти прямых производителей по ТЗ и ГОСТам</a>"
         )
         buttons = [
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
@@ -503,9 +525,13 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
     elif step == "step1_final":
         text = (
             "👋 <b>Здравствуйте!</b>\n\n"
-            f"Напоминаем последний раз: на вашем балансе в TenderLex всё ещё активен стартовый доступ на <b>{grant_text}</b>.\n\n"
-            "Чтобы попробовать, достаточно отправить в чат <b>номер закупки ЕИС</b> или прикрепить <b>файл ТЗ</b>.\n\n"
-            "Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, просто нажмите «Отписаться» ниже."
+            "Напоминаем: на вашем балансе в <b>TenderLex</b> сохранен <b>бесплатный пробный доступ</b>.\n\n"
+            "Если у вас прямо сейчас в работе есть спецификация или расчет к закупке 44-ФЗ / 223-ФЗ — отправьте файл ТЗ в этот чат:\n"
+            "• За 2–3 минуты соберем контакты отделов сбыта заводов РФ и подготовим Запрос КП (.docx);\n"
+            "• Подберем аналоги и эквиваленты под параметры заказчика;\n"
+            "• Проверим проект контракта на кабальные штрафы и риски сроков.\n\n"
+            "💳 <i>Списание средств происходит только после успешного отчёта.</i>\n\n"
+            "<i>Это последнее напоминание — больше не побеспокоим. Если сервис сейчас не актуален, нажмите кнопку ниже.</i>"
         )
         buttons = [
             [{"text": "📖 Читать Базу знаний", "url": f"{base_url}/baza-znaniy"}],
@@ -513,31 +539,42 @@ def build_nurturing_telegram_message(step: str, base_url: str = "https://tenderl
         ]
     elif step == "step2":
         text = (
-            "💡 <b>3 полезные возможности TenderLex для работы с ТЗ:</b>\n\n"
-            "Вы уже протестировали первую задачу! Сервис также помогает:\n\n"
-            "1️⃣ <b>Подобрать поставщиков</b> и сформировать официальный Запрос КП (DOCX) с контактами.\n"
-            "2️⃣ <b>Подобрать товар и аналоги</b> по техническим характеристикам ТЗ со сверкой с Реестром Минпромторга (ГИСП).\n"
-            "3️⃣ <b>Провести экспресс-аудит рисков</b> — найти скрытые штрафы и ловушки в документации 44-ФЗ / 223-ФЗ.\n\n"
-            "На вашем балансе ещё есть средства для проверки любых задач!"
+            "💡 <b>3 ключевые возможности TenderLex для работы с ТЗ:</b>\n\n"
+            "Вы уже протестировали первую задачу! Напоминаем о полном арсенале сервиса под 44-ФЗ и 223-ФЗ:\n\n"
+            "1️⃣ <b>Поиск поставщиков и Запрос КП:</b>\n"
+            "Прямые заводы РФ и дилеры по маркоразмерам и ГОСТам ТЗ, email отделов продаж, телефоны, сайты и готовый файл Запроса КП (.docx). Проверка реестра Минпромторга (ГИСП).\n\n"
+            "2️⃣ <b>Подбор товара и аналогов:</b>\n"
+            "Расшифровка сложных характеристик, подбор эквивалентов под ТЗ заказчика с выгрузкой в Word (.docx).\n\n"
+            "3️⃣ <b>Анализ документации:</b>\n"
+            "Мгновенный аудит проектов контрактов по номеру закупки ЕИС — выявление штрафов выше нормы, скрытых обязательств и ловушек нацрежима.\n\n"
+            "На вашем балансе ещё есть средства — протестируйте эти сценарии на текущих расчетах!"
+        )
+        buttons = [
+            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
+        ]
+    elif step == "step4_reengage":
+        text = (
+            "👋 <b>Здравствуйте! Давно не виделись — TenderLex на связи.</b>\n\n"
+            "Вы ранее уже выполняли расчеты в сервисе. Если прямо сейчас у вас в работе появились новые сложные спецификации по 44-ФЗ / 223-ФЗ, горят сроки подачи или требуется срочно выйти на прямых изготовителей — сервис готов подключиться:\n\n"
+            "1️⃣ <b>Поиск прямых производителей РФ и дилеров:</b>\n"
+            "Сбор контактов отделов сбыта (email, телефоны, сайты), оформление Запроса КП (.docx), сверка с реестром Минпромторга (ГИСП, ПП 616/617).\n\n"
+            "2️⃣ <b>Подбор товара и аналогов по ТЗ:</b>\n"
+            "Точный подбор моделей и эквивалентов под требования заказчика с выгрузкой в Word (.docx).\n\n"
+            "3️⃣ <b>Экспресс-аудит документации:</b>\n"
+            "Проверка проектов контрактов на кабальные штрафы, скрытые риски и нереалистичные сроки.\n\n"
+            "Просто отправьте файл спецификации или номер ЕИС в чат — результат будет готов за 2–3 минуты.\n\n"
+            "Если для отдела снабжения нужны дополнительные лимиты для тестирования сложных закупок — напишите нам в ответ, поможем!"
         )
         buttons = [
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
         ]
     else:  # step3
         text = (
-            "🏁 <b>Тестовый доступ успешно завершён!</b>\n\n"
-            "Вы использовали стартовый баланс TenderLex. Надеемся, отчёты помогли сэкономить время при подборе поставщиков, аналогов и анализе документации.\n\n"
-            "Если вам или отделу снабжения требуются дополнительные лимиты для тестирования, либо корпоративный тариф — напишите нам, пополним баланс или подготовим счёт."
-        )
-        buttons = [
-            [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],
-        ]
-
-    if step == "step4_reengage":
-        text = (
-            "👋 <b>Давно не виделись!</b>\n\n"
-            "Вы уже работали с TenderLex, а мы как раз можем помочь с подбором поставщиков и аудитом ТЗ под 44-ФЗ / 223-ФЗ.\n\n"
-            "Если остались вопросы или нужны дополнительные лимиты для теста — просто напишите нам в ответ, поможем."
+            "🏁 <b>Тестовые расчеты в TenderLex выполнены!</b>\n\n"
+            "Вы использовали стартовый баланс сервиса. Надеемся, TenderLex сэкономил вам часы работы при поиске прямых заводов, подборе аналогов и анализе документации.\n\n"
+            "Чтобы продолжить регулярную работу без пауз:\n"
+            "• Пополните баланс или выберите пакет в кабинете: https://tenderlex.ru/cabinet\n"
+            "• Если требуется подключение для тендерного отдела или отдела снабжения — напишите нам в ответ, оперативно выставим счет для юрлица со всеми закрывающими документами (УПД/ЭДО)."
         )
         buttons = [
             [{"text": "🔕 Отписаться от подсказок", "callback_data": "nurturing_unsubscribe"}],

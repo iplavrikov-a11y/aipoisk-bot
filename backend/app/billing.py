@@ -273,7 +273,7 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
 
 
 def trial_grant_summary_text(db: Session, client: Client | None) -> str:
-    """Человеческое описание стартового триал-баланса, например '4 задачи (396 ₽)'.
+    """Человеческое описание стартового триал-баланса, например '5 задач'.
 
     Считается из баланса настроек или лимитов и цен тарифов, чтобы тексты не протухали
     при смене лимитов/цен. Если данных нет — нейтральная формулировка.
@@ -309,8 +309,6 @@ def trial_grant_summary_text(db: Session, client: Client | None) -> str:
     else:
         tasks_word = "задач"
 
-    if total_kopeks > 0:
-        return f"{total_units} {tasks_word} ({total_kopeks // 100} ₽)"
     return f"{total_units} {tasks_word}"
 
 

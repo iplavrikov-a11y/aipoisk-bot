@@ -105,7 +105,7 @@ class SystemSettings(Base):
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
             "trial_file_limit": self.trial_file_limit,
-            "trial_balance_rub": getattr(self, "trial_balance_rub", 396) or 396,
+            "trial_balance_rub": getattr(self, "trial_balance_rub", 495) or 495,
             "onboarding_reminders_enabled": self.onboarding_reminders_enabled,
             "onboarding_reminders_rollout_at": self.onboarding_reminders_rollout_at,
             "reengagement_reminders_enabled": self.reengagement_reminders_enabled,

@@ -12,6 +12,12 @@ Date: 2026-09-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Dynamic Trial Balance (495 ₽) & Full Price Sanitization (2026-09):
+  - Upgraded starter trial balance to 495 ₽ (5 tasks @ 99 ₽) in settings, models fallback, and db default migration.
+  - Fully sanitized user-facing copy: removed all hardcoded ruble prices (e.g. 390 ₽, 396 ₽) from website, Telegram bot, and nurturing templates to keep the trial balance purely dynamic and easily adjustable by the owner at any time.
+  - Linked reengagement toggle with onboarding reminders in admin UI and nurturing candidate collection, ensuring smooth background dispatch for "Вернуть остывших" (10+ days since last activity).
+  - Single Source of Truth for GISP/Minpromtorg Database: removed redundant upload controls from TenderLex admin UI. The shared GISP registry is managed exclusively in EmailAgent and symlinked to TenderLex (`current.*`), displaying status, entry counts, and update timestamps.
+  - Outreach-Aligned Copy & Strict Module Order: updated all Telegram and email nurturing templates to match high-converting Outreach copy, presenting the three core modules in strict order: 1. Поиск поставщиков (email сбыта, телефоны, сайты, Запрос КП в .docx, ГИСП ПП 616/617), 2. Подбор товара и аналогов (.docx), 3. Анализ документации (штрафы, риски, нацрежим).
 - Admin AI Models & Freeze Elimination Optimization (2026-09):
   - Fast Model Testing Without Server Freezes (`backend/app/main.py`, `backend/app/ai.py`): Replaced 90-second hangs on dead/unresponsive models in `/api/ai/test` with strict 10s execution timeout, 12s overall deadline, 0 retries (`max_retries=0`), and 5s limiter acquisition guard (`limiter_timeout_seconds=5.0`). Testing dead or slow models now fails fast in seconds without blocking global LLM concurrency slots shared by the bot and active tasks.
   - Zero-Freeze Atomic Settings Saving (`frontend/src/App.tsx`): Eliminated full-table reloads (`loadAll()`) upon saving individual AI settings sections. `saveSection` now directly consumes the `PATCH /api/settings` response (10ms) and updates React state via `onSettingsUpdated` without triggering heavy background queries (such as 2,000 tasks taking 4+ seconds) or resetting in-progress inputs in neighboring accordions.
