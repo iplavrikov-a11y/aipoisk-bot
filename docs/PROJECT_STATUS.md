@@ -12,6 +12,14 @@ Date: 2026-09-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Email Deliverability & Production Relay Infrastructure (2026-09-04):
+  - SPF / DKIM / DMARC DNS Alignment (`tenderlex.ru` on Jino):
+    - Replaced blocking Jino SPF redirect (`redirect=_spf.jino.ru`) with unified root TXT record: `v=spf1 ip4:79.133.182.215 include:_spf.jino.ru ~all`, authorizing direct outbound transmission from the VPS relay server.
+    - Generated and deployed 2048-bit RSA DKIM key for selector `relay` on `79.133.182.215` (`/etc/opendkim/keys/tenderlex.ru/relay.private`), updated OpenDKIM `KeyTable` and `SigningTable` (`*@tenderlex.ru`), and published public key to `relay._domainkey.tenderlex.ru` TXT. Verified with `opendkim-testkey -d tenderlex.ru -s relay -vvv` (`key OK`).
+    - Configured explicit DMARC policy record on `_dmarc.tenderlex.ru` TXT: `v=DMARC1; p=none; sp=none`.
+    - Live Deliverability Verification: Dispatched live test email to Yandex Mail (`79210629909@ya.ru`); verified `status=sent (250 2.0.0 Ok: queued)`, valid `DKIM-Signature (s=relay, d=tenderlex.ru)`, and passing SPF/DMARC authentication without spam filter rejections.
+  - Automated Test Suite Relay Guard (`backend/tests/conftest.py`): Added autouse fixture `suppress_real_email_relay_in_tests` intercepting outbound relay calls during `pytest` runs when pointing to `79.133.182.215`, completely preventing automated tests with dummy emails (`buyer-*@example.com`) from generating false bounces/NDRs.
+  - Email Typography & Visual Polish (`backend/app/nurturing.py`): Scaled font sizes 1.5x across all 5 nurturing email templates (18px headings, 15px body, 15px CTA button) for improved readability across mobile and desktop clients, removed card mentions, and enforced `info@tenderlex.ru` sender uniformity.
 - Omnichannel Email & Telegram Auto-Reminders with Channel Affinity (2026-09):
   - Omnichannel Dispatch for Web Registrations (`backend/app/nurturing.py`): Extended onboarding and reengagement reminder sequence to web-registered customers (Email/password and Yandex ID OAuth).
   - Activity-Based Channel Priority & Anti-Spam: When both Telegram and Web channels are known for a customer, the pipeline automatically detects where the user actively works:
