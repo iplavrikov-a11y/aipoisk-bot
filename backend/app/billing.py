@@ -273,18 +273,31 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
 
 
 def trial_grant_summary_text(db: Session, client: Client | None) -> str:
-    """Человеческое описание стартового триал-баланса, например '4 бесплатные задачи (396 ₽)'.
+    """Человеческое описание стартового триал-баланса, например '4 задачи (396 ₽)'.
 
-    Считается из лимитов настроек и цен тарифов, чтобы тексты не протухали
+    Считается из баланса настроек или лимитов и цен тарифов, чтобы тексты не протухали
     при смене лимитов/цен. Если данных нет — нейтральная формулировка.
     """
     settings = db.query(SystemSettings).first()
     if settings is None:
         return "бесплатные задачи"
-    units_search = max(int(settings.trial_supplier_search_limit or 0), 0)
-    units_report = max(int(settings.trial_procurement_report_limit or 0), 0)
-    total_units = units_search + units_report
-    if total_units <= 0:
+
+    price_search = effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH) or 9900
+    price_report = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT) or 9900
+    price_product = effective_price_kopeks(db, client, KIND_EXACT_PRODUCT) or 9900
+    min_task_price = min(price for price in (price_search, price_report, price_product) if price > 0) or 9900
+
+    trial_rub = getattr(settings, "trial_balance_rub", None)
+    if trial_rub is not None and int(trial_rub or 0) > 0:
+        total_kopeks = int(trial_rub) * 100
+        total_units = max(1, total_kopeks // min_task_price)
+    else:
+        units_search = max(int(settings.trial_supplier_search_limit or 0), 0)
+        units_report = max(int(settings.trial_procurement_report_limit or 0), 0)
+        total_units = units_search + units_report
+        total_kopeks = units_search * price_search + units_report * price_report
+
+    if total_units <= 0 and total_kopeks <= 0:
         return "бесплатные задачи"
 
     if total_units % 100 in (11, 12, 13, 14):
@@ -296,9 +309,6 @@ def trial_grant_summary_text(db: Session, client: Client | None) -> str:
     else:
         tasks_word = "задач"
 
-    price_search = effective_price_kopeks(db, client, KIND_SUPPLIER_SEARCH)
-    price_report = effective_price_kopeks(db, client, KIND_PROCUREMENT_REPORT)
-    total_kopeks = units_search * price_search + units_report * price_report
     if total_kopeks > 0:
         return f"{total_units} {tasks_word} ({total_kopeks // 100} ₽)"
     return f"{total_units} {tasks_word}"
@@ -997,8 +1007,9 @@ def grant_trial_balance(
     db: Session,
     client: Client,
     *,
-    supplier_search_units: int,
-    procurement_report_units: int,
+    amount_kopeks: int | None = None,
+    supplier_search_units: int = 0,
+    procurement_report_units: int = 0,
     note: str = "Стартовый баланс триала",
 ) -> None:
     db.flush()
@@ -1007,6 +1018,7 @@ def grant_trial_balance(
         _grant_trial_balance_locked(
             db,
             client,
+            amount_kopeks=amount_kopeks,
             supplier_search_units=supplier_search_units,
             procurement_report_units=procurement_report_units,
             note=note,
@@ -1017,10 +1029,48 @@ def _grant_trial_balance_locked(
     db: Session,
     client: Client,
     *,
-    supplier_search_units: int,
-    procurement_report_units: int,
+    amount_kopeks: int | None = None,
+    supplier_search_units: int = 0,
+    procurement_report_units: int = 0,
     note: str,
 ) -> None:
+    if amount_kopeks is not None:
+        amount = max(0, int(amount_kopeks))
+        if amount <= 0:
+            return
+        money_note = note
+        existing_grant = (
+            db.query(BillingTransaction.id)
+            .filter(BillingTransaction.client_id == client.id)
+            .filter(BillingTransaction.operation == OP_GRANT)
+            .filter(func.lower(func.coalesce(BillingTransaction.created_by, "")) == "system")
+            .filter(
+                or_(
+                    (BillingTransaction.kind == KIND_MONEY) & (BillingTransaction.note == money_note),
+                    BillingTransaction.note.like(f"{note}%"),
+                )
+            )
+            .first()
+        )
+        if existing_grant:
+            return
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0)) + amount
+        db.add(
+            BillingTransaction(
+                client_id=client.id,
+                kind=KIND_MONEY,
+                operation=OP_GRANT,
+                units=0,
+                amount_kopeks=amount,
+                balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                note=money_note,
+                created_by="system",
+            )
+        )
+        db.flush()
+        return
+
     for kind, units in (
         (KIND_SUPPLIER_SEARCH, supplier_search_units),
         (KIND_PROCUREMENT_REPORT, procurement_report_units),

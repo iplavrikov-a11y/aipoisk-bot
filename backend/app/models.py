@@ -46,6 +46,7 @@ class SystemSettings(Base):
     yandex_search_price_per_request: Mapped[float] = mapped_column(Float, default=0.04)
     trial_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=2)
     trial_file_limit: Mapped[int] = mapped_column(Integer, default=10)
+    trial_balance_rub: Mapped[int] = mapped_column(Integer, default=0)
     onboarding_reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     onboarding_reminders_rollout_at: Mapped[str] = mapped_column(String(40), default="")
     reengagement_reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -104,6 +105,7 @@ class SystemSettings(Base):
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
             "trial_file_limit": self.trial_file_limit,
+            "trial_balance_rub": getattr(self, "trial_balance_rub", 396) or 396,
             "onboarding_reminders_enabled": self.onboarding_reminders_enabled,
             "onboarding_reminders_rollout_at": self.onboarding_reminders_rollout_at,
             "reengagement_reminders_enabled": self.reengagement_reminders_enabled,
@@ -170,6 +172,7 @@ class Client(Base):
     access_until: Mapped[str] = mapped_column(String(32), default="")
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)

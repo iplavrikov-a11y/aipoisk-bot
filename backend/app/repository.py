@@ -372,6 +372,7 @@ def get_or_create_trial_client_by_telegram_id(
         is_trial=True,
         allowed_supplier_search=True,
         allowed_procurement_report=True,
+        allowed_exact_product=True,
         monthly_job_limit=max(0, settings.trial_supplier_search_limit + settings.trial_procurement_report_limit),
         monthly_supplier_search_limit=settings.trial_supplier_search_limit,
         monthly_procurement_report_limit=settings.trial_procurement_report_limit,
@@ -380,12 +381,16 @@ def get_or_create_trial_client_by_telegram_id(
     )
     db.add(client)
     db.flush()
-    grant_trial_balance(
-        db,
-        client,
-        supplier_search_units=settings.trial_supplier_search_limit,
-        procurement_report_units=settings.trial_procurement_report_limit,
-    )
+    trial_rub = getattr(settings, "trial_balance_rub", None)
+    if trial_rub is not None and int(trial_rub or 0) > 0:
+        grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+    else:
+        grant_trial_balance(
+            db,
+            client,
+            supplier_search_units=settings.trial_supplier_search_limit,
+            procurement_report_units=settings.trial_procurement_report_limit,
+        )
     ensure_client_telegram_account(
         db,
         client,
@@ -413,12 +418,16 @@ def ensure_unused_trial_balance(db: Session, client: Client) -> bool:
         .filter(BillingTransaction.operation == OP_GRANT)
         .count()
     )
-    grant_trial_balance(
-        db,
-        client,
-        supplier_search_units=settings.trial_supplier_search_limit,
-        procurement_report_units=settings.trial_procurement_report_limit,
-    )
+    trial_rub = getattr(settings, "trial_balance_rub", None)
+    if trial_rub is not None and int(trial_rub or 0) > 0:
+        grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+    else:
+        grant_trial_balance(
+            db,
+            client,
+            supplier_search_units=settings.trial_supplier_search_limit,
+            procurement_report_units=settings.trial_procurement_report_limit,
+        )
     db.flush()
     after_count = (
         db.query(BillingTransaction.id)

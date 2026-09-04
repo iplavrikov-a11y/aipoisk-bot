@@ -120,6 +120,7 @@ def create_web_user(
             is_trial=trial_enabled,
             allowed_supplier_search=True,
             allowed_procurement_report=True,
+            allowed_exact_product=True,
             monthly_job_limit=supplier_limit + report_limit,
             monthly_supplier_search_limit=supplier_limit,
             monthly_procurement_report_limit=report_limit,
@@ -137,12 +138,16 @@ def create_web_user(
         db.add(client)
         db.flush()
         if trial_enabled:
-            grant_trial_balance(
-                db,
-                client,
-                supplier_search_units=supplier_limit,
-                procurement_report_units=report_limit,
-            )
+            trial_rub = getattr(settings, "trial_balance_rub", None)
+            if trial_rub is not None and int(trial_rub or 0) > 0:
+                grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+            else:
+                grant_trial_balance(
+                    db,
+                    client,
+                    supplier_search_units=supplier_limit,
+                    procurement_report_units=report_limit,
+                )
     password_val = password or generate_temporary_password(16)
     user = WebUser(
         client_id=client.id,
@@ -871,6 +876,7 @@ def get_or_create_telegram_web_user(
         is_trial=trial_enabled,
         allowed_supplier_search=True,
         allowed_procurement_report=True,
+        allowed_exact_product=True,
         monthly_job_limit=supplier_limit + report_limit,
         monthly_supplier_search_limit=supplier_limit,
         monthly_procurement_report_limit=report_limit,
@@ -885,12 +891,16 @@ def get_or_create_telegram_web_user(
     db.flush()
 
     if trial_enabled:
-        grant_trial_balance(
-            db,
-            client,
-            supplier_search_units=supplier_limit,
-            procurement_report_units=report_limit,
-        )
+        trial_rub = getattr(settings, "trial_balance_rub", None)
+        if trial_rub is not None and int(trial_rub or 0) > 0:
+            grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+        else:
+            grant_trial_balance(
+                db,
+                client,
+                supplier_search_units=supplier_limit,
+                procurement_report_units=report_limit,
+            )
 
     db.add(
         ClientTelegramAccount(

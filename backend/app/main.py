@@ -1389,6 +1389,12 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
+    if "trial_balance_rub" in payload and payload["trial_balance_rub"] is not None:
+        rub = max(0, int(payload["trial_balance_rub"]))
+        if "trial_supplier_search_limit" not in payload:
+            settings.trial_supplier_search_limit = max(1, rub // 198)
+        if "trial_procurement_report_limit" not in payload:
+            settings.trial_procurement_report_limit = max(1, rub // 198)
     # Product rule: ATI/logistics is disabled for TenderLex.
     settings.logistics_enabled = False
     db.commit()
@@ -1645,6 +1651,7 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.is_active = bool(target.is_active or source.is_active)
     target.allowed_supplier_search = bool(target.allowed_supplier_search or source.allowed_supplier_search)
     target.allowed_procurement_report = bool(target.allowed_procurement_report or source.allowed_procurement_report)
+    target.allowed_exact_product = bool(getattr(target, "allowed_exact_product", True) or getattr(source, "allowed_exact_product", True))
     target.monthly_job_limit = max(int(target.monthly_job_limit or 0), int(source.monthly_job_limit or 0))
     target.monthly_supplier_search_limit = max(int(target.monthly_supplier_search_limit or 0), int(source.monthly_supplier_search_limit or 0))
     target.monthly_procurement_report_limit = max(int(target.monthly_procurement_report_limit or 0), int(source.monthly_procurement_report_limit or 0))
@@ -3092,6 +3099,7 @@ def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
         (start + timedelta(days=index)).isoformat(): {
             "date": (start + timedelta(days=index)).isoformat(),
             "supplier_search": 0,
+            "exact_product": 0,
             "procurement_report": 0,
             "analysis_and_suppliers": 0,
             "total": 0,
@@ -3271,14 +3279,15 @@ def public_site_payload(db: Session) -> dict:
         },
         "trial": {
             "enabled": bool(settings.trial_enabled),
+            "balance_rub": max(0, int(getattr(settings, "trial_balance_rub", 396) or 0)),
             "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
             "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
         },
         "tariffs": tariffs,
         "tariff_groups": {
-            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
             "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
@@ -4821,6 +4830,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "access_until": client.access_until,
         "allowed_supplier_search": client.allowed_supplier_search,
         "allowed_procurement_report": client.allowed_procurement_report,
+        "allowed_exact_product": getattr(client, "allowed_exact_product", True),
         "monthly_job_limit": client.monthly_job_limit,
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,

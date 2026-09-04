@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import json
 import logging
 import os
@@ -655,6 +656,19 @@ def get_minprom_registry_cache_status() -> dict[str, Any]:
         if _minprom_status_cache["sig"] == sig and _minprom_status_cache["data"] is not None:
             return dict(_minprom_status_cache["data"])
 
+    target_for_mtime = xlsx_path if xlsx_path.is_file() else (sqlite_path if sqlite_path.is_file() else None)
+    updated_at = None
+    updated_at_label = ""
+    if target_for_mtime is not None:
+        try:
+            mtime = target_for_mtime.stat().st_mtime
+            dt_utc = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            updated_at = dt_utc.isoformat()
+            dt_msk = dt_utc.astimezone(ZoneInfo("Europe/Moscow"))
+            updated_at_label = dt_msk.strftime("%d.%m.%Y, %H:%M:%S")
+        except Exception:
+            pass
+
     sqlite_meta = _minprom_registry_sqlite_meta(sqlite_path)
     result = {
         "xlsx_exists": xlsx_path.is_file(),
@@ -667,6 +681,8 @@ def get_minprom_registry_cache_status() -> dict[str, Any]:
         "sqlite_path": str(sqlite_path),
         "sqlite_size_bytes": sqlite_path.stat().st_size if sqlite_path.is_file() else 0,
         "source_url": GISP_PRODUCT_REGISTRY_URL,
+        "updated_at": updated_at,
+        "updated_at_label": updated_at_label,
         **sqlite_meta,
     }
     with _minprom_status_lock:
@@ -697,9 +713,9 @@ def store_minprom_registry_xlsx_cache(payload: bytes, *, filename: str = "") -> 
         raise ValueError("Файл реестра Минпромторга пустой")
     if payload[:2] != b"PK":
         raise ValueError("Файл реестра Минпромторга должен быть XLSX")
-    xlsx_path = _minprom_registry_xlsx_path()
-    index_path = _minprom_registry_index_path()
-    sqlite_path = _minprom_registry_sqlite_path()
+    xlsx_path = _minprom_registry_xlsx_path().resolve()
+    index_path = _minprom_registry_index_path().resolve()
+    sqlite_path = _minprom_registry_sqlite_path().resolve()
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     suffix = f"{os.getpid()}.{uuid.uuid4().hex}"
     tmp_xlsx = xlsx_path.with_name(f"{xlsx_path.stem}.{suffix}.tmp{xlsx_path.suffix or '.xlsx'}")

@@ -17,6 +17,7 @@ class SettingsPatch(BaseModel):
     trial_supplier_search_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_procurement_report_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_file_limit: int | None = Field(default=None, ge=0, le=100000)
+    trial_balance_rub: int | None = Field(default=None, ge=0, le=1000000)
     onboarding_reminders_enabled: bool | None = None
     onboarding_reminders_rollout_at: str | None = None
     reengagement_reminders_enabled: bool | None = None
@@ -122,6 +123,7 @@ class ClientPatch(BaseModel):
     access_until: str | None = None
     allowed_supplier_search: bool | None = None
     allowed_procurement_report: bool | None = None
+    allowed_exact_product: bool | None = None
     monthly_job_limit: int | None = Field(default=None, ge=0)
     monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
     monthly_procurement_report_limit: int | None = Field(default=None, ge=0)
