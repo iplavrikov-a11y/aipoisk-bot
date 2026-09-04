@@ -23,3 +23,22 @@ def setup_test_database():
             os.remove(_test_db_path)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def suppress_real_email_relay_in_tests(monkeypatch):
+    """Prevent automated tests from hitting the live email relay and generating bounced email flood."""
+    import app.web_auth as web_auth
+    import app.nurturing as nurturing
+
+    original_relay = web_auth._send_email_verification_via_relay
+
+    def safe_relay(user, subject, html_body):
+        # Prevent tests from calling the real production relay IP
+        if "79.133.182.215" in str(web_auth.config.email_relay_url):
+            return True
+        return original_relay(user, subject, html_body)
+
+    monkeypatch.setattr(web_auth, "_send_email_verification_via_relay", safe_relay)
+    monkeypatch.setattr(nurturing, "_send_email_verification_via_relay", safe_relay)
+
