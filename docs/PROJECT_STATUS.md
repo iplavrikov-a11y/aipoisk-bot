@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-02
+Date: 2026-09-05
 
 ## Current Production State
 
@@ -12,6 +12,31 @@ Date: 2026-09-02
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Two-Sided Referral Program, Anti-Abuse Engine & Clean In-Cabinet UX (2026-09-05):
+  - Economic Model & Ledger Rules:
+    - 1 000 ₽ welcome balance credited to new invitees upon valid referral registration (`ref_welcome_*` transaction).
+    - 1 000 ₽ bonus credited to inviters automatically upon the invitee's first settled task (`ref_reward_*` transaction in `billing.py`).
+    - Anti-Abuse Protections (`backend/app/referral.py`):
+      - Self-referral prevention: blocks self-invitations across Telegram IDs, client IDs, and linked accounts.
+      - Cycle detection: validates referral chains to prevent circular loops (A &rarr; B &rarr; A).
+      - Disposable email blacklist: active filtering against 30+ burner email domains.
+      - IP rate limiting: throttles multiple registrations from identical IP addresses within rolling 24-hour windows.
+      - Maximum referral cap: configurable ceiling limits per inviter.
+      - Strict idempotency: guaranteed single bonus grant per client via dedicated DB flags (`Client.referral_reward_granted`) and unique ledger keys.
+  - In-Cabinet Client UX (`ReferralModal` in `site/src/app/cabinet/cabinet-client.tsx`):
+    - Completely compact modal without inner vertical scrollbars (`max-w-xl`), fitting comfortably on all laptop and desktop viewports.
+    - Zero duplication & noise: eliminated redundant 1-2-3 explainer blocks, removed file format labels (`(Excel + Word RFQ)`, `(Word .docx)`), and strictly adhered to project copy rules.
+    - Strict module presentation order: 1. Поиск поставщиков, 2. Подбор товара и аналогов, 3. Анализ документации.
+    - 1-click copying for Web cabinet (`?ref=...`) and Telegram bot (`?start=ref_...`) deep links with unified teal buttons.
+    - Compact 3-metric statistics row (Приглашено, Выполнили задачу, Начислено бонусов).
+    - Pre-filled clean Russian chat sharing message.
+  - Finalized Cabinet Toolbar Button (Design 5.4C):
+    - Neutral slate background matching existing toolbar controls (`bg-slate-100 border-slate-200 text-slate-800`).
+    - Single warm amber gift icon (`text-amber-500`, 13px) without duplicate emojis.
+    - High-contrast 10px solid emerald badge (`bg-emerald-600 text-white font-black px-1.5 py-0.5 rounded`) displaying `+1 000 ₽`.
+    - Dedicated live interactive design showcase at `https://tenderlex.ru/demo-buttons` demonstrating multiple badge sizes and layout options.
+  - Partner Program Foundations: Added `PartnerPayoutRequest` database model and schemas (`models.py`, `db.py`) ready for future direct bank card payouts once automatic payment gateway integration is enabled.
+  - Comprehensive Test Suite: 5 dedicated unit tests in `backend/tests/test_referral.py` (anti-abuse, welcome bonus, first task reward, customer API endpoints). Full test suite: 669/669 passed. Production verified and live via `./scripts/deploy_tenderlex_live.sh`.
 - Email Deliverability & Production Relay Infrastructure (2026-09-04):
   - SPF / DKIM / DMARC DNS Alignment (`tenderlex.ru` on Jino):
     - Replaced blocking Jino SPF redirect (`redirect=_spf.jino.ru`) with unified root TXT record: `v=spf1 ip4:79.133.182.215 include:_spf.jino.ru ~all`, authorizing direct outbound transmission from the VPS relay server.
