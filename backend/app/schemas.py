@@ -72,6 +72,7 @@ class WebRegisterRequest(BaseModel):
     terms_accepted: bool = False
     personal_data_consent: bool = False
     legal_version: str = Field(default="", max_length=40)
+    ref: str = Field(default="", max_length=64)
 
 
 class WebLoginRequest(BaseModel):

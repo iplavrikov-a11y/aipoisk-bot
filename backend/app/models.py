@@ -181,6 +181,10 @@ class Client(Base):
     money_reserved_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     supplier_target_min: Mapped[int] = mapped_column(Integer, default=0)
     marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
+    referrer_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("clients.id"), nullable=True, index=True)
+    referral_reward_granted: Mapped[bool] = mapped_column(Boolean, default=False)
+    referral_code: Mapped[str] = mapped_column(String(32), default="", index=True)
+    registration_ip: Mapped[str] = mapped_column(String(64), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -589,6 +593,22 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped[Client | None] = relationship(foreign_keys=[client_id])
+
+
+class PartnerPayoutRequest(Base):
+    __tablename__ = "partner_payout_requests"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), index=True)
+    amount_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    payout_method: Mapped[str] = mapped_column(String(32), default="card")
+    payout_details: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    admin_notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    client: Mapped[Client] = relationship(foreign_keys=[client_id])
 
 
 def parse_json_list(value: str) -> list[dict]:

@@ -648,6 +648,11 @@ def charge_job_reservation(db: Session, job: Job, *, note: str = "Результ
     with _billing_client_lock(job.client_id):
         _charge_job_reservation_locked(db, job, note=note)
         db.commit()
+    try:
+        from .referral import process_referral_on_job_completion
+        process_referral_on_job_completion(db, job)
+    except Exception:
+        pass
 
 
 def _charge_job_reservation_locked(db: Session, job: Job, *, note: str) -> None:

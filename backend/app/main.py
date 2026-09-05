@@ -460,6 +460,20 @@ def customer_register_api(
             ip_address=client_ip,
             user_agent=user_agent,
         )
+        if getattr(data, "ref", None) and str(data.ref).strip() and user.client:
+            try:
+                from .referral import resolve_referrer, link_referral_and_grant_welcome
+                referrer = resolve_referrer(db, str(data.ref).strip())
+                if referrer:
+                    link_referral_and_grant_welcome(
+                        db,
+                        user.client,
+                        referrer,
+                        client_ip=client_ip,
+                        invitee_email=data.email,
+                    )
+            except Exception as ref_err:
+                logger.warning("referral_link_on_register_error", extra={"error": str(ref_err)})
         db.commit()
         db.refresh(user)
     except ValueError as exc:
@@ -693,6 +707,21 @@ def customer_telegram_verify_api(
             last_name=str(auth_data.get("last_name") or ""),
             photo_url=str(auth_data.get("photo_url") or ""),
         )
+        if is_new and data.get("ref") and user.client:
+            try:
+                from .referral import resolve_referrer, link_referral_and_grant_welcome
+                referrer = resolve_referrer(db, str(data["ref"]).strip())
+                if referrer:
+                    link_referral_and_grant_welcome(
+                        db,
+                        user.client,
+                        referrer,
+                        client_ip=_client_ip(request),
+                        invitee_telegram_id=str(auth_data["id"]),
+                    )
+                    db.commit()
+            except Exception as ref_err:
+                logger.warning("referral_link_on_telegram_verify_error", extra={"error": str(ref_err)})
     except Exception as exc:
         logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -895,6 +924,15 @@ def customer_me_api(
 ) -> dict:
     csrf_token = context.session.csrf_token if context.session else ""
     return customer_session_payload(db, context.user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.get("/api/customer/referral")
+def customer_referral_api(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    from .referral import get_referral_stats
+    return get_referral_stats(db, context.user.client)
 
 
 @app.get("/api/customer/jobs")
@@ -3392,6 +3430,11 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "instructions": settings.payment_instructions or "",
             "yookassa_ready": _settings_yookassa_ready(settings),
         },
+        "referral": (
+            __import__("app.referral", fromlist=["get_referral_stats"]).get_referral_stats(db, user.client)
+            if user.client
+            else {}
+        ),
     }
 
 

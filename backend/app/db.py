@@ -118,6 +118,10 @@ def _ensure_schema() -> None:
             "supplier_target_min": "INTEGER DEFAULT 0",
             "yandex_search_price_per_request": "REAL DEFAULT 0.04",
             "marketing_unsubscribed": "BOOLEAN DEFAULT 0",
+            "referrer_id": "VARCHAR(32) NULL",
+            "referral_reward_granted": "BOOLEAN DEFAULT 0",
+            "referral_code": "VARCHAR(32) DEFAULT ''",
+            "registration_ip": "VARCHAR(64) DEFAULT ''",
         }
         jobs_existing = _existing_columns(inspector, "jobs")
         job_additions = {

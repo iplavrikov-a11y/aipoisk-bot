@@ -290,6 +290,7 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎯 Подбор товара и аналогов", callback_data="scenario:exact_product")],
             [InlineKeyboardButton(text="📄 Анализ закупки (44/223-ФЗ)", callback_data="scenario:report")],
             [InlineKeyboardButton(text="📄🔎 Анализ + поиск поставщиков", callback_data="scenario:analysis_and_suppliers")],
+            [InlineKeyboardButton(text="🎁 Пригласить (+1 000 ₽)", callback_data="open_referral")],
             [
                 InlineKeyboardButton(text="📊 Кабинет", callback_data="open_cabinet"),
                 InlineKeyboardButton(text="🕘 Задачи", callback_data="open_status"),
@@ -1828,9 +1829,14 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
     db = SessionLocal()
     try:
         link_token = ""
+        ref_code = ""
         command_args = str(getattr(command, "args", "") or "").strip()
         if command_args.startswith("link_"):
             link_token = command_args.removeprefix("link_")
+        elif command_args.startswith("ref_"):
+            ref_code = command_args.removeprefix("ref_")
+        elif command_args.startswith("ref-"):
+            ref_code = command_args.removeprefix("ref-")
         if link_token:
             try:
                 link_result = consume_web_to_telegram_token(
@@ -1848,7 +1854,27 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
                 await message.answer(f"⚠️ {exc}", reply_markup=main_menu())
                 return
         else:
+            is_existing_client = bool(db.query(Client.id).filter(Client.telegram_id == telegram_id).first())
             client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
+            if ref_code and client and not is_existing_client and not client.referrer_id:
+                try:
+                    from .referral import resolve_referrer, link_referral_and_grant_welcome
+                    referrer = resolve_referrer(db, ref_code)
+                    if referrer:
+                        linked = link_referral_and_grant_welcome(
+                            db,
+                            client,
+                            referrer,
+                            invitee_telegram_id=telegram_id,
+                        )
+                        if linked:
+                            db.commit()
+                            access_note = (
+                                "\n\n🎁 <b>Вам начислен приветственный подарок: 1 000 ₽ на баланс!</b>\n"
+                                "Хватит на 10 отчетов или поисков поставщиков."
+                            )
+                except Exception as ref_err:
+                    logger.warning("bot_referral_welcome_error", extra={"error": str(ref_err)})
         if account_error:
             access_note = f"\n\n⚠️ {account_error}"
         if client:
@@ -1859,6 +1885,7 @@ async def start(message: Message, command: CommandObject | None = None) -> None:
     await message.answer(
         _start_text() + access_note,
         reply_markup=main_inline_keyboard(),
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -3033,6 +3060,92 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_text(cabinet_text, reply_markup=kb, **_contact_message_options())
         except Exception:
             await callback.message.answer(cabinet_text, reply_markup=kb, **_contact_message_options())
+    finally:
+        db.close()
+
+
+def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tuple[str, InlineKeyboardMarkup]:
+    from .referral import get_referral_stats
+    stats = get_referral_stats(db, client) if client else {}
+    bot_link = stats.get("invite_url_bot", f"https://t.me/tenderlex_bot?start=ref_{user.id if user else ''}")
+    invited = stats.get("invited_count", 0)
+    activated = stats.get("activated_count", 0)
+    earned = stats.get("bonus_earned_rub", 0)
+    earned_formatted = f"{earned:,}".replace(",", " ")
+
+    text = (
+        "🎁 <b>Реферальная программа TenderLex</b>\n\n"
+        "Дарите коллегам 1 000 ₽ на баланс для работы с закупками и получайте 1 000 ₽ себе за каждого активного пользователя!\n\n"
+        "🔹 <b>Что получает коллега:</b> 1 000 ₽ на баланс сразу (хватит на 10 отчетов по закупкам, подборов товара или поисков поставщиков).\n"
+        "🔹 <b>Что получаете вы:</b> 1 000 ₽ на баланс, как только приглашенный пользователь выполнит свою первую задачу в сервисе.\n\n"
+        f"🔗 <b>Ваша ссылка для приглашения:</b>\n<code>{bot_link}</code>\n\n"
+        "📊 <b>Ваша статистика:</b>\n"
+        f"• Приглашено: {invited} чел.\n"
+        f"• Завершили 1-ю задачу: {activated} чел.\n"
+        f"• Начислено бонусов: {earned_formatted} ₽"
+    )
+
+    share_text = (
+        "Коллега, держи сервис для подготовки к закупкам и тендерам — TenderLex.\n"
+        "Он за 2 минуты:\n"
+        "1. Находит реальных производителей и дилеров по ТЗ с прямыми телефонами и email.\n"
+        "2. Подбирает точную модель товара и аналоги под первую часть заявки, в том числе из реестра Минпромторга (ГИСП).\n"
+        "3. Формирует полный структурированный отчет по закупке (ТЗ, условия оплаты, сроки, логистика и требования к товару).\n\n"
+        "По моей ссылке тебе сразу начислят 1 000 ₽ на баланс (хватит на 10 задач):\n"
+        f"👉 {bot_link}"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📤 Переслать приглашение коллеге",
+                    switch_inline_query=share_text,
+                )
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu"),
+            ],
+        ]
+    )
+    return text, keyboard
+
+
+@router.message(Command("referral"))
+@router.message(Command("ref"))
+@router.message(Command("invite"))
+async def referral_button(message: Message) -> None:
+    user = message.from_user
+    telegram_id = str(user.id if user else "")
+    db = SessionLocal()
+    try:
+        client, _ = get_client_by_telegram_id(db, telegram_id)
+        if not client and user:
+            client, _ = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=user.username or "", name=user.full_name or "")
+        text, kb = _referral_text_and_keyboard(db, client, user)
+        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "open_referral")
+async def open_referral_callback(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return
+    await callback.answer()
+    user = callback.from_user
+    telegram_id = str(user.id if user else "")
+    db = SessionLocal()
+    try:
+        client, _ = get_client_by_telegram_id(db, telegram_id)
+        if not client and user:
+            client, _ = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=user.username or "", name=user.full_name or "")
+        text, kb = _referral_text_and_keyboard(db, client, user)
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     finally:
         db.close()
 

@@ -19,6 +19,7 @@ import {
   Download,
   Eye,
   FileText,
+  Gift,
   HelpCircle,
   History,
   Layers,
@@ -110,6 +111,15 @@ type SessionPayload = {
     provider: string;
     instructions: string;
     yookassa_ready: boolean;
+  };
+  referral?: {
+    referral_code: string;
+    invited_count: number;
+    activated_count: number;
+    bonus_earned_rub: number;
+    balance_rub: number;
+    invite_url_web: string;
+    invite_url_bot: string;
   };
   verification_email_sent?: boolean;
   message?: string;
@@ -879,6 +889,8 @@ export function CabinetClient() {
   const [showTariffs, setShowTariffs] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showReferralModal, setShowReferralModal] = useState(false);
+  const [referralCopiedKey, setReferralCopiedKey] = useState<string | null>(null);
   const [historyTransactions, setHistoryTransactions] = useState<CustomerBillingTransaction[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -1085,6 +1097,10 @@ export function CabinetClient() {
   useEffect(() => {
     loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
+    const refParam = params.get("ref");
+    if (refParam && typeof window !== "undefined") {
+      localStorage.setItem("tenderlex_ref", refParam.trim());
+    }
     const hashStr = typeof window !== "undefined" && window.location.hash ? window.location.hash.replace(/^#/, "") : "";
     const hashParams = new URLSearchParams(hashStr);
 
@@ -1101,6 +1117,10 @@ export function CabinetClient() {
         source.forEach((val, key) => {
           payload[key] = val;
         });
+      }
+      if (typeof window !== "undefined") {
+        const storedRef = localStorage.getItem("tenderlex_ref");
+        if (storedRef) payload.ref = storedRef;
       }
 
       window.history.replaceState(null, "", window.location.pathname);
@@ -1262,6 +1282,7 @@ export function CabinetClient() {
           password,
           name,
           website: authMode === "register" ? website : "",
+          ref: authMode === "register" ? (typeof window !== "undefined" ? localStorage.getItem("tenderlex_ref") || "" : "") : "",
           terms_accepted: termsAccepted,
           personal_data_consent: personalDataConsent,
           legal_version: "2026-07-17",
@@ -2033,6 +2054,18 @@ export function CabinetClient() {
             >
               <History size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>История</span>
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-200/90 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowReferralModal(true);
+              }}
+              title="Реферальная программа: дарите коллегам 1 000 ₽ и получайте 1 000 ₽ на свой баланс"
+            >
+              <Gift size={13} className="text-amber-700 shrink-0" aria-hidden="true" />
+              <span>🎁 Пригласить (+1 000 ₽)</span>
             </button>
           </div>
 
@@ -3786,6 +3819,271 @@ export function CabinetClient() {
                   Закрыть
                 </button>
               </div>
+            </section>
+          </div>
+        );
+      })() : null}
+
+      {/* Referral Program Modal (Spacious, Clean, Emerald/Amber Branded, Strict Module Order, No Separate Page) */}
+      {showReferralModal ? (() => {
+        const refCode = session?.referral?.referral_code || "ref";
+        const webLink = session?.referral?.invite_url_web || `https://tenderlex.ru/cabinet?ref=${refCode}`;
+        const botLink = session?.referral?.invite_url_bot || `https://t.me/tenderlex_bot?start=ref_${refCode}`;
+        const invited = session?.referral?.invited_count ?? 0;
+        const activated = session?.referral?.activated_count ?? 0;
+        const earned = session?.referral?.bonus_earned_rub ?? 0;
+
+        const shareMessage = `Коллега, держи сервис для подготовки к закупкам и тендерам — TenderLex.
+Он за 2 минуты:
+1. Находит реальных производителей и дилеров по ТЗ с прямыми телефонами и email.
+2. Подбирает точную модель товара и аналоги под первую часть заявки, в том числе из реестра Минпромторга (ГИСП).
+3. Формирует полный структурированный отчет по закупке (ТЗ, условия оплаты, сроки, логистика и требования к товару).
+
+По моей ссылке тебе сразу начислят 1 000 ₽ на баланс (хватит на 10 задач):
+👉 ${webLink}`;
+
+        function copyLink(textToCopy: string, key: string) {
+          if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(textToCopy).then(() => {
+              setReferralCopiedKey(key);
+              setTimeout(() => setReferralCopiedKey(null), 2500);
+            });
+          }
+        }
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setShowReferralModal(false);
+            }}
+          >
+            <section
+              className="bg-white rounded-2xl sm:rounded-3xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans max-h-[90vh]"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="referral-modal-title"
+            >
+              {/* Header */}
+              <header className="bg-gradient-to-r from-emerald-950 via-teal-900 to-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 shrink-0 shadow-inner">
+                    <Gift size={20} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="referral-modal-title" className="text-base sm:text-lg font-extrabold text-white leading-tight flex items-center gap-2">
+                      Реферальная программа TenderLex
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                        +1 000 ₽ за друга
+                      </span>
+                    </h2>
+                    <p className="text-xs text-teal-200/90 font-medium mt-0.5">
+                      Дарите коллегам 1 000 ₽ на первый запуск и получайте 1 000 ₽ на свой баланс
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
+                  onClick={() => setShowReferralModal(false)}
+                  aria-label="Закрыть"
+                >
+                  <X size={20} aria-hidden="true" />
+                </button>
+              </header>
+
+              {/* Body */}
+              <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1">
+                {/* How it works cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+                    <div>
+                      <div className="w-6 h-6 rounded-lg bg-teal-100 text-teal-800 text-xs font-black flex items-center justify-center mb-2">
+                        1
+                      </div>
+                      <h3 className="text-xs font-bold text-slate-900">Скопируйте ссылку</h3>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Отправьте персональную ссылку коллеге или партнеру в Telegram или рабочий чат.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+                    <div>
+                      <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 text-xs font-black flex items-center justify-center mb-2">
+                        2
+                      </div>
+                      <h3 className="text-xs font-bold text-slate-900">Коллега получает 1 000 ₽</h3>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Бонус начисляется сразу на баланс (хватит на 10 любых отчетов и задач).
+                      </p>
+                    </div>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+                    <div>
+                      <div className="w-6 h-6 rounded-lg bg-amber-100 text-amber-800 text-xs font-black flex items-center justify-center mb-2">
+                        3
+                      </div>
+                      <h3 className="text-xs font-bold text-slate-900">Вам 1 000 ₽ на баланс</h3>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Как только коллега выполнит первую задачу — вам автоматически начисляется 1 000 ₽.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Links Section */}
+                <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                    Ваши персональные ссылки для приглашения
+                  </h3>
+                  
+                  {/* Web link */}
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                      Ссылка для сайта (кабинет):
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={webLink}
+                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => copyLink(webLink, "web")}
+                        className="px-3 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
+                      >
+                        {referralCopiedKey === "web" ? (
+                          <>
+                            <Check size={14} />
+                            <span>Скопировано</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={14} />
+                            <span>Скопировать</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Telegram bot link */}
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                      Ссылка для Telegram-бота:
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={botLink}
+                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => copyLink(botLink, "bot")}
+                        className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
+                      >
+                        {referralCopiedKey === "bot" ? (
+                          <>
+                            <Check size={14} />
+                            <span>Скопировано</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={14} />
+                            <span>Скопировать</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Statistics Cards */}
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-2.5">
+                    Ваша статистика рекомендаций
+                  </h3>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
+                      <div className="text-xl sm:text-2xl font-black text-slate-900">{invited}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">Приглашено коллег</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
+                      <div className="text-xl sm:text-2xl font-black text-teal-700">{activated}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">Выполнили 1-ю задачу</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
+                      <div className="text-xl sm:text-2xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">Начислено бонусов</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3 Core Modules Breakdown in Strict Order */}
+                <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-2.5">
+                  <h4 className="text-xs font-bold text-slate-800">
+                    Что получают ваши коллеги в сервисе (3 ключевых модуля):
+                  </h4>
+                  <ul className="text-xs text-slate-600 space-y-1.5">
+                    <li className="flex items-start gap-2">
+                      <span className="font-bold text-teal-800 shrink-0">1. Поиск поставщиков:</span>
+                      <span>проверенные заводы и дилеры по ТЗ с прямыми телефонами, email и формой запроса КП (Excel + Word RFQ).</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="font-bold text-teal-800 shrink-0">2. Подбор товара и аналогов:</span>
+                      <span>модель, характеристики для первой части заявки, подбор в том числе из реестра Минпромторга РФ (ГИСП) (Word .docx).</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="font-bold text-teal-800 shrink-0">3. Анализ документации:</span>
+                      <span>полный структурированный отчет по закупке (44/223-ФЗ) с таблицей ТЗ, условиями оплаты, графиком поставки и логистикой (Word .docx).</span>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Quick Share Template Box */}
+                <div className="p-4 rounded-xl bg-emerald-50/60 border border-emerald-200/80 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-emerald-950">
+                      Готовый текст для пересылки коллегам в чаты
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => copyLink(shareMessage, "msg")}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-100/80 px-2.5 py-1 rounded-lg border border-emerald-300 transition-colors cursor-pointer"
+                    >
+                      {referralCopiedKey === "msg" ? (
+                        <>
+                          <Check size={13} />
+                          <span>Текст скопирован!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={13} />
+                          <span>Скопировать сообщение</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="text-[11px] text-slate-700 bg-white/90 p-3 rounded-lg border border-emerald-200/60 whitespace-pre-wrap font-sans leading-relaxed">
+                    {shareMessage}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <footer className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowReferralModal(false)}
+                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Закрыть
+                </button>
+              </footer>
             </section>
           </div>
         );
