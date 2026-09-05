@@ -1,34 +1,64 @@
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
+import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import time
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy.orm import Session
+import httpx
+import jwt
 
-from .ai import call_llm
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
+
+from .ai import call_llm, resolve_job_ai_info
+from .result_offers import (
+    result_offer_to_dict,
+    accept_job_result_offer,
+    decline_job_result_offer,
+    claim_job_result_offer_delivery,
+    complete_job_result_offer_delivery,
+)
 from .billing import (
     BillingError,
+    KIND_MONEY,
+    OP_CHARGE,
+    OP_GRANT,
+    OP_MANUAL_DEBIT,
+    OP_RELEASE,
+    OP_RESERVE,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
+    STATUS_CONFIRMATION_EXPIRED,
+    STATUS_DELIVERY_EXPIRED,
     VALID_BILLING_KINDS,
     billing_kind_label,
     charge_job_reservation,
+    charge_job_kind_reservation,
     client_balance_summary,
+    client_service_balance_summary,
     client_uses_trial_access,
+    debit_money_balance,
+    debit_package_units,
     expire_stale_confirmations,
+    grant_money_balance,
     grant_package_units,
+    invalidate_tariff_packages_cache,
+    operation_label,
     release_job_reservation,
     list_tariffs,
     recent_billing_transactions,
@@ -36,24 +66,64 @@ from .billing import (
     tariff_to_dict,
     transaction_to_dict,
 )
+from .legal import (
+    LEGAL_VERSION,
+    LEGAL_DOCUMENT_TERMS,
+    LEGAL_DOCUMENT_PERSONAL_DATA,
+    record_legal_acceptance,
+)
 from .config import config
 from .db import db_session, init_db
 from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_EXACT_PRODUCT,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
+    SUPPLIER_POLICY_MINPROM_ONLY,
+    SUPPLIER_POLICY_MINPROM_PRIORITY,
+    SUPPLIER_POLICY_NORMAL,
+    SUPPLIER_RUN_ADDITIONAL,
+    SUPPLIER_RUN_INITIAL,
     TERMINAL_JOB_STATUSES,
+    VALID_SUPPLIER_SEARCH_POLICIES,
     VALID_JOB_MODES,
     cancel_running_job,
     cleanup_expired_jobs,
     create_job,
     enqueue_job,
+    job_dir,
     package_job_output_items,
     package_job_outputs,
+    read_supplier_exclusions,
+    read_supplier_exclusions_payload,
     recover_interrupted_jobs,
+    write_dobor_context,
     write_supplier_exclusions,
 )
-from .models import BillingTransaction, Client, ClientTelegramAccount, Job, JobFile, JobSource, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebSession, WebUser, now_utc, parse_json_dict, parse_json_list
+from .models import (
+    AccountLinkToken,
+    BillingTransaction,
+    Client,
+    ClientTariffOverride,
+    ClientTelegramAccount,
+    Job,
+    JobFile,
+    JobSource,
+    OnboardingReminder,
+    SupplierResult,
+    SystemSettings,
+    TariffPackage,
+    UserJourneyEvent,
+    WebEmailVerificationToken,
+    WebPasswordResetRequest,
+    WebRegistrationAttempt,
+    WebSession,
+    WebUser,
+    new_id,
+    now_utc,
+    parse_json_dict,
+    parse_json_list,
+)
 from .procurement_sources import source_label, source_payloads_from_text
 from .repository import (
     client_access_error,
@@ -79,6 +149,7 @@ from .schemas import (
     ClientPatch,
     ClientTelegramAccountCreate,
     ClientTelegramAccountPatch,
+    ClientTariffOverridePatch,
     BillingGrantCreate,
     LoginRequest,
     ManualJobCreate,
@@ -92,6 +163,7 @@ from .schemas import (
     WebPasswordResetRequestCreate,
     WebRegisterRequest,
 )
+from .readiness import build_readiness
 from .security import (
     ADMIN_COOKIE,
     admin_cookie_max_age,
@@ -102,13 +174,21 @@ from .security import (
 )
 from .web_auth import (
     CSRF_HEADER,
+    YANDEX_OAUTH_COOKIE,
     WebAuthContext,
     authenticate_web_user,
+    build_telegram_oauth_url,
+    build_yandex_oauth_url,
     clear_customer_session_cookie,
+    clear_yandex_oauth_state_cookie,
     create_email_verification_token,
     create_web_session,
     create_web_user,
+    extract_telegram_auth_payload,
+    fetch_yandex_oauth_profile,
     generate_temporary_password,
+    get_or_create_telegram_web_user,
+    get_or_create_yandex_web_user,
     hash_password,
     send_email_verification,
     optional_web_context,
@@ -116,17 +196,32 @@ from .web_auth import (
     require_web_context,
     revoke_web_session,
     set_customer_session_cookie,
+    set_yandex_oauth_state_cookie,
     validate_email,
     verify_email_token,
+    verify_telegram_auth_payload,
+    yandex_oauth_redirect_uri,
 )
-from .supplier_search import _google_credentials, _provider_order, _tavily_key_candidates, _yandex_credentials
+from .supplier_search import (
+    _google_credentials,
+    _provider_order,
+    _yandex_credentials,
+    get_minprom_registry_cache_status,
+    store_minprom_registry_xlsx_cache,
+)
 
 ANALYTICS_EXCLUDED_WEB_EMAILS = {"79210629909@ya.ru"}
 ANALYTICS_EXCLUDED_TELEGRAM_USERNAMES = {"lexelence", "lexs"}
 ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+logger = logging.getLogger(__name__)
+from .outreach_api import router as outreach_router
+from .mcp_api import router as mcp_router, admin_router as mcp_admin_router
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
+app.include_router(outreach_router)
+app.include_router(mcp_router)
+app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_AUTH_ATTEMPTS: dict[str, list[float]] = {}
 CUSTOMER_REGISTRATION_HOUR_LIMIT = 3
@@ -158,10 +253,56 @@ async def startup() -> None:
         cleanup_expired_jobs(db, settings)
         expire_stale_confirmations(db)
         recovered_job_ids = recover_interrupted_jobs(db)
+        try:
+            from .db import SessionLocal
+            from .outreach_models import OutreachCampaign, OutreachSearchTask
+            from .outreach_mail import run_campaign_worker, ACTIVE_CAMPAIGN_TASKS
+            running_camps = db.query(OutreachCampaign).filter(OutreachCampaign.status == "running").all()
+            for rc in running_camps:
+                task = asyncio.create_task(run_campaign_worker(rc.id, SessionLocal))
+                ACTIVE_CAMPAIGN_TASKS[rc.id] = task
+
+            # Recover interrupted search tasks into paused state so candidates are not lost
+            stale_searches = db.query(OutreachSearchTask).filter(OutreachSearchTask.status == "running").all()
+            for s_task in stale_searches:
+                s_task.status = "paused"
+                s_task.message = "Сбор приостановлен при перезапуске сервера. Сайты сохранены. Нажмите «Продолжить»."
+                try:
+                    waves = json.loads(s_task.waves_json) if s_task.waves_json else []
+                    for w in waves:
+                        if w.get("status") == "running":
+                            w["status"] = "paused"
+                    s_task.waves_json = json.dumps(waves, ensure_ascii=False)
+                except Exception:
+                    pass
+            # Launch background periodic IMAP poller (runs quietly every 45s)
+            asyncio.create_task(_background_imap_loop())
+        except Exception as e:
+            logger.warning(f"Error resuming campaigns on startup: {e}")
     finally:
         db.close()
     for job_id in recovered_job_ids:
         enqueue_job(job_id)
+
+
+async def _background_imap_loop() -> None:
+    """Quietly and continuously fetches new incoming supplier replies in the background every 45s."""
+    from .db import SessionLocal
+    from .outreach_models import OutreachSettings
+    from .outreach_mail import sync_imap_inbox
+
+    await asyncio.sleep(10)
+    while True:
+        try:
+            with SessionLocal() as db:
+                settings = db.query(OutreachSettings).first()
+                if settings and settings.imap_password and settings.imap_host:
+                    await asyncio.to_thread(sync_imap_inbox, settings=settings, db=db, limit=50)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Background IMAP worker exception: {e}")
+        await asyncio.sleep(45)
 
 
 @app.get("/api/health")
@@ -172,6 +313,14 @@ def health(db: Session = Depends(db_session)) -> dict:
         "domain": settings.public_base_url,
         "logistics_enabled": settings.logistics_enabled,
     }
+
+
+@app.get("/api/health/ready")
+def readiness(response: Response, db: Session = Depends(db_session)) -> dict:
+    payload = build_readiness(db)
+    if not payload.get("ok"):
+        response.status_code = 503
+    return payload
 
 
 @app.get("/api/public/site")
@@ -188,6 +337,13 @@ def _customer_request_ip(request: Request) -> str:
 def _customer_auth_key(request: Request, email: str) -> str:
     client_ip = _customer_request_ip(request)
     return f"{client_ip}:{str(email or '').strip().lower()[:255]}"
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
 
 
 def _check_customer_auth_rate(request: Request, email: str) -> str:
@@ -242,7 +398,14 @@ def _send_customer_verification_email(db: Session, user: WebUser, request: Reque
     settings = get_or_create_settings(db)
     token, _record = create_email_verification_token(db, user, request=request)
     try:
-        return send_email_verification(user, token, public_base_url=settings.public_base_url)
+        from .billing import trial_grant_summary_text
+
+        return send_email_verification(
+            user,
+            token,
+            public_base_url=settings.public_base_url,
+            trial_summary=trial_grant_summary_text(db, user.client if user.client_id else None),
+        )
     except Exception:
         return False
 
@@ -257,16 +420,74 @@ def customer_register_api(
     if str(data.website or "").strip():
         _record_customer_registration_attempt(db, request, data.email, "bot_blocked")
         raise HTTPException(status_code=400, detail="Не удалось создать кабинет.")
+    if not bool(data.terms_accepted) or not bool(data.personal_data_consent):
+        _record_customer_registration_attempt(db, request, data.email, "rejected_consent")
+        raise HTTPException(
+            status_code=400,
+            detail="Для регистрации необходимо принять оферту и согласие на обработку персональных данных.",
+        )
     _check_customer_registration_rate(db, request, data.email)
     key = _check_customer_auth_rate(request, data.email)
     try:
-        user = create_web_user(db, email=data.email, password=data.password, name=data.name, email_verified=False)
+        user = create_web_user(
+            db,
+            email=data.email,
+            password=data.password,
+            name=data.name,
+            email_verified=False,
+            commit=False,
+        )
+        client_ip = _client_ip(request)
+        user_agent = request.headers.get("user-agent", "")
+        doc_version = str(data.legal_version or LEGAL_VERSION).strip() or LEGAL_VERSION
+        record_legal_acceptance(
+            db,
+            subject_type="web_user",
+            subject_id=user.id,
+            document_type=LEGAL_DOCUMENT_TERMS,
+            source="web",
+            document_version=doc_version,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+        record_legal_acceptance(
+            db,
+            subject_type="web_user",
+            subject_id=user.id,
+            document_type=LEGAL_DOCUMENT_PERSONAL_DATA,
+            source="web",
+            document_version=doc_version,
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+        if getattr(data, "ref", None) and str(data.ref).strip() and user.client:
+            try:
+                from .referral import resolve_referrer, link_referral_and_grant_welcome
+                referrer = resolve_referrer(db, str(data.ref).strip())
+                if referrer:
+                    link_referral_and_grant_welcome(
+                        db,
+                        user.client,
+                        referrer,
+                        client_ip=client_ip,
+                        invitee_email=data.email,
+                    )
+            except Exception as ref_err:
+                logger.warning("referral_link_on_register_error", extra={"error": str(ref_err)})
+        db.commit()
+        db.refresh(user)
     except ValueError as exc:
+        db.rollback()
         _record_customer_registration_attempt(db, request, data.email, "failed")
         _record_customer_auth_failure(key)
         detail = str(exc)
         status_code = 409 if "уже зарегистрирован" in detail else 400
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        db.rollback()
+        _record_customer_registration_attempt(db, request, data.email, "failed")
+        _record_customer_auth_failure(key)
+        raise exc
     _record_customer_registration_attempt(db, request, user.email, "created")
     email_sent = _send_customer_verification_email(db, user, request)
     token, csrf_token, session = create_web_session(db, user, request=request)
@@ -298,6 +519,225 @@ def customer_login_api(
     set_customer_session_cookie(response, token)
     CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
     return customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+
+
+@app.get("/api/customer/auth/yandex/login")
+def customer_yandex_login_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+    state = secrets.token_urlsafe(32)
+    try:
+        auth_url = build_yandex_oauth_url(redirect_uri=redirect_uri, state=state)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    redirect_resp = RedirectResponse(url=auth_url, status_code=303)
+    set_yandex_oauth_state_cookie(redirect_resp, state)
+    return redirect_resp
+
+
+@app.get("/api/customer/auth/yandex/url")
+def customer_yandex_auth_url_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+    state = secrets.token_urlsafe(32)
+    try:
+        auth_url = build_yandex_oauth_url(redirect_uri=redirect_uri, state=state)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    set_yandex_oauth_state_cookie(response, state)
+    return {"url": auth_url, "state": state}
+
+
+@app.get("/api/customer/auth/yandex/callback")
+def customer_yandex_callback_api(
+    request: Request,
+    response: Response,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    target_error_url = "/cabinet?auth_error="
+    if error:
+        logger.warning("yandex_oauth_user_declined", extra={"error": error, "description": error_description})
+        return RedirectResponse(url=f"{target_error_url}yandex_declined", status_code=303)
+
+    if not code:
+        return RedirectResponse(url=f"{target_error_url}no_code", status_code=303)
+
+    expected_state = request.cookies.get(YANDEX_OAUTH_COOKIE, "")
+    if not state or not expected_state or not hmac.compare_digest(state, expected_state):
+        logger.warning("yandex_oauth_state_mismatch", extra={"received": state, "has_expected": bool(expected_state)})
+        resp = RedirectResponse(url=f"{target_error_url}invalid_state", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    settings = get_or_create_settings(db)
+    redirect_uri = yandex_oauth_redirect_uri(public_base_url=settings.public_base_url)
+
+    try:
+        profile = fetch_yandex_oauth_profile(code, redirect_uri)
+    except Exception as exc:
+        logger.error("yandex_oauth_profile_error", extra={"error": str(exc)})
+        resp = RedirectResponse(url=f"{target_error_url}fetch_failed", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    try:
+        user, is_new = get_or_create_yandex_web_user(
+            db,
+            yandex_user_id=profile["yandex_id"],
+            email=profile["email"],
+            name=profile.get("name", ""),
+        )
+    except Exception as exc:
+        logger.error("yandex_oauth_user_creation_error", extra={"error": str(exc)})
+        resp = RedirectResponse(url=f"{target_error_url}user_creation_failed", status_code=303)
+        clear_yandex_oauth_state_cookie(resp)
+        return resp
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    resp = RedirectResponse(url="/cabinet", status_code=303)
+    set_customer_session_cookie(resp, token)
+    clear_yandex_oauth_state_cookie(resp)
+    return resp
+
+
+@app.get("/api/customer/auth/telegram/login")
+def customer_telegram_login_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    settings = get_or_create_settings(db)
+    try:
+        telegram_auth_url = build_telegram_oauth_url(public_base_url=settings.public_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=telegram_auth_url, status_code=303)
+
+
+@app.get("/api/customer/auth/telegram/callback")
+def customer_telegram_callback_api(
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> RedirectResponse:
+    target_error_url = "/cabinet?auth_error="
+    query_params = dict(request.query_params)
+    auth_data = extract_telegram_auth_payload(query_params)
+
+    if not auth_data.get("hash") or not auth_data.get("id"):
+        logger.warning(
+            "telegram_callback_missing_data",
+            extra={"received_keys": list(query_params.keys())},
+        )
+        return RedirectResponse(
+            url=f"{target_error_url}telegram_no_data", status_code=303
+        )
+
+    if not verify_telegram_auth_payload(auth_data, config.bot_token):
+        logger.warning(
+            "telegram_auth_invalid_signature",
+            extra={
+                "params": {
+                    k: v for k, v in auth_data.items() if k != "hash"
+                }
+            },
+        )
+        return RedirectResponse(
+            url=f"{target_error_url}telegram_invalid", status_code=303
+        )
+
+    try:
+        user, is_new = get_or_create_telegram_web_user(
+            db,
+            telegram_user_id=auth_data["id"],
+            username=str(auth_data.get("username") or ""),
+            first_name=str(auth_data.get("first_name") or ""),
+            last_name=str(auth_data.get("last_name") or ""),
+            photo_url=str(auth_data.get("photo_url") or ""),
+        )
+    except Exception as exc:
+        logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
+        return RedirectResponse(
+            url=f"{target_error_url}user_creation_failed", status_code=303
+        )
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    resp = RedirectResponse(url="/cabinet", status_code=303)
+    set_customer_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/api/customer/auth/telegram/verify")
+def customer_telegram_verify_api(
+    data: dict,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    auth_data = extract_telegram_auth_payload(data) if isinstance(data, dict) else {}
+    if not isinstance(auth_data, dict) or not auth_data.get("hash") or not auth_data.get("id"):
+        raise HTTPException(
+            status_code=400, detail="Не переданы данные авторизации Telegram."
+        )
+
+    if not verify_telegram_auth_payload(auth_data, config.bot_token):
+        raise HTTPException(
+            status_code=400,
+            detail="Неверная подпись данных Telegram или время сессии истекло.",
+        )
+
+    try:
+        user, is_new = get_or_create_telegram_web_user(
+            db,
+            telegram_user_id=auth_data["id"],
+            username=str(auth_data.get("username") or ""),
+            first_name=str(auth_data.get("first_name") or ""),
+            last_name=str(auth_data.get("last_name") or ""),
+            photo_url=str(auth_data.get("photo_url") or ""),
+        )
+        if is_new and data.get("ref") and user.client:
+            try:
+                from .referral import resolve_referrer, link_referral_and_grant_welcome
+                referrer = resolve_referrer(db, str(data["ref"]).strip())
+                if referrer:
+                    link_referral_and_grant_welcome(
+                        db,
+                        user.client,
+                        referrer,
+                        client_ip=_client_ip(request),
+                        invitee_telegram_id=str(auth_data["id"]),
+                    )
+                    db.commit()
+            except Exception as ref_err:
+                logger.warning("referral_link_on_telegram_verify_error", extra={"error": str(ref_err)})
+    except Exception as exc:
+        logger.error("telegram_auth_user_creation_error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, token)
+    return {
+        "success": True,
+        "is_new": is_new,
+        "csrf_token": csrf_token,
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        },
+    }
 
 
 @app.post("/api/customer/auth/password-reset/request")
@@ -364,6 +804,45 @@ def customer_email_verification_request_api(
 @app.get("/api/customer/auth/verify-email/confirm")
 def customer_email_verification_confirm_link(token: str):
     return RedirectResponse(f"/cabinet?email_verify_token={quote(token, safe='')}", status_code=303)
+
+
+@app.get("/api/customer/auth/unsubscribe")
+def customer_unsubscribe_api(token: str = "", email: str = "", db: Session = Depends(db_session)):
+    from .nurturing import unsubscribe_by_email, unsubscribe_by_token
+
+    if token:
+        success, message = unsubscribe_by_token(db, token)
+    elif email:
+        success, message = unsubscribe_by_email(db, email)
+    else:
+        success, message = False, "Недействительная ссылка отписки: не указан токен или email."
+
+    status_title = "Вы успешно отписались" if success else "Ошибка отписки"
+    status_desc = (
+        "Вы успешно отписались от уведомлений и обучающих рассылок TenderLex. Мы больше не будем присылать вам автоматические письма."
+        if success
+        else message
+    )
+    badge_color = "#0f766e" if success else "#e11d48"
+    icon = "✅" if success else "⚠️"
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>{status_title} — TenderLex</title>
+</head>
+<body style="margin:0;padding:40px 16px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;color:#1e293b;display:flex;justify-content:center;align-items:center;min-height:80vh;">
+  <div style="max-width:540px;width:100%;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:36px 32px;text-align:center;box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);box-sizing:border-box;">
+    <div style="font-size:42px;margin-bottom:16px;">{icon}</div>
+    <h1 style="font-size:24px;font-weight:bold;color:#0f172a;margin:0 0 12px 0;">{status_title}</h1>
+    <p style="font-size:16px;line-height:1.65;color:#475569;margin:0 0 28px 0;">{status_desc}</p>
+    <a href="https://tenderlex.ru" style="display:inline-block;background:{badge_color};color:#ffffff;text-decoration:none;font-weight:bold;font-size:16px;padding:12px 28px;border-radius:8px;">На главную TenderLex</a>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200 if success else 400)
 
 
 @app.post("/api/customer/auth/verify-email/confirm")
@@ -447,12 +926,25 @@ def customer_me_api(
     return customer_session_payload(db, context.user, csrf_token=csrf_token, authenticated=True)
 
 
+@app.get("/api/customer/referral")
+def customer_referral_api(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    from .referral import get_referral_stats
+    return get_referral_stats(db, context.user.client)
+
+
 @app.get("/api/customer/jobs")
 def customer_jobs_api(
     response: Response,
     limit: int = 50,
     offset: int = 0,
     include_pagination: bool = False,
+    q: str = "",
+    mode: str = "",
+    policy: str = "",
+    status: str = "",
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> list[dict] | dict:
@@ -460,6 +952,25 @@ def customer_jobs_api(
     safe_limit = max(1, min(200, int(limit or 50)))
     safe_offset = max(0, int(offset or 0))
     query = commercial_jobs_query(db, context.user.client)
+    clean_q = str(q or "").strip()
+    if clean_q:
+        pattern = f"%{clean_q}%"
+        query = query.filter(
+            or_(
+                func.coalesce(Job.title, "").ilike(pattern),
+                func.coalesce(Job.message, "").ilike(pattern),
+                Job.files.any(JobFile.original_filename.ilike(pattern)),
+            )
+        )
+    clean_mode = str(mode or "").strip()
+    if clean_mode in {MODE_SUPPLIER_SEARCH, MODE_EXACT_PRODUCT, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+        query = query.filter(Job.mode == clean_mode)
+    clean_policy = str(policy or "").strip()
+    if clean_policy in {"normal", "minprom_registry_only", "minprom_registry_priority"}:
+        query = query.filter(Job.supplier_search_policy == clean_policy)
+    clean_status = str(status or "").strip()
+    if clean_status:
+        query = query.filter(Job.status == clean_status)
     total = query.count()
     jobs = query.order_by(Job.created_at.desc()).offset(safe_offset).limit(safe_limit).all()
     items = [customer_job_to_dict(job) for job in jobs]
@@ -468,10 +979,53 @@ def customer_jobs_api(
     return items
 
 
+@app.get("/api/customer/billing/transactions")
+def customer_billing_transactions_api(
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    kind: str = "",
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    _mark_no_store(response)
+    safe_limit = max(1, min(100, int(limit or 50)))
+    safe_offset = max(0, int(offset or 0))
+    client = context.user.client
+    if not client:
+        return {"items": [], "total": 0, "limit": safe_limit, "offset": safe_offset}
+
+    query = (
+        db.query(BillingTransaction)
+        .options(selectinload(BillingTransaction.job))
+        .filter(BillingTransaction.client_id == client.id)
+        .filter(BillingTransaction.operation.in_([OP_CHARGE, OP_GRANT, OP_RELEASE, OP_MANUAL_DEBIT]))
+    )
+    clean_kind = str(kind or "").strip()
+    if clean_kind:
+        query = query.filter(BillingTransaction.kind == clean_kind)
+
+    total = query.count()
+    rows = (
+        query
+        .order_by(BillingTransaction.created_at.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
+        .all()
+    )
+    return {
+        "items": [customer_billing_transaction_to_dict(row) for row in rows],
+        "total": total,
+        "limit": safe_limit,
+        "offset": safe_offset,
+    }
+
+
 @app.post("/api/customer/jobs")
 async def customer_create_job_route(
     request: Request,
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
+    supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -482,6 +1036,7 @@ async def customer_create_job_route(
     require_customer_csrf(request, context)
     return await create_customer_job_api(
         mode=mode,
+        supplier_search_policy=supplier_search_policy,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -499,6 +1054,28 @@ def customer_job_detail_api(
 ) -> dict:
     job = _customer_job_or_404(db, job_id, context)
     return customer_job_to_dict(job, include_files=True)
+
+
+
+@app.post("/api/customer/jobs/{job_id}/retry")
+def customer_job_retry_api(
+    job_id: str,
+    policy: str | None = Query(default=None),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if policy:
+        normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
+        job.supplier_search_policy = normalized
+    job.status = "pending"
+    job.progress = 0
+    job.error = ""
+    job.message = "Повторный запуск задачи" + (" (обычный поиск)" if getattr(job, "supplier_search_policy", "normal") == "normal" else "")
+    job.updated_at = now_utc()
+    db.commit()
+    enqueue_job(job.id)
+    return {"ok": True, "message": "Задача успешно перезапущена"}
 
 
 @app.get("/api/customer/jobs/{job_id}/download")
@@ -583,14 +1160,59 @@ def customer_decline_partial_route(
 
 
 @app.post("/api/customer/jobs/{job_id}/find-more-suppliers")
-def customer_find_more_suppliers_route(
+async def customer_find_more_suppliers_route(
     job_id: str,
     request: Request,
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
-    return create_additional_supplier_search_api(job_id, context=context, db=db)
+    additional_prompt = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            additional_prompt = str(body.get("additional_prompt") or "").strip()
+    except Exception:
+        pass
+    return create_additional_supplier_search_api(job_id, context=context, db=db, additional_prompt=additional_prompt)
+
+
+@app.post("/api/customer/jobs/{job_id}/start-supplier-search")
+async def customer_start_supplier_search_route(
+    job_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    if not context.user.is_email_verified:
+        raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    supplier_search_policy = SUPPLIER_POLICY_NORMAL
+    include_alternatives = True
+    additional_prompt = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            supplier_search_policy = str(body.get("supplier_search_policy") or SUPPLIER_POLICY_NORMAL).strip()
+            include_alternatives = bool(body.get("include_alternatives", True))
+            additional_prompt = str(body.get("additional_prompt") or "").strip()
+    except Exception:
+        pass
+    original_job = _customer_job_or_404(db, job_id, context)
+    job = create_supplier_search_from_exact_product(
+        db,
+        client=context.user.client,
+        original_job=original_job,
+        created_by_telegram_id=f"web:{context.user.id}",
+        supplier_search_policy=supplier_search_policy,
+        include_alternatives=include_alternatives,
+        additional_prompt=additional_prompt,
+    )
+    return {
+        "success": True,
+        "message": "Поиск поставщиков успешно запущен на основе подобранных товаров и аналогов.",
+        "job": customer_job_to_dict(job, db=db),
+    }
 
 
 @app.post("/api/auth/login")
@@ -635,21 +1257,25 @@ def auth_me() -> dict:
 
 @app.get("/api/dashboard", dependencies=[Depends(require_admin)])
 def dashboard(db: Session = Depends(db_session)) -> dict:
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
     return {
         "clients": db.query(Client).count(),
         "active_clients": db.query(Client).filter(Client.is_active.is_(True)).count(),
         "jobs": db.query(Job).count(),
         "running_jobs": db.query(Job).filter(Job.status.in_(["pending", "running"])).count(),
         "completed_jobs": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
-        "failed_jobs": db.query(Job).filter(Job.status == "failed").count(),
+        "failed_jobs": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
+        "failed_jobs_total": db.query(Job).filter(Job.status == "failed").count(),
         "suppliers": db.query(SupplierResult).count(),
     }
 
 
 @app.get("/api/ops/system-status", dependencies=[Depends(require_admin)])
-def system_status_ops(db: Session = Depends(db_session)) -> dict:
+async def system_status_ops(db: Session = Depends(db_session)) -> dict:
     settings = get_or_create_settings(db)
-    return build_system_status(settings, db)
+    billing = await _fetch_yandex_billing_balance()
+    return build_system_status(settings, db, yandex_balance=billing.get("balance"))
 
 
 @app.get("/api/ops/supplier-quality", dependencies=[Depends(require_admin)])
@@ -664,10 +1290,121 @@ def supplier_quality_ops(db: Session = Depends(db_session)) -> dict:
     return build_supplier_quality_snapshot(jobs)
 
 
+@app.get("/api/ops/minprom-registry", dependencies=[Depends(require_admin)])
+def minprom_registry_status_ops() -> dict:
+    return get_minprom_registry_cache_status()
+
+
+@app.post("/api/ops/minprom-registry/upload", dependencies=[Depends(require_admin)])
+async def minprom_registry_upload_ops(file: UploadFile = File(...)) -> dict:
+    filename = str(file.filename or "")
+    payload = await file.read()
+    try:
+        return store_minprom_registry_xlsx_cache(payload, filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+_yandex_billing_cache: dict = {"data": None, "timestamp": 0.0}
+_YANDEX_BILLING_CACHE_TTL = 3600
+
+
+async def _fetch_yandex_billing_balance() -> dict:
+    global _yandex_billing_cache
+    if (
+        _yandex_billing_cache["data"] is not None
+        and (time.time() - _yandex_billing_cache["timestamp"]) < _YANDEX_BILLING_CACHE_TTL
+    ):
+        return _yandex_billing_cache["data"]
+
+    key_path = Path(__file__).parent.parent.parent / ".yandex_sa_key.json"
+    if not key_path.exists():
+        return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "key_not_found"}
+
+    try:
+        with open(key_path, "r") as f:
+            obj = json.load(f)
+        service_account_id = obj.get("service_account_id")
+        key_id = obj.get("id")
+        private_key = obj.get("private_key")
+        if not service_account_id or not key_id or not private_key:
+            return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "invalid_key"}
+
+        now = int(time.time())
+        payload = {
+            "aud": "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+            "iss": service_account_id,
+            "iat": now,
+            "exp": now + 3600,
+        }
+        encoded_token = jwt.encode(payload, private_key, algorithm="PS256", headers={"kid": key_id})
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            iam_response = await client.post(
+                "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+                json={"jwt": encoded_token},
+            )
+            if iam_response.status_code != 200:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "iam_token_failed"}
+            token = iam_response.json().get("iamToken")
+            if not token:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "iam_token_missing"}
+
+            billing_id = obj.get("billing_account_id", "dn2i7mph462v2u6ff922")
+            billing_response = await client.get(
+                f"https://billing.api.cloud.yandex.net/billing/v1/billingAccounts/{billing_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if billing_response.status_code != 200:
+                return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "billing_api_failed"}
+
+            data = billing_response.json()
+            result = {
+                "balance": float(data.get("balance", 0.0)),
+                "currency": data.get("currency", "RUB"),
+                "is_active": data.get("active", False),
+            }
+            _yandex_billing_cache["data"] = result
+            _yandex_billing_cache["timestamp"] = time.time()
+            return result
+    except Exception:
+        return {"balance": 0.0, "currency": "RUB", "is_active": False, "error": "exception"}
+
+
+@app.get("/api/ops/yandex-billing", dependencies=[Depends(require_admin)])
+async def yandex_billing_ops() -> dict:
+    return await _fetch_yandex_billing_balance()
+
+
 @app.get("/api/analytics/bot", dependencies=[Depends(require_admin)])
 def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) -> dict:
     safe_days = min(365, max(1, int(period_days or 30)))
     return build_bot_analytics(db, period_days=safe_days)
+
+
+@app.get("/api/seo-analytics", dependencies=[Depends(require_admin)])
+def seo_analytics_api(refresh: bool = False) -> dict:
+    from app.yandex_seo import get_cached_or_fresh_analytics
+    return get_cached_or_fresh_analytics(force_refresh=refresh)
+
+
+@app.post("/api/seo-analytics/send-digest", dependencies=[Depends(require_admin)])
+async def send_seo_digest_api() -> dict:
+    from app.yandex_seo import send_seo_telegram_digest
+    return await send_seo_telegram_digest()
+
+
+@app.post("/api/seo-analytics/recrawl", dependencies=[Depends(require_admin)])
+def seo_recrawl_api() -> dict:
+    from app.yandex_seo import submit_sitemap_recrawl
+    return submit_sitemap_recrawl()
+
+
+@app.post("/api/seo-analytics/recommendations/{rec_id}/action", dependencies=[Depends(require_admin)])
+def seo_rec_action_api(rec_id: str, payload: dict) -> dict:
+    from app.yandex_seo import handle_recommendation_action
+    action = payload.get("action", "pending")
+    return handle_recommendation_action(rec_id, action)
 
 
 @app.get("/api/settings", dependencies=[Depends(require_admin)])
@@ -696,6 +1433,16 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     for key, value in payload.items():
         if value is not None and hasattr(settings, key):
             setattr(settings, key, value)
+    if "onboarding_reminders_enabled" in payload:
+        enabled = bool(payload["onboarding_reminders_enabled"])
+        settings.onboarding_reminders_enabled = enabled
+        settings.reengagement_reminders_enabled = enabled
+    if "trial_balance_rub" in payload and payload["trial_balance_rub"] is not None:
+        rub = max(0, int(payload["trial_balance_rub"]))
+        if "trial_supplier_search_limit" not in payload:
+            settings.trial_supplier_search_limit = max(1, rub // 198)
+        if "trial_procurement_report_limit" not in payload:
+            settings.trial_procurement_report_limit = max(1, rub // 198)
     # Product rule: ATI/logistics is disabled for TenderLex.
     settings.logistics_enabled = False
     db.commit()
@@ -703,19 +1450,64 @@ def patch_settings(data: SettingsPatch, db: Session = Depends(db_session)) -> di
     return {"success": True, "settings": settings_to_public_dict(settings)}
 
 
+@app.get("/api/nurturing/stats", dependencies=[Depends(require_admin)])
+def nurturing_stats_api(db: Session = Depends(db_session)) -> dict:
+    """Воронка напоминаний: отправки по шагам и конверсия в первую задачу."""
+    from .nurturing import get_nurturing_funnel_stats
+
+    settings = get_or_create_settings(db)
+    return get_nurturing_funnel_stats(db, settings)
+
+
 @app.get("/api/tariffs", dependencies=[Depends(require_admin)])
 def list_tariffs_api(active_only: bool = False, db: Session = Depends(db_session)) -> list[dict]:
     return [tariff_to_dict(item) for item in list_tariffs(db, active_only=active_only)]
+
+
+def _validate_tariff_unit_price(
+    db: Session,
+    *,
+    kind: str,
+    units: int,
+    price_kopeks: int,
+    is_active: bool,
+    exclude_id: str | None = None,
+) -> None:
+    if not is_active or units <= 0:
+        return
+    existing = db.query(TariffPackage).filter(
+        TariffPackage.kind == kind,
+        TariffPackage.is_active.is_(True),
+    )
+    if exclude_id:
+        existing = existing.filter(TariffPackage.id != exclude_id)
+    other = existing.first()
+    if other and other.units and other.units > 0:
+        existing_unit_price = round(other.price_kopeks / other.units)
+        new_unit_price = round(price_kopeks / units)
+        if existing_unit_price != new_unit_price:
+            raise HTTPException(
+                status_code=400,
+                detail="Все активные тарифы услуги должны иметь одинаковую цену за единицу",
+            )
 
 
 @app.post("/api/tariffs", dependencies=[Depends(require_admin)])
 def create_tariff_api(data: TariffPackageCreate, db: Session = Depends(db_session)) -> dict:
     if data.kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    _validate_tariff_unit_price(
+        db,
+        kind=data.kind,
+        units=data.units,
+        price_kopeks=data.price_kopeks,
+        is_active=data.is_active,
+    )
     package = TariffPackage(**data.model_dump())
     db.add(package)
     db.commit()
     db.refresh(package)
+    invalidate_tariff_packages_cache(db)
     return tariff_to_dict(package)
 
 
@@ -727,11 +1519,24 @@ def patch_tariff_api(package_id: str, data: TariffPackagePatch, db: Session = De
     payload = data.model_dump(exclude_unset=True)
     if "kind" in payload and payload["kind"] not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    candidate_kind = payload.get("kind", package.kind)
+    candidate_units = payload.get("units", package.units)
+    candidate_price = payload.get("price_kopeks", package.price_kopeks)
+    candidate_active = payload.get("is_active", package.is_active)
+    _validate_tariff_unit_price(
+        db,
+        kind=candidate_kind,
+        units=candidate_units,
+        price_kopeks=candidate_price,
+        is_active=candidate_active,
+        exclude_id=package.id,
+    )
     for key, value in payload.items():
         if value is not None:
             setattr(package, key, value)
     db.commit()
     db.refresh(package)
+    invalidate_tariff_packages_cache(db)
     return tariff_to_dict(package)
 
 
@@ -742,12 +1547,22 @@ def delete_tariff_api(package_id: str, db: Session = Depends(db_session)) -> dic
         raise HTTPException(status_code=404, detail="Tariff package not found")
     db.delete(package)
     db.commit()
+    invalidate_tariff_packages_cache()
     return {"success": True}
 
 
 @app.get("/api/clients", dependencies=[Depends(require_admin)])
 def list_clients(db: Session = Depends(db_session)) -> list[dict]:
-    clients = db.query(Client).order_by(Client.created_at.desc()).all()
+    clients = (
+        db.query(Client)
+        .options(
+            selectinload(Client.telegram_accounts),
+            selectinload(Client.web_users),
+            selectinload(Client.tariff_overrides),
+        )
+        .order_by(Client.created_at.desc())
+        .all()
+    )
     return [client_to_dict(client, db=db) for client in clients]
 
 
@@ -820,8 +1635,29 @@ def _force_delete_client(db: Session, client: Client) -> None:
     jobs = db.query(Job).filter(Job.client_id == client.id).all()
     job_ids = [job.id for job in jobs]
     if job_ids:
+        db.query(SupplierResult).filter(SupplierResult.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobFile).filter(JobFile.job_id.in_(job_ids)).delete(synchronize_session=False)
+        db.query(JobSource).filter(JobSource.job_id.in_(job_ids)).delete(synchronize_session=False)
         db.query(BillingTransaction).filter(BillingTransaction.job_id.in_(job_ids)).delete(synchronize_session=False)
+
+    web_users = db.query(WebUser).filter(WebUser.client_id == client.id).all()
+    web_user_ids = [wu.id for wu in web_users]
+    if web_user_ids:
+        db.query(WebSession).filter(WebSession.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(AccountLinkToken).filter(AccountLinkToken.web_user_id.in_(web_user_ids)).delete(synchronize_session=False)
+        db.query(WebUser).filter(WebUser.client_id == client.id).delete(synchronize_session=False)
+
+    db.query(AccountLinkToken).filter(
+        (AccountLinkToken.client_id == client.id) | (AccountLinkToken.conflict_client_id == client.id)
+    ).delete(synchronize_session=False)
+    db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == client.id).delete(synchronize_session=False)
+    db.query(OnboardingReminder).filter(OnboardingReminder.client_id == client.id).delete(synchronize_session=False)
+    db.query(ClientTariffOverride).filter(ClientTariffOverride.client_id == client.id).delete(synchronize_session=False)
+    db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == client.id).delete(synchronize_session=False)
     db.query(BillingTransaction).filter(BillingTransaction.client_id == client.id).delete(synchronize_session=False)
+
     for job in jobs:
         shutil.rmtree(config.storage_path / "jobs" / job.id, ignore_errors=True)
         db.delete(job)
@@ -863,11 +1699,14 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.is_active = bool(target.is_active or source.is_active)
     target.allowed_supplier_search = bool(target.allowed_supplier_search or source.allowed_supplier_search)
     target.allowed_procurement_report = bool(target.allowed_procurement_report or source.allowed_procurement_report)
+    target.allowed_exact_product = bool(getattr(target, "allowed_exact_product", True) or getattr(source, "allowed_exact_product", True))
     target.monthly_job_limit = max(int(target.monthly_job_limit or 0), int(source.monthly_job_limit or 0))
     target.monthly_supplier_search_limit = max(int(target.monthly_supplier_search_limit or 0), int(source.monthly_supplier_search_limit or 0))
     target.monthly_procurement_report_limit = max(int(target.monthly_procurement_report_limit or 0), int(source.monthly_procurement_report_limit or 0))
     target.monthly_file_limit = max(int(target.monthly_file_limit or 0), int(source.monthly_file_limit or 0))
     target.supplier_target_min = max(int(target.supplier_target_min or 0), int(source.supplier_target_min or 0))
+    target.money_balance_kopeks = int(target.money_balance_kopeks or 0) + int(source.money_balance_kopeks or 0)
+    target.money_reserved_kopeks = int(target.money_reserved_kopeks or 0) + int(source.money_reserved_kopeks or 0)
     merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
@@ -875,6 +1714,10 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     db.query(BillingTransaction).filter(BillingTransaction.client_id == source.id).update({BillingTransaction.client_id: target.id}, synchronize_session=False)
     db.query(ClientTelegramAccount).filter(ClientTelegramAccount.client_id == source.id).update({ClientTelegramAccount.client_id: target.id}, synchronize_session=False)
     db.query(WebUser).filter(WebUser.client_id == source.id).update({WebUser.client_id: target.id}, synchronize_session=False)
+    db.query(ClientTariffOverride).filter(ClientTariffOverride.client_id == source.id).update({ClientTariffOverride.client_id: target.id}, synchronize_session=False)
+    db.query(UserJourneyEvent).filter(UserJourneyEvent.client_id == source.id).update({UserJourneyEvent.client_id: target.id}, synchronize_session=False)
+    db.query(OnboardingReminder).filter(OnboardingReminder.client_id == source.id).update({OnboardingReminder.client_id: target.id}, synchronize_session=False)
+    db.query(AccountLinkToken).filter(AccountLinkToken.client_id == source.id).update({AccountLinkToken.client_id: target.id}, synchronize_session=False)
     db.flush()
     db.delete(source)
     db.commit()
@@ -888,28 +1731,111 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     package = db.get(TariffPackage, data.package_id) if data.package_id else None
+    operation = (data.operation or "grant").strip().lower()
+    if operation not in {"grant", "debit", "manual_debit"}:
+        raise HTTPException(status_code=400, detail="Unknown billing operation")
     if data.package_id and not package:
         raise HTTPException(status_code=404, detail="Tariff package not found")
+    if package and operation != "grant":
+        raise HTTPException(status_code=400, detail="Tariff package can only be used for grants")
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
+    if kind == KIND_MONEY:
+        if package:
+            raise HTTPException(status_code=400, detail="Money balance can only be changed directly")
+        try:
+            if operation == "grant":
+                transaction = grant_money_balance(
+                    db,
+                    client,
+                    amount_kopeks=data.amount_kopeks,
+                    note=data.note or "Ручное пополнение баланса",
+                    created_by="admin",
+                    idempotency_key=data.idempotency_key or "",
+                )
+            else:
+                transaction = debit_money_balance(
+                    db,
+                    client,
+                    amount_kopeks=data.amount_kopeks,
+                    note=data.note or "Ручное списание с баланса",
+                    created_by="admin",
+                    idempotency_key=data.idempotency_key or "",
+                )
+        except BillingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.refresh(client)
+        return {
+            "success": True,
+            "transaction": transaction_to_dict(transaction),
+            "client": client_to_dict(client, db=db),
+        }
     if kind not in VALID_BILLING_KINDS:
         raise HTTPException(status_code=400, detail="Unknown billing kind")
-    note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
-    transaction = grant_package_units(
-        db,
-        client,
-        kind=kind,
-        units=units,
-        package_id=package.id if package else data.package_id,
-        note=note,
-        created_by="admin",
-    )
+    try:
+        if operation == "grant":
+            note = data.note or (f"Начислен пакет «{package.name}»" if package else "Ручное пополнение пакета")
+            transaction = grant_package_units(
+                db,
+                client,
+                kind=kind,
+                units=units,
+                amount_kopeks=data.amount_kopeks,
+                package_id=package.id if package else data.package_id,
+                note=note,
+                created_by="admin",
+                idempotency_key=data.idempotency_key or "",
+            )
+        else:
+            transaction = debit_package_units(
+                db,
+                client,
+                kind=kind,
+                units=units,
+                amount_kopeks=data.amount_kopeks,
+                note=data.note or "Ручное списание с баланса",
+                created_by="admin",
+                idempotency_key=data.idempotency_key or "",
+            )
+    except BillingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.refresh(client)
     return {
         "success": True,
         "transaction": transaction_to_dict(transaction),
         "client": client_to_dict(client, db=db),
     }
+
+
+@app.patch("/api/clients/{client_id}/tariff-overrides/{kind}", dependencies=[Depends(require_admin)])
+def patch_client_tariff_override(
+    client_id: str,
+    kind: str,
+    data: ClientTariffOverridePatch,
+    db: Session = Depends(db_session),
+) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    normalized_kind = str(kind or data.kind or "").strip()
+    if normalized_kind not in VALID_BILLING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown tariff kind")
+    override = (
+        db.query(ClientTariffOverride)
+        .filter(ClientTariffOverride.client_id == client.id)
+        .filter(ClientTariffOverride.kind == normalized_kind)
+        .first()
+    )
+    if not override:
+        override = ClientTariffOverride(client_id=client.id, kind=normalized_kind)
+        db.add(override)
+    override.price_kopeks = int(data.price_kopeks or 0)
+    override.is_enabled = bool(data.is_enabled)
+    override.note = data.note or ""
+    override.updated_at = now_utc()
+    db.commit()
+    db.refresh(client)
+    return {"success": True, "client": client_to_dict(client, db=db)}
 
 
 @app.post("/api/clients/{client_id}/web-users/{user_id}/verify-email", dependencies=[Depends(require_admin)])
@@ -924,6 +1850,44 @@ def admin_verify_web_user_email(client_id: str, user_id: str, db: Session = Depe
     ).update({WebEmailVerificationToken.used_at: now_utc()}, synchronize_session=False)
     db.commit()
     return {"success": True, "client": client_to_dict(user.client, db=db)}
+
+
+@app.delete("/api/clients/{client_id}/web-users/{user_id}", dependencies=[Depends(require_admin)])
+def delete_client_web_user(client_id: str, user_id: str, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    user = db.get(WebUser, user_id)
+    if not user or user.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Web user not found")
+
+    db.query(WebSession).filter(WebSession.user_id == user.id).delete(synchronize_session=False)
+    db.query(WebPasswordResetRequest).filter(WebPasswordResetRequest.user_id == user.id).delete(synchronize_session=False)
+    db.query(WebEmailVerificationToken).filter(WebEmailVerificationToken.user_id == user.id).delete(synchronize_session=False)
+    db.delete(user)
+    if not db.query(WebUser.id).filter(WebUser.client_id == client.id, WebUser.id != user.id).first():
+        client.telegram_id = _primary_telegram_id_after_web_delete(client)
+    db.commit()
+    db.refresh(client)
+    return {"success": True, "client": client_to_dict(client, db=db)}
+
+
+def _primary_telegram_id_after_web_delete(client: Client) -> str:
+    current_id = str(client.telegram_id or "")
+    if current_id and not current_id.startswith("web:"):
+        return current_id
+    accounts = [
+        account
+        for account in client.telegram_accounts
+        if account.telegram_id and not is_pending_telegram_id(account.telegram_id) and not str(account.telegram_id).startswith("web:")
+    ]
+    if not accounts:
+        client.username = ""
+        return new_pending_telegram_id()
+    primary = sorted(accounts, key=lambda item: item.created_at, reverse=True)[0]
+    if not client.username and primary.username:
+        client.username = primary.username
+    return primary.telegram_id
 
 
 @app.get("/api/web-password-resets", dependencies=[Depends(require_admin)])
@@ -1309,13 +2273,14 @@ def delete_client_telegram_account(
 @app.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
     include_internal: bool = False,
-    limit: int = 200,
+    limit: int = 2000,
     db: Session = Depends(db_session),
 ) -> list[dict]:
-    safe_limit = max(1, min(500, int(limit or 200)))
-    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 3).all()
-    visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job)]
-    return [job_to_dict(job) for job in visible_jobs[:safe_limit]]
+    safe_limit = max(1, min(10000, int(limit or 2000)))
+    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 2).all()
+    visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
+    settings = get_or_create_settings(db)
+    return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
 
 
 @app.get("/api/jobs/{job_id}", dependencies=[Depends(require_admin)])
@@ -1323,7 +2288,8 @@ def get_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job_to_dict(job, include_files=True)
+    settings = get_or_create_settings(db)
+    return job_to_dict(job, include_files=True, settings=settings, db=db)
 
 
 @app.get("/api/jobs/{job_id}/download", dependencies=[Depends(require_admin)])
@@ -1337,6 +2303,91 @@ def download_job(job_id: str, db: Session = Depends(db_session)):
     return FileResponse(output, filename=output.name)
 
 
+def get_job_admin_supplements(job: Job) -> list[dict]:
+    raw_path = getattr(job, "admin_supplement_path", "") or ""
+    if not raw_path:
+        return []
+    raw_path = raw_path.strip()
+    if raw_path.startswith("[") and raw_path.endswith("]"):
+        try:
+            data = json.loads(raw_path)
+            if isinstance(data, list):
+                res = []
+                for idx, item in enumerate(data):
+                    if isinstance(item, dict) and item.get("path"):
+                        p = Path(str(item["path"]))
+                        if p.is_file():
+                            label = item.get("label") or ("Дополнительный отчет (эксперт)" if len(data) == 1 else f"Дополнительный отчет {idx + 1} (эксперт)")
+                            res.append({
+                                "path": str(p),
+                                "name": item.get("name") or p.name,
+                                "label": label,
+                                "kind": "admin_supplement" if len(data) == 1 else f"admin_supplement_{idx}",
+                            })
+                if res:
+                    return res
+        except Exception:
+            pass
+    p = Path(raw_path)
+    if p.is_file():
+        name = getattr(job, "admin_supplement_name", "") or p.name
+        return [{
+            "path": str(p),
+            "name": name,
+            "label": "Дополнительный отчет (эксперт)",
+            "kind": "admin_supplement",
+        }]
+    return []
+
+
+@app.get("/api/jobs/{job_id}/download/{file_kind}", dependencies=[Depends(require_admin)])
+def download_job_file(job_id: str, file_kind: str, db: Session = Depends(db_session)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    normalized_kind = str(file_kind or "").strip()
+    if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        supplements = get_job_admin_supplements(job)
+        if not supplements:
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+        if "_" in normalized_kind and normalized_kind.split("_")[-1].isdigit():
+            idx = int(normalized_kind.split("_")[-1])
+            if idx < 0 or idx >= len(supplements):
+                raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+            target_supp = supplements[idx]
+        else:
+            target_supp = supplements[0]
+        supp_path = Path(target_supp["path"])
+        if not supp_path.is_file():
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден на сервере.")
+        return FileResponse(supp_path, filename=target_supp["name"])
+
+    output = None
+    for item in package_job_output_items(job):
+        if str(item.get("kind") or "") == normalized_kind:
+            output = Path(str(item.get("path") or ""))
+            break
+    if not output or not output.exists():
+        raise HTTPException(status_code=404, detail="Output not found")
+    return FileResponse(output, filename=output.name)
+
+
+@app.get("/api/jobs/{job_id}/input-files/{file_id}/download", dependencies=[Depends(require_admin)])
+def download_job_input_file(job_id: str, file_id: str, db: Session = Depends(db_session)):
+    file = (
+        db.query(JobFile)
+        .filter(JobFile.id == file_id)
+        .filter(JobFile.job_id == job_id)
+        .first()
+    )
+    if not file:
+        raise HTTPException(status_code=404, detail="Input file not found")
+    path = Path(str(file.stored_path or ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Input file not found")
+    return FileResponse(path, filename=file.original_filename or path.name)
+
+
 @app.get("/api/jobs/{job_id}/evidence", dependencies=[Depends(require_admin)])
 def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
@@ -1346,17 +2397,154 @@ def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
-def retry_job(job_id: str, db: Session = Depends(db_session)) -> dict:
+def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session = Depends(db_session)) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if policy:
+        job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
     job.status = "pending"
     job.progress = 0
     job.error = ""
-    job.message = "Повторный запуск"
+    job.message = "Повторный запуск задачи"
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": job_to_dict(job)}
+
+
+@app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
+def admin_rerun_job(
+    job_id: str,
+    policy: str | None = Query(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
+    parent_job = db.get(Job, job_id)
+    if not parent_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    new_job_id = new_id()
+    orig_title = parent_job.title or ""
+    clean_title = orig_title.replace("[Админ] ", "").strip()
+    admin_title = f"[Админ] {clean_title}"
+
+    root_parent_id = parent_job.parent_job_id if getattr(parent_job, "parent_job_id", "") else parent_job.id
+
+    new_job = Job(
+        id=new_job_id,
+        client_id=parent_job.client_id,
+        created_by_telegram_id="",
+        mode=parent_job.mode,
+        supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+        title=admin_title,
+        status="pending",
+        progress=0,
+        message="Экспертный перезапуск администратора",
+        parent_job_id=root_parent_id,
+        is_admin_rerun=True,
+        target_suppliers=parent_job.target_suppliers,
+    )
+    db.add(new_job)
+    db.flush()
+
+    parent_dir = job_dir(parent_job.id)
+    new_dir = job_dir(new_job.id)
+    new_dir.mkdir(parents=True, exist_ok=True)
+
+    parent_input_dir = parent_dir / "input"
+    new_input_dir = new_dir / "input"
+    new_input_dir.mkdir(parents=True, exist_ok=True)
+    if parent_input_dir.exists():
+        shutil.copytree(parent_input_dir, new_input_dir, dirs_exist_ok=True)
+
+    for pf in parent_job.files:
+        src_p = Path(pf.stored_path) if pf.stored_path else None
+        dest_stored_path = ""
+        if src_p and src_p.exists():
+            dest_file = new_input_dir / src_p.name
+            if not dest_file.exists():
+                shutil.copy2(src_p, dest_file)
+            dest_stored_path = str(dest_file)
+        elif src_p:
+            dest_stored_path = str(new_input_dir / src_p.name)
+
+        new_file = JobFile(
+            id=new_id(),
+            job_id=new_job.id,
+            original_filename=pf.original_filename,
+            stored_path=dest_stored_path,
+            parse_status="pending",
+            extracted_chars=pf.extracted_chars or 0,
+            error="",
+        )
+        db.add(new_file)
+
+    for ps in parent_job.sources:
+        new_source = JobSource(
+            id=new_id(),
+            job_id=new_job.id,
+            kind=ps.kind,
+            label=ps.label,
+            value=ps.value,
+            parse_status="pending",
+            context_path="",
+            extracted_chars=ps.extracted_chars or 0,
+            error="",
+        )
+        db.add(new_source)
+
+    db.commit()
+    enqueue_job(new_job.id)
+    return {
+        "success": True,
+        "job": job_to_dict(new_job, db=db),
+        "parent_job_id": root_parent_id,
+    }
+
+
+@app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
+def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    root_id = job.parent_job_id if getattr(job, "parent_job_id", "") else job.id
+
+    related_jobs = db.query(Job).filter(
+        or_(
+            Job.id == root_id,
+            Job.parent_job_id == root_id,
+            Job.id == job.id,
+        )
+    ).order_by(Job.created_at.desc()).all()
+
+    candidates: list[dict] = []
+    seen_paths = set()
+
+    for rj in related_jobs:
+        is_rerun = bool(getattr(rj, "is_admin_rerun", False) or getattr(rj, "parent_job_id", "") or "[Админ]" in (rj.title or ""))
+        for item in package_job_output_items(rj):
+            p = Path(str(item.get("path") or ""))
+            if p.is_file() and str(p) not in seen_paths:
+                seen_paths.add(str(p))
+                k = str(item.get("kind") or p.stem).strip()
+                prefix = "👑 " if is_rerun else "📄 "
+                suffix = " (экспертный перезапуск)" if is_rerun else " (исходный отчет)"
+                candidates.append({
+                    "kind": k,
+                    "composite_id": f"{rj.id}:{k}",
+                    "label": f"{prefix}{item.get('label') or k}{suffix}",
+                    "filename": p.name,
+                    "job_id": rj.id,
+                    "is_admin_rerun": is_rerun,
+                    "created_at": rj.created_at.isoformat() if rj.created_at else None,
+                })
+
+    return {
+        "success": True,
+        "job_id": job.id,
+        "root_job_id": root_id,
+        "candidates": candidates,
+    }
 
 
 @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
@@ -1406,6 +2594,139 @@ def force_fail_stale_jobs(
     return {"cancelled": cancelled, "count": len(cancelled)}
 
 
+@app.post("/api/jobs/resolve-failed", dependencies=[Depends(require_admin)])
+def resolve_all_failed_jobs(db: Session = Depends(db_session)) -> dict:
+    """Mark all failed jobs as resolved so they no longer trigger error alerts."""
+    failed_jobs = db.query(Job).filter(Job.status == "failed").all()
+    count = len(failed_jobs)
+    for job in failed_jobs:
+        job.status = "resolved"
+        job.updated_at = now_utc()
+    if count > 0:
+        db.commit()
+    return {"success": True, "resolved_count": count}
+
+
+@app.post("/api/jobs/{job_id}/resolve", dependencies=[Depends(require_admin)])
+def resolve_single_job(job_id: str, db: Session = Depends(db_session)) -> dict:
+    """Mark a single failed job as resolved."""
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.status = "resolved"
+    job.updated_at = now_utc()
+    db.commit()
+    return {"success": True, "job": job_to_dict(job)}
+
+
+@app.post("/api/jobs/{job_id}/admin-supplement", dependencies=[Depends(require_admin)])
+async def upload_admin_supplement(
+    job_id: str,
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
+    comment: str = Form(default=""),
+    notify_telegram: bool = Form(default=True),
+    source_mode: str = Form(default="upload"),
+    file_kinds: str = Form(default=""),
+    file_kind: str = Form(default=""),
+    db: Session = Depends(db_session),
+) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    clean_comment = str(comment if isinstance(comment, str) else "").strip()
+    supplement_items: list[dict] = []
+
+    all_uploads: list[UploadFile] = []
+    if files and isinstance(files, (list, tuple)):
+        all_uploads.extend([f for f in files if isinstance(f, UploadFile)])
+    if file and isinstance(file, UploadFile) and file not in all_uploads:
+        all_uploads.append(file)
+
+    file_kinds_str = file_kinds if isinstance(file_kinds, str) else ""
+    file_kind_str = file_kind if isinstance(file_kind, str) else ""
+    raw_kinds = [k.strip() for k in (file_kinds_str or file_kind_str).split(",") if k.strip()]
+
+    target_dir = job_dir(job.id) / "supplement"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if (source_mode == "job_file" or raw_kinds) and not all_uploads:
+        output_items = package_job_output_items(job)
+        for target_kind in raw_kinds:
+            for item in output_items:
+                k = str(item.get("kind") or "").strip()
+                p = Path(str(item.get("path") or ""))
+                if k == target_kind or p.name == target_kind:
+                    if p.is_file():
+                        dest = target_dir / f"supplement_{p.name}"
+                        shutil.copy2(p, dest)
+                        supplement_items.append({
+                            "path": str(dest),
+                            "name": p.name,
+                            "label": item.get("label") or _customer_result_file_label(k, f"Дополнительный отчет ({p.name})"),
+                        })
+                    break
+        if not supplement_items and not clean_comment:
+            raise HTTPException(status_code=400, detail="Файлы из результатов задачи не найдены.")
+
+    elif all_uploads:
+        for uf in all_uploads:
+            if not uf.filename:
+                continue
+            content = await uf.read()
+            if content:
+                original_filename = uf.filename
+                dest = target_dir / f"supplement_{Path(original_filename).name}"
+                dest.write_bytes(content)
+                supplement_items.append({
+                    "path": str(dest),
+                    "name": original_filename,
+                    "label": f"Дополнительный отчет ({original_filename})",
+                })
+
+    if not clean_comment and not supplement_items and not getattr(job, "admin_supplement_path", ""):
+        raise HTTPException(status_code=400, detail="Укажите комментарий или прикрепите хотя бы один файл.")
+
+    if supplement_items:
+        if len(supplement_items) == 1:
+            job.admin_supplement_path = supplement_items[0]["path"]
+            job.admin_supplement_name = supplement_items[0]["name"]
+        else:
+            job.admin_supplement_path = json.dumps(supplement_items, ensure_ascii=False)
+            job.admin_supplement_name = ", ".join(item["name"] for item in supplement_items)
+
+    if clean_comment:
+        job.admin_comment = clean_comment
+    job.admin_supplement_at = now_utc()
+    job.updated_at = now_utc()
+    db.commit()
+
+    tg_sent = False
+    if notify_telegram:
+        target_tg_id = job.created_by_telegram_id or (job.client.telegram_id if job.client else "")
+        if target_tg_id:
+            try:
+                from .bot import send_admin_supplement_telegram
+
+                supp_list = get_job_admin_supplements(job)
+                tg_sent = await send_admin_supplement_telegram(
+                    telegram_id=target_tg_id,
+                    job_title=human_job_title(job) or job.title,
+                    job_id=job.id,
+                    comment=job.admin_comment,
+                    files=supp_list,
+                )
+            except Exception as exc:
+                logger.warning("Error notifying telegram in admin-supplement: %s", exc)
+
+    return {
+        "success": True,
+        "job": job_to_dict(job, db=db),
+        "telegram_notified": tg_sent,
+    }
+
+
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     if not evidence_path:
@@ -1434,6 +2755,7 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
     supplier_jobs = 0
     underfilled = 0
     ai_required_failures = 0
+    ai_degraded_jobs = 0
     durations: list[float] = []
     recent_failures: list[dict] = []
 
@@ -1448,7 +2770,7 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         verified = int(getattr(job, "verified_count", 0) or 0)
         target = int(getattr(job, "target_suppliers", 0) or 0)
         total_verified += verified
-        if status in {"completed", "partial", "needs_review"} and target and verified < target:
+        if status in {"completed", "partial", "needs_review", STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED} and target and verified < target:
             underfilled += 1
         created_at = getattr(job, "created_at", None)
         completed_at = getattr(job, "completed_at", None)
@@ -1457,6 +2779,11 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         evidence = _safe_read_job_evidence(job, storage_root=storage_root)
         if evidence.get("ai_required") and status == "failed":
             ai_required_failures += 1
+        if (
+            evidence.get("candidate_rerank", {}).get("status") == "fallback_after_empty_ai_selection"
+            or evidence.get("ai_degraded")
+        ):
+            ai_degraded_jobs += 1
         search_reports = evidence.get("search", {}).get("reports", [])
         if isinstance(search_reports, list):
             for report in search_reports:
@@ -1478,6 +2805,21 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
                 }
             )
 
+    alerts = build_supplier_quality_alerts(
+        supplier_jobs=supplier_jobs,
+        status_counts=status_counts,
+        provider_status_counts=provider_status_counts,
+        ai_required_failures=ai_required_failures,
+        underfilled_terminal_jobs=underfilled,
+        average_duration_seconds=round(sum(durations) / len(durations), 2) if durations else 0,
+    )
+    if ai_degraded_jobs > 0 and not any(a.get("code") == "ai_degraded_jobs" for a in alerts):
+        alerts.append({
+            "code": "ai_degraded_jobs",
+            "level": "warning",
+            "message": f"Выявлены задачи с деградацией ИИ ({ai_degraded_jobs})",
+        })
+
     return {
         "window_size": supplier_jobs,
         "status_counts": dict(sorted(status_counts.items())),
@@ -1485,19 +2827,13 @@ def build_supplier_quality_snapshot(jobs: list[Job], *, storage_root: Path | Non
         "average_duration_seconds": round(sum(durations) / len(durations), 2) if durations else 0,
         "underfilled_terminal_jobs": underfilled,
         "ai_required_failures": ai_required_failures,
+        "ai_degraded_jobs": ai_degraded_jobs,
         "provider_status_counts": {
             provider: dict(sorted(counts.items()))
             for provider, counts in sorted(provider_status_counts.items())
         },
         "recent_failures": recent_failures,
-        "alerts": build_supplier_quality_alerts(
-            supplier_jobs=supplier_jobs,
-            status_counts=status_counts,
-            provider_status_counts=provider_status_counts,
-            ai_required_failures=ai_required_failures,
-            underfilled_terminal_jobs=underfilled,
-            average_duration_seconds=round(sum(durations) / len(durations), 2) if durations else 0,
-        ),
+        "alerts": alerts,
     }
 
 
@@ -1555,10 +2891,10 @@ async def upload_job(
     if mode not in VALID_JOB_MODES:
         raise HTTPException(status_code=400, detail="Unknown job mode")
     sources = source_payloads_from_text(source_urls)
-    if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+    if sources and mode not in {MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT}:
         raise HTTPException(
             status_code=400,
-            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis.",
+            detail="Supplier search requires a technical assignment file; procurement numbers and links are accepted for documentation analysis and exact product matching.",
         )
     if not files and not sources:
         raise HTTPException(status_code=400, detail="Upload at least one document or provide a procurement notice number/source URL")
@@ -1597,11 +2933,25 @@ async def upload_job(
                 files=[(filename, content)],
                 sources=[],
             )
+            reserve_job_units(db, client, job)
             enqueue_job(job.id)
             jobs.append(job_to_dict(job))
         return {"batch": True, "count": len(jobs), "jobs": jobs}
 
     title = Path(files[0].filename).stem if files else source_label(sources[0]["value"])
+
+    # Protection against double-clicks / instant re-submissions (< 5 seconds)
+    recent_job = db.query(Job).filter(
+        Job.client_id == client.id,
+        Job.created_by_telegram_id == telegram_id,
+        Job.mode == mode,
+        Job.created_at >= datetime.now(timezone.utc) - timedelta(seconds=5),
+    ).order_by(Job.created_at.desc()).first()
+    
+    if recent_job:
+        logger.warning("Duplicate job creation request suppressed (double-click within 5s)", recent_job_id=recent_job.id)
+        return job_to_dict(recent_job)
+
     job = create_job(
         db,
         client_id=client.id,
@@ -1612,6 +2962,7 @@ async def upload_job(
         files=payload,
         sources=sources,
     )
+    reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
     enqueue_job(job.id)
     return job_to_dict(job)
 
@@ -1628,7 +2979,10 @@ async def test_ai(data: AiTestRequest, db: Session = Depends(db_session)) -> dic
             tier="light",
             routing_key=data.routing_key,
             override=override,
-            timeout_seconds=45,
+            timeout_seconds=10.0,
+            total_timeout_seconds=12.0,
+            max_retries=0,
+            limiter_timeout_seconds=5.0,
             metadata=metadata,
         )
     except Exception as exc:
@@ -1676,7 +3030,7 @@ def build_bot_analytics(db: Session, *, period_days: int = 30) -> dict:
     grants_all = [
         item
         for item in db.query(BillingTransaction).filter(BillingTransaction.operation == "grant").all()
-        if item.client_id not in excluded_client_ids
+        if item.client_id not in excluded_client_ids and (item.created_by or "").strip().lower() != "system"
     ]
 
     clients_with_jobs = {job.client_id for job in all_jobs if job.client_id}
@@ -1793,6 +3147,7 @@ def _daily_job_series(jobs: list[Job], *, now, period_days: int) -> list[dict]:
         (start + timedelta(days=index)).isoformat(): {
             "date": (start + timedelta(days=index)).isoformat(),
             "supplier_search": 0,
+            "exact_product": 0,
             "procurement_report": 0,
             "analysis_and_suppliers": 0,
             "total": 0,
@@ -1818,17 +3173,36 @@ def _billing_period_summary(transactions: list[BillingTransaction]) -> list[dict
         kind = str(item.kind or "")
         row = rows.setdefault(
             kind,
-            {"kind": kind, "label": billing_kind_label(kind), "granted": 0, "reserved": 0, "charged": 0, "released": 0},
+            {
+                "kind": kind,
+                "label": billing_kind_label(kind),
+                "granted": 0,
+                "reserved": 0,
+                "charged": 0,
+                "released": 0,
+                "manual_debited": 0,
+                "granted_amount_kopeks": 0,
+                "reserved_amount_kopeks": 0,
+                "charged_amount_kopeks": 0,
+                "released_amount_kopeks": 0,
+            },
         )
         units = int(item.units or 0)
+        amount = int(item.amount_kopeks or 0)
         if item.operation == "grant":
             row["granted"] += units
+            row["granted_amount_kopeks"] += amount
         elif item.operation == "reserve":
             row["reserved"] += units
+            row["reserved_amount_kopeks"] += amount
         elif item.operation == "charge":
             row["charged"] += units
+            row["charged_amount_kopeks"] += amount
         elif item.operation == "release":
             row["released"] += units
+            row["released_amount_kopeks"] += amount
+        elif item.operation == "manual_debit":
+            row["manual_debited"] += units
     return sorted(rows.values(), key=lambda item: item["label"])
 
 
@@ -1942,15 +3316,18 @@ def public_site_payload(db: Session) -> dict:
         },
         "contacts": {
             "email": settings.contact_email,
+            "phone": None,
+            "phone_url": None,
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
-            "max": settings.contact_max,
-            "max_url": max_public_url(settings.contact_max_link),
+            "max": None,
+            "max_url": None,
             "website": settings.contact_website,
             "website_url": website_public_url(settings.contact_website),
         },
         "trial": {
             "enabled": bool(settings.trial_enabled),
+            "balance_rub": max(0, int(getattr(settings, "trial_balance_rub", 495) or 0)),
             "supplier_search_limit": max(0, int(settings.trial_supplier_search_limit or 0)),
             "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
@@ -1958,7 +3335,9 @@ def public_site_payload(db: Session) -> dict:
         "tariffs": tariffs,
         "tariff_groups": {
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+            "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
@@ -2032,21 +3411,30 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
         },
         "tariffs": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)],
         "tariff_groups": {
+            "exact_product": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "exact_product"],
             "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
             "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
+            "supplier_search_extra": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search_extra"],
         },
         "contacts": {
             "email": settings.contact_email,
+            "phone": None,
+            "phone_url": None,
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
-            "max": settings.contact_max,
-            "max_url": max_public_url(settings.contact_max_link),
+            "max": getattr(settings, "contact_max", None) or None,
+            "max_url": max_public_url(getattr(settings, "contact_max_link", "") or getattr(settings, "contact_max", "")),
         },
         "payment": {
             "provider": settings.payment_provider or "manual",
             "instructions": settings.payment_instructions or "",
             "yookassa_ready": _settings_yookassa_ready(settings),
         },
+        "referral": (
+            __import__("app.referral", fromlist=["get_referral_stats"]).get_referral_stats(db, user.client)
+            if user.client
+            else {}
+        ),
     }
 
 
@@ -2064,16 +3452,79 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
     }
 
 
-def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
+def customer_billing_transaction_to_dict(transaction: BillingTransaction) -> dict:
+    op = str(transaction.operation or "")
+    amount_kopeks = int(transaction.amount_kopeks or 0)
+    amount_rub = round(amount_kopeks / 100, 2)
+
+    job = transaction.job
+    if job:
+        kind_label = mode_label(str(job.mode or "")) if getattr(job, "mode", None) else billing_kind_label(str(transaction.kind or ""))
+        subject = _customer_job_subject_from_evidence(job) or _clean_customer_job_subject(str(job.title or ""))
+        if subject and subject.lower() not in {
+            "подбор товара и аналогов",
+            "поиск поставщиков",
+            "анализ документации",
+            "анализ + поиск",
+            "точный товар и аналоги",
+        }:
+            title = f"ТЗ: {subject}" if not subject.startswith("ТЗ:") else subject
+        else:
+            title = ""
+    else:
+        kind_label = billing_kind_label(str(transaction.kind or ""))
+        raw_note = str(transaction.note or "").strip()
+        if raw_note.lower() in {"пополнение баланса", "резерв перед запуском задачи", "результат отправлен клиенту"}:
+            title = ""
+        else:
+            title = raw_note
+
+    if op == OP_CHARGE:
+        op_label = "Списание"
+    elif op == OP_GRANT:
+        op_label = "Пополнение"
+    elif op == OP_RELEASE:
+        op_label = "Возврат"
+    elif op == OP_MANUAL_DEBIT:
+        op_label = "Корректировка"
+    elif op == OP_RESERVE:
+        op_label = "Резерв"
+    else:
+        op_label = operation_label(op)
+
+    return {
+        "id": transaction.id,
+        "job_id": transaction.job_id,
+        "operation": op,
+        "operation_label": op_label,
+        "kind": str(transaction.kind or ""),
+        "kind_label": kind_label,
+        "title": title,
+        "note": str(transaction.note or ""),
+        "units": int(transaction.units or 0),
+        "amount_kopeks": amount_kopeks,
+        "amount_rub": amount_rub,
+        "created_at": transaction.created_at.isoformat() if transaction.created_at else None,
+    }
+
+
+def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session | None = None) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     result_files = customer_job_result_files(job)
+    confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
+    result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    status_lbl = human_status_label(job.status)
+    if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
+        status_lbl = "нет в реестре"
     data = {
         "id": job.id,
         "client_id": job.client_id,
         "mode": job.mode,
         "mode_label": mode_label(job.mode),
+        "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
         "status": job.status,
-        "status_label": human_status_label(job.status),
+        "status_label": status_lbl,
         "progress": job.progress,
         "message": job.message,
         "title": job.title,
@@ -2087,13 +3538,28 @@ def customer_job_to_dict(job: Job, include_files: bool = False) -> dict:
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
         "can_cancel": job.status in {"pending", "running"},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
+        "can_start_supplier_search": job_can_start_supplier_search(job),
+        "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
         "result_files": result_files,
+        "result_offer": result_offer,
         "awaiting_customer_confirmation": job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION,
         "error": job.error,
+        "has_admin_supplement": bool(getattr(job, "admin_supplement_path", "") or getattr(job, "admin_comment", "")),
+        "admin_comment": getattr(job, "admin_comment", "") or "",
+        "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
+        "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
+        "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
+        "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
+        "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
+    exclusions_payload = read_supplier_exclusions_payload(job)
+    if exclusions_payload or getattr(job, "supplier_search_run_type", "") == SUPPLIER_RUN_ADDITIONAL:
+        prior_count = int(exclusions_payload.get("prior_verified_count") if exclusions_payload.get("prior_verified_count") is not None else len(exclusions_payload.get("suppliers", [])))
+        data["prior_verified_count"] = prior_count
+        data["cumulative_verified_count"] = prior_count + int(job.verified_count or 0)
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
         data["sources"] = [source_to_dict(item) for item in job.sources]
@@ -2113,6 +3579,15 @@ def customer_job_result_files(job: Job) -> list[dict]:
                 "filename": path.name,
             }
         )
+    for supp in get_job_admin_supplements(job):
+        result.append(
+            {
+                "kind": supp["kind"],
+                "label": supp["label"],
+                "filename": supp["name"],
+                "is_admin_supplement": True,
+            }
+        )
     return result
 
 
@@ -2125,12 +3600,17 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
         return "Поставщики"
     if kind == "quote_request":
         return "Запрос КП"
+    if kind in {"exact_product", "exact_product_table", "exact_product_spec"}:
+        return "Подбор товара и аналоги"
+    if kind in {"admin_supplement", "admin-supplement"}:
+        return "Дополнительный отчет (эксперт)"
     return "Файл"
 
 
 async def create_customer_job_api(
     *,
     mode: str,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -2142,6 +3622,7 @@ async def create_customer_job_api(
         raise HTTPException(status_code=400, detail="Неизвестный режим обработки.")
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
+    normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     settings = get_or_create_settings(db)
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:
@@ -2187,6 +3668,7 @@ async def create_customer_job_api(
                     target_suppliers=safe_target,
                     files=job_files,
                     sources=[],
+                    supplier_search_policy=normalized_policy,
                 )
                 reserve_job_units(db, client, job)
                 enqueue_job(job.id)
@@ -2203,6 +3685,7 @@ async def create_customer_job_api(
             target_suppliers=safe_target,
             files=payload,
             sources=sources,
+            supplier_search_policy=normalized_policy,
         )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         enqueue_job(job.id)
@@ -2234,6 +3717,13 @@ def _customer_supplier_job_specs(mode: str, payload: list[tuple[str, bytes]]) ->
     return [(_clean_customer_job_subject(Path(filename).stem) or "ТЗ", [(filename, content)]) for filename, content in payload]
 
 
+def _normalize_supplier_search_policy_for_job(mode: str, policy: str) -> str:
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        return SUPPLIER_POLICY_NORMAL
+    normalized = str(policy or "").strip().lower()
+    return normalized if normalized in VALID_SUPPLIER_SEARCH_POLICIES else SUPPLIER_POLICY_NORMAL
+
+
 def _customer_initial_job_title(mode: str, payload: list[tuple[str, bytes]], sources: list[dict]) -> str:
     if payload:
         title = _clean_customer_job_subject(Path(payload[0][0]).stem)
@@ -2253,28 +3743,64 @@ def _customer_job_or_404(db: Session, job_id: str, context: WebAuthContext) -> J
 
 def download_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
+    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
+        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
     output = package_job_outputs(job)
     if not output or not output.exists():
+        items = package_job_output_items(job)
+        if items:
+            output = Path(str(items[0].get("path") or ""))
+    if not output or not output.exists():
         raise HTTPException(status_code=404, detail="Файл результата не найден.")
-    charge_job_reservation(db, job)
+    if job.confirmation_kind and job.confirmation_outcome == "accepted" and job.offer_delivery_outcome != "delivered":
+        claim_token = claim_job_result_offer_delivery(db, job, channel="web")
+        complete_job_result_offer_delivery(db, job, claim_token, channel="web")
+    else:
+        charge_job_reservation(db, job)
     return FileResponse(output, filename=output.name)
 
 
 def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebAuthContext, db: Session):
     job = _customer_job_or_404(db, job_id, context)
+    if job.status in {STATUS_CONFIRMATION_EXPIRED, STATUS_DELIVERY_EXPIRED}:
+        raise HTTPException(status_code=410, detail="Срок действия предложения или выдачи результата истёк.")
     if job.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтвердите неполный отчёт перед скачиванием.")
     normalized_kind = str(file_kind or "").strip()
+    if normalized_kind in {"admin_supplement", "admin-supplement"} or normalized_kind.startswith("admin_supplement_") or normalized_kind.startswith("admin-supplement_"):
+        supplements = get_job_admin_supplements(job)
+        if not supplements:
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+        if "_" in normalized_kind and normalized_kind.split("_")[-1].isdigit():
+            idx = int(normalized_kind.split("_")[-1])
+            if idx < 0 or idx >= len(supplements):
+                raise HTTPException(status_code=404, detail="Дополнительный файл не найден.")
+            target_supp = supplements[idx]
+        else:
+            target_supp = supplements[0]
+        supp_path = Path(target_supp["path"])
+        if not supp_path.is_file():
+            raise HTTPException(status_code=404, detail="Дополнительный файл не найден на сервере.")
+        return FileResponse(supp_path, filename=target_supp["name"])
     output = None
+    billing_kind = None
     for item in package_job_output_items(job):
         if str(item.get("kind") or "") == normalized_kind:
             output = Path(str(item.get("path") or ""))
+            billing_kind = str(item.get("billing_kind") or "")
             break
     if not output or not output.exists():
         raise HTTPException(status_code=404, detail="Файл результата не найден.")
-    charge_job_reservation(db, job)
+    if job.confirmation_kind and job.confirmation_outcome == "accepted" and job.offer_delivery_outcome != "delivered":
+        claim_token = claim_job_result_offer_delivery(db, job, channel="web")
+        kinds = [billing_kind] if billing_kind else None
+        complete_job_result_offer_delivery(db, job, claim_token, billing_kinds=kinds, channel="web")
+    elif billing_kind:
+        charge_job_kind_reservation(db, job, billing_kind)
+    else:
+        charge_job_reservation(db, job)
     return FileResponse(output, filename=output.name)
 
 
@@ -2360,34 +3886,46 @@ def accept_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db:
     job = _customer_job_or_404(db, job_id, context)
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
-    job.status = "partial"
-    job.message = "Клиент принял неполный отчёт"
-    job.error = ""
-    job.updated_at = now_utc()
-    if job.completed_at is None:
-        job.completed_at = now_utc()
-    db.commit()
-    return {"success": True, "job": customer_job_to_dict(job)}
+    if job.confirmation_kind:
+        job = accept_job_result_offer(db, job, channel="web")
+    else:
+        job.status = "partial"
+        job.message = "Клиент принял неполный отчёт"
+        job.error = ""
+        job.updated_at = now_utc()
+        if job.completed_at is None:
+            job.completed_at = now_utc()
+        db.commit()
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
 def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
     if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION:
         raise HTTPException(status_code=409, detail="Подтверждение уже не актуально.")
-    release_job_reservation(db, job, note="Резерв возвращён: клиент сайта отказался от неполного отчёта")
-    job.status = STATUS_CUSTOMER_DECLINED
-    job.message = "Клиент отказался от неполного отчёта"
-    job.error = ""
-    job.completed_at = now_utc()
-    job.updated_at = now_utc()
-    db.commit()
-    return {"success": True, "job": customer_job_to_dict(job)}
+    if job.confirmation_kind:
+        job = decline_job_result_offer(db, job, channel="web")
+    else:
+        release_job_reservation(db, job, note="Резерв возвращён: клиент сайта отказался от неполного отчёта")
+        job.status = STATUS_CUSTOMER_DECLINED
+        job.message = "Клиент отказался от неполного отчёта"
+        job.error = ""
+        job.completed_at = now_utc()
+        job.updated_at = now_utc()
+        db.commit()
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
 FIND_MORE_SUPPLIER_STATUSES = {"completed", "partial", "needs_review"}
 
 
-def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
+def create_additional_supplier_search_api(
+    job_id: str,
+    *,
+    context: WebAuthContext,
+    db: Session,
+    additional_prompt: str = "",
+) -> dict:
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     original_job = _customer_job_or_404(db, job_id, context)
@@ -2396,13 +3934,28 @@ def create_additional_supplier_search_api(job_id: str, *, context: WebAuthContex
         client=context.user.client,
         original_job=original_job,
         created_by_telegram_id=f"web:{context.user.id}",
+        additional_prompt=additional_prompt,
     )
 
     return {
         "success": True,
-        "message": "Запущен дополнительный поиск поставщиков. Он резервирует 1 генерацию и исключает уже найденные компании.",
+        "message": "Запущен дополнительный поиск поставщиков. Он резервирует стоимость добора и исключает уже найденные компании.",
         "job": customer_job_to_dict(job),
     }
+
+
+def _additional_supplier_target(settings: SystemSettings, client: Client, original_job: Job) -> int:
+    base_target = int(original_job.target_suppliers or 0) or supplier_target_for_client(settings, client)
+    verified = int(original_job.verified_count or 0)
+    if base_target > verified and verified > 0:
+        return max(1, base_target - verified)
+    return max(1, base_target)
+
+
+def _cumulative_prior_verified_count(job: Job) -> int:
+    prev_payload = read_supplier_exclusions_payload(job)
+    prev_prior = int(prev_payload.get("prior_verified_count") or 0)
+    return prev_prior + int(job.verified_count or 0)
 
 
 def create_additional_supplier_search_for_client(
@@ -2411,6 +3964,7 @@ def create_additional_supplier_search_for_client(
     client: Client,
     original_job: Job,
     created_by_telegram_id: str,
+    additional_prompt: str = "",
 ) -> Job:
     if original_job.client_id != client.id:
         raise HTTPException(status_code=404, detail="Задача не найдена.")
@@ -2430,11 +3984,12 @@ def create_additional_supplier_search_for_client(
         MODE_SUPPLIER_SEARCH,
         incoming_file_count=len(input_files),
         supplier_search_count=1,
+        supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
     )
     if access_error:
         raise HTTPException(status_code=403, detail=access_error)
 
-    target_suppliers = max(1, int(original_job.target_suppliers or 0) or supplier_target_for_client(settings, client))
+    target_suppliers = _additional_supplier_target(settings, client, original_job)
     job: Job | None = None
     try:
         job = create_job(
@@ -2446,9 +4001,46 @@ def create_additional_supplier_search_for_client(
             target_suppliers=target_suppliers,
             files=input_files,
             sources=[],
+            supplier_search_policy=_normalize_supplier_search_policy_for_job(
+                MODE_SUPPLIER_SEARCH,
+                getattr(original_job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            ),
+            supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
-        write_supplier_exclusions(job, previous_job_id=original_job.id, suppliers=excluded_suppliers)
+        prior_verified_count = _cumulative_prior_verified_count(original_job)
+        write_supplier_exclusions(
+            job,
+            previous_job_id=original_job.id,
+            suppliers=excluded_suppliers,
+            prior_verified_count=prior_verified_count,
+        )
+
+        unreviewed_candidates: list[dict] = []
+        cached_profile: dict = {}
+        executed_queries: list[str] = []
+        wave_index = 2
+        try:
+            parent_evidence = read_job_evidence_payload(original_job)
+            if isinstance(parent_evidence, dict):
+                s_ev = parent_evidence.get("supplier_search") if isinstance(parent_evidence.get("supplier_search"), dict) else parent_evidence
+                unreviewed_candidates = s_ev.get("unreviewed_candidates", [])
+                cached_profile = s_ev.get("procurement_profile", {})
+                executed_queries = s_ev.get("executed_queries", [])
+                prev_wave = int(s_ev.get("wave_index") or 1)
+                wave_index = prev_wave + 1
+        except Exception:
+            pass
+
+        write_dobor_context(
+            job,
+            previous_job_id=original_job.id,
+            unreviewed_candidates=unreviewed_candidates,
+            cached_procurement_profile=cached_profile,
+            executed_queries=executed_queries,
+            additional_prompt=additional_prompt,
+            wave_index=wave_index,
+        )
         enqueue_job(job.id)
     except BillingError as exc:
         if job:
@@ -2498,6 +4090,228 @@ def _repeat_supplier_search_input_files(job: Job) -> list[tuple[str, bytes]]:
     return [("previous_supplier_context.txt", context.encode("utf-8"))] if context else []
 
 
+def job_can_start_supplier_search(job: Job | object) -> bool:
+    return bool(
+        str(getattr(job, "mode", "") or "") == MODE_EXACT_PRODUCT
+        and str(getattr(job, "status", "") or "") in {"completed", "done"}
+        and not getattr(job, "error", "")
+    )
+
+
+def _clean_brand_model_label(mfr: str, brand: str, model: str) -> str:
+    mfr = str(mfr or "").strip()
+    brand = str(brand or "").strip()
+    model = str(model or "").strip()
+
+    generic_mfr = {
+        "не указан", "нет данных", "отечественный производитель", "россия", "рф",
+        "отечественный производитель (россия)", "не определен", "не требуется"
+    }
+    if mfr.lower() in generic_mfr:
+        mfr = ""
+
+    seen_significant_words: set[str] = set()
+    result_words: list[str] = []
+    ignore_duplicate_check = {"dn", "pn", "ру", "ду", "мм", "см", "м", "в", "вт", "квт", "а", "v", "w", "1", "2", "3", "no", "тип"}
+
+    for part in [mfr, brand, model]:
+        if not part:
+            continue
+        for word in part.split():
+            clean_w = word.strip(" ,;.:\"'()[]")
+            w_lower = clean_w.lower()
+            if not clean_w:
+                continue
+            if w_lower in seen_significant_words and w_lower not in ignore_duplicate_check:
+                if len(result_words) > 0 and result_words[-1].lower() == w_lower:
+                    continue
+                if any(rw.lower() == w_lower for rw in result_words):
+                    continue
+            result_words.append(word)
+            if len(w_lower) >= 3 and w_lower not in ignore_duplicate_check:
+                seen_significant_words.add(w_lower)
+
+    res = " ".join(result_words).strip()
+    return res or model or brand or mfr
+
+
+def _customer_exact_product_summary(job: Job) -> dict | None:
+    try:
+        evidence = read_job_evidence_payload(job)
+        if not isinstance(evidence, dict):
+            return None
+        rep = evidence.get("exact_product_report")
+        if not isinstance(rep, dict):
+            return None
+        positions = rep.get("positions", [])
+        if not positions or not isinstance(positions, list):
+            return None
+        first_pos = positions[0] if isinstance(positions[0], dict) else {}
+        brand = str(first_pos.get("identified_brand") or "").strip()
+        model = str(first_pos.get("identified_model") or "").strip()
+        mfr = str(first_pos.get("manufacturer") or "").strip()
+        name_tz = str(first_pos.get("name_in_tz") or "").strip()
+        primary_str = _clean_brand_model_label(mfr, brand, model) or name_tz
+
+        alts: list[str] = []
+        for a in first_pos.get("alternative_brands", []) or []:
+            if isinstance(a, dict):
+                a_b = str(a.get("brand") or "").strip()
+                a_m = str(a.get("model") or "").strip()
+                a_mfr = str(a.get("manufacturer") or "").strip()
+                alt_str = _clean_brand_model_label(a_mfr, a_b, a_m)
+                if alt_str and alt_str not in alts:
+                    alts.append(alt_str)
+        return {
+            "primary_product": primary_str,
+            "brand": brand,
+            "model": model,
+            "manufacturer": mfr,
+            "name_in_tz": name_tz,
+            "alternatives": alts,
+            "total_positions": len(positions),
+        }
+    except Exception:
+        return None
+
+
+def _build_exact_product_supplier_selection_text(
+    exact_report: dict,
+    include_alternatives: bool = True,
+    additional_prompt: str = "",
+    job_title: str = "",
+) -> str:
+    lines = [
+        "=== ВЫЯВЛЕННЫЙ ТОЧНЫЙ ТОВАР И АНАЛОГИ (ПОДБОР TENDERLEX) ===",
+        "Инструкция для ИИ-поиска поставщиков:",
+        "По данному техническому заданию был выполнен детальный подбор товаров, материалов и эквивалентов.",
+        "Необходимо найти прямых производителей, официальных дистрибьюторов, дилеров и оптовых поставщиков для следующей номенклатуры:",
+        "",
+    ]
+    if job_title:
+        lines.append(f"Предмет закупки: {job_title}\n")
+    positions = exact_report.get("positions", [])
+    if isinstance(positions, list) and positions:
+        for pos in positions:
+            if not isinstance(pos, dict):
+                continue
+            p_no = pos.get("position_no", 1)
+            name_tz = pos.get("name_in_tz", "")
+            brand = pos.get("identified_brand", "")
+            model = pos.get("identified_model", "")
+            mfr = pos.get("manufacturer", "")
+            lines.append(f"Позиция {p_no}: {name_tz}")
+            conf = float(pos.get("confidence", 0.90) or 0.90)
+            identified = _clean_brand_model_label(mfr, brand, model)
+            if identified:
+                if conf >= 0.60:
+                    lines.append(f"- Выявленный точный товар: {identified}")
+                else:
+                    lines.append(f"- Проверенная модель {identified} имеет отклонения от ТЗ (соответствие {int(conf*100)}%). Искать поставщиков по техническим характеристикам позиции: {name_tz}")
+            alts = pos.get("alternative_brands", [])
+            if include_alternatives and isinstance(alts, list) and alts:
+                alt_lines = []
+                for a in alts:
+                    if isinstance(a, dict):
+                        a_conf = float(a.get("confidence", 0.90) or 0.90)
+                        if a_conf >= 0.60:
+                            a_b = a.get("brand", "")
+                            a_m = a.get("model", "")
+                            a_mfr = a.get("manufacturer", "")
+                            item_str = _clean_brand_model_label(a_mfr, a_b, a_m)
+                            if item_str:
+                                alt_lines.append(item_str)
+                if alt_lines:
+                    lines.append(f"- Допустимые проверенные аналоги: {'; '.join(alt_lines)}")
+            lines.append("")
+    else:
+        summary = str(exact_report.get("summary") or "").strip()
+        if summary:
+            lines.append(f"Результаты подбора: {summary}\n")
+    if additional_prompt:
+        lines.append(f"ТРЕБОВАНИЯ И ПОЖЕЛАНИЯ КЛИЕНТА К ПОИСКУ ПОСТАВЩИКОВ:\n{additional_prompt.strip()}\n")
+    lines.append("=== ИСХОДНОЕ ТЕХНИЧЕСКОЕ ЗАДАНИЕ И ТРЕБОВАНИЯ СМ. ВО ВЛОЖЕНИЯХ ===")
+    return "\n".join(lines)
+
+
+def create_supplier_search_from_exact_product(
+    db: Session,
+    *,
+    client: Client,
+    original_job: Job,
+    created_by_telegram_id: str,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    include_alternatives: bool = True,
+    additional_prompt: str = "",
+) -> Job:
+    if original_job.client_id != client.id:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    if str(getattr(original_job, "mode", "") or "") != MODE_EXACT_PRODUCT:
+        raise HTTPException(status_code=409, detail="Поиск поставщиков можно запустить только из задачи подбора товара.")
+    if str(getattr(original_job, "status", "") or "") not in {"completed", "done"}:
+        raise HTTPException(status_code=409, detail="Дождитесь завершения подбора товара перед поиском поставщиков.")
+
+    input_files = _repeat_supplier_search_input_files(original_job)
+    settings = get_or_create_settings(db)
+    access_error = client_access_error(
+        db,
+        client,
+        MODE_SUPPLIER_SEARCH,
+        incoming_file_count=max(1, len(input_files)),
+        supplier_search_count=1,
+    )
+    if access_error:
+        raise HTTPException(status_code=403, detail=access_error)
+
+    exact_report = {}
+    try:
+        evidence = read_job_evidence_payload(original_job)
+        if isinstance(evidence, dict):
+            exact_report = evidence.get("exact_product_report") or {}
+    except Exception:
+        pass
+
+    selection_text = _build_exact_product_supplier_selection_text(
+        exact_report=exact_report,
+        include_alternatives=include_alternatives,
+        additional_prompt=additional_prompt,
+        job_title=original_job.title or "",
+    )
+
+    combined_files = [("podbor_tovara_i_analogi_rezultat.txt", selection_text.encode("utf-8")), *input_files]
+    subject = _customer_job_subject_from_evidence(original_job) or _clean_customer_job_subject(original_job.title) or human_job_title(original_job)
+    title = _ellipsize_customer_title(f"Поставщики: {subject}", limit=120)
+    target_suppliers = supplier_target_for_client(settings, client)
+    normalized_policy = _normalize_supplier_search_policy_for_job(MODE_SUPPLIER_SEARCH, supplier_search_policy)
+
+    job: Job | None = None
+    try:
+        job = create_job(
+            db,
+            client_id=client.id,
+            created_by_telegram_id=created_by_telegram_id,
+            mode=MODE_SUPPLIER_SEARCH,
+            title=title,
+            target_suppliers=target_suppliers,
+            files=combined_files,
+            sources=[],
+            supplier_search_policy=normalized_policy,
+            supplier_search_run_type="initial",
+        )
+        reserve_job_units(db, client, job, supplier_search_count=1)
+        enqueue_job(job.id)
+    except BillingError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        if job:
+            _discard_created_job(db, job)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return job
+
+
 def _supplier_context_from_job_evidence(job: Job) -> str:
     try:
         evidence = read_job_evidence_payload(job)
@@ -2529,6 +4343,7 @@ def _supplier_context_from_job_evidence(job: Job) -> str:
 
 
 def _supplier_exclusions_from_job(job: Job) -> list[dict]:
+    existing_exclusions = read_supplier_exclusions(job)
     suppliers = [
         _supplier_result_exclusion(item)
         for item in getattr(job, "suppliers", []) or []
@@ -2536,17 +4351,17 @@ def _supplier_exclusions_from_job(job: Job) -> list[dict]:
     ]
     suppliers = [item for item in suppliers if item.get("company_name") or item.get("site")]
     if suppliers:
-        return suppliers
+        return _dedupe_supplier_exclusions(existing_exclusions + suppliers)
     try:
         evidence = read_job_evidence_payload(job)
     except HTTPException:
-        return []
+        return _dedupe_supplier_exclusions(existing_exclusions)
     accepted = evidence.get("accepted")
     if not isinstance(accepted, list) and isinstance(evidence.get("supplier_search"), dict):
         accepted = evidence["supplier_search"].get("accepted")
     if not isinstance(accepted, list):
-        return []
-    return [
+        return _dedupe_supplier_exclusions(existing_exclusions)
+    evidence_suppliers = [
         {
             "company_name": str(item.get("company_name") or ""),
             "site": str(item.get("site") or ""),
@@ -2558,6 +4373,34 @@ def _supplier_exclusions_from_job(job: Job) -> list[dict]:
         for item in accepted
         if isinstance(item, dict) and (item.get("company_name") or item.get("site"))
     ]
+    return _dedupe_supplier_exclusions(existing_exclusions + evidence_suppliers)
+
+
+def _dedupe_supplier_exclusions(suppliers: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in suppliers:
+        if not isinstance(item, dict):
+            continue
+        domain = _supplier_exclusion_domain(item)
+        company = " ".join(str(item.get("company_name") or "").lower().split())
+        key = domain or company
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _supplier_exclusion_domain(item: dict) -> str:
+    for key in ("site", "evidence_url", "contact_url"):
+        value = str(item.get(key) or "").strip()
+        if not value:
+            continue
+        match = re.search(r"(?i)^(?:https?://)?(?:www\.)?([^/\s?#]+)", value)
+        if match:
+            return match.group(1).lower()
+    return ""
 
 
 def _supplier_result_exclusion(item: SupplierResult) -> dict:
@@ -2579,16 +4422,21 @@ def human_job_title(job: Job | object) -> str:
     if is_internal_job(job):
         return "Служебная проверка"
     mode = str(getattr(job, "mode", "") or "")
+    is_admin = bool(getattr(job, "is_admin_rerun", False) or str(getattr(job, "title", "") or "").startswith("[Админ]"))
     subject = _customer_job_subject_from_evidence(job)
     if subject:
-        return _customer_job_title_for_subject(mode, subject)
+        title = _customer_job_title_for_subject(mode, subject)
+        return f"[Админ] {title}" if is_admin else title
     raw = str(getattr(job, "title", "") or "").strip()
     if not raw:
-        return mode_label(mode)
+        lbl = mode_label(mode)
+        return f"[Админ] {lbl}" if is_admin else lbl
     cleaned = _clean_customer_job_subject(raw)
     if not cleaned or _looks_like_hash(cleaned):
-        return mode_label(mode)
-    return _customer_job_title_for_subject(mode, cleaned)
+        lbl = mode_label(mode)
+        return f"[Админ] {lbl}" if is_admin else lbl
+    title = _customer_job_title_for_subject(mode, cleaned)
+    return f"[Админ] {title}" if is_admin else title
 
 
 def _customer_job_subject_from_evidence(job: Job | object) -> str:
@@ -2599,6 +4447,24 @@ def _customer_job_subject_from_evidence(job: Job | object) -> str:
             payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
         except Exception:
             payload = {}
+
+    if isinstance(payload, dict) and "exact_product_report" in payload:
+        ep_rep = payload.get("exact_product_report")
+        if isinstance(ep_rep, dict):
+            ep_title = ep_rep.get("procurement_title")
+            if ep_title:
+                ep_clean = _clean_customer_job_subject(ep_title)
+                if ep_clean:
+                    return ep_clean
+            positions = ep_rep.get("positions")
+            if isinstance(positions, list) and positions:
+                first_pos = positions[0]
+                if isinstance(first_pos, dict):
+                    pos_name = first_pos.get("name_in_tz") or first_pos.get("identified_model") or ""
+                    ep_clean = _clean_customer_job_subject(pos_name)
+                    if ep_clean:
+                        return ep_clean
+
     subject = _clean_customer_job_subject(payload.get("subject") if payload else "")
     if subject:
         return subject
@@ -2628,12 +4494,18 @@ def _customer_job_title_for_subject(mode: str, subject: str) -> str:
         return f"Анализ закупки: {value}"
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
         return f"Анализ + поиск: {value}"
+    if mode == MODE_EXACT_PRODUCT:
+        return f"Подбор товаров: {value}"
     return value
 
 
 def _clean_customer_job_subject(value: object) -> str:
     cleaned = " ".join(str(value or "").replace("_", " ").split()).strip(" .,:;\"'")
     cleaned = re.sub(r"\.(?:docx?|xlsx?|pdf|zip|rar|7z|rtf|txt)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"(?i)\[\s*админ\s*\]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^точный\s+товар\s+и\s+аналоги\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^подбор\s+товар(?:а|ов)\s*(?:и\s+аналогов)?\s*[-:—–]?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^анализ\s+(?:закупки|документации|\+\s*поиск)\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^техническое\s+задание\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^тз\s*[-:—–]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"(?i)^тз(?=[A-ZА-ЯЁ])", "", cleaned).strip()
@@ -2664,29 +4536,36 @@ def mode_label(mode: str) -> str:
         MODE_SUPPLIER_SEARCH: "Поиск поставщиков",
         MODE_PROCUREMENT_REPORT: "Анализ документации",
         MODE_ANALYSIS_AND_SUPPLIERS: "Анализ + поставщики",
+        MODE_EXACT_PRODUCT: "Подбор товара и аналогов",
     }
     return labels.get(mode, "Задача")
 
 
 def client_usage_summary(db: Session, client: Client) -> dict:
-    balances = client_balance_summary(db, client)
+    balances = client_service_balance_summary(db, client)
     return {
         "supplier_search": usage_counter_from_balance(balances["supplier_search"]),
         "procurement_report": usage_counter_from_balance(balances["procurement_report"]),
+        "supplier_search_extra": usage_counter_from_balance(balances["supplier_search_extra"]),
+        "exact_product": usage_counter_from_balance(balances.get("exact_product", {})),
+        "money": balances["money"],
+        "effective_prices": balances["effective_prices"],
     }
 
 
 def usage_counter_from_balance(counter: dict) -> dict:
     granted = int(counter.get("granted") or 0)
+    manual_debited = int(counter.get("manual_debited") or 0)
     spent = int(counter.get("spent") or 0)
     available = counter.get("available")
     reserved = int(counter.get("reserved") or 0)
     unlimited = bool(counter.get("unlimited"))
-    percent = 0 if unlimited or granted <= 0 else min(100, round((spent + reserved) * 100 / granted))
+    effective_limit = max(0, granted - manual_debited)
+    percent = 0 if unlimited or effective_limit <= 0 else min(100, round((spent + reserved) * 100 / effective_limit))
     return {
         "label": counter.get("label") or billing_kind_label(str(counter.get("kind") or "")),
         "used": spent,
-        "limit": granted,
+        "limit": effective_limit,
         "remaining": available,
         "unlimited": unlimited,
         "percent": percent,
@@ -2694,8 +4573,11 @@ def usage_counter_from_balance(counter: dict) -> dict:
         "reserved": reserved,
         "spent": spent,
         "granted": granted,
+        "manual_debited": manual_debited,
         "source": counter.get("source") or "ledger",
         "low": bool(counter.get("low")),
+        "price_kopeks": int(counter.get("price_kopeks") or 0),
+        "price_rub": round(int(counter.get("price_kopeks") or 0) / 100, 2),
     }
 
 
@@ -2736,6 +4618,8 @@ def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[
                 "procurement_report_units": report_units,
                 "status": job.status,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             }
         )
         if len(items) >= limit:
@@ -2745,18 +4629,15 @@ def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[
 
 def supplier_search_ui(settings: SystemSettings) -> dict:
     provider_order = _provider_order(settings)
-    tavily_ready = bool(_tavily_key_candidates(settings))
     google_key, google_cse = _google_credentials(settings)
     yandex_folder, yandex_key = _yandex_credentials(settings)
     configured = {
-        "tavily": tavily_ready,
         "google": bool(google_key and google_cse),
         "yandex": bool(yandex_folder and yandex_key),
-        "ddgs": "ddgs" in provider_order,
     }
     active_provider = next((provider for provider in provider_order if configured.get(provider)), "")
     if not active_provider:
-        active_provider = provider_order[0] if provider_order else "tavily"
+        active_provider = provider_order[0] if provider_order else "yandex"
     active_ready = bool(configured.get(active_provider))
     return {
         "active_provider": active_provider,
@@ -2776,23 +4657,17 @@ def supplier_search_source_label(provider: str) -> str:
     labels = {
         "yandex": "Яндекс Поиск",
         "google": "Google Поиск",
-        "tavily": "Дополнительный поиск Tavily",
-        "ddgs": "Резерв DuckDuckGo",
     }
     return labels.get(provider, "Источник поиска")
 
 
 def supplier_search_active_note(provider: str, ready: bool) -> str:
     if not ready:
-        return "Первый источник в порядке поиска не настроен. Добавьте ключи Яндекса или Google в расширенных параметрах."
+        return "Основной поиск через Яндекс не настроен. Добавьте ключи Яндекса в расширенных параметрах."
     if provider == "yandex":
         return "Основной поиск через Яндекс подключён."
     if provider == "google":
-        return "Основной поиск через Google подключён."
-    if provider == "tavily":
-        return "Работает дополнительный источник Tavily."
-    if provider == "ddgs":
-        return "Работает резервный поиск без ключа."
+        return "Поиск через Google подключён."
     return "Источник поиска подключён."
 
 
@@ -2806,7 +4681,7 @@ def source_ui_item(provider: str, label: str, configured: bool, active_provider:
     }
 
 
-def build_system_status(settings: SystemSettings, db: Session) -> dict:
+def build_system_status(settings: SystemSettings, db: Session, yandex_balance: float | None = None) -> dict:
     root_disk = disk_usage_payload(Path("/"))
     storage_disk = disk_usage_payload(config.storage_path if config.storage_path.exists() else config.storage_path.parent)
     memory = memory_payload()
@@ -2820,13 +4695,16 @@ def build_system_status(settings: SystemSettings, db: Session) -> dict:
         "storage_used_gb": storage_disk["disk_used_gb"],
         "storage_percent": storage_disk["disk_percent"],
     }
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
     queue = {
         "pending": db.query(Job).filter(Job.status == "pending").count(),
         "running": db.query(Job).filter(Job.status == "running").count(),
-        "failed": db.query(Job).filter(Job.status == "failed").count(),
+        "failed": db.query(Job).filter(Job.status == "failed", Job.created_at >= week_ago).count(),
+        "failed_total": db.query(Job).filter(Job.status == "failed").count(),
         "completed": db.query(Job).filter(Job.status.in_(["completed", "partial"])).count(),
     }
-    services = api_service_statuses(settings)
+    services = api_service_statuses(settings, yandex_balance=yandex_balance)
     warnings = []
     if server["disk_free_gb"] < 10:
         warnings.append("На сервере осталось меньше 10 ГБ свободного места.")
@@ -2910,19 +4788,63 @@ def read_cpu_totals(path: Path = Path("/proc/stat")) -> tuple[int, int] | None:
     return sum(parts), idle
 
 
-def api_service_statuses(settings: SystemSettings) -> list[dict]:
-    yandex_folder, yandex_key = _yandex_credentials(settings)
-    google_key, google_cse = _google_credentials(settings)
+def api_service_statuses(settings: SystemSettings, yandex_balance: float | None = None) -> list[dict]:
+    yandex_folder = str(getattr(settings, "yandex_search_folder_id", "") or "").strip()
+    yandex_key = str(getattr(settings, "yandex_search_api_key", "") or "").strip()
+    google_key = str(getattr(settings, "google_search_api_key", "") or "").strip()
+    google_cse = str(getattr(settings, "google_search_cse_id", "") or "").strip()
     configured_ai = [
         item
         for item in parse_json_list(settings.custom_ai_providers_json)
         if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip()
     ]
+    
+    yandex_configured = bool(yandex_folder and yandex_key)
+    yandex_warning = not yandex_configured or (yandex_balance is not None and yandex_balance < 100.0)
+    yandex_url = (
+        f"https://console.yandex.cloud/folders/{yandex_folder}/dashboard"
+        if yandex_folder
+        else "https://console.yandex.cloud/folders/b1gmnp1u8urslual8ht8/dashboard"
+    )
+
     services = [
-        api_service_item("yandex", "Яндекс Поиск", "yandex.cloud", bool(yandex_folder and yandex_key), "Основной источник поиска поставщиков."),
-        api_service_item("google", "Google Поиск", "customsearch.googleapis.com", bool(google_key and google_cse), "Основной источник поиска поставщиков."),
-        api_service_item("ai", "Нейросети", f"подключений: {len(configured_ai)}", bool(configured_ai), "Используются для анализа документации и проверки поставщиков."),
-        api_service_item("tavily", "Tavily", "дополнительный поиск", bool(_tavily_key_candidates(settings)), "Вспомогательный источник после Яндекса и Google."),
+        {
+            "id": "yandex",
+            "label": "Поиск Яндекс",
+            "detail": "yandex.cloud",
+            "configured": yandex_configured,
+            "status": "ok" if yandex_configured else "missing",
+            "status_label": "подключено" if yandex_configured else "не настроено",
+            "balance_rub": yandex_balance,
+            "balance_label": f"{yandex_balance:.2f} ₽" if yandex_balance is not None else "н/д",
+            "warning": yandex_warning,
+            "note": "Основной источник поиска поставщиков.",
+            "url": yandex_url,
+        },
+        {
+            "id": "google",
+            "label": "Google Поиск",
+            "detail": "customsearch.googleapis.com",
+            "configured": bool(google_key and google_cse),
+            "status": "ok" if bool(google_key and google_cse) else "missing",
+            "status_label": "подключено" if bool(google_key and google_cse) else "не настроено",
+            "balance_label": "подключено",
+            "warning": not bool(google_key and google_cse),
+            "note": "Основной источник поиска поставщиков.",
+            "url": "https://programmablesearchengine.google.com/",
+        },
+        {
+            "id": "ai",
+            "label": "Нейросети AI",
+            "detail": "OpenRouter / Polza",
+            "configured": bool(configured_ai) or settings.has_active_ai_provider,
+            "status": "ok" if (bool(configured_ai) or settings.has_active_ai_provider) else "missing",
+            "status_label": "подключено" if (bool(configured_ai) or settings.has_active_ai_provider) else "не настроено",
+            "balance_label": "подключено",
+            "warning": not (bool(configured_ai) or settings.has_active_ai_provider),
+            "note": "Используются для анализа и ранжирования.",
+            "url": "https://openrouter.ai/settings/credits",
+        },
     ]
     return services
 
@@ -2961,6 +4883,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "access_until": client.access_until,
         "allowed_supplier_search": client.allowed_supplier_search,
         "allowed_procurement_report": client.allowed_procurement_report,
+        "allowed_exact_product": getattr(client, "allowed_exact_product", True),
         "monthly_job_limit": client.monthly_job_limit,
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,
@@ -3026,17 +4949,31 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
     }
 
 
-def job_to_dict(job: Job, include_files: bool = False) -> dict:
+def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings | None = None, db: Session | None = None) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
+    result_files = admin_job_result_files(job)
+    ai_info = resolve_job_ai_info(job, settings=settings)
+    confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
+    confirmation_outcome = str(getattr(job, "confirmation_outcome", "") or "")
+    offer_delivery_outcome = str(getattr(job, "offer_delivery_outcome", "") or "")
+    result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
     data = {
         "id": job.id,
         "client_id": job.client_id,
         "client_name": job.client.name if job.client else "",
+        "client_email": (job.client.users[0].email if (job.client and getattr(job.client, "users", None) and len(job.client.users) > 0) else "") if job.client else "",
+        "client_username": job.client.username if job.client else "",
         "telegram_id": job.client.telegram_id if job.client else "",
         "created_by_telegram_id": job.created_by_telegram_id,
         "mode": job.mode,
         "mode_label": mode_label(job.mode),
+        "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
+        "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "confirmation_kind": confirmation_kind,
+        "confirmation_outcome": confirmation_outcome,
+        "offer_delivery_outcome": offer_delivery_outcome,
+        "result_offer": result_offer,
         "status": job.status,
         "progress": job.progress,
         "message": job.message,
@@ -3048,18 +4985,81 @@ def job_to_dict(job: Job, include_files: bool = False) -> dict:
         "target_suppliers": job.target_suppliers,
         "verified_count": job.verified_count,
         "file_count": job.file_count,
-        "has_result": bool(job.result_path),
+        "has_result": bool(result_files),
+        "result_files": result_files,
         "has_evidence": bool(evidence_path),
+        "has_admin_supplement": bool(getattr(job, "admin_supplement_path", "") or getattr(job, "admin_comment", "")),
+        "admin_comment": getattr(job, "admin_comment", "") or "",
+        "admin_supplement_name": getattr(job, "admin_supplement_name", "") or "",
+        "admin_supplement_at": job.admin_supplement_at.isoformat() if getattr(job, "admin_supplement_at", None) else None,
         "error": job.error,
+        "ai_provider": ai_info.get("ai_provider", ""),
+        "ai_provider_name": ai_info.get("ai_provider_name", ""),
+        "ai_model": ai_info.get("ai_model", ""),
+        "ai_label": ai_info.get("ai_label", ""),
+        "yandex_requests_count": getattr(job, "yandex_requests_count", 0) or 0,
+        "yandex_cost_rub": getattr(job, "yandex_cost_rub", 0.0) or 0.0,
+        "yandex_cost_label": f"{(getattr(job, 'yandex_cost_rub', 0.0) or 0.0):.2f} ₽",
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "parent_job_id": getattr(job, "parent_job_id", "") or "",
+        "is_admin_rerun": bool(getattr(job, "is_admin_rerun", False) or (getattr(job, "title", "") or "").startswith("[Админ]")),
+        "input_files": [file_to_dict(item) for item in job.files],
+        "sources": [source_to_dict(item) for item in job.sources],
     }
+    if db and not getattr(job, "is_admin_rerun", False):
+        child_rerun = (
+            db.query(Job)
+            .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        if child_rerun:
+            child_files = admin_job_result_files(child_rerun)
+            data["admin_rerun"] = {
+                "id": child_rerun.id,
+                "status": child_rerun.status,
+                "progress": child_rerun.progress,
+                "message": child_rerun.message,
+                "files": child_files,
+                "yandex_requests_count": getattr(child_rerun, "yandex_requests_count", 0) or 0,
+                "yandex_cost_rub": getattr(child_rerun, "yandex_cost_rub", 0.0) or 0.0,
+                "created_at": child_rerun.created_at.isoformat() if child_rerun.created_at else None,
+            }
+        else:
+            data["admin_rerun"] = None
+    else:
+        data["admin_rerun"] = None
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
-        data["sources"] = [source_to_dict(item) for item in job.sources]
         data["suppliers"] = [supplier_to_dict(item) for item in job.suppliers]
     return data
+
+
+def admin_job_result_files(job: Job) -> list[dict]:
+    result: list[dict] = []
+    if getattr(job, "evidence_path", None) or getattr(job, "status", "") == "completed":
+        for item in package_job_output_items(job):
+            path = Path(str(item.get("path") or ""))
+            kind = str(item.get("kind") or path.stem).strip()
+            result.append(
+                {
+                    "kind": kind,
+                    "label": _customer_result_file_label(kind, str(item.get("label") or "")),
+                    "filename": path.name,
+                }
+            )
+    for supp in get_job_admin_supplements(job):
+        result.append(
+            {
+                "kind": supp["kind"],
+                "label": supp["label"],
+                "filename": supp["name"],
+                "is_admin_supplement": True,
+            }
+        )
+    return result
 
 
 def file_to_dict(file: JobFile) -> dict:

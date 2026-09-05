@@ -5,8 +5,17 @@
 - Public site: `https://tenderlex.ru`
 - Customer cabinet: `https://tenderlex.ru/cabinet`
 - Online payment is not enabled yet.
-- Web users and Telegram users are separate. Web clients are identified in admin data as `web:<id>`.
-- Web access is topped up manually from the admin panel.
+- Web users and Telegram users are separate. Internal `web:<id>` markers may exist in runtime data, but the owner-facing admin UI must not show them as Telegram accounts or Telegram IDs.
+- Customers can sign in using email/password, **Яндекс ID (OAuth 2.0)**, or **Telegram (OAuth/Login Widget)**.
+- When logging in via Яндекс ID:
+  - If a web user with that verified email already exists, their account is linked with `yandex_id` without duplicating records or losing balance/jobs.
+  - If it is a new user, a new `Client` and `WebUser` are provisioned automatically with pre-verified email and active trial balance.
+- When logging in via Telegram:
+  - If the user already interacted with the Telegram bot (`ClientTelegramAccount`), their web session connects directly to their existing `Client` profile with full balance and task history.
+  - If it is a new user, a new unified `Client`, `ClientTelegramAccount`, and `WebUser` are created with initial trial balance.
+- Web access is managed manually from the admin panel by crediting or debiting a
+  money amount. Search, analysis, and additional supplier search then debit the
+  customer's balance according to effective prices.
 - Linked Telegram and website accounts share the same customer job history.
   A Telegram-launched job can therefore appear in the website cabinet; this is
   not a duplicate job.
@@ -35,32 +44,69 @@
   not send internal task IDs, filesystem paths, evidence paths, provider details,
   or separate owner diagnostic alerts into the customer chat.
 - Finished supplier-search jobs can offer `Найти ещё`; the customer must confirm
-  that one supplier-search generation will be spent before an additional search
-  starts.
+  that the additional-supplier-search price will be charged before the extra
+  search starts. By default this price is 50% of the customer's effective
+  supplier-search price; a global dobор package or per-customer `Добор` override
+  replaces the default.
 - If a job is cancelled from Telegram, the website cabinet must show the same
   terminal `отменено` state after polling. The customer job API and cabinet
   fetches are no-store, and active job polling is intentionally more frequent
   than idle polling.
 
-## Manual Top-Up
+## Manual Balance Adjustment
 
 1. Open the admin panel.
 2. Go to `Клиенты`.
 3. Find the client by website email.
 4. Open the client card.
-5. In `Баланс`, choose:
-   - `Поставщики` for supplier search runs.
-   - `Анализ документации` for procurement analysis runs.
-6. Enter the number of runs or choose a tariff template.
-7. Add a short note, for example `Оплата по счету от YYYY-MM-DD`.
-8. Click `Начислить`.
-9. Ask the customer to refresh the cabinet.
+5. In `Финансы`, enter the money amount in `Пополнить баланс, ₽` to credit the
+   client.
+6. Click `Пополнить`.
+7. To correct an accidental over-credit, enter the amount in `Списать с
+   баланса, ₽` and click `Списать`.
+8. Ask the customer to refresh the cabinet if the balance is already open.
 
 Notes:
 
 - Use the customer's website email to find web-cabinet clients.
-- Do not merge website users into Telegram customers unless the owner explicitly decides to change the billing/account model.
-- Until YooKassa is enabled, payment confirmation happens outside the site and the owner grants runs manually.
+- The owner UI no longer grants or debits "runs" by function. It credits money
+  and can manually debit money only; jobs reserve and charge money according to
+  the customer's prices.
+- `В обработке` appears only when money is temporarily reserved for a running
+  job. A zero reserve is intentionally hidden.
+- Per-client prices for `Поиск`, `Анализ`, and `Добор` are editable in the
+  collapsed `Индивидуальные цены` block under `Настройки клиента`. The global
+  package list remains in `Тарифы`. If `Добор` is not configured explicitly, the
+  system displays and charges 50% of the effective `Поиск` price.
+- Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
+- Web logins and Telegram accounts are separate access types inside one
+  customer card. Removing a web login must remove only that website access and
+  its sessions/reset tokens; it must not delete the customer, balance, jobs, or
+  Telegram accounts.
+- Do not merge website users into Telegram customers unless the owner explicitly
+  decides to change the billing/account model.
+- Until online checkout is implemented, payment confirmation happens outside the
+  site and the owner tops up the money balance manually.
+
+## Minpromtorg Registry Cache
+
+The manual registry modes depend on the local Minpromtorg/GISP cache.
+
+Admin path:
+
+1. Open the admin panel.
+2. Go to `Настройки`.
+3. In `Поиск поставщиков`, check `Реестр Минпромторга`.
+4. Confirm the status is `готов` and the entry count is non-zero.
+5. To refresh the cache, upload the current XLSX registry snapshot.
+
+Operational notes:
+
+- upload accepts XLSX only;
+- the backend builds JSONL and SQLite indexes before replacing the active cache;
+- `Только реестр (Минпромторг)` and `Реестр в приоритете (Минпромторг)` are blocked before job creation if
+  the local cache is missing, stale, or empty;
+- registry lookup is local SQLite search and does not use Playwright.
 
 ## Password Recovery
 
@@ -95,7 +141,8 @@ Use this checklist after deploy:
 3. Open `https://tenderlex.ru/cabinet`.
 4. Register a test web account only when production data writes are acceptable.
 5. In admin, find the new web client by email.
-6. Manually grant one supplier search run and one procurement analysis run.
+6. Manually top up enough money for one supplier search and one procurement
+   analysis.
 7. Sign in as the web user.
 8. Confirm the cabinet shows four function cards: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 9. Confirm `Одно ТЗ` allows one dragged file or a text description.
@@ -106,16 +153,18 @@ Use this checklist after deploy:
 14. Start a supplier search from text or a test file.
 15. Start a procurement analysis from a notice number, link, or document.
 16. Confirm tasks appear in `Задачи`, pagination shows 15 tasks per page, progress updates, and finished results can be downloaded.
-17. For a procurement where the published documents indicate an active
-    prohibition, confirm the analysis says the Minpromtorg registry extract is
-    required and `evidence.json` has `supplier_search.minprom_registry.required`
-    set to `true`. If the registry search returns no entries, the supplier
-    result must say to request registry confirmation instead of claiming that a
-    supplier already satisfies the registry requirement.
-18. For a partial supplier-search result in Telegram, confirm there is only one
+17. For supplier search and `Анализ + поиск`, confirm the customer can choose
+    the registry mode before launch:
+    `Обычный поиск`, `Только реестр (Минпромторг)`, or `Реестр в приоритете (Минпромторг)`.
+18. For `Только реестр (Минпромторг)`, use a procurement where registry candidates are known
+    or mockable. Confirm `evidence.json` records the selected supplier search
+    policy and `minprom_registry` context. If the local registry cache is not
+    ready, job creation must fail before reservation/charge instead of returning
+    ordinary suppliers as if they had registry records.
+19. For a partial supplier-search result in Telegram, confirm there is only one
     confirmation message with send/decline buttons and no internal paths or job
     IDs.
-19. Start a test job from Telegram while the same customer is signed in on the
+20. Start a test job from Telegram while the same customer is signed in on the
     website, cancel it in Telegram, and confirm the cabinet row changes to
     `отменено` and no result buttons appear for that cancelled job.
 
@@ -129,16 +178,13 @@ Current public templates:
 
 Before paid public launch, review these texts with legal counsel and add official seller details if needed.
 
-## YooKassa Preparation
+## Online Checkout Preparation
 
-The admin panel already has fields for:
-
-- payment mode
-- YooKassa shop id
-- YooKassa return URL
-- YooKassa secret key
-
-Do not switch payment mode to `YooKassa` until checkout creation, webhook processing, idempotency, and payment history are implemented and tested.
+Online checkout is not an active workflow. Legacy YooKassa fields may still
+exist in the backend schema/database for a future integration, but the owner UI
+intentionally keeps the active payment path to manager-assisted top-up. Do not
+expose or switch to online checkout until checkout creation, webhook
+processing, idempotency, and payment history are implemented and tested.
 
 ## Deploy Check
 

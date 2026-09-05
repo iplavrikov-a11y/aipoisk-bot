@@ -6,14 +6,15 @@ import re
 from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
-from .billing import access_error_for_units, client_uses_trial_access, requested_billing_units
+from .billing import OP_GRANT, access_error_for_units, client_uses_trial_access, grant_trial_balance, resolve_requested_billing_kinds
 from .config import config
-from .models import DEFAULT_PAYMENT_INSTRUCTIONS, Client, ClientTelegramAccount, Job, SystemSettings, new_id, now_utc
+from .models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, new_id, now_utc
 
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-DEFAULT_SUPPLIER_TARGET = 25
+MODE_EXACT_PRODUCT = "exact_product"
+DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
 INTERNAL_JOB_PATTERN = re.compile(
     r"(smoke|retest|patch2?|remain|pusher|ai_required|live_|worker_smoke)",
@@ -64,6 +65,10 @@ def get_or_create_settings(db: Session) -> SystemSettings:
         google_search_cse_id=config.default_google_search_cse_id,
         document_settings_json=config.default_document_settings_json,
         payment_instructions=DEFAULT_PAYMENT_INSTRUCTIONS,
+        trial_enabled=True,
+        trial_supplier_search_limit=2,
+        trial_procurement_report_limit=2,
+        trial_file_limit=10,
     )
     db.add(settings)
     db.commit()
@@ -202,13 +207,23 @@ def ensure_client_telegram_account(
     if not normalized:
         raise ValueError("telegram_id is required")
     existing = db.query(ClientTelegramAccount).filter(ClientTelegramAccount.telegram_id == normalized).first()
+    clean_username = normalize_telegram_username(username)
+    clean_name = str(name or "").strip()
     if existing:
+        if clean_username and not existing.username:
+            existing.username = clean_username
+        if clean_name and (not existing.name or existing.name.startswith("Trial ") or existing.name == "Без имени"):
+            existing.name = clean_name
+        if clean_username and not client.username:
+            client.username = clean_username
+        if clean_name and (not client.name or client.name.startswith("Trial ") or client.name == "Без имени"):
+            client.name = clean_name
         return existing
     account = ClientTelegramAccount(
         client_id=client.id,
         telegram_id=normalized,
-        username=username or client.username,
-        name=name or client.name,
+        username=clean_username or client.username,
+        name=clean_name or client.name,
         is_active=True,
         notes=notes,
     )
@@ -324,6 +339,10 @@ def get_or_create_trial_client_by_telegram_id(
 ) -> tuple[Client | None, str]:
     client, account_error = get_client_by_telegram_id(db, telegram_id)
     if client or account_error:
+        if client and not account_error:
+            ensure_client_telegram_account(db, client, telegram_id, username=username, name=name)
+            ensure_unused_trial_balance(db, client)
+            db.commit()
         return client, account_error
     pending_client, pending_error = resolve_pending_telegram_account_by_username(
         db,
@@ -332,6 +351,8 @@ def get_or_create_trial_client_by_telegram_id(
         name=name,
     )
     if pending_client or pending_error:
+        if pending_client and not pending_error:
+            ensure_unused_trial_balance(db, pending_client)
         db.commit()
         if pending_client:
             db.refresh(pending_client)
@@ -351,6 +372,7 @@ def get_or_create_trial_client_by_telegram_id(
         is_trial=True,
         allowed_supplier_search=True,
         allowed_procurement_report=True,
+        allowed_exact_product=True,
         monthly_job_limit=max(0, settings.trial_supplier_search_limit + settings.trial_procurement_report_limit),
         monthly_supplier_search_limit=settings.trial_supplier_search_limit,
         monthly_procurement_report_limit=settings.trial_procurement_report_limit,
@@ -359,6 +381,16 @@ def get_or_create_trial_client_by_telegram_id(
     )
     db.add(client)
     db.flush()
+    trial_rub = getattr(settings, "trial_balance_rub", None)
+    if trial_rub is not None and int(trial_rub or 0) > 0:
+        grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+    else:
+        grant_trial_balance(
+            db,
+            client,
+            supplier_search_units=settings.trial_supplier_search_limit,
+            procurement_report_units=settings.trial_procurement_report_limit,
+        )
     ensure_client_telegram_account(
         db,
         client,
@@ -370,6 +402,44 @@ def get_or_create_trial_client_by_telegram_id(
     db.commit()
     db.refresh(client)
     return client, ""
+
+
+def ensure_unused_trial_balance(db: Session, client: Client) -> bool:
+    if not client_uses_trial_access(db, client):
+        return False
+    if db.query(Job.id).filter(Job.client_id == client.id).first():
+        return False
+    settings = get_or_create_settings(db)
+    if not settings.trial_enabled:
+        return False
+    before_count = (
+        db.query(BillingTransaction.id)
+        .filter(BillingTransaction.client_id == client.id)
+        .filter(BillingTransaction.operation == OP_GRANT)
+        .count()
+    )
+    trial_rub = getattr(settings, "trial_balance_rub", None)
+    if trial_rub is not None and int(trial_rub or 0) > 0:
+        grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+    else:
+        grant_trial_balance(
+            db,
+            client,
+            supplier_search_units=settings.trial_supplier_search_limit,
+            procurement_report_units=settings.trial_procurement_report_limit,
+        )
+    db.flush()
+    after_count = (
+        db.query(BillingTransaction.id)
+        .filter(BillingTransaction.client_id == client.id)
+        .filter(BillingTransaction.operation == OP_GRANT)
+        .count()
+    )
+    if after_count <= before_count:
+        return False
+    db.commit()
+    db.refresh(client)
+    return True
 
 
 def requested_function_units(mode: str, *, supplier_search_count: int = 1) -> tuple[int, int]:
@@ -390,22 +460,27 @@ def client_access_error(
     *,
     incoming_file_count: int = 0,
     supplier_search_count: int = 1,
+    supplier_search_run_type: str = "initial",
 ) -> str:
     if not client:
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
     if not client.is_active:
         return "Доступ отключён. Свяжитесь с администратором."
-    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT}:
         return "Неизвестный режим обработки."
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)
-    if uses_trial_access and mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return "В бесплатном доступе режим «Анализ + поставщики» недоступен. Запустите анализ и поиск поставщиков отдельно."
     if uses_trial_access and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:
         return "В бесплатном доступе массовая обработка ТЗ недоступна. Отправьте одно ТЗ за один запуск."
 
     return access_error_for_units(
         db,
         client,
-        requested_billing_units(mode, supplier_search_count=supplier_search_count),
+        resolve_requested_billing_kinds(
+            db,
+            client,
+            mode,
+            supplier_search_count=supplier_search_count,
+            supplier_search_run_type=supplier_search_run_type,
+        ),
     )

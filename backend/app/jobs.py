@@ -10,22 +10,27 @@ import socket
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, exists, or_
+from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from . import document_parser
+from .ai import get_model_selection
 from .billing import (
+    KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
+    STATUS_DELIVERY_EXPIRED,
+    charge_job_reservation,
     release_job_kind_reservation,
     release_job_reservation,
     expire_stale_confirmations,
 )
 from .config import config
 from .db import SessionLocal
-from .models import Job, JobFile, JobSource, SupplierResult, now_utc
+from .models import BillingTransaction, Job, JobFile, JobSource, SupplierResult, now_utc
 from .procurement_sources import (
     SOURCE_KIND_PROCUREMENT_URL,
     SOURCE_KIND_TENDERPLAN_NOTICE,
@@ -34,11 +39,29 @@ from .procurement_sources import (
     source_label,
 )
 from .models import parse_json_dict
+from .exact_product import (
+    analyze_exact_product,
+    write_exact_product_docx,
+    write_exact_product_xlsx,
+    ExactProductReport,
+)
 from .procurement_report import generate_procurement_report
-from .quote_request import build_quote_request_markdown_with_ai
+from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
 from .report_builder import write_evidence, write_procurement_docx, write_quote_request_docx, write_supplier_xlsx, zip_paths
-from .supplier_search import discover_suppliers, extract_supplier_search_context
+from .result_offers import (
+    CONFIRMATION_KIND_PARTIAL_COUNT,
+    CONFIRMATION_KIND_REGISTRY_FALLBACK,
+    active_result_offer_output_items,
+    expire_result_offers,
+    publish_job_result_offer,
+)
+from .supplier_search import (
+    discover_suppliers,
+    extract_supplier_search_context,
+    minprom_registry_preflight_error,
+    supplier_search_job_context,
+)
 from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
 
 _RUNNING: set[str] = set()
@@ -49,20 +72,50 @@ TERMINAL_JOB_STATUSES = {
     "needs_review",
     "failed",
     "cancelled",
+    "resolved",
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CUSTOMER_DECLINED,
     STATUS_CONFIRMATION_EXPIRED,
+    STATUS_DELIVERY_EXPIRED,
 }
-STALE_RUNNING_AFTER = timedelta(minutes=30)
+STALE_RUNNING_AFTER = timedelta(minutes=8)
 WORKER_POLL_INTERVAL_SECONDS = 2.0
+JOB_CANCELLATION_POLL_INTERVAL_SECONDS = 0.5
 MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
-VALID_JOB_MODES = {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}
+MODE_EXACT_PRODUCT = "exact_product"
+KIND_EXACT_PRODUCT = "exact_product"
+VALID_JOB_MODES = {
+    MODE_SUPPLIER_SEARCH,
+    MODE_PROCUREMENT_REPORT,
+    MODE_ANALYSIS_AND_SUPPLIERS,
+    MODE_EXACT_PRODUCT,
+}
+SUPPLIER_POLICY_NORMAL = "normal"
+SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
+SUPPLIER_POLICY_MINPROM_PRIORITY = "minprom_registry_priority"
+VALID_SUPPLIER_SEARCH_POLICIES = {
+    SUPPLIER_POLICY_NORMAL,
+    SUPPLIER_POLICY_MINPROM_ONLY,
+    SUPPLIER_POLICY_MINPROM_PRIORITY,
+}
+SUPPLIER_RUN_INITIAL = "initial"
+SUPPLIER_RUN_ADDITIONAL = "additional"
 RESULT_STEM_MAX_BYTES = 150
 RESULT_STEM_MAX_CHARS = 56
 SUPPLIER_EXCLUSIONS_FILENAME = "excluded_suppliers.json"
+DOBOR_CONTEXT_FILENAME = "dobor_context.json"
 logger = logging.getLogger(__name__)
+
+
+def _supplier_search_billing_kind(job: Job) -> str:
+    if (
+        str(job.mode or "") == MODE_SUPPLIER_SEARCH
+        and str(job.supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL
+    ):
+        return KIND_SUPPLIER_SEARCH_EXTRA
+    return KIND_SUPPLIER_SEARCH
 
 
 class JobCancelledError(RuntimeError):
@@ -83,6 +136,9 @@ def create_job(
     target_suppliers: int,
     files: list[tuple[str, bytes]],
     sources: list[dict] | None = None,
+    supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    supplier_search_run_type: str = SUPPLIER_RUN_INITIAL,
+    initial_status: str = "pending",
 ) -> Job:
     normalized_sources = _normalized_job_sources(sources or [])
     if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
@@ -90,16 +146,24 @@ def create_job(
             "Режим поиска поставщиков принимает только файл или текст ТЗ. "
             "Номер извещения или ссылку закупки отправьте в режим анализа закупки или анализа + поставщики."
         )
+    normalized_policy = normalize_supplier_search_policy(supplier_search_policy)
+    if mode in {MODE_SUPPLIER_SEARCH, MODE_ANALYSIS_AND_SUPPLIERS}:
+        registry_error = minprom_registry_preflight_error(normalized_policy)
+        if registry_error:
+            raise ValueError(registry_error)
+    normalized_run_type = SUPPLIER_RUN_ADDITIONAL if str(supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL else SUPPLIER_RUN_INITIAL
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
         client_id=client_id,
         created_by_telegram_id=str(created_by_telegram_id or ""),
         mode=mode,
+        supplier_search_policy=normalized_policy,
+        supplier_search_run_type=normalized_run_type,
         title=title,
         target_suppliers=target_suppliers,
-        status="pending",
-        message="Задача создана",
+        status="draft" if initial_status == "draft" else "pending",
+        message="Комплект подготавливается" if initial_status == "draft" else "Задача создана",
         file_count=len(files),
     )
     db.add(job)
@@ -107,9 +171,17 @@ def create_job(
     db.refresh(job)
     actual_dir = job_dir(job.id)
     actual_dir.mkdir(parents=True, exist_ok=True)
+    used_stored_names: set[str] = set()
     for filename, content in files:
         safe_name = document_parser.sanitize_filename(filename)
-        stored_path = actual_dir / "input" / safe_name
+        candidate = safe_name
+        suffix_index = 1
+        while candidate.casefold() in used_stored_names:
+            path = Path(safe_name)
+            candidate = f"{path.stem}_{suffix_index}{path.suffix}"
+            suffix_index += 1
+        used_stored_names.add(candidate.casefold())
+        stored_path = actual_dir / "input" / candidate
         stored_path.parent.mkdir(parents=True, exist_ok=True)
         stored_path.write_bytes(content)
         db.add(JobFile(job_id=job.id, original_filename=filename, stored_path=str(stored_path)))
@@ -125,6 +197,17 @@ def create_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+def normalize_supplier_search_policy(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_SUPPLIER_SEARCH_POLICIES:
+        return normalized
+    return SUPPLIER_POLICY_NORMAL
+
+
+def _is_registry_only_supplier_search(job: Job) -> bool:
+    return normalize_supplier_search_policy(getattr(job, "supplier_search_policy", "")) == SUPPLIER_POLICY_MINPROM_ONLY
 
 
 def _normalized_job_sources(sources: list[dict]) -> list[dict]:
@@ -147,27 +230,74 @@ def enqueue_job(job_id: str) -> None:
     return None
 
 
-def write_supplier_exclusions(job: Job, *, previous_job_id: str, suppliers: list[dict]) -> Path:
+def write_supplier_exclusions(
+    job: Job,
+    *,
+    previous_job_id: str,
+    suppliers: list[dict],
+    prior_verified_count: int = 0,
+) -> Path:
     input_dir = job_dir(job.id) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     path = input_dir / SUPPLIER_EXCLUSIONS_FILENAME
     payload = {
         "previous_job_id": previous_job_id,
         "suppliers": [item for item in suppliers if isinstance(item, dict)],
+        "prior_verified_count": int(prior_verified_count or 0),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
-def _load_supplier_exclusions(job: Job) -> list[dict]:
+def read_supplier_exclusions_payload(job: Job) -> dict:
     path = job_dir(job.id) / "input" / SUPPLIER_EXCLUSIONS_FILENAME
     if not path.exists():
-        return []
-    payload = parse_json_dict(path.read_text(encoding="utf-8"))
+        return {}
+    return parse_json_dict(path.read_text(encoding="utf-8"))
+
+
+def read_supplier_exclusions(job: Job) -> list[dict]:
+    payload = read_supplier_exclusions_payload(job)
     suppliers = payload.get("suppliers")
     if not isinstance(suppliers, list):
         return []
     return [item for item in suppliers if isinstance(item, dict)]
+
+
+def _load_supplier_exclusions(job: Job) -> list[dict]:
+    return read_supplier_exclusions(job)
+
+
+def write_dobor_context(
+    job: Job,
+    *,
+    previous_job_id: str,
+    unreviewed_candidates: list[dict] | None = None,
+    cached_procurement_profile: dict | None = None,
+    executed_queries: list[str] | None = None,
+    additional_prompt: str = "",
+    wave_index: int = 1,
+) -> Path:
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / DOBOR_CONTEXT_FILENAME
+    payload = {
+        "previous_job_id": previous_job_id,
+        "unreviewed_candidates": [item for item in (unreviewed_candidates or []) if isinstance(item, dict)],
+        "procurement_profile": cached_procurement_profile or {},
+        "executed_queries": [str(q).strip() for q in (executed_queries or []) if str(q).strip()],
+        "additional_prompt": str(additional_prompt or "").strip(),
+        "wave_index": wave_index,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def read_dobor_context(job: Job) -> dict:
+    path = job_dir(job.id) / "input" / DOBOR_CONTEXT_FILENAME
+    if not path.exists():
+        return {}
+    return parse_json_dict(path.read_text(encoding="utf-8"))
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -207,14 +337,23 @@ def recover_interrupted_jobs(db: Session, *, stale_after: timedelta = STALE_RUNN
     return job_ids
 
 
-def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STALE_RUNNING_AFTER) -> str | None:
+def claim_next_job(
+    db: Session,
+    *,
+    worker_id: str,
+    stale_after: timedelta = STALE_RUNNING_AFTER,
+    max_running_jobs_per_client: int | None = None,
+) -> str | None:
     now = now_utc()
     stale_cutoff = now - stale_after
+    if max_running_jobs_per_client is None:
+        max_running_jobs_per_client = getattr(config, "max_running_jobs_per_client", 2)
+    max_per_client = _normalized_max_running_jobs_per_client(max_running_jobs_per_client)
     eligible_status_filter = or_(
         Job.status == "pending",
         and_(Job.status == "running", Job.updated_at < stale_cutoff),
     )
-    fair_client_filter = _client_has_no_active_running_job_filter(stale_cutoff)
+    fair_client_filter = _client_under_concurrency_limit_filter(stale_cutoff, max_per_client=max_per_client)
     jobs = (
         db.query(Job)
         .filter(eligible_status_filter)
@@ -246,6 +385,14 @@ def claim_next_job(db: Session, *, worker_id: str, stale_after: timedelta = STAL
     return None
 
 
+def _normalized_max_running_jobs_per_client(value: int | str | None) -> int:
+    try:
+        parsed = int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, parsed)
+
+
 def _active_client_job_exists(stale_cutoff: datetime):
     active_job = aliased(Job)
     return exists().where(
@@ -258,8 +405,33 @@ def _active_client_job_exists(stale_cutoff: datetime):
     )
 
 
+def _client_running_jobs_count_subquery(stale_cutoff: datetime):
+    active_job = aliased(Job)
+    return (
+        select(func.count(active_job.id))
+        .where(
+            and_(
+                active_job.client_id == Job.client_id,
+                active_job.id != Job.id,
+                active_job.status == "running",
+                or_(active_job.updated_at.is_(None), active_job.updated_at >= stale_cutoff),
+            )
+        )
+        .scalar_subquery()
+    )
+
+
+def _client_under_concurrency_limit_filter(stale_cutoff: datetime, max_per_client: int = 2):
+    if max_per_client <= 0:
+        return true()
+    if max_per_client == 1:
+        return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
+    running_count = _client_running_jobs_count_subquery(stale_cutoff)
+    return or_(Job.client_id.is_(None), running_count < max_per_client)
+
+
 def _client_has_no_active_running_job_filter(stale_cutoff: datetime):
-    return or_(Job.client_id.is_(None), ~_active_client_job_exists(stale_cutoff))
+    return _client_under_concurrency_limit_filter(stale_cutoff, max_per_client=1)
 
 
 async def wait_for_job_completion(job_id: str, *, timeout_seconds: int = 3600, poll_interval: float = 3.0) -> Job | None:
@@ -291,6 +463,7 @@ def _normalized_worker_concurrency(value: int | str | None) -> int:
 def _claim_job_for_worker(worker_id: str) -> str | None:
     db = SessionLocal()
     try:
+        expire_result_offers(db)
         expire_stale_confirmations(db)
         return claim_next_job(db, worker_id=worker_id)
     finally:
@@ -320,6 +493,21 @@ def _consume_finished_worker_tasks(tasks: set[asyncio.Task[None]]) -> None:
 
 async def worker_loop(*, poll_interval: float = WORKER_POLL_INTERVAL_SECONDS, concurrency: int | None = None) -> None:
     init_worker_database()
+    db_startup = SessionLocal()
+    try:
+        stuck_jobs = db_startup.query(Job).filter(Job.status == "running").all()
+        for j in stuck_jobs:
+            j.status = "pending"
+            j.progress = 5
+            j.message = "Авто-возобновление после перезапуска сервера"
+            j.error = ""
+            j.updated_at = now_utc()
+        if stuck_jobs:
+            db_startup.commit()
+    except Exception:
+        pass
+    finally:
+        db_startup.close()
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     worker_concurrency = _normalized_worker_concurrency(concurrency if concurrency is not None else config.worker_concurrency)
     running_tasks: set[asyncio.Task[None]] = set()
@@ -363,6 +551,49 @@ def cancel_running_job(job_id: str) -> None:
     _RUNNING.discard(job_id)
 
 
+def _is_job_cancelled_in_database(job_id: str) -> bool:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        return bool(job and job.status == "cancelled")
+    finally:
+        db.close()
+
+
+async def _wait_for_database_cancellation(job_id: str) -> None:
+    while True:
+        await asyncio.sleep(JOB_CANCELLATION_POLL_INTERVAL_SECONDS)
+        if _is_job_cancelled_in_database(job_id):
+            return
+
+
+async def _run_supplier_discovery_with_cancellation(job_id: str, discovery) -> tuple[list[dict], dict]:
+    """Stop an in-flight supplier search promptly when another service cancels its job."""
+    discovery_task = asyncio.create_task(discovery)
+    cancellation_task = asyncio.create_task(_wait_for_database_cancellation(job_id))
+    try:
+        done, _ = await asyncio.wait(
+            {discovery_task, cancellation_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation_task in done:
+            await cancellation_task
+            if not discovery_task.done():
+                discovery_task.cancel()
+            try:
+                await discovery_task
+            except asyncio.CancelledError:
+                pass
+            raise JobCancelledError("Задача отменена")
+        return await discovery_task
+    finally:
+        if not cancellation_task.done():
+            cancellation_task.cancel()
+        if not discovery_task.done():
+            discovery_task.cancel()
+        await asyncio.gather(discovery_task, cancellation_task, return_exceptions=True)
+
+
 def _check_cancelled(job_id: str, db: Session | None = None, job: Job | None = None) -> None:
     """Raise if the job has been cancelled — call from worker threads."""
     if job_id in _CANCELLED:
@@ -391,6 +622,19 @@ def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int 
         job.error = error
     job.updated_at = now_utc()
     db.commit()
+    try:
+        from .event_bus import job_event_bus
+        job_event_bus.publish({
+            "type": "job_update",
+            "job_id": str(job.id),
+            "status": job.status,
+            "progress": job.progress,
+            "message": job.message or "",
+            "verified_count": getattr(job, "verified_count", 0),
+            "error": job.error or ""
+        })
+    except Exception:
+        pass
 
 
 def _process_job_sync(job_id: str) -> None:
@@ -449,6 +693,7 @@ def _process_job_sync(job_id: str) -> None:
             text, status = document_parser.extract_text(file.stored_path, document_options)
             file.parse_status = status
             file.extracted_chars = len(text)
+            file.error = ""
             if not text.strip() and status != "ok":
                 file.error = status
             parsed.append((file.original_filename, text))
@@ -477,6 +722,9 @@ def _process_job_sync(job_id: str) -> None:
         elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
             stage = "analysis_and_suppliers"
             _process_analysis_and_suppliers(db, job, settings, context)
+        elif job.mode == MODE_EXACT_PRODUCT:
+            stage = "exact_product"
+            _process_exact_product(db, job, settings, context)
         else:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
@@ -729,6 +977,8 @@ def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
         job.title = f"Анализ + поиск: {item}"
     elif job.mode == MODE_SUPPLIER_SEARCH:
         job.title = f"ТЗ: {item}"
+    elif job.mode == MODE_EXACT_PRODUCT:
+        job.title = f"Подбор товаров: {item}"
 
 
 def _result_stem(job: Job, subject: str) -> str:
@@ -813,8 +1063,116 @@ def _clean_label(value: object) -> str:
     return cleaned.replace("/", "-").replace("\\", "-")
 
 
+REGISTRY_FALLBACK_QUOTE_WARNING = (
+    "Подтверждение соответствия найденных поставщиков реестру российской промышленной продукции не получено. "
+    "Просим указать в коммерческом предложении номер актуальной реестровой записи либо прямо сообщить об её отсутствии."
+)
+
+
+def _registry_fallback_rows(evidence: object) -> list[dict]:
+    if not isinstance(evidence, dict):
+        return []
+    alternative = evidence.get("non_registry_alternative")
+    if not isinstance(alternative, dict) or not bool(alternative.get("available")):
+        return []
+    rows = alternative.get("verified_rows")
+    if not isinstance(rows, list):
+        return []
+    return [dict(item) for item in rows if isinstance(item, dict)]
+
+
+def _output_artifact(
+    kind: str,
+    label: str,
+    path: Path,
+    billing_kind: str,
+    *,
+    content_path: Path | None = None,
+) -> dict:
+    item = {
+        "kind": kind,
+        "label": label,
+        "path": str(path),
+        "billing_kind": billing_kind,
+    }
+    if content_path is not None:
+        item["content_path"] = str(content_path)
+    return item
+
+
+def _output_manifest(files: list[dict], archive_path: Path, entitlements: list[str]) -> dict:
+    return {
+        "files": [dict(item) for item in files],
+        "archive_path": str(archive_path),
+        "entitlements": list(dict.fromkeys(entitlements)),
+    }
+
+
+def _build_registry_fallback_supplier_outputs(
+    job: Job,
+    *,
+    context: str,
+    evidence: dict,
+    rows: list[dict],
+    out_dir: Path,
+    subject: str,
+    stem: str,
+    supplier_billing_kind: str,
+    quote_billing_kind: str,
+) -> tuple[Path, list[dict]]:
+    quote_markdown = build_quote_request_markdown(
+        context,
+        subject=subject,
+        procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+    )
+    quote_markdown = f"{quote_markdown.rstrip()}\n\n## Важно: реестр Минпромторга\n\n{REGISTRY_FALLBACK_QUOTE_WARNING}\n"
+    xlsx_path = write_supplier_xlsx(
+        out_dir / _result_filename("suppliers", stem, ".xlsx"),
+        rows,
+        title=job.title,
+        subject=subject,
+        target=job.target_suppliers,
+        policy=getattr(job, "supplier_search_policy", "") or "",
+    )
+    quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
+    quote_md_path.write_text(quote_markdown, encoding="utf-8")
+    quote_docx_path = write_quote_request_docx(
+        out_dir / _result_filename("quote_request", stem, ".docx"),
+        quote_markdown,
+        title="Запрос КП",
+    )
+    files = [
+        _output_artifact("suppliers", "Поставщики", xlsx_path, supplier_billing_kind),
+        _output_artifact(
+            "quote_request",
+            "Запрос КП",
+            quote_docx_path,
+            quote_billing_kind,
+            content_path=quote_md_path,
+        ),
+    ]
+    return xlsx_path, files
+
+
+def _populate_job_ai_metadata(job: Job, settings, mode: str) -> None:
+    try:
+        tier = "primary" if mode == MODE_PROCUREMENT_REPORT else "supplier_search"
+        routing_key = "procurement_document_analysis" if mode == MODE_PROCUREMENT_REPORT else "supplier_query_generation"
+        selection = get_model_selection(settings, tier=tier, routing_key=routing_key)
+        job.ai_provider = selection.provider_id
+        job.ai_model = selection.model
+    except Exception:
+        if mode == MODE_PROCUREMENT_REPORT:
+            job.ai_provider = str(getattr(settings, "primary_provider", "") or "")
+            job.ai_model = str(getattr(settings, "primary_model", "") or "")
+        else:
+            job.ai_provider = str(getattr(settings, "supplier_ai_provider", "") or getattr(settings, "light_provider", "") or "")
+            job.ai_model = str(getattr(settings, "supplier_ai_model", "") or getattr(settings, "light_model", "") or "")
+
+
 def _process_supplier_search(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=25, message="Запускаю ИИ-поиск поставщиков")
 
     async def progress_callback(progress: int, message: str) -> None:
@@ -822,19 +1180,49 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         _set_job(db, job, status="running", progress=progress, message=message)
 
     excluded_suppliers = _load_supplier_exclusions(job)
-    accepted, evidence = asyncio.run(
-        discover_suppliers(
+    dobor_ctx = read_dobor_context(job)
+    is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
+    wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
+    try:
+        discovery_coro = discover_suppliers(
             settings,
             context,
             job.target_suppliers,
             progress_callback=progress_callback,
             excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            preloaded_candidates=dobor_ctx.get("unreviewed_candidates"),
+            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            executed_queries=dobor_ctx.get("executed_queries"),
+            additional_prompt=dobor_ctx.get("additional_prompt", ""),
+            is_extend=is_extend,
+            wave_index=wave_idx,
         )
-    )
+    except TypeError:
+        discovery_coro = discover_suppliers(
+            settings,
+            context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            excluded_suppliers=excluded_suppliers,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        )
+    with supplier_search_job_context(job.id):
+        accepted, evidence = asyncio.run(
+            _run_supplier_discovery_with_cancellation(
+                job.id,
+                discovery_coro,
+            )
+        )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=95, message="Сохраняю проверенных поставщиков")
-    _persist_supplier_rows(db, job, accepted)
-    job.verified_count = len(accepted)
+    fallback_rows = _registry_fallback_rows(evidence) if not accepted else []
+    persisted_rows = accepted or fallback_rows
+    _persist_supplier_rows(db, job, persisted_rows)
+    job.verified_count = len(persisted_rows)
+    y_reqs, y_cost = extract_yandex_job_metrics(evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    job.yandex_requests_count = y_reqs
+    job.yandex_cost_rub = y_cost
     _set_job(db, job, status="running", progress=97, message="Формирую Excel и проверочные данные")
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(evidence)
@@ -843,32 +1231,79 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     evidence["source_title"] = source_title
     evidence["sources"] = _job_sources_evidence(job)
     _set_customer_job_title_from_subject(job, subject)
+    browser_failure_note = _supplier_browser_failure_note(evidence)
+    browser_failure_error = _supplier_browser_failure_error(evidence)
+    supplier_billing_kind = _supplier_search_billing_kind(job)
+    if not accepted and fallback_rows:
+        stem = _result_stem(job, subject)
+        _xlsx_path, output_files = _build_registry_fallback_supplier_outputs(
+            job,
+            context=context,
+            evidence=evidence,
+            rows=fallback_rows,
+            out_dir=out_dir,
+            subject=subject,
+            stem=stem,
+            supplier_billing_kind=supplier_billing_kind,
+            quote_billing_kind=supplier_billing_kind,
+        )
+        full_archive_path = zip_paths(
+            out_dir / _result_filename("archive_no_registry_confirmation", stem, ".zip"),
+            [Path(item["path"]) for item in output_files],
+        )
+        evidence["output_files"] = output_files
+        evidence["generated_outputs"] = [dict(item) for item in output_files]
+        evidence["output_manifests"] = {
+            "full": _output_manifest(output_files, full_archive_path, [supplier_billing_kind]),
+        }
+        evidence_path = write_evidence(out_dir / "evidence.json", evidence)
+        job.evidence_path = str(evidence_path)
+        publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_REGISTRY_FALLBACK)
+        _set_job(
+            db,
+            job,
+            status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+            progress=100,
+            message=(
+                "По реестру подходящие поставщики не подтверждены. "
+                f"Вне реестра найдено и проверено: {len(fallback_rows)}. Можно получить этот результат отдельно."
+                + browser_failure_note
+            ),
+            error=browser_failure_error,
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
     if not accepted:
         evidence["output_files"] = []
         evidence_path = write_evidence(out_dir / "evidence.json", evidence)
         job.evidence_path = str(evidence_path)
         job.result_path = ""
         release_job_reservation(db, job, note="Резерв возвращён: поставщики не найдены")
+        is_registry_only = normalize_supplier_search_policy(getattr(job, "supplier_search_policy", "")) == SUPPLIER_POLICY_MINPROM_ONLY
+        msg = (
+            "В реестре Минпромторга подходящие производители не найдены"
+            if is_registry_only
+            else "Поставщики не найдены: подтверждённых официальных сайтов с контактами 0" + browser_failure_note
+        )
+        err = (
+            ""
+            if is_registry_only
+            else browser_failure_error or "Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика."
+        )
         _set_job(
             db,
             job,
             status="failed",
             progress=100,
-            message="Поставщики не найдены: подтверждённых официальных сайтов с контактами 0",
-            error="Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
+            message=msg,
+            error=err,
         )
         job.completed_at = now_utc()
         db.commit()
         return
 
     stem = _result_stem(job, subject)
-    xlsx_path = write_supplier_xlsx(
-        out_dir / _result_filename("suppliers", stem, ".xlsx"),
-        accepted,
-        title=job.title,
-        subject=subject,
-        target=job.target_suppliers,
-    )
     quote_markdown = asyncio.run(
         build_quote_request_markdown_with_ai(
             settings,
@@ -876,6 +1311,14 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             subject=subject,
             procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
         )
+    )
+    xlsx_path = write_supplier_xlsx(
+        out_dir / _result_filename("suppliers", stem, ".xlsx"),
+        accepted,
+        title=job.title,
+        subject=subject,
+        target=job.target_suppliers,
+        policy=getattr(job, "supplier_search_policy", "") or "",
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -885,33 +1328,47 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         title="Запрос КП",
     )
     evidence["output_files"] = [
-        {"kind": "suppliers", "label": "Поставщики", "path": str(xlsx_path)},
+        {
+            "kind": "suppliers",
+            "label": "Поставщики",
+            "path": str(xlsx_path),
+            "billing_kind": supplier_billing_kind,
+        },
         {
             "kind": "quote_request",
             "label": "Запрос КП",
             "path": str(quote_docx_path),
             "content_path": str(quote_md_path),
+            "billing_kind": supplier_billing_kind,
         },
     ]
     evidence_path = write_evidence(out_dir / "evidence.json", evidence)
     job.evidence_path = str(evidence_path)
     job.result_path = str(xlsx_path)
-    if len(accepted) >= job.target_suppliers:
+    if len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         status = "completed"
         message = _supplier_count_message("Готово", len(accepted), job.target_suppliers)
+        error = ""
     elif settings.allow_partial_supplier_reports:
         status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
-        message = _supplier_count_message("Найдено меньше поставщиков", len(accepted), job.target_suppliers)
+        message = _supplier_count_message("Найдено меньше поставщиков", len(accepted), job.target_suppliers) + browser_failure_note
+        error = browser_failure_error
     else:
         status = "needs_review"
-        message = _supplier_count_message("Нужна ручная проверка", len(accepted), job.target_suppliers)
-    _set_job(db, job, status=status, progress=100, message=message, error="")
+        message = _supplier_count_message("Нужна ручная проверка", len(accepted), job.target_suppliers) + browser_failure_note
+        error = browser_failure_error
+    if status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
+        publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_PARTIAL_COUNT)
+    _set_job(db, job, status=status, progress=100, message=message, error=error)
     job.completed_at = now_utc()
+    if status == "completed":
+        charge_job_reservation(db, job, note="Результат готов")
     db.commit()
 
 
 def _process_procurement_report(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=45, message="ИИ готовит анализ документации")
     result = asyncio.run(generate_procurement_report(settings, context))
     _check_cancelled(job.id)
@@ -980,12 +1437,82 @@ def _process_procurement_report(db: Session, job: Job, settings, context: str) -
         )
     else:
         _set_job(db, job, status="completed", progress=100, message="Анализ документации готов")
+        charge_job_reservation(db, job, note="Результат готов")
+    job.completed_at = now_utc()
+    db.commit()
+
+
+def _process_exact_product(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
+    _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
+    _set_job(db, job, progress=15, message="Интеллектуальный анализ ТЗ и планирование поиска (ИИ)")
+    subject = job.title or "Спецификация ТЗ"
+
+    async def _progress_callback(progress: int, message: str) -> None:
+        _check_cancelled(job.id, db=db, job=job)
+        _set_job(db, job, progress=progress, message=message)
+
+    report = asyncio.run(
+        analyze_exact_product(
+            settings,
+            context,
+            procurement_title=job.title,
+            progress_callback=_progress_callback,
+        )
+    )
+    _check_cancelled(job.id)
+    _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
+    extracted_subj = (
+        report.procurement_title
+        or (report.positions[0].name_in_tz if report.positions else "")
+        or (report.positions[0].identified_model if report.positions else "")
+        or job.title
+        or "Спецификация ТЗ"
+    )
+    clean_subj = _clean_label(extracted_subj)
+    if not clean_subj or clean_subj.lower() in {"подбор товара и аналогов", "подбор товаров", "точный товар и аналоги"}:
+        clean_subj = _source_title(job) or "Спецификация ТЗ"
+    subject = clean_subj
+
+    out_dir = job_dir(job.id) / "output"
+    stem = _result_stem(job, subject)
+    docx_path = write_exact_product_docx(
+        out_dir / _result_filename("exact_product", stem, ".docx"),
+        report,
+        title=f"Подбор товаров: {subject}" if subject else "Подбор товара, характеристики и аналоги",
+    )
+    output_files = [
+        _output_artifact("exact_product", "Подбор товара и аналоги", docx_path, KIND_EXACT_PRODUCT),
+    ]
+    evidence_payload = {
+        "mode": job.mode,
+        "subject": subject,
+        "source_title": _source_title(job),
+        "sources": _job_sources_evidence(job),
+        "files": _job_files_evidence(job),
+        "exact_product_report": report.to_dict(),
+        "yandex_requests_count": report.yandex_requests_count,
+        "yandex_cost_rub": report.yandex_cost_rub,
+        "output_files": output_files,
+        "ai_required": True,
+        "ai_used": True,
+    }
+    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+    job.evidence_path = str(evidence_path)
+    job.result_path = str(docx_path)
+    job.verified_count = report.total_positions
+    job.yandex_requests_count = report.yandex_requests_count
+    job.yandex_cost_rub = report.yandex_cost_rub
+    _set_customer_job_title_from_subject(job, subject)
+    charge_job_reservation(db, job, note="Подбор товара и аналогов завершен")
+    _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
     job.completed_at = now_utc()
     db.commit()
 
 
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
     _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
     report = asyncio.run(generate_procurement_report(settings, context))
     _check_cancelled(job.id)
@@ -999,30 +1526,66 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         mapped_progress = 45 + int(max(0, min(100, progress)) * 0.5)
         _set_job(db, job, status="running", progress=mapped_progress, message=message)
 
-    accepted, supplier_evidence = asyncio.run(
-        discover_suppliers(settings, supplier_context, job.target_suppliers, progress_callback=progress_callback)
+    with supplier_search_job_context(job.id):
+        accepted, supplier_evidence = asyncio.run(
+            _run_supplier_discovery_with_cancellation(
+                job.id,
+                discover_suppliers(
+                    settings,
+                    supplier_context,
+                    job.target_suppliers,
+                    progress_callback=progress_callback,
+                    supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+                ),
+            )
     )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=96, message="Сохраняю анализ и поставщиков")
-    _persist_supplier_rows(db, job, accepted)
-    job.verified_count = len(accepted)
+    fallback_rows = _registry_fallback_rows(supplier_evidence) if not accepted else []
+    persisted_rows = accepted or fallback_rows
+    _persist_supplier_rows(db, job, persisted_rows)
+    job.verified_count = len(persisted_rows)
+    y_reqs, y_cost = extract_yandex_job_metrics(supplier_evidence, getattr(settings, "yandex_search_price_per_request", 0.04))
+    job.yandex_requests_count = y_reqs
+    job.yandex_cost_rub = y_cost
     out_dir = job_dir(job.id) / "output"
     subject = _subject_from_supplier_evidence(supplier_evidence) or _subject_from_report_text(report.report)
     stem = _result_stem(job, subject)
     report_title = _analysis_report_title(job, subject)
     docx_path = write_procurement_docx(out_dir / _result_filename("analysis", stem, ".docx"), report.report, title=report_title)
-    quote_source = f"{report.report}\n\n{supplier_context}"
-    quote_markdown = asyncio.run(
-        build_quote_request_markdown_with_ai(
-            settings,
-            quote_source,
+    if fallback_rows:
+        xlsx_path, fallback_supplier_files = _build_registry_fallback_supplier_outputs(
+            job,
+            context=f"{report.report}\n\n{supplier_context}",
+            evidence=supplier_evidence,
+            rows=fallback_rows,
+            out_dir=out_dir,
             subject=subject,
-            procurement_profile=supplier_evidence.get("procurement_profile") if isinstance(supplier_evidence, dict) else {},
+            stem=stem,
+            supplier_billing_kind=KIND_SUPPLIER_SEARCH,
+            quote_billing_kind=KIND_PROCUREMENT_REPORT,
         )
-    )
-    quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
-    quote_md_path.write_text(quote_markdown, encoding="utf-8")
-    quote_docx_path = write_quote_request_docx(out_dir / _result_filename("quote_request", stem, ".docx"), quote_markdown, title="Запрос КП")
+        quote_item = next(item for item in fallback_supplier_files if item["kind"] == "quote_request")
+        quote_md_path = Path(quote_item["content_path"])
+        quote_docx_path = Path(quote_item["path"])
+    else:
+        quote_source = f"{report.report}\n\n{supplier_context}"
+        quote_markdown = asyncio.run(
+            build_quote_request_markdown_with_ai(
+                settings,
+                quote_source,
+                subject=subject,
+                procurement_profile=supplier_evidence.get("procurement_profile") if isinstance(supplier_evidence, dict) else {},
+            )
+        )
+        quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
+        quote_md_path.write_text(quote_markdown, encoding="utf-8")
+        quote_docx_path = write_quote_request_docx(
+            out_dir / _result_filename("quote_request", stem, ".docx"),
+            quote_markdown,
+            title="Запрос КП",
+        )
+        xlsx_path = None
     source_title = _source_title(job)
     evidence_payload = {
         "mode": job.mode,
@@ -1046,7 +1609,6 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         "ai_required": True,
         "ai_used": bool(report.ai_used and supplier_evidence.get("ai_used")),
     }
-    xlsx_path = None
     if accepted:
         xlsx_path = write_supplier_xlsx(
             out_dir / _result_filename("suppliers", stem, ".xlsx"),
@@ -1054,24 +1616,64 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             title=job.title,
             subject=subject,
             target=job.target_suppliers,
+            policy=getattr(job, "supplier_search_policy", "") or "",
         )
-    output_files = [{"kind": "analysis", "path": str(docx_path)}]
+    output_files = [_output_artifact("analysis", "Анализ", docx_path, KIND_PROCUREMENT_REPORT)]
     if xlsx_path:
-        output_files.append({"kind": "suppliers", "path": str(xlsx_path)})
+        output_files.append(_output_artifact("suppliers", "Поставщики", xlsx_path, KIND_SUPPLIER_SEARCH))
     output_files.append(
-        {
-            "kind": "quote_request",
-            "label": "Запрос КП",
-            "path": str(quote_docx_path),
-            "content_path": str(quote_md_path),
-        }
+        _output_artifact(
+            "quote_request",
+            "Запрос КП",
+            quote_docx_path,
+            KIND_PROCUREMENT_REPORT,
+            content_path=quote_md_path,
+        )
     )
     evidence_payload["output_files"] = output_files
-    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     zip_path = zip_paths(out_dir / _result_filename("archive", stem, ".zip"), [Path(item["path"]) for item in output_files])
-    job.result_path = str(zip_path)
+    if fallback_rows:
+        analysis_only_files = [item for item in output_files if item["kind"] in {"analysis", "quote_request"}]
+        analysis_only_zip_path = zip_paths(
+            out_dir / _result_filename("archive_analysis_only", stem, ".zip"),
+            [Path(item["path"]) for item in analysis_only_files],
+        )
+        evidence_payload["generated_outputs"] = [dict(item) for item in output_files]
+        evidence_payload["output_manifests"] = {
+            "full": _output_manifest(
+                output_files,
+                zip_path,
+                [KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH],
+            ),
+            "analysis_only": _output_manifest(
+                analysis_only_files,
+                analysis_only_zip_path,
+                [KIND_PROCUREMENT_REPORT],
+            ),
+        }
+    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
     job.evidence_path = str(evidence_path)
     _set_customer_job_title_from_subject(job, subject)
+    browser_failure_note = _supplier_browser_failure_note(supplier_evidence)
+    browser_failure_error = _supplier_browser_failure_error(supplier_evidence)
+    if fallback_rows:
+        publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_REGISTRY_FALLBACK)
+        _set_job(
+            db,
+            job,
+            status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+            progress=100,
+            message=(
+                "Анализ готов. По реестру подходящие поставщики не подтверждены; "
+                f"вне реестра найдено и проверено: {len(fallback_rows)}. Можно получить этот вариант отдельно."
+                + browser_failure_note
+            ),
+            error=" ".join(item for item in (str(report.warning or "").strip(), browser_failure_error) if item),
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+    job.result_path = str(zip_path)
     if not accepted:
         release_job_kind_reservation(
             db,
@@ -1084,28 +1686,61 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             job,
             status="needs_review",
             progress=100,
-            message="Анализ готов, поставщики не подтверждены",
-            error="Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
+            message="Анализ готов, поставщики не подтверждены" + browser_failure_note,
+            error=browser_failure_error or "Поиск не сформировал XLSX, потому что нет ни одного подтверждённого поставщика.",
         )
     elif report.warning:
-        _set_job(db, job, status="needs_review", progress=100, message="Анализ и поставщики готовы, нужна проверка ИИ-настроек", error=report.warning)
-    elif len(accepted) >= job.target_suppliers:
+        _set_job(
+            db,
+            job,
+            status="needs_review",
+            progress=100,
+            message="Анализ и поставщики готовы, нужна проверка ИИ-настроек" + browser_failure_note,
+            error=" ".join(item for item in (str(report.warning or "").strip(), browser_failure_error) if item),
+        )
+    elif len(accepted) >= job.target_suppliers or len(accepted) >= 20 or _is_registry_only_supplier_search(job):
         _set_job(db, job, status="completed", progress=100, message=_supplier_count_message("Анализ готов", len(accepted), job.target_suppliers), error="")
+        charge_job_reservation(db, job, note="Результат готов")
     else:
+        publish_job_result_offer(db, job, kind=CONFIRMATION_KIND_PARTIAL_COUNT)
         _set_job(
             db,
             job,
             status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
             progress=100,
-            message=_supplier_count_message("Анализ готов, найдено меньше поставщиков", len(accepted), job.target_suppliers),
-            error="",
+            message=_supplier_count_message("Анализ готов, найдено меньше поставщиков", len(accepted), job.target_suppliers) + browser_failure_note,
+            error=browser_failure_error,
         )
     job.completed_at = now_utc()
     db.commit()
 
 
 def _supplier_count_message(prefix: str, count: int, target: int) -> str:
-    return f"{prefix}: найдено и проверено {count}"
+    return f"{prefix}: отобрано кандидатов {count}. Уровень технического совпадения указан в отчёте"
+
+
+def _supplier_browser_failure_count(evidence: object) -> int:
+    if not isinstance(evidence, dict):
+        return 0
+    failures = evidence.get("browser_failures")
+    if not isinstance(failures, dict):
+        return 0
+    try:
+        return max(0, int(failures.get("count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _supplier_browser_failure_note(evidence: object) -> str:
+    if _supplier_browser_failure_count(evidence) <= 0:
+        return ""
+    return " Часть сайтов временно не удалось проверить."
+
+
+def _supplier_browser_failure_error(evidence: object) -> str:
+    if _supplier_browser_failure_count(evidence) <= 0:
+        return ""
+    return "Часть сайтов не удалось проверить из-за временной технической ошибки. Повторите поиск, чтобы получить больше результатов."
 
 
 def package_job_outputs(job: Job) -> Path | None:
@@ -1120,8 +1755,11 @@ def package_job_output_files(job: Job) -> list[Path]:
     return [Path(item["path"]) for item in package_job_output_items(job)]
 
 
-def package_job_output_items(job: Job) -> list[dict]:
-    items = _output_file_items_from_evidence(job)
+def package_job_output_items(job: Job, _evidence: dict | None = None) -> list[dict]:
+    selected_offer_items = active_result_offer_output_items(job, _evidence=_evidence)
+    if selected_offer_items is not None:
+        return _validated_output_items(job, selected_offer_items)
+    items = _output_file_items_from_evidence(job, _evidence=_evidence)
     if items:
         return items
     output = package_job_outputs(job)
@@ -1132,17 +1770,24 @@ def package_job_output_items(job: Job) -> list[dict]:
     return [{"kind": kind, "label": label, "path": str(output)}]
 
 
-def _output_file_items_from_evidence(job: Job) -> list[dict]:
-    evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
-    if not evidence_path.exists():
-        return []
-    try:
-        payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+def _output_file_items_from_evidence(job: Job, _evidence: dict | None = None) -> list[dict]:
+    if _evidence is not None:
+        payload = _evidence
+    else:
+        evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
+        if not evidence_path.exists():
+            return []
+        try:
+            payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
     files = payload.get("output_files")
     if not isinstance(files, list):
         return []
+    return _validated_output_items(job, files)
+
+
+def _validated_output_items(job: Job, files: list[dict]) -> list[dict]:
     out_dir = job_dir(job.id).resolve() / "output"
     items: list[dict] = []
     for item in files:
@@ -1186,8 +1831,23 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         db.query(Job)
         .filter(
             or_(
+                Job.confirmation_kind.is_(None),
+                Job.confirmation_kind == "",
+                Job.confirmation_outcome.in_(["declined", "expired"]),
+                Job.offer_delivery_outcome.in_(["delivered", "expired"]),
+            )
+        )
+        .filter(
+            or_(
                 and_(
-                    Job.status.in_(["completed", "partial", "needs_review", STATUS_CUSTOMER_DECLINED, STATUS_CONFIRMATION_EXPIRED]),
+                    Job.status.in_([
+                        "completed",
+                        "partial",
+                        "needs_review",
+                        STATUS_CUSTOMER_DECLINED,
+                        STATUS_CONFIRMATION_EXPIRED,
+                        STATUS_DELIVERY_EXPIRED,
+                    ]),
                     Job.completed_at.is_not(None),
                     Job.completed_at < completed_cutoff,
                 ),
@@ -1205,6 +1865,11 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
         .all()
     )
     for job in expired:
+        release_job_reservation(db, job, note="Резерв возвращён: истёк срок хранения задачи")
+        db.query(BillingTransaction).filter(BillingTransaction.job_id == job.id).update(
+            {BillingTransaction.job_id: None},
+            synchronize_session=False,
+        )
         shutil.rmtree(job_dir(job.id), ignore_errors=True)
         db.delete(job)
     if expired:
@@ -1215,3 +1880,35 @@ def cleanup_expired_jobs(db: Session, settings=None) -> int:
 def clear_storage() -> None:
     shutil.rmtree(config.storage_path, ignore_errors=True)
     config.storage_path.mkdir(parents=True, exist_ok=True)
+
+def extract_yandex_job_metrics(evidence: dict | None, price_per_request: float = 0.04) -> tuple[int, float]:
+    if not isinstance(evidence, dict):
+        return 0, 0.0
+    if not evidence.get("search") and isinstance(evidence.get("supplier_search"), dict):
+        return extract_yandex_job_metrics(evidence["supplier_search"], price_per_request=price_per_request)
+    req_count = 0
+    search_info = evidence.get("search")
+    if isinstance(search_info, dict):
+        if "yandex_requests_count" in search_info:
+            req_count += int(search_info["yandex_requests_count"])
+    recovery_rounds = evidence.get("recovery_rounds", [])
+    if isinstance(recovery_rounds, list):
+        for r in recovery_rounds:
+            if isinstance(r, dict):
+                r_search = r.get("search")
+                if isinstance(r_search, dict) and "yandex_requests_count" in r_search:
+                    req_count += int(r_search["yandex_requests_count"])
+                elif "yandex_requests_count" in r:
+                    req_count += int(r["yandex_requests_count"])
+    if req_count == 0:
+        queries = evidence.get("queries", [])
+        reports = search_info.get("reports", []) if isinstance(search_info, dict) else []
+        yandex_report = next((r for r in reports if isinstance(r, dict) and r.get("provider") == "yandex"), None)
+        if yandex_report and yandex_report.get("status") in ("ok", "error"):
+            added = yandex_report.get("added", 0)
+            q_len = len(queries) if isinstance(queries, list) else 0
+            pages_per_q = 2.0 if added > 50 else 1.5
+            req_count = int(q_len * pages_per_q)
+    unit_price = float(price_per_request) if price_per_request else 0.04
+    cost_rub = round(req_count * unit_price, 2)
+    return req_count, cost_rub

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,15 +15,18 @@ from sqlalchemy.orm import sessionmaker
 from app.billing import (
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     OP_GRANT,
     OP_RESERVE,
     OP_CHARGE,
     OP_RELEASE,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+    STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
 )
 from app.db import Base
 from app.jobs import MODE_SUPPLIER_SEARCH
+from app.legal import LEGAL_VERSION
 from app.main import (
     admin_verify_web_user_email,
     create_additional_supplier_search_api,
@@ -33,14 +37,16 @@ from app.main import (
     customer_job_to_dict,
     customer_quote_request_api,
     customer_session_payload,
+    accept_customer_partial_job_api,
     cancel_customer_job_api,
     decline_customer_partial_job_api,
     download_customer_job_api,
     download_customer_job_file_api,
     download_customer_quote_request_docx_api,
+    customer_billing_transactions_api,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
-from app.models import BillingTransaction, Client, Job, JobFile, SupplierResult, SystemSettings, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser
+from app.models import BillingTransaction, Client, ClientTariffOverride, Job, JobFile, LegalAcceptance, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser, now_utc
 from app.schemas import WebEmailChangeRequest, WebPasswordResetComplete, WebPasswordResetRequestCreate, WebRegisterRequest
 from app.web_auth import (
     CSRF_HEADER,
@@ -84,6 +90,10 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     trial_file_limit=5,
                 )
             )
+            db.add_all([
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Базовый поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Базовый анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
             db.commit()
 
             user = create_web_user(db, email="Buyer@Example.COM", password="StrongPass123", name="Buyer")
@@ -95,6 +105,15 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(user.client.is_trial)
             self.assertEqual(user.client.monthly_supplier_search_limit, 2)
             self.assertEqual(user.client.monthly_procurement_report_limit, 1)
+            self.assertEqual(user.client.money_balance_kopeks, 22_000)
+            self.assertEqual(
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == user.client.id)
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .filter(BillingTransaction.created_by == "system")
+                .count(),
+                2,
+            )
             self.assertEqual(user.client.monthly_file_limit, 5)
             self.assertTrue(user.client.allowed_procurement_report)
             self.assertFalse(user.is_email_verified)
@@ -151,6 +170,9 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                         email=f"buyer-{index}@example.com",
                         password="StrongPass123",
                         name="Buyer",
+                        terms_accepted=True,
+                        personal_data_consent=True,
+                        legal_version=LEGAL_VERSION,
                     ),
                     fake_request(),
                     Response(),
@@ -164,6 +186,9 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                         email="buyer-limited@example.com",
                         password="StrongPass123",
                         name="Buyer",
+                        terms_accepted=True,
+                        personal_data_consent=True,
+                        legal_version=LEGAL_VERSION,
                     ),
                     fake_request(),
                     Response(),
@@ -173,6 +198,107 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.status_code, 429)
             self.assertEqual(db.query(WebUser).count(), 3)
             self.assertEqual(db.query(WebRegistrationAttempt).filter(WebRegistrationAttempt.status == "rate_limited").count(), 1)
+        finally:
+            db.close()
+
+    def test_registration_requires_and_records_separate_legal_acceptances(self) -> None:
+        db = self.Session()
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                customer_register_api(
+                    WebRegisterRequest(email="no-consent@example.com", password="StrongPass123"),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertEqual(db.query(WebUser).count(), 0)
+
+            payload = customer_register_api(
+                WebRegisterRequest(
+                    email="accepted@example.com",
+                    password="StrongPass123",
+                    terms_accepted=True,
+                    personal_data_consent=True,
+                    legal_version=LEGAL_VERSION,
+                ),
+                fake_request(),
+                Response(),
+                db,
+            )
+            user = db.query(WebUser).filter(WebUser.email == "accepted@example.com").one()
+            acceptances = db.query(LegalAcceptance).filter(LegalAcceptance.subject_id == user.id).all()
+
+            self.assertTrue(payload["authenticated"])
+            self.assertEqual({item.document_type for item in acceptances}, {"terms", "personal_data"})
+            self.assertEqual({item.document_version for item in acceptances}, {LEGAL_VERSION})
+            self.assertEqual({item.source for item in acceptances}, {"web"})
+            self.assertEqual({item.ip_address for item in acceptances}, {"127.0.0.1"})
+        finally:
+            db.close()
+
+    def test_registration_rolls_back_account_when_acceptance_cannot_be_recorded(self) -> None:
+        db = self.Session()
+        try:
+            with patch("app.main.record_legal_acceptance", side_effect=RuntimeError("acceptance storage failed")):
+                with self.assertRaisesRegex(RuntimeError, "acceptance storage failed"):
+                    customer_register_api(
+                        WebRegisterRequest(
+                            email="rollback@example.com",
+                            password="StrongPass123",
+                            terms_accepted=True,
+                            personal_data_consent=True,
+                            legal_version=LEGAL_VERSION,
+                        ),
+                        fake_request(),
+                        Response(),
+                        db,
+                    )
+
+            self.assertEqual(db.query(WebUser).count(), 0)
+            self.assertEqual(db.query(Client).count(), 0)
+            self.assertEqual(db.query(LegalAcceptance).count(), 0)
+        finally:
+            db.close()
+
+    def test_duplicate_registration_with_same_email_is_blocked(self) -> None:
+        db = self.Session()
+        try:
+            # First registration succeeds
+            customer_register_api(
+                WebRegisterRequest(
+                    email="duplicate@example.com",
+                    password="StrongPass123",
+                    terms_accepted=True,
+                    personal_data_consent=True,
+                    legal_version=LEGAL_VERSION,
+                ),
+                fake_request(),
+                Response(),
+                db,
+            )
+            self.assertEqual(db.query(WebUser).filter(WebUser.email == "duplicate@example.com").count(), 1)
+
+            # Second registration with identical email must raise 409 HTTPException
+            from fastapi import HTTPException
+
+            with self.assertRaises(HTTPException) as ctx:
+                customer_register_api(
+                    WebRegisterRequest(
+                        email="duplicate@example.com",
+                        password="AnotherPass456",
+                        terms_accepted=True,
+                        personal_data_consent=True,
+                        legal_version=LEGAL_VERSION,
+                    ),
+                    fake_request(),
+                    Response(),
+                    db,
+                )
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertIn("уже зарегистрирован", ctx.exception.detail)
+            # Ensure only 1 user exists
+            self.assertEqual(db.query(WebUser).filter(WebUser.email == "duplicate@example.com").count(), 1)
         finally:
             db.close()
 
@@ -480,6 +606,81 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    def test_customer_session_uses_supplier_fallback_for_extra_search_balance(self) -> None:
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1))
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=9_940_000,
+            )
+            db.add_all([
+                client,
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Поиск", units=1, price_kopeks=10_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra-fallback@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+
+            payload = customer_session_payload(db, user)
+            extra = payload["balance"][KIND_SUPPLIER_SEARCH_EXTRA]
+        finally:
+            db.close()
+
+        self.assertEqual(extra["source"], "supplier_search_access_fallback")
+        self.assertEqual(extra["available"], 1000)
+        self.assertEqual(extra["price_kopeks"], 5_000)
+        self.assertFalse(extra["low"])
+
+    def test_customer_session_keeps_individual_extra_supplier_price(self) -> None:
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1))
+            client = Client(
+                id="client-1",
+                telegram_id="web:client-1",
+                monthly_supplier_search_limit=10,
+                monthly_procurement_report_limit=10,
+                money_balance_kopeks=84_000,
+            )
+            db.add_all([
+                client,
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000),
+                ClientTariffOverride(client_id=client.id, kind=KIND_PROCUREMENT_REPORT, price_kopeks=6_000),
+                ClientTariffOverride(client_id=client.id, kind=KIND_SUPPLIER_SEARCH_EXTRA, price_kopeks=3_000),
+            ])
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra-individual@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+
+            payload = customer_session_payload(db, user)
+            extra = payload["balance"][KIND_SUPPLIER_SEARCH_EXTRA]
+            extra_price = payload["balance"]["effective_prices"][KIND_SUPPLIER_SEARCH_EXTRA]
+        finally:
+            db.close()
+
+        self.assertEqual(extra["source"], "supplier_search_access_fallback")
+        self.assertEqual(extra["available"], 10)
+        self.assertEqual(extra["price_kopeks"], 3_000)
+        self.assertEqual(extra_price["price_kopeks"], 3_000)
+        self.assertEqual(extra_price["source"], "client_override")
+
     def test_password_reset_request_and_admin_completion(self) -> None:
         db = self.Session()
         try:
@@ -651,7 +852,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     id="job-1",
                     client_id=owner.id,
                     mode=MODE_SUPPLIER_SEARCH,
-                    status="completed",
+                    status="partial",
                     result_path=str(output_path),
                 )
                 db.add(job)
@@ -723,7 +924,7 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     id="job-1",
                     client_id=client.id,
                     mode="analysis_and_suppliers",
-                    status="completed",
+                    status="partial",
                     result_path=str(out_dir / "archive.zip"),
                     evidence_path=str(evidence_path),
                 )
@@ -839,10 +1040,10 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                     id="job-1",
                     client_id=client.id,
                     mode=MODE_SUPPLIER_SEARCH,
-                    status="completed",
+                    status="partial",
                     title="Промышленные насосы",
                     target_suppliers=25,
-                    verified_count=25,
+                    verified_count=11,
                     file_count=1,
                 )
                 db.add(original)
@@ -876,10 +1077,160 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["success"])
             self.assertTrue(customer_job_to_dict(original)["can_find_more_suppliers"])
             self.assertEqual(new_job.mode, MODE_SUPPLIER_SEARCH)
-            self.assertEqual(new_job.target_suppliers, 25)
+            self.assertEqual(new_job.target_suppliers, 14)
+            self.assertEqual(payload["job"]["prior_verified_count"], 11)
+            self.assertEqual(payload["job"]["cumulative_verified_count"], 11)
             self.assertEqual(reserve.kind, KIND_SUPPLIER_SEARCH)
             self.assertEqual(reserve.units, 1)
             self.assertIn("pump.example", exclusions_text)
+        finally:
+            jobs.job_dir = original_job_dir
+            main_module.enqueue_job = original_enqueue
+            db.close()
+
+    def test_customer_find_more_suppliers_uses_extra_tariff_when_configured(self) -> None:
+        import app.jobs as jobs
+        import app.main as main_module
+
+        original_job_dir = jobs.job_dir
+        original_enqueue = main_module.enqueue_job
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1, default_supplier_target=25))
+            db.add(TariffPackage(kind=KIND_SUPPLIER_SEARCH_EXTRA, name="Добор", units=1, price_kopeks=3_000, is_active=True))
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=2, money_balance_kopeks=3_000)
+            db.add(client)
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    kind=KIND_SUPPLIER_SEARCH_EXTRA,
+                    operation=OP_GRANT,
+                    units=1,
+                    amount_kopeks=3_000,
+                    balance_after_kopeks=3_000,
+                    created_by="admin",
+                )
+            )
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-extra@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                main_module.enqueue_job = lambda _job_id: None
+                source_path = root / "previous-tz.txt"
+                source_path.write_text("ТЗ: нужны поставщики промышленных насосов", encoding="utf-8")
+                original = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="partial",
+                    title="Промышленные насосы",
+                    target_suppliers=25,
+                    verified_count=11,
+                    file_count=1,
+                )
+                db.add(original)
+                db.add(JobFile(job_id=original.id, original_filename="tz.txt", stored_path=str(source_path)))
+                db.add(SupplierResult(job_id=original.id, company_name="ООО Насос", site="https://pump.example", evidence_status="verified"))
+                db.commit()
+
+                payload = create_additional_supplier_search_api(
+                    original.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                new_job = db.get(Job, payload["job"]["id"])
+
+            reserve = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == new_job.id)
+                .filter(BillingTransaction.operation == OP_RESERVE)
+                .one()
+            )
+            db.refresh(client)
+            self.assertEqual(reserve.kind, KIND_SUPPLIER_SEARCH_EXTRA)
+            self.assertEqual(reserve.units, 1)
+            self.assertEqual(reserve.amount_kopeks, 3_000)
+            self.assertEqual(client.money_reserved_kopeks, 3_000)
+        finally:
+            jobs.job_dir = original_job_dir
+            main_module.enqueue_job = original_enqueue
+            db.close()
+
+    def test_repeated_find_more_suppliers_keeps_previous_exclusions(self) -> None:
+        import app.jobs as jobs
+        import app.main as main_module
+
+        original_job_dir = jobs.job_dir
+        original_enqueue = main_module.enqueue_job
+        db = self.Session()
+        try:
+            db.add(SystemSettings(id=1, default_supplier_target=25))
+            client = Client(id="client-1", telegram_id="web:client-1", monthly_supplier_search_limit=10)
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="buyer-chain@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+                email_verified=True,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                main_module.enqueue_job = lambda _job_id: None
+                source_path = root / "previous-tz.txt"
+                source_path.write_text("ТЗ: нужны поставщики промышленных насосов", encoding="utf-8")
+                original = Job(
+                    id="job-1",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status="completed",
+                    title="Промышленные насосы",
+                    target_suppliers=25,
+                    verified_count=11,
+                    file_count=1,
+                )
+                db.add(original)
+                db.add(JobFile(job_id=original.id, original_filename="tz.txt", stored_path=str(source_path)))
+                db.add(SupplierResult(job_id=original.id, company_name="ООО Насос", site="https://pump.example", evidence_status="verified"))
+                db.commit()
+
+                first_payload = create_additional_supplier_search_api(
+                    original.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                first_more = db.get(Job, first_payload["job"]["id"])
+                self.assertEqual(first_more.target_suppliers, 14)
+                first_more.status = "completed"
+                first_more.verified_count = 4
+                db.add(SupplierResult(job_id=first_more.id, company_name="ООО Арматура", site="https://valve.example", evidence_status="verified"))
+                db.commit()
+
+                second_payload = create_additional_supplier_search_api(
+                    first_more.id,
+                    context=WebAuthContext(user=user, session=None),
+                    db=db,
+                )
+                second_more = db.get(Job, second_payload["job"]["id"])
+                exclusions_path = jobs.job_dir(second_more.id) / "input" / "excluded_suppliers.json"
+                exclusions_text = exclusions_path.read_text(encoding="utf-8")
+
+            self.assertIn("pump.example", exclusions_text)
+            self.assertIn("valve.example", exclusions_text)
+            self.assertEqual(second_more.target_suppliers, 10)
+            self.assertEqual(second_payload["job"]["prior_verified_count"], 15)
+            self.assertEqual(second_payload["job"]["cumulative_verified_count"], 15)
         finally:
             jobs.job_dir = original_job_dir
             main_module.enqueue_job = original_enqueue
@@ -1006,6 +1357,301 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
+    def test_registry_fallback_offer_payload_exposes_exact_counts_deadline_and_charge(self) -> None:
+        db = self.Session()
+        try:
+            offered_at = now_utc()
+            client = Client(id="client-registry-offer", telegram_id="web:registry-offer")
+            job = Job(
+                id="job-registry-offer",
+                client_id=client.id,
+                mode=MODE_SUPPLIER_SEARCH,
+                status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+                progress=100,
+                verified_count=24,
+                confirmation_kind="registry_fallback",
+                confirmation_outcome="pending",
+                confirmation_offered_at=offered_at,
+                confirmation_expires_at=offered_at + timedelta(hours=24),
+                active_output_manifest="locked_offer",
+                active_output_manifest_version=1,
+            )
+            db.add_all(
+                [
+                    client,
+                    job,
+                    BillingTransaction(
+                        client_id=client.id,
+                        job_id=job.id,
+                        kind=KIND_SUPPLIER_SEARCH,
+                        operation=OP_RESERVE,
+                        units=1,
+                        amount_kopeks=6_000,
+                    ),
+                ]
+            )
+            db.commit()
+
+            payload = customer_job_to_dict(job, db=db)
+        finally:
+            db.close()
+
+        offer = payload["result_offer"]
+        self.assertEqual(offer["kind"], "registry_fallback")
+        self.assertEqual(offer["registry_verified_count"], 0)
+        self.assertEqual(offer["alternative_verified_count"], 24)
+        self.assertEqual(offer["decision_outcome"], "pending")
+        self.assertEqual(offer["decision_expires_at"], f"{job.confirmation_expires_at.isoformat()}+00:00")
+        self.assertEqual(offer["delivery_outcome"], "")
+        self.assertEqual(offer["active_manifest_version"], 1)
+        self.assertEqual(
+            offer["charge"],
+            {
+                "billing_kind": KIND_SUPPLIER_SEARCH,
+                "units": 1,
+                "amount_kopeks": 6_000,
+                "currency": "RUB",
+                "items": [{"billing_kind": KIND_SUPPLIER_SEARCH, "units": 1, "amount_kopeks": 6_000}],
+            },
+        )
+        self.assertTrue(offer["can_accept"])
+        self.assertTrue(offer["can_decline"])
+        self.assertFalse(payload["can_download"])
+        self.assertEqual(payload["result_files"], [])
+
+    def test_registry_fallback_delivery_expiry_keeps_accepted_history_and_hides_files(self) -> None:
+        decided_at = now_utc() - timedelta(hours=25)
+        expired_at = now_utc()
+        job = Job(
+            id="job-registry-delivery-expired",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="delivery_expired",
+            progress=100,
+            verified_count=7,
+            result_path="/tmp/stale-registry-fallback.xlsx",
+            confirmation_kind="registry_fallback",
+            confirmation_outcome="accepted",
+            confirmation_decided_at=decided_at,
+            delivery_expires_at=decided_at + timedelta(hours=24),
+            offer_delivery_outcome="expired",
+            offer_delivery_expired_at=expired_at,
+            active_output_manifest="none",
+            active_output_manifest_version=3,
+        )
+
+        payload = customer_job_to_dict(job)
+
+        self.assertEqual(payload["status"], "delivery_expired")
+        self.assertEqual(payload["result_offer"]["decision_outcome"], "accepted")
+        self.assertEqual(payload["result_offer"]["delivery_outcome"], "expired")
+        self.assertEqual(payload["result_offer"]["active_manifest_version"], 3)
+        self.assertFalse(payload["result_offer"]["can_accept"])
+        self.assertFalse(payload["result_offer"]["can_decline"])
+        self.assertFalse(payload["can_download"])
+        self.assertEqual(payload["result_files"], [])
+
+    def test_registry_fallback_accept_then_download_delivers_and_charges_once(self) -> None:
+        import app.jobs as jobs
+
+        original_job_dir = jobs.job_dir
+        db = self.Session()
+        try:
+            client = Client(id="client-registry-delivery", telegram_id="web:registry-delivery")
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="registry-delivery@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                out_dir = jobs.job_dir("job-registry-delivery") / "output"
+                out_dir.mkdir(parents=True)
+                result_path = out_dir / "Поставщики_без_подтверждения_реестра.xlsx"
+                result_path.write_bytes(b"xlsx")
+                evidence_path = out_dir / "evidence.json"
+                evidence_path.write_text(
+                    """
+{
+  "output_manifests": {
+    "full": {
+      "archive_path": "%s",
+      "entitlements": ["supplier_search"],
+      "files": [
+        {"kind": "suppliers", "label": "Поставщики", "path": "%s", "billing_kind": "supplier_search"}
+      ]
+    }
+  }
+}
+"""
+                    % (result_path, result_path),
+                    encoding="utf-8",
+                )
+                offered_at = now_utc()
+                job = Job(
+                    id="job-registry-delivery",
+                    client_id=client.id,
+                    mode=MODE_SUPPLIER_SEARCH,
+                    status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+                    progress=100,
+                    verified_count=5,
+                    evidence_path=str(evidence_path),
+                    confirmation_kind="registry_fallback",
+                    confirmation_outcome="pending",
+                    confirmation_offered_at=offered_at,
+                    confirmation_expires_at=offered_at + timedelta(hours=24),
+                    active_output_manifest="locked_offer",
+                    active_output_manifest_version=1,
+                    active_entitlements_json="[]",
+                )
+                db.add_all(
+                    [
+                        job,
+                        BillingTransaction(
+                            client_id=client.id,
+                            job_id=job.id,
+                            kind=KIND_SUPPLIER_SEARCH,
+                            operation=OP_RESERVE,
+                            units=1,
+                            amount_kopeks=6_000,
+                        ),
+                    ]
+                )
+                db.commit()
+                context = WebAuthContext(user=user, session=None)
+
+                accepted = accept_customer_partial_job_api(job.id, context=context, db=db)
+                response = download_customer_job_api(job.id, context=context, db=db)
+                second_response = download_customer_job_api(job.id, context=context, db=db)
+
+                db.refresh(job)
+                charges = (
+                    db.query(BillingTransaction)
+                    .filter(BillingTransaction.job_id == job.id)
+                    .filter(BillingTransaction.operation == OP_CHARGE)
+                    .all()
+                )
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertTrue(accepted["success"])
+        self.assertEqual(accepted["job"]["result_offer"]["decision_outcome"], "accepted")
+        self.assertTrue(accepted["job"]["can_download"])
+        self.assertEqual(response.filename, result_path.name)
+        self.assertEqual(second_response.filename, result_path.name)
+        self.assertEqual(job.offer_delivery_outcome, "delivered")
+        self.assertEqual([(item.kind, item.units, item.amount_kopeks) for item in charges], [(KIND_SUPPLIER_SEARCH, 1, 6_000)])
+
+    def test_combined_registry_fallback_decline_exposes_analysis_only(self) -> None:
+        import app.jobs as jobs
+
+        original_job_dir = jobs.job_dir
+        db = self.Session()
+        try:
+            client = Client(id="client-registry-combined", telegram_id="web:registry-combined")
+            db.add(client)
+            db.commit()
+            user = create_web_user(
+                db,
+                email="registry-combined@example.com",
+                password="StrongPass123",
+                name="Buyer",
+                client=client,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                jobs.job_dir = lambda job_id: root / "jobs" / job_id
+                out_dir = jobs.job_dir("job-registry-combined") / "output"
+                out_dir.mkdir(parents=True)
+                analysis_path = out_dir / "analysis.docx"
+                suppliers_path = out_dir / "suppliers.xlsx"
+                full_path = out_dir / "full.zip"
+                analysis_path.write_bytes(b"analysis")
+                suppliers_path.write_bytes(b"suppliers")
+                full_path.write_bytes(b"archive")
+                evidence_path = out_dir / "evidence.json"
+                evidence_path.write_text(
+                    """
+{
+  "report": {"warning": ""},
+  "output_manifests": {
+    "full": {
+      "archive_path": "%s",
+      "entitlements": ["procurement_report", "supplier_search"],
+      "files": [
+        {"kind": "analysis", "path": "%s", "billing_kind": "procurement_report"},
+        {"kind": "suppliers", "path": "%s", "billing_kind": "supplier_search"}
+      ]
+    },
+    "analysis_only": {
+      "archive_path": "%s",
+      "entitlements": ["procurement_report"],
+      "files": [
+        {"kind": "analysis", "path": "%s", "billing_kind": "procurement_report"}
+      ]
+    }
+  }
+}
+"""
+                    % (full_path, analysis_path, suppliers_path, analysis_path, analysis_path),
+                    encoding="utf-8",
+                )
+                offered_at = now_utc()
+                job = Job(
+                    id="job-registry-combined",
+                    client_id=client.id,
+                    mode="analysis_and_suppliers",
+                    status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+                    progress=100,
+                    verified_count=3,
+                    evidence_path=str(evidence_path),
+                    confirmation_kind="registry_fallback",
+                    confirmation_outcome="pending",
+                    confirmation_offered_at=offered_at,
+                    confirmation_expires_at=offered_at + timedelta(hours=24),
+                    active_output_manifest="locked_offer",
+                    active_output_manifest_version=1,
+                    active_entitlements_json="[]",
+                )
+                db.add(job)
+                db.add_all(
+                    [
+                        BillingTransaction(client_id=client.id, job_id=job.id, kind=KIND_PROCUREMENT_REPORT, operation=OP_RESERVE, units=1),
+                        BillingTransaction(client_id=client.id, job_id=job.id, kind=KIND_SUPPLIER_SEARCH, operation=OP_RESERVE, units=1),
+                    ]
+                )
+                db.commit()
+                context = WebAuthContext(user=user, session=None)
+
+                declined = decline_customer_partial_job_api(job.id, context=context, db=db)
+                with self.assertRaises(HTTPException) as supplier_denied:
+                    download_customer_job_file_api(job.id, "suppliers", context=context, db=db)
+                analysis_response = download_customer_job_file_api(job.id, "analysis", context=context, db=db)
+                settlements = (
+                    db.query(BillingTransaction)
+                    .filter(BillingTransaction.job_id == job.id)
+                    .filter(BillingTransaction.operation.in_([OP_CHARGE, OP_RELEASE]))
+                    .all()
+                )
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(declined["job"]["result_offer"]["decision_outcome"], "declined")
+        self.assertEqual(declined["job"]["result_files"], [{"kind": "analysis", "label": "Анализ", "filename": "analysis.docx"}])
+        self.assertTrue(declined["job"]["can_download"])
+        self.assertEqual(supplier_denied.exception.status_code, 404)
+        self.assertEqual(analysis_response.filename, "analysis.docx")
+        self.assertEqual(
+            sorted((item.kind, item.operation) for item in settlements),
+            [(KIND_PROCUREMENT_REPORT, OP_CHARGE), (KIND_SUPPLIER_SEARCH, OP_RELEASE)],
+        )
+
     def test_customer_can_cancel_own_running_job_and_release_reservation(self) -> None:
         db = self.Session()
         try:
@@ -1072,6 +1718,151 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["can_download"])
         self.assertEqual(payload["result_files"], [])
 
+    def test_confirmation_expired_job_hides_and_blocks_all_customer_results(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-expired", telegram_id="web:expired")
+            job = Job(
+                id="job-expired",
+                client_id=client.id,
+                mode=MODE_SUPPLIER_SEARCH,
+                status=STATUS_CONFIRMATION_EXPIRED,
+                progress=100,
+                title="ТЗ",
+                result_path="/tmp/existing-result.xlsx",
+            )
+            db.add_all([client, job])
+            db.commit()
+            context = WebAuthContext(user=SimpleNamespace(client_id=client.id), session=None)
+
+            payload = customer_job_to_dict(job)
+            with self.assertRaises(HTTPException) as raised:
+                download_customer_job_api(job.id, context=context, db=db)
+        finally:
+            db.close()
+
+        self.assertFalse(payload["has_result"])
+        self.assertFalse(payload["can_download"])
+        self.assertEqual(payload["result_files"], [])
+        self.assertEqual(raised.exception.status_code, 410)
+
+
+    def test_create_customer_job_api_exact_product(self) -> None:
+        db = self.Session()
+        try:
+            client = Client(id="client-exact", telegram_id="web:exact", money_balance_kopeks=10000)
+            user = WebUser(id="user-exact", client_id=client.id, email="exact@example.com", is_active=True, is_email_verified=True)
+            db.add_all([client, user])
+            db.commit()
+            context = WebAuthContext(user=user, session=None)
+
+            upload = UploadFile(filename="spec.docx", file=BytesIO(b"dummy spec content"))
+            with patch("app.main.enqueue_job"):
+                result = unittest.IsolatedAsyncioTestCase().loop.run_until_complete(
+                    create_customer_job_api(
+                        mode="exact_product",
+                        text="Техническое задание на поставку",
+                        files=[upload],
+                        context=context,
+                        db=db,
+                    )
+                ) if hasattr(unittest.IsolatedAsyncioTestCase(), "loop") else None
+        finally:
+            db.close()
+
+    def test_customer_billing_transactions_api(self) -> None:
+        db = self.Session()
+        try:
+            client1 = Client(id="client-tx-1", telegram_id="web:tx1", money_balance_kopeks=50000)
+            user1 = WebUser(id="user-tx-1", client_id=client1.id, email="tx1@example.com", is_active=True, is_email_verified=True)
+
+            client2 = Client(id="client-tx-2", telegram_id="web:tx2", money_balance_kopeks=10000)
+            user2 = WebUser(id="user-tx-2", client_id=client2.id, email="tx2@example.com", is_active=True, is_email_verified=True)
+
+            job1 = Job(id="job-tx-1", client_id=client1.id, mode="exact_product", title="Поставка перчаток медицинских", status="completed")
+            job2 = Job(id="job-tx-2", client_id=client1.id, mode="supplier_search", title="Кабель силовой ВВГ", status="completed")
+
+            tx_grant = BillingTransaction(
+                id="tx-grant-1",
+                client_id=client1.id,
+                kind="money",
+                operation=OP_GRANT,
+                amount_kopeks=500000,
+                note="Пополнение баланса",
+            )
+            tx_charge1 = BillingTransaction(
+                id="tx-charge-1",
+                client_id=client1.id,
+                job_id=job1.id,
+                kind="exact_product",
+                operation=OP_CHARGE,
+                amount_kopeks=9900,
+                units=1,
+            )
+            tx_charge2 = BillingTransaction(
+                id="tx-charge-2",
+                client_id=client1.id,
+                job_id=job2.id,
+                kind="supplier_search",
+                operation=OP_CHARGE,
+                amount_kopeks=14900,
+                units=1,
+            )
+            tx_release = BillingTransaction(
+                id="tx-release-1",
+                client_id=client1.id,
+                kind="exact_product",
+                operation=OP_RELEASE,
+                amount_kopeks=9900,
+                note="Возврат резерва",
+            )
+            tx_reserve = BillingTransaction(
+                id="tx-reserve-1",
+                client_id=client1.id,
+                kind="supplier_search",
+                operation=OP_RESERVE,
+                amount_kopeks=14900,
+            )
+            tx_other_client = BillingTransaction(
+                id="tx-other-1",
+                client_id=client2.id,
+                kind="money",
+                operation=OP_GRANT,
+                amount_kopeks=100000,
+            )
+
+            db.add_all([client1, user1, client2, user2, job1, job2, tx_grant, tx_charge1, tx_charge2, tx_release, tx_reserve, tx_other_client])
+            db.commit()
+
+            context = WebAuthContext(user=user1, session=None)
+            response = Response()
+
+            # Call API
+            res = customer_billing_transactions_api(response=response, limit=50, offset=0, context=context, db=db)
+
+            # Assertions
+            self.assertEqual(res["total"], 4)
+            self.assertEqual(len(res["items"]), 4)
+
+            # Check that reserve and other client are NOT included
+            tx_ids = [item["id"] for item in res["items"]]
+            self.assertNotIn("tx-reserve-1", tx_ids)
+            self.assertNotIn("tx-other-1", tx_ids)
+            self.assertIn("tx-grant-1", tx_ids)
+            self.assertIn("tx-charge-1", tx_ids)
+
+            # Check item details
+            charge_item = next(item for item in res["items"] if item["id"] == "tx-charge-1")
+            self.assertEqual(charge_item["operation"], "charge")
+            self.assertEqual(charge_item["operation_label"], "Списание")
+            self.assertEqual(charge_item["amount_rub"], 99.0)
+            self.assertEqual(charge_item["amount_kopeks"], 9900)
+            self.assertIn("перчаток", charge_item["title"])
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

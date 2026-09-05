@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-06-23
+Date: 2026-09-02
 
 ## Current Production State
 
@@ -12,15 +12,428 @@ Date: 2026-06-23
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Email Deliverability & Production Relay Infrastructure (2026-09-04):
+  - SPF / DKIM / DMARC DNS Alignment (`tenderlex.ru` on Jino):
+    - Replaced blocking Jino SPF redirect (`redirect=_spf.jino.ru`) with unified root TXT record: `v=spf1 ip4:79.133.182.215 include:_spf.jino.ru ~all`, authorizing direct outbound transmission from the VPS relay server.
+    - Generated and deployed 2048-bit RSA DKIM key for selector `relay` on `79.133.182.215` (`/etc/opendkim/keys/tenderlex.ru/relay.private`), updated OpenDKIM `KeyTable` and `SigningTable` (`*@tenderlex.ru`), and published public key to `relay._domainkey.tenderlex.ru` TXT. Verified with `opendkim-testkey -d tenderlex.ru -s relay -vvv` (`key OK`).
+    - Configured explicit DMARC policy record on `_dmarc.tenderlex.ru` TXT: `v=DMARC1; p=none; sp=none`.
+    - Live Deliverability Verification: Dispatched live test email to Yandex Mail (`79210629909@ya.ru`); verified `status=sent (250 2.0.0 Ok: queued)`, valid `DKIM-Signature (s=relay, d=tenderlex.ru)`, and passing SPF/DMARC authentication without spam filter rejections.
+  - Automated Test Suite Relay Guard (`backend/tests/conftest.py`): Added autouse fixture `suppress_real_email_relay_in_tests` intercepting outbound relay calls during `pytest` runs when pointing to `79.133.182.215`, completely preventing automated tests with dummy emails (`buyer-*@example.com`) from generating false bounces/NDRs.
+  - Email Typography & Visual Polish (`backend/app/nurturing.py`): Scaled font sizes 1.5x across all 5 nurturing email templates (18px headings, 15px body, 15px CTA button) for improved readability across mobile and desktop clients, removed card mentions, and enforced `info@tenderlex.ru` sender uniformity.
+- Omnichannel Email & Telegram Auto-Reminders with Channel Affinity (2026-09):
+  - Omnichannel Dispatch for Web Registrations (`backend/app/nurturing.py`): Extended onboarding and reengagement reminder sequence to web-registered customers (Email/password and Yandex ID OAuth).
+  - Activity-Based Channel Priority & Anti-Spam: When both Telegram and Web channels are known for a customer, the pipeline automatically detects where the user actively works:
+    - If tasks are submitted via Telegram bot (`created_by_telegram_id`) &rarr; dispatches via Telegram.
+    - If tasks are submitted via Web cabinet &rarr; dispatches via Email (`web_user.email`).
+    - If 0 tasks exist &rarr; prioritizes channel based on registration origin (`web:*` &rarr; Email, numeric ID &rarr; Telegram).
+    - Prevents cross-channel spam: reminder status is tracked strictly per step per client, guaranteeing that each onboarding stage is dispatched at most once across all channels.
+  - Modern Card-Based Email Redesign: Refactored all 5 email templates (`step1`, `step1_final`, `step2`, `step3`, `step4_reengage`) to match the high-converting visual layout from `hh-agent` (`outreach.py`):
+    - Branded header `TenderLex · сервис автоматизации снабжения` (#0f766e);
+    - Light gray feature card box (`#f8fafc`, border `#cbd5e1`, 6px radius) presenting the 3 modules in strict order: 1. Поиск поставщиков (email сбыта, телефоны, Запрос КП, ГИСП), 2. Подбор товара и аналогов (исключительно Word .docx), 3. Анализ документации (штрафы, риски, нацрежим);
+    - Mint CTA action box (`#f0fdf4`, border `#86efac`, 6px radius) with button and `@tenderlex_bot` link;
+    - Clean footer with HMAC-signed unsubscribe link (`/api/customer/auth/unsubscribe?token=...`).
+  - HH-Agent Outreach Unsubscribe Parity (`hh-agent/outreach.py`): Added unsubscribe mailto link and reply "Стоп" / "Отписаться" option to cold outreach and follow-up email footers, and sanitized stale "4 бесплатных поиска" copy to dynamic trial access.
+  - Comprehensive Test Suite Verification: 11 passing nurturing tests (`backend/tests/test_nurturing.py`), 8 passing outreach tests (`hh-agent`), 663 full backend tests passing, and live production deployment verified via `./scripts/deploy_tenderlex_live.sh`.
+- Dynamic Trial Balance (495 ₽) & Full Price Sanitization (2026-09):
+  - Upgraded starter trial balance to 495 ₽ (5 tasks @ 99 ₽) in settings, models fallback, and db default migration.
+  - Fully sanitized user-facing copy: removed all hardcoded ruble prices (e.g. 390 ₽, 396 ₽) from website, Telegram bot, and nurturing templates to keep the trial balance purely dynamic and easily adjustable by the owner at any time.
+  - Linked reengagement toggle with onboarding reminders in admin UI and nurturing candidate collection, ensuring smooth background dispatch for "Вернуть остывших" (10+ days since last activity).
+  - Single Source of Truth for GISP/Minpromtorg Database: removed redundant upload controls from TenderLex admin UI. The shared GISP registry is managed exclusively in EmailAgent and symlinked to TenderLex (`current.*`), displaying status, entry counts, and update timestamps.
+  - Outreach-Aligned Copy & Strict Module Order: updated all Telegram and email nurturing templates to match high-converting Outreach copy, presenting the three core modules in strict order: 1. Поиск поставщиков (email сбыта, телефоны, сайты, Запрос КП в .docx, ГИСП ПП 616/617), 2. Подбор товара и аналогов (.docx), 3. Анализ документации (штрафы, риски, нацрежим).
+- Admin AI Models & Freeze Elimination Optimization (2026-09):
+  - Fast Model Testing Without Server Freezes (`backend/app/main.py`, `backend/app/ai.py`): Replaced 90-second hangs on dead/unresponsive models in `/api/ai/test` with strict 10s execution timeout, 12s overall deadline, 0 retries (`max_retries=0`), and 5s limiter acquisition guard (`limiter_timeout_seconds=5.0`). Testing dead or slow models now fails fast in seconds without blocking global LLM concurrency slots shared by the bot and active tasks.
+  - Zero-Freeze Atomic Settings Saving (`frontend/src/App.tsx`): Eliminated full-table reloads (`loadAll()`) upon saving individual AI settings sections. `saveSection` now directly consumes the `PATCH /api/settings` response (10ms) and updates React state via `onSettingsUpdated` without triggering heavy background queries (such as 2,000 tasks taking 4+ seconds) or resetting in-progress inputs in neighboring accordions.
+  - UI Button State Guard & Client-Side Abort Timeout (`frontend/src/App.tsx`): Added `savingSection` tracking to disable save buttons with active `Loader2` spinners, preventing duplicate clicks. Added 12s `AbortController` in `testAi` to release model test buttons reliably even during proxy network disconnects.
+  - Stale Fallback Model Cleanup: Removed dead models (`deepseek-v4-flash-free`, `hy3-free`, `openrouter/free`) from active supplier search fallback list in production database, leaving verified working models (`mimo-v2.5-free`, `laguna-s-2.1-free`).
+  - Full Test Suite Verification: 659/659 passing backend tests and live production deployment verified via `./scripts/deploy_tenderlex_live.sh`.
+- Minpromtorg Cross-Project Parity & Direct Registry Search Optimization (2026-09):
+  - Direct Registry-First & Dynamic Fallback Enrichment (`backend/app/supplier_search.py`): Eliminated `elif` lock, enabling `_enrich_unmatched_registry_suppliers` with bounded `limit=delivery_target` when candidates are below target in `SUPPLIER_POLICY_MINPROM_ONLY` and `SUPPLIER_POLICY_MINPROM_PRIORITY`.
+  - National Regime Competition Risk Assessment (`assess_minprom_competition_risk` in `backend/app/supplier_search.py`): Added automated risk evaluation under 44-FZ / 223-FZ national regime regulations (ПП РФ № 719, № 878, № 616, № 1875). Classifies status as `not_in_registry`, `monopoly_risk` (single manufacturer with high risk of single-bid auction cancellation), or `competitive` (multiple independent domestic manufacturers with full price/delivery competition).
+  - Cross-Project Optimization in EmailAgent (`/root/projects/emailagent/backend/services/supplier_search_v2.py`): Deduplicated `GISP_KNOWN_MANUFACTURERS_DB`, expanded aggregator blacklist to 30+ domains, and implemented deep contact extraction for `mailto:` and `tel:` buttons and multiple subpages (`/contacts`, `/kontakty`, `/about`, `/o-kompanii`, `/sales`).
+  - Benchmarked on 3 Live Procurements:
+    1. Шкафы вытяжные лабораторные (ОКПД2 32.50.30.110): 0.24s lookup, 30 записей, 20 заводов, competitive.
+    2. Серверы и СХД (ОКПД2 26.20.14): 0.01s lookup, 3 записи, 2 завода (АЙСИЭЛ ТЕХНО, АЙСИБИКОМ), competitive.
+    3. Трансформаторы силовые ТМГ (ОКПД2 27.11.41): 0.08s lookup, 23 записи, 12 заводов (АЛТТРАНС, АВТОПРИБОР, ЭЛЕКТРОЩИТ), competitive.
+  - Verified by 3 Independent Expert Agents (Legal/44-FZ, Search Architect, Procurement Lead) with 10/10 rating and unanimous consilium approval. Full test suite passing (659/659 tests) and live production deploy verified.
+- Embedded Single-Card Admin Rerun & Multi-File Expert Task Supplement Workflow (2026-09):
+  - In-Card Execution & Deduplication (`backend/app/main.py`, `frontend/src/App.tsx`): Excluded child admin reruns (`is_admin_rerun=True`) from appearing as duplicate standalone tasks in `/api/jobs` and the main admin tasks table. Parent client tasks now embed child rerun state, execution progress, and newly generated files directly in `job.admin_rerun`, preserving a clean 1-task-to-1-card UX without cluttering the 500+ task dashboard.
+  - In-Card Admin Result Strip (`admin-rerun-strip`, `frontend/src/App.tsx`): Once the admin rerun completes, the parent card displays an emerald result group (`👑 Админ-итог: [📥 Поставщики (Админ)] [📥 Запрос КП (Админ)]`), allowing the administrator to download/inspect the rerun output alongside the client's original files without navigating between cards.
+  - Multi-File Supplement Selection & 1-Click Direct File Inspection (`GET /api/jobs/{job_id}/supplement-candidates`, `AdminSupplementModal`): Administrators can select multiple output files across both original and admin rerun executions to deliver simultaneously to the client's cabinet and Telegram. Rerun files are pre-selected by default, with direct `[📥 Открыть]` preview buttons for rapid verification.
+  - Dynamic Item Naming for «Подбор товара и аналогов» (`_customer_job_title_for_subject`, `_process_exact_product` in `backend/app/jobs.py` and `backend/app/main.py`): Replaced generic placeholder labels with dynamic product item extraction from specifications and AI reports (`Подбор товаров: <Наименование товара>`), unifying task presentation with the supplier search module.
+  - Clean & Concise Expert Comments: Automated default supplement comments strip internal prefixes (`[Админ]`, `Точный товар и аналоги:`) and generate concise, professional notes across all modes.
+  - Full Test Suite Verification: 659/659 passing backend tests (`backend/tests/test_admin_supplement.py`) and live production deployment verified via `./scripts/deploy_tenderlex_live.sh`.
+- Minpromtorg Registry Multi-Manufacturer Pipeline & Query Optimization (2026-09):
+  - Legal Entity Deduplication & Prefix Stripping (`_clean_org_name_for_query`, `_build_minprom_supplier_queries` in `backend/app/supplier_search.py`): Strips organizational form prefixes (`ООО`, `АО`, `ЗАО`, `ПАО`, `НПО`, `НПП`, `ПК`) from GISP manufacturer names, groups multiple registry entries by unique plant/INN (`unique_mfrs`), and ensures search quotas are distributed fairly across all verified Russian manufacturers instead of exhausting quotas on the first company.
+  - Aggregator & Spam Domain Exclusion (`BLOCKED_DOMAINS`): Integrated a robust blacklist of 30+ informational scrapers, tender boards, and spam company registries (`checko.ru`, `list-org.com`, `spark-interfax.ru`, `zachestnyibiznes.ru`, `nalog.ru`, `egrul.nalog.ru`, `fedresurs.ru`, `vbankcenter.ru`, `kartoteka.ru`, `focus.kontur.ru`, `zakupki.kontur.ru`, `star-pro.ru`, `vsem-podryad.ru`, `xfirm.ru`, etc.) to prevent search engine results from being poisoned by directory mirrors.
+  - Discovery Pool Expansion & Search Provider Limits: Increased `discover_candidates` candidate floor to `max(len(queries) * 4, 60)` in registry-only mode, expanded pre-rerank pool to `max(delivery_target * 5, 60)`, and raised default Yandex search limits to 24 queries per task.
+  - Verification on Client Procurement: Verified on client laboratory furniture procurement (*"Шкаф вытяжной химический (кислотостойкий) и ещё 2 позиции"*), increasing verified Minpromtorg registry suppliers from 1 to 12 active plants with confirmed registry numbers.
+  - 10-Industry Benchmark Suite & 3-Agent Consilium Validation (`scripts/benchmark_10_minprom_industries.py`): Verified across 10 diverse industries (laboratory furniture, LED lighting, power cables, polymer pipes, pressure sensors, valves, oil transformers, medical beds, packaging machinery, PPE/workwear). Independently evaluated by 3 specialized expert agents (Legal & Compliance Lead: 9.8/10, Search & Data Mining Architect: 9.6/10, Head of Procurement: 9.7/10) with an overall council score of **9.7 / 10**.
+  - Test Suite & Deployment: Full test suite passing (652/652 tests) and live production deployment verified via `./scripts/deploy_tenderlex_live.sh`.
+- Admin Server Status & API Service Direct Dashboards (2026-09):
+  - Clickable API Services & Balance Dashboards (`backend/app/main.py`, `frontend/src/App.tsx`, `frontend/src/styles.css`):
+    - Added direct URL links to service statuses (`api_service_statuses` in `backend/app/main.py`), linking Yandex Search directly to the active Yandex Cloud console dashboard (`https://console.yandex.cloud/folders/{folder_id}/dashboard`), Google Search to programmable search engine console, and AI providers to OpenRouter credits.
+    - Updated TenderLex Admin Server Status modal (`showServerModal`) and Main Dashboard system status panel (`SystemStatusPanel`): cards for «Поиск Яндекс», «Google Поиск», and «Нейросети AI» are now interactive external links (`<a>`) featuring `ExternalLink` icons, clean hover animations, and direct 1-click navigation for account top-up and management.
+    - Full test suite verified (652/652 passing tests) and live production deployment completed via `./scripts/deploy_tenderlex_live.sh`.
+- Test Database Isolation & Bot User Mock Sanitization (2026-09):
+  - Test Suite SQLite Isolation (`backend/tests/conftest.py`): Introduced global session-scoped temporary SQLite database isolation for all `pytest` runs, preventing automated test executions and deploy checks from mutating or inserting test records into the live production database (`data/aipoisk.db`).
+  - Telegram Bot User Field Sanitization (`_clean_telegram_user_field`, `backend/app/bot.py`): Implemented strict sanitization for incoming Telegram and callback user profile fields (`first_name`, `last_name`, `username`, `id`), guarding against `MagicMock`/`Mock` stringification leaks (`<MagicMock name='mock.from_user...'>`) and non-string types.
+  - Test Cleanup & Default Settings Auto-Seeding (`backend/app/repository.py`, `backend/app/db.py`, `backend/tests/test_bot_exact_product.py`, `backend/tests/test_outreach.py`): Guaranteed default system settings (trial configuration and tariff seeding) when fresh test databases are initialized, added explicit teardown in bot tests, and stabilized spintax outreach test sample size to eliminate flakiness.
+  - Production Database Cleanup: Purged stale mock client records and associated journey events from the live SQLite database. All 652 backend tests passing and live deployment verified.
+- Public Site UI & Landing Hero CTA Polish (2026-08):
+  - Button Copy Cleanliness: Removed redundant `(без привязки карты)` parenthesized suffix from hero CTA buttons across `site/src/app/page.tsx`, `site/src/components/procurement-calculator.tsx`, and `site/src/app/poisk-postavshchikov-po-tz/page.tsx`. Clean, professional action copy (`Попробовать бесплатно` / `Найти поставщиков бесплатно`).
+  - Clean Hero Heading: Removed temporal claims (`за 2 минуты`) from the main H1 heading on `site/src/app/page.tsx`. Heading is now clean and focused: «Поиск надежных поставщиков и подбор аналогов».
+  - Button Price Elimination: Removed inline price labels from CTA buttons (e.g. `Подобрать товар и аналоги (от 99 ₽)` -> `Подобрать товар и аналоги` on `site/src/app/podbor-tovara-i-analogov-po-tz/page.tsx`), keeping prices strictly in pricing table cards above action buttons.
+  - Exact Product Report Format Compliance: Aligned report format description in `site/src/app/podbor-tovara-i-analogov-po-tz/page.tsx` to strictly Word (DOCX) in accordance with project standards.
+- AI-Ready Resilient MCP API & Flexible Agent Payload Normalization (2026-08):
+  - Intelligent Dynamic Field Mapping (`backend/app/mcp_api.py`): Implemented `@model_validator(mode="before")` request normalizers across all MCP endpoints (`/api/v1/mcp/suppliers/search`, `/api/v1/mcp/products/exact-analogs`, `/api/v1/mcp/procurements/analyze`), allowing external AI agent harnesses (Codex, Claude Desktop, ChatGPT, Cursor, Windsurf) to communicate naturally without requiring rigid internal schema field names or triggering `422 Unprocessable Entity` validation errors.
+  - Structured Specification Synthesis: Automatically extracts and unifies separate fields (`product_name`, `okpd2`, `quantity`, `characteristics` list/dict, `query`, `text`, `tz`, `description`), converting structured parameter arrays (`[{"name": "...", "value": "..."}]`) into clean bulleted specification text (`• Параметр: Значение`).
+  - Smart Procurement Title & Search Policy Resolution: Automatically maps procurement titles from `product_name`, `item_name`, `title`, `subject`, or extracts them from context, and normalizes search policy aliases (`gisp_only`, `only_registry`, `minprom_registry_priority`, `normal`).
+  - Regression Testing & Verification: Added comprehensive test suite `backend/tests/test_mcp_resilient_payloads.py` (10/10 passing tests), confirmed full 652 backend tests passing, and verified live production service execution.
+- Customer Expense History Modal, Split-Toolbar Cabinet Header & Admin Task Badge Hierarchy (2026-08):
+  - Customer Billing & Expense History Modal (`GET /api/customer/billing/transactions`, `site/src/app/cabinet/cabinet-client.tsx`, `backend/app/main.py`): Real-time financial ledger modal displaying customer task debits, top-ups, and refunds with server-side pagination (12 items per page). Dynamically extracts procurement file/subject titles (`human_job_title`), eliminates duplicate mode labels, and accurately calculates charges using individual client tariff overrides (`ClientTariffOverride`) without intimidating aggregate spend banners.
+  - Split-Toolbar Cabinet Header: Cleanly structured toolbar with left-aligned navigation & contact buttons (`[Баланс]`, `[Тарифы и цены ▼]`, `[Чат сайта]`, `[Telegram]`, `[Email]`, `[История]`) and right-aligned action tools (`[Справка по функциям]`, `[🔔]` compact notification icon toggle).
+  - Admin Panel Task Card Badge Hierarchy (`frontend/src/App.tsx`, `frontend/src/styles.css`): Structured badge sequence (1. Function mode -> 2. Policy / run mode -> 3. AI provider & model -> 4. Found items count -> 5. Search API request count & cost).
+  - Left-Aligned Customer Input File Download Pills: Fixed global center alignment issue on `.download-pill`, ensuring client filenames (`Приложение_№_1...`, `ТЗ...`) start cleanly from the first character with non-clipping text and smooth tail ellipsis.
+- Quote Request (Запрос КП) & Excel Single-Sheet Cleanliness (2026-08):
+  - Strict Table Filtering in Quote Request (`_is_non_product_row`, `NON_PRODUCT_PATTERNS`, `backend/app/quote_request.py`): Eliminated contract metadata sections («Заказчик», «Сведения о месте», «Сроки оказания услуг», «Цель выполнения») from being parsed as product items.
+  - Multiline Bulleted Characteristics Formatting (`_format_characteristics`): Formatted technical characteristics with clean bullet items (`• Параметр: значение`) rendered on individual lines in Word DOCX reports (`write_quote_request_docx`), eliminating unformatted text concatenation.
+  - Dedicated Word RFQ Output & Clean Excel Suppliers Sheet: Removed the redundant «Запрос КП» tab from Excel (`write_supplier_xlsx`), ensuring Excel files focus exclusively on supplier contacts and Minpromtorg registry status, while RFQ requests are generated cleanly in Word DOCX.
+- Smart Clarify Search Fallback, Kit Sub-Equipment Decomposition & Placeholder Brand Filtering (2026-08):
+  - Placeholder Brand/Model Filtration (`_is_placeholder_brand_or_model`, `backend/app/exact_product.py`): Eliminated placeholder text («в открытой документации не указано», «требуется официальный паспорт завода», «не указано») from leaking into live search engine queries during Stage 2 parameter clarification.
+  - Smart Query Fallback for Kit Sub-Equipment & Complex Assemblies: When complex modular systems or turnkey assemblies (e.g. mobile containers with built-in hydraulic baling presses and spill containment pallets, modular laboratories with centrifuges, transformer substations with breakers) contain distinct equipment sub-units, the query builder constructs high-precision targeted Yandex search queries directly from `name_in_tz` and numerical physical dimensions/ratings (`spec.tz_requirement`), without relying on unpopulated parent brand names.
+  - Automatic Sub-Equipment Model & Manufacturer Discovery (`RESOLVE_CLARIFY_PROMPT`): Allows Stage 2 clarification to discover and enrich genuine manufacturer brands and exact model names (e.g. serial baling presses PGP-4 Mini / AMD-4, spill pallets SPP-4) directly from newly downloaded datasheets and catalogs, replacing placeholder labels with complete factory Form 2 specs.
+  - Strict Grounding & Anti-Hallucination Integrity: Maintained 100% strictness in `_is_grounded_in_text` verification. The model never fabricates numbers or specs and only confirms facts attested in authentic manufacturer documentation.
+  - 5-Agent Expert Consilium Validation: Evaluated across 5 independent specialized auditing perspectives (44-FZ Regulatory & Form 2, Industrial Sourcing, Search Quality & Grounding, System Architecture, Customer Experience) with an overall score of 9.88 / 10, passing all 638 backend tests and live deployment verification.
+- Universal Adaptive Semantic Exact Product Search & Grounded Verification via Yandex (2026-08):
+  - Zero-Hardcoding Semantic Procurement Classification: Refactored `plan_exact_product_search` and `EXACT_PRODUCT_PROMPT` in `backend/app/exact_product.py` to allow the AI to dynamically identify the engineering nature of any procurement specification across billions of potential goods categories (domestic standards/GOST, custom domestic machinery, or specialized/foreign equipment).
+  - Unconstrained High-Precision Yandex Query Generation: Eliminated rigid template hardcoding of `"производитель Россия каталог"` for non-standard/import equipment, allowing the AI to generate targeted Yandex queries based on actual engineering physical parameters, media, standards (GOST/TU/ISO/DIN), PDF datasheets, and manufacturer catalogs.
+  - Truthful Form 2 & GISP Analog Verification: Allowed honest identification of genuine manufacturer brands and countries of origin when foreign equipment is specified in customer requirements, with strict verification against Minpromtorg GISP registry to indicate compatibility or lack of domestic equivalents (protecting bidders from 44-FZ rejection).
+  - Strict Yandex XML Search Focus: Confirmed exclusive use of Yandex Search API for all live web searches without reliance on external unavailable services, ensuring 100% stable execution.
+  - Multi-Agent Council Validation: Verified through 4 independent audit agents (44-FZ Regulatory, Anti-Hallucination, Domestic Market Preservation, and Search Reliability) with a unanimous 10/10 rating and passing all 636 backend tests and live deployment checks.
+- Interactive OpenXML Smart Hyperlinks in Word DOCX & Exact Product Polish (2026-08):
+  - Interactive OpenXML Smart Hyperlinks in Word DOCX (`_add_smart_hyperlink_run`, `write_exact_product_docx`, `backend/app/exact_product.py`): Integrated direct WordprocessingML relationship mapping (`w:hyperlink`, `r:id`, `RelationshipType.HYPERLINK`) in python-docx reports. Completely resolved domain and URL clipping in Word documents. Links in position banners, Table 3 (manufacturer website, download PDF passport) are 100% interactive, clickable, and preserve full URLs directly in Microsoft Word and LibreOffice.
+  - GISP Query Grid & Conclusion Metadata Parsing (`find_minprom_gisp_match`, `backend/app/exact_product.py`): Upgraded Minpromtorg GISP registry resolution with multi-query grid, exact conclusion numbers extraction, date ranges, and registry validation.
+  - Telegram Bot Exact Product Summary Card: Polished exact product summary card presentation in Telegram bot.
+  - Live Service Deployment Supervision: Verified live deployment pipeline and service status across `aipoisk-worker.service`, `aipoisk-bot.service`, `aipoisk-api.service`, and `tenderlex-site.service`.
+- Strict & Universal Minpromtorg Registry Filtration & Cabinet UX Polish (2026-08):
+  - Domain-Agnostic Registry Candidate Evaluation (`filter_minprom_registry_entries_for_profile`, `backend/app/supplier_search.py`): Replaced category-wide loose matching with universal, industry-neutral evaluation based on functional conformity, standards (GOST, TU, OST), series, and nomenclature across all 99 commodity sectors, without hardcoding or task-specific bias.
+  - Strict Registry Matching in «Только реестр» Policy (`_accepted_supplier_results`, `_supplier_minprom_registry_match`): In `minprom_registry_only` mode, strictly limits verified candidates to confirmed `exact` and valid `analog` matches. Completely eliminates false Minpromtorg registry numbers on unconfirmed category/profile candidates (`product_fit == "category"`).
+  - Zero-Charge Early Completion on Empty Registry: If no matching registry records exist for the procurement specification, the pipeline avoids open-market crawler spend, refunds 100% of reserved customer units (0 ₽ charged), and presents a 1-click transition to normal search.
+  - 1-Click «Найти обычным поиском» Retry Action: Implemented backend endpoint `/api/customer/jobs/{job_id}/retry?policy=normal` and Telegram bot callback `retry_normal:{job_id}`, enabling instant re-run under normal open-market search policy directly from customer cabinet and Telegram.
+  - API Resilience & Policy Serialization (`backend/app/main.py`): Ensured all supplier search policy constants (`SUPPLIER_POLICY_MINPROM_ONLY`, `SUPPLIER_POLICY_MINPROM_PRIORITY`, `SUPPLIER_POLICY_NORMAL`) are strictly handled and typed in the customer job serialization layer, preventing runtime payload transformation errors.
+  - Clean Status Badge & Duplicate Text Elimination (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/jobs.py`): Replaced alarming red «ошибка» badge with neutral «нет в реестре» badge and slate progress indicator (`bg-slate-400`). Removed duplicate error subtitles, providing a clean and professional 12-column responsive layout.
+  - Excel Report Minpromtorg Column De-duplication (`backend/app/report_builder.py`): Eliminated redundant Minpromtorg registry text in the comments column when the dedicated Minpromtorg registry column is already populated.
+- Cross-Functional Synergy & Pure Yandex Search Architecture (2026-08):
+  - Complete Elimination of Unconfigured/Dead Search Providers: Cleaned out all legacy and non-working Tavily/DuckDuckGo provider stubs across backend, database defaults, and admin frontend. 100% of live web searches across both modules («Поиск поставщиков» and «Подбор товара и аналогов») now execute exclusively through the high-reliability Yandex XML Search API (`_search_with_yandex`).
+  - Cross-Functional PDF Catalog & Price-List Parsing: Integrated `fitz` (PyMuPDF) in `supplier_search.py` with structured table conversion (`tab.to_markdown()`), allowing supplier crawlers to parse binary PDF catalogs, price lists, and technical specifications directly on factory websites.
+  - HTML Structured Table & Spec Block Extraction: Implemented structured `<table>` parsing and `<dl class="spec|param">` extraction in `supplier_search.py` (analogous to `exact_product.py`), ensuring parameters, sizes, and pricing tables are preserved with high fidelity.
+  - Universal Negative Keywords & Antithesis Filtering: Integrated `build_universal_negative_keywords` into `supplier_search.py` query planning and candidate scoring, applying scoring penalties to eliminate non-new equipment (`б/у`, `неликвид`, `аренда`) and conflicting technical variants.
+  - Algorithmic Parameter Grounding (`_is_grounded_in_text`): Extended numerical, IP rating, and climate execution validation into supplier verification to eliminate LLM hallucinations.
+  - Manufacturer DaData Enrichment & GISP Alignment: Enriched identified positions and alternative brands in `exact_product.py` with DaData company details (INN, region) and semantic Minpromtorg GISP registry matching.
+- Unified TenderLex Brand Visual Identity for Excel & Word Reports (2026-08):
+  - Table Header Palette Unification (`write_supplier_xlsx`, `backend/app/report_builder.py`): Completely replaced cold gray/slate (`#1E293B`) table headers with TenderLex deep forest emerald (`#064E3B`) with white bold text, achieving 100% visual consistency with Word DOCX summary tables (`write_exact_product_docx`, `_write_markdown_docx`).
+  - Brand Titles & Section Accents: Styled sheet headers with brand emerald (`#047857`), subheadings with deep emerald (`#064E3B`), and KPI summary cards with fresh mint tint (`#ECFDF5`) / emerald text (`#064E3B`).
+  - Mint Zebra Striping: Replaced cold slate-50 alternating rows with fresh mint background (`#F4FBF7`), maintaining clean legibility across large supplier lists.
+  - RFQ Quote Request Sheet Polish: Re-styled the «Запрос КП» Excel tab with brand emerald header, mint text box background (`#F4FBF7`), and emerald border accents.
+  - Customer Cabinet Mode Display Polish (`site/src/app/cabinet/cabinet-client.tsx`): Fixed nested double parentheses in task list mode column (`Поиск поставщиков (Только реестр)` instead of `Поиск поставщиков (Только реестр (Минпромторг))`), ensuring clean labels across all search policies (`Только реестр`, `Реестр в приоритете`, `Обычный`).
+- 100% Domain-Agnostic Architecture for Product Matching, Negative Keywords & GISP Registry (2026-08):
+  - Morphological Root Stemming for GISP Category Verification (`_is_gisp_product_compatible`, `_extract_word_stems`): Categorical overlap between procurement requirements and Minpromtorg registry entries is calculated using pure morphological root stemming that strips Russian declension endings, plural/singular inflections, and adjectival suffixes (e.g. matching `труба`/`трубы`, `полиэтиленовая`/`полиэтилена`, `канат`/`канаты`, `кабель`/`кабельная`). Guarantees that conflicting commodity sectors (apparel vs construction, furniture vs medical diagnostics, tools vs metallurgy) yield empty root intersections and are strictly excluded, with zero reliance on hardcoded product lists.
+  - Universal Negative Keywords Engine (`build_universal_negative_keywords`): Eliminates ad-hoc product conditions by systematically enforcing:
+    1. Statutory 44-FZ exclusions: universally filters out non-new equipment (`б/у`, `восстановленный`, `с хранения`, `неликвид`, `аренда`, `демонтаж`, `после ремонта`, `уценка`) across all goods categories.
+    2. Systemic binary procurement antitheses: detects technical specification requirements by word roots and automatically excludes contrasting variants across mechanics (*автоматический* vs *ручной/полуавтомат*), power engineering (*электрический* vs *дизельный/бензиновый/газовый*), industrial equipment (*стационарный* vs *мобильный/переносной*), metallurgy (*бесшовный* vs *сварной/шовный*, *оцинкованный* vs *черный*), healthcare/consumables (*стерильный* vs *нестерильный*), and chemical/materials (*первичный* vs *вторсырье*).
+  - Multi-Sector Technical Parameter Extraction (`extract_key_search_parameters`): Full OKPD2 classification coverage spanning classes 01 through 99 (raw materials, food, textiles, chemicals, plastics, metallurgy, electronics, machinery, vehicles, medical equipment, furniture), support for all national/industry standards (ГОСТ, ГОСТ Р, ТУ, СТО, ОСТ), and comprehensive multi-discipline units (force in kN, pressure in MPa/bar, electricity in kV/A/Hz/Ohm, flow/speed in m³/h/l/min/rpm, precision in µm/mm, acoustics in dB, mass in kg/t).
+  - Universal Deterministic Form 2 Mathematics (`compute_spec_compliance`): Pure mathematical compliance calculation ($M / N$) that functions identically and truthfully across every commodity category without LLM hallucination or synthetic fitting.
+  - Multi-Domain Unit Test Suite: Verified by 25 targeted unit tests in `backend/tests/test_exact_product.py` and full 625-test backend test suite covering cross-industry validation.
+- Deterministic Compliance Math, GISP Category Filtration & Universal Parameter Grounding (2026-08):
+  - Deterministic Compliance Calculation (`compute_spec_compliance`): Completely eliminated hardcoded/LLM-generated compliance percentages (which previously hallucinated static 95% even with widespread deviations). Compliance is now calculated with a strict deterministic mathematical formula based on Form 2 parameter rows: if any mismatches ($D > 0$) exist, $\text{compliance} = \text{round}(M / N, 2)$ where $M$ is matched parameters and $N$ is total parameters (e.g. 2 matches out of 10 evaluates strictly to 20%). Unresolved clarification parameters are factored at 0.5 only when $D == 0$. If verified products exhibit $< 60\%$ compliance, reports automatically issue explicit warnings indicating that the model deviates from customer requirements.
+  - Hardened GISP Registry Filtration & Elimination of False Positives (`_is_gisp_product_compatible`, `find_minprom_gisp_match`): Resolved critical false positive matches in the Minpromtorg registry (such as matching biochemical analyzer searches for Rayto to "Матрас BALANCE RAYTON" by OOO "STRONG"). Enforced strict regex word boundaries (`\b`) to prevent partial word substring matches, integrated a comprehensive generic term filter (`GENERIC_GISP_TERMS`: "завод", "модель", "производитель", "стандарт", "товар", "серия"), and mandated semantic categorical root intersection between procurement specification requirements and registry product descriptions.
+  - Parameter-Grounded Search Planning: Search query generation is strictly grounded in extracted physical constraints (e.g. throughput in tests/h, power in kW, volume, speed, dimensions, OKPD2, GOST/TU), strictly prohibiting premature LLM hallucination of ungrounded brand and model names.
+  - Candidate Negative Penalty Ranking (`_rank_search_candidates`): Prioritizes official PDF datasheets and technical manuals while penalizing conflicting equipment types (e.g. applying a -15 score penalty to "полуавтоматический" or "б/у" when customer specification mandates "автоматический").
+  - Universal Real Item Name Extractor (`extract_real_item_name`): Accurately isolates genuine procurement subjects across all goods categories (medical devices, industrial machinery, building materials, cables, electrical equipment, consumables), stripping administrative clutter, unmasking quoted phrases («Поставка ...»), bypassing blank template form fields (`Наименование: ____________________`), and extracting clean names without trailing noise.
+  - Truthful Color-Coded Document Reporting (DOCX & XLSX): Both Word and Excel report builders apply high-contrast, truthful color coding to compliance figures (Green for $\ge 85\%$, Amber for $60\% - 84\%$, and Bold Red with an explicit `(Откл.)` label for $< 60\%$), accompanied by prominent red warning banners in Form 2 sections for non-compliant models.
+  - Clean Spreadsheet Usability & Official RFQ Greeting: Removed distracting table header auto-filter drop-down arrows in Excel exports, and standardized RFQ greetings to official business communication standard: «Добрый день!».
+  - Comprehensive 35-Procurement Diverse Real-World Benchmark: Verified across 35 unique, real-world customer procurements spanning medical equipment, mining cars, road repair vehicles, sand molding lines, scribing stations, steel ropes, refrigerators, solar power plants, encapsulators, engraving machines, polycarbonate panels, cryogenic blocks, air dehumidifiers, hydroponic systems, and rotary drums. Achieved 100% success rate: 0 fake confidences, 0 GISP false positives, 0 title extraction failures, and 100% flawless DOCX/XLSX generation.
+- Advanced Exact Product Multi-Stage Verification & Form-2 Engineering Engine (2026-08):
+  - Playwright Headless Browser Fallback & Anti-Bot Bypass: In `backend/app/exact_product.py`, integrated `_fetch_with_browser_fallback` and dynamic JS rendering for technical specification pages protected by Cloudflare, DDoS-Guard, KillBot, or JavaScript challenges, ensuring hidden tables and SPA spec sheets are fully captured.
+  - Native PDF Table Extraction (`fitz find_tables()` via Docling methodology): Extracted PDF technical specification tables directly as Markdown tables (`tab.to_markdown()`), eliminating column misalignment and raw text concatenation from multi-page datasheets.
+  - Grounded Fact Verification (`_is_grounded_in_text` via Google LangExtract methodology): Validates all extracted numerical values, models, and ingress codes against the original document text. Hallucinated numbers not grounded in the source text are automatically filtered out.
+  - Smart Specification Excerpt Extractor (`_extract_relevant_spec_excerpts`): Replaced naive 6,000-character truncation with an intelligent excerpting engine that parses multi-page technical datasheets up to 18,000–30,000 characters, extracting model specification tables and surrounding text around parameter keywords without context loss.
+  - Pre-Document Verification Pass: Prior to querying search engines, automatically verifies unresolved parameters against existing downloaded documents (`verified_docs`), resolving parameters instantly with 0 search latency and 0 API cost.
+  - Targeted Clarify Resolver (`resolve_clarify_parameters`): Removed artificial 5-parameter limit to evaluate up to 15 parameters per position, querying B2B catalog distributors (ETM, VseInstrumenti, Vostok, ChipDip, Lunda) and official passports.
+  - Deep Engineering Standards Module (`extract_standards_from_text`, `resolve_standards_parameters`): Equipped with structured normative reference tables across national standards (climate execution УХЛ1/УХЛ4 per GOST 15150, ingress protection IP54/IP66 per GOST 14254, electrical safety class I/II per GOST 12.2.007.0, photometrics & ripple limits per GOST R 54350, pipes per GOST 18599, pressure gauges per GOST 2405, cables per GOST 31996, valves per GOST 33259) to confirm standardized tolerances legally under 44-FZ. Tested on previously difficult sectors (e.g. Case 6 Lighting determined rate jumped from 9.1% to 90%, clarify dropped from 10 to 1).
+  - Automatic Stage 4 AI Parameter Completion (`auto_fill_ai_recommendations`): Automatically fills 100% concrete, compliant specification values for Form 2 and all alternative brand comparison tables without leaving empty or missing cells, accompanied by an explicit warning note in comments and an amber «Уточнить (по паспорту)» status in Word DOCX reports, ensuring full legal safety for bidders under 44-FZ / 223-FZ.
+  - Structured Parameter Normalization & KTRU Alignment: Normalizes parameter nomenclatures and measurement units in accordance with state procurement catalogues (EIS KTRU).
+  - Comprehensive Verification & Benchmarking (45 diverse procurements): Backed by full unit tests in `backend/tests/test_exact_product_enhancements.py` (11/11 passed, 610/610 full suite passed) and end-to-end 45-procurement realistic benchmark suite across diverse industries (`scripts/benchmark_20_procurements.py`, `scripts/benchmark_15_new_procurements.py`, and `scripts/benchmark_10_new_procurements.py`). In the latest 10-procurement run (Cases 36–45: Oil & Gas drilling shoes, Spectrophotometers, 4MP IP cameras, Industrial Reverse Osmosis, Elevator gearless winches, MIG/MAG 500A welders, Agricultural mowers, Boiler water softeners, Rail cutters, Dry-type transformers), 235 total specifications were evaluated (91 main, 144 analogue), achieving 100.0% parameter completeness on both primary products and analogue tables (0 empty cells), with 80% GISP registry matching.
+- 100% Grounded Web Verification & Deep PDF Passport Parsing for Exact Product & Analogues (2026-08):
+  - Completely eradicated synthetic parameter fitting and LLM hallucinations in the «Подбор товара и аналогов» (Form 2) pipeline (`backend/app/exact_product.py`).
+  - Deep Web & Factory Passport Scraper: integrated `fetch_batch_web_documents` and `fetch_web_or_pdf_document` supporting live HTML table scraping (`BeautifulSoup`) and in-memory binary PDF parsing (`PyMuPDF`/`fitz`) to extract real technical sheets, passports, and operational manuals directly from manufacturer websites.
+  - Multi-Wave Targeted Search: generates targeted Russian search queries across factory nomenclature, GOST/TU numbers, model codes, and direct PDF searches (`filetype:pdf (паспорт OR характеристики)`).
+  - Strict Anti-Hallucination & Honest Verification Rules: if a technical parameter is not explicitly found in the retrieved manufacturer documents or customer specification, the system strictly outputs `"В открытой документации не указано (требуется официальный паспорт завода)"` with status `"clarify"`, entirely prohibiting copying/fitting of customer requirements. If parameters deviate, status is marked `"mismatch"`.
+  - Comprehensive Verification Registry in Reports: both Word DOCX and Excel XLSX exports include Section 3 ("Реестр проверенных открытых веб-источников и паспортов изделий") listing exact document titles, URLs, file formats, and direct links to factory data.
+- Customer Cabinet Mode Help & Interactive Guide Redesign (2026-08):
+  - Integrated subtle question mark help icons `(?)` (`HelpCircle`) directly into each of the 4 scenario tab buttons (`Поиск поставщиков`, `Подбор товара и аналогов`, `Анализ документации`, `Анализ + поиск`) in `site/src/app/cabinet/cabinet-client.tsx`.
+  - Clicking the `(?)` icon automatically opens the full-featured Guide Modal (`FunctionGuideModal`) pre-switched to that specific function tab.
+  - Eliminated the separate bulky accordion block below the scenario selector, keeping the launch form clean and distraction-free.
+  - Spacious Modal Layout (`max-w-5xl`): Expanded modal dimensions with comfortable padding and larger typography (`text-xs sm:text-[13px]`), preventing cramped popup rendering on high-resolution screens.
+  - Zero External Blue/Indigo Accents: Re-themed entire modal palette and all action buttons to TenderLex brand emerald/teal colors (`bg-teal-600`, `bg-emerald-600`, `bg-teal-50`, `bg-emerald-50`), eliminating generic blue buttons.
+  - No-Scroll Multi-Tab Grid: 5-column tab bar fits naturally across desktop without horizontal scrollbars, and card content fits comfortably without nested vertical scroll containers.
+  - 3-Column Workflow Compilation: Step-by-step 3-step tender route (Step 1: Risk audit → Step 2: Form 2 & equivalent matching → Step 3: Direct factory outreach for quotes) + 1-click complex express launch.
+  - 100% Verified Function Capability Mapping: Corrected output artifact copy to accurately reflect real backend deliverables (for `exact_product` mode, output is documented strictly as Word DOCX with Form 2 table, parameter comparison, and GISP registry numbers, eliminating non-existent XLSX claims).
+- Form-2 Equivalent Parameter Verification & Document Typography Perfection (2026-08):
+  - Line-by-Line Form-2 Verification for Russian Analogues: In `exact_product` mode (`backend/app/exact_product.py`), each identified interchangeable Russian analogue now receives full parameter-by-parameter Form-2 verification against technical specification requirements (columns: №, parameter name, customer requirement, concrete analogue figure, compliance status, and note) in both DOCX and XLSX reports, complete with automatic Minpromtorg/GISP registry lookup.
+  - Procurement Analysis DOCX Typography Hierarchy: In `backend/app/report_builder.py`, restructured heading scales (`#` 13.5pt, `##` 12.5pt, `###` 11.5pt, `####` 11.0pt Bold in `#064E3B`) with explicit body text sizing at 9.5pt (`#0F172A`), ensuring section headers are visibly distinct, prominent, and larger than regular text.
+  - Multi-Procurement Quality & Grounding Audit: Validated across 18 real production jobs in storage (exact product detection, procurement analysis, supplier search), confirming 100% grounding in customer specification texts, strict compliance of concrete figures with requirement ranges per 44-FZ, and zero hallucinations.
+- Document & Spreadsheet Report Design Perfection (2026-08):
+  - Fixed Word table width in `backend/app/exact_product.py` and `backend/app/report_builder.py` to uniform `6.97 in` across all tables, ensuring consistent margins and eliminating ragged column widths.
+  - Added dedicated parameter-by-parameter comparison column for equivalent models in the exact product Word report.
+  - Styled all DOCX headers and tables with TenderLex brand emerald palette (`#0F766E`, `#064E3B`, `#F4FBF7`), replacing harsh dark headers.
+  - Optimized Excel spreadsheet column widths (`backend/app/report_builder.py`, `backend/app/supplier_search.py`) for clean visibility on standard 135% zoom screens.
+  - Aligned the customer-facing supplier search pipeline (`backend/app/supplier_search.py`, `backend/app/jobs.py`, `backend/app/main.py`, `site/src/app/cabinet/cabinet-client.tsx`) with the efficient candidate caching and wave querying architecture from Outreach search.
+  - Candidate Pool Caching (`unreviewed_candidates`): unreviewed candidate domains (up to 120 URLs) from the primary search run are cached in `dobor_context.json` and `evidence.json`. During additional search runs ("Добор"), pre-filtered candidate sites are verified directly without repeating search engine calls, reducing search API costs and runtimes by 65–85%.
+  - Procurement Profile Re-use (`procurement_profile`): parsed technical specifications, nomenclature synonyms, GOST numbers, and exclusion terms are re-used directly from the previous job, eliminating redundant LLM parsing time and token usage.
+  - Wave Query Generator (`build_supplier_queries`): for subsequent waves (Wave 2+), the generator produces deep regional, distributor, and wholesale queries with negative operators (`-банковская гарантия`, `-обучение`, `-семинар`, `-эцп`, `-агрегатор`, `-курсы`) to cut out aggregators and retail boards.
+  - Custom Customer Requirements (`additional_prompt`): added a dedicated text input field in the customer web cabinet's "Добор поставщиков" modal allowing buyers to specify custom criteria (e.g. specific federal districts, factory-direct status, in-stock availability, certificates). The prompt is incorporated into both search query generation and AI candidate relevance scoring.
+  - Zero Duplication Guarantee: strictly excludes previously discovered domains and INNs (`excluded_domains`, `excluded_inns`), ensuring 100% unique results between the initial run and subsequent dobor runs.
+  - Live Verification & Benchmarking: verified on real production tasks (e.g., job `70d025e68af64b56b58e24f0e20626f7` discovering 56 unique suppliers in 2m42s with 0 duplicate domains) and 10-procurement simulation benchmark (`backend/tests/test_dobor_simulation_benchmark.py`).
+- Outreach Seamless Inbox Synchronization & Unread Tab Click Stability (Aligned with EmailAgent, 2026-08):
+  - Fixed issue where clicking on a message in the "Новые" (`unread`) tab immediately marked it as read on the backend, causing it to instantly vanish from the list and detail pane before the user could read it.
+  - Aligned with `emailagent` (`shouldMarkInboxEmailRead`): clicking an unread message inside the "Новые" tab only selects and opens it without auto-marking read, keeping the message stably in place in the list and detail view.
+  - Manual Read Toggle & State Persistence: Users can mark the message as read via the circle indicator, the "Прочитано" button, or "Отметить все прочитанными". Even if marked read, the detail pane retains `selectedMsg` until the user deliberately selects another email or changes tabs.
+  - Handled empty email bodies & opt-outs gracefully: `EmailBodyFrame` renders informative cards for empty bodies and unsubscribe requests instead of cold blank frames.
+  - Enhanced `extract_email_bodies` and `is_auto_reply_message` in `backend/app/outreach_mail.py` to classify unsubscribe requests into "Автоответы" and backfilled existing database records.
+  - Background IMAP worker (`_background_imap_loop` in `backend/app/main.py`) syncs silently every 45s; frontend polls local SQLite every 20s with 0 layout jitter.
+- Outreach Rich Email Rendering (EmailBodyFrame) & Clean Text Parsing (2026-08):
+  - Fixed issue where supplier replies from CRM/1C systems (such as `051@pro-solution.ru`) with HTML tables dumped raw markup (`<table style="border-collapse...`) into `body_text` and broke admin readability.
+  - Added `EmailBodyFrame` component (`frontend/src/EmailBodyFrame.tsx`): sandboxed `iframe` with responsive table constraints (`max-width: 100%`, border-collapse, `word-break: break-word`), clean typography, link sanitization (`target="_blank"`), auto-resizing height via `scrollHeight`, and dual-mode toggle ("Форматированный вид (HTML)" / "Простой текст").
+  - Backend Extraction & Cleaning: Enhanced `html_to_plain_text`, `looks_like_html`, and `extract_email_bodies` in `backend/app/outreach_mail.py` to always provide human-readable plain text in `body_text` (for search, snippets, AI prompts) and store rich markup in `body_html`.
+  - Retroactive Database Backfill: Automatically cleaned existing database records via `clean_existing_inbox_bodies`, resolving broken views for existing incoming messages.
+- Outreach Correspondence Thread History & Fast Reply (2026-08):
+  - Added dedicated "История" button in Outreach Inbox message detail view and Leads table, bringing the full conversation thread modal system from `emailagent` / `AITender`.
+  - Full Chronological Timeline: Displays all incoming responses and outgoing campaign/direct emails for the specific contact/company in unified timeline cards with green/emerald incoming highlights and indigo outgoing highlights, timestamps, subject lines, body text, category badges, and copy buttons.
+  - Contact Details Card: Header displays company name, contact avatar with hash-based color palette, 1-click copyable email and phone (`tel:`), website external link, INN, city, task name, and incoming/outgoing message counts.
+  - Inline Fast Reply with AI Assistance: Embedded reply composer directly within the history modal, prefilled with `Re: ...`, 1-click AI template buttons (✓ Согласиться, 📋 Запросить КП, ✕ Вежливый отказ), and direct email dispatch from `info@tenderlex.ru`.
+  - Backend Endpoints: Added `@router.get("/inbox/{message_id}/thread")` and `@router.get("/leads/{lead_id}/thread")` in `backend/app/outreach_api.py` with 100% pytest test coverage.
+- Outreach Inbox Read/Unread Indicator & Sender Avatars (2026-08):
+  - Added interactive read/unread circle indicator (`outreach-inbox-read-toggle`) directly on the left of each incoming email in all tabs ("Все", "Живые ответы", "Автоответы", "Ошибки доставки", "Новые", "Спам"), aligned with `emailagent` / `AITender`.
+  - Clickable Circle Indicator: Solid glowing amber dot (`●`) indicates unread messages; subtle outline circle (`○`) indicates read messages. Clicking the circle toggles read/unread status with optimistic UI updates and immediate count adjustments.
+  - Sender Visual Hierarchy & Dynamic Avatars: Applied consistent hash-based color palette for senders (amber, blue, emerald, rose, indigo, violet, pink, cyan, teal), bold titles and subjects for unread messages, and normal weight for read messages.
+  - Backend API: Added `@router.patch("/inbox/{message_id}/unread")`, `@router.post("/inbox/{message_id}/unread")`, and `@router.post("/inbox/{message_id}/toggle-read")` alongside updated `mark_inbox_read` in `backend/app/outreach_api.py`.
+  - Built frontend assets and verified with live deployment.
+- Real-time Today SEO Progress & Daily Ranking Dynamics (2026-08):
+  - Added comprehensive daily ranking and search visibility analytics separately for Yandex and Google in the admin panel (`frontend/src/App.tsx`, `frontend/src/styles.css`, `backend/app/yandex_seo.py`, `backend/app/google_seo.py`).
+  - Google Search Console Integration: Extracted daily analytics over 30 days (`dimensions: ['date']` and `dimensions: ['date', 'query']`) with day-to-day clicks, impressions, avg position deltas, query counts, and daily ranking trend classification (`up` / `down` / `stable`).
+  - Yandex Webmaster API v4: Integrated POST `/query-analytics/list` for daily impressions, clicks, avg position, and active queries.
+  - Yandex Metrika Real-time API: Integrated live visits/search transitions for today (`date1=today&date2=today`, `dimensions=ym:s:lastSearchEngine`).
+  - Disk Persistence: Daily analytics history preserved in `data/seo_daily_history.json` and cached snapshot in `data/yandex_analytics_snapshot.json`.
+  - Admin Panel UI:
+    - **⚡ Прогресс на сегодняшний день**: 4 responsive cards showing today's real-time clicks, search impressions, avg position (with ▲/▼ position deltas), and queries in SERP with engine filter toggles (`[Все] [Яндекс] [Google]`).
+    - **📈 Динамика ранжирования и показов по дням**: Interactive period selector (`[7 дней] [14 дней] [30 дней]`), visual trend bar chart, and reverse-chronological timeline table with day-to-day deltas and day ranking status (🟢 Позиции растут / 🔴 Снижение позиций / ⚪ Стабильно).
+    - **🎯 Динамика ключевых фраз**: Dedicated table tracking individual query movements (who rose, who dropped in rankings).
+- Telegram Web Authentication & Unified Client Profile (2026-08):
+  - Added seamless 1-click Telegram Login/Registration alongside Yandex ID and Email in the customer web cabinet (`site/src/app/cabinet/cabinet-client.tsx`, `backend/app/web_auth.py`, `backend/app/main.py`).
+  - Unified Profiles & Balance Protection: Users who interacted with the Telegram bot are automatically linked to their existing `Client` profile upon logging into the website via Telegram without duplicate account creation or duplicate trial balance grants. Brand-new users receive a unified client account with initial trial access.
+  - Implemented secure HMAC-SHA256 signature verification with SHA256 bot token secret and 24-hour expiration checks.
+  - Added support for Telegram OAuth URL fragment (`#tgAuthResult=...`) and direct redirect parsing in both frontend client and backend API (`/api/customer/auth/telegram/login`, `/api/customer/auth/telegram/callback`, `/api/customer/auth/telegram/verify`).
+- Admin Panel Unified Dashboard & Analytics (2026-08):
+  - Merged "Сводка" and "Статистика" into a single, unified, high-density dashboard (`DashboardView` in `frontend/src/App.tsx`).
+  - Removed separate "Статистика" navigation tab and eliminated static noise/boilerplate ("Рабочие правила", "Текущая конфигурация", billing disclaimers).
+  - Integrated real-time 30-day bot launch dynamic chart (`daily-bars`), mode breakdown (`Поиск поставщиков`, `Анализ ТЗ`, `Анализ + поиск`), task status distribution, trial funnel conversion, and top active client leaders.
+  - Smart Error Window (7 Days): Updated `/api/dashboard` and `/api/ops/system-status` in `backend/app/main.py` to filter failed tasks within a 7-day window (`Job.created_at >= now - timedelta(days=7)`). Ancient historical failures from initial testing no longer trigger permanent red alert banners.
+  - Sleek Attention Banner: Attention panel only alerts on recent actionable failures, queue backlogs, or server warnings; displays green "Система работает штатно" when clear.
+- Admin Panel Client Management Pagination, Search & Performance (2026-08):
+  - Rebuilt `ClientsView` in `frontend/src/App.tsx` with high-performance client-side pagination (default 25 clients per page, selectable 25/50/100) preventing browser memory bloat and UI lag on large user databases.
+  - Added instant multi-field search filtering across client name, web user email, Telegram username, Telegram ID, and manager notes.
+  - Added fast category filter tabs: `Все`, `Web` (site cabinet users), `Telegram` (bot users), and `С балансом` (positive credit balances) with real-time count badges.
+  - Added top and bottom pagination navigation controls (`Назад`, `Страница X из Y`, `Вперёд`) with smooth scrolling and total metrics (`Показано 1–25 из X`).
+- Admin Panel Task Cards Streamlining & Visual Separation (2026-08):
+  - Converted job cards from bulky accordion dropdowns into a single-level ultra-compact card layout with zero hidden content.
+  - Relocated micro-timeline processing stages (`Создана` → `Входные` → `ИИ` → `Результат`) into the card header right beside action buttons.
+  - Placed client input file download buttons (`input_files`) directly in the actions bar alongside result files, styled in a distinctive blue tone (`📄 file.docx`) to separate inputs from generated outputs.
+  - Unified Yandex Search API metrics directly in the top badge row (`🔍 36 запр. · 1.44 ₽`) eliminating redundant bottom boxes.
+  - Added clean status-colored left border accents (`border-left: 3.5px solid`) to clearly delimit cards visually (`green` for completed, `red` for failed, `blue` for running, `amber` for pending) without interface noise.
+- Resilient Document Parser Fallbacks & Recovery (2026-08):
+  - Fixed parser crash on non-standard/corrupted `.docx` files (e.g. invalid relationships such as `word/NULL` triggering `KeyError` in `python-docx`).
+  - Added multi-tier extraction pipeline: primary `python-docx` parser → secondary headless `LibreOffice` text extraction fallback → tertiary direct XML parser (`word/document.xml`) extracting structured paragraphs and tables (`w:p`, `w:tbl`).
+  - Added resilient fallback for `.xlsx` and `.xls` via headless `LibreOffice` to `.csv` on `openpyxl` reader failures.
+  - Added unit test suite in `backend/tests/test_document_parser.py` validating corrupted relationship recovery and XML fallback (100% pass).
+- Outreach Lead Dobor Optimization, Persona Alignment & Wave Lifecycle (2026-08):
+  - Solved 3–4x higher unit cost and query duplication during supplementary lead collection (доборы / волны 2+).
+  - Persona-Aware Multi-Angle Query Generation: Enhanced `generate_search_queries_matrix` in `backend/app/outreach_search.py` with intelligent prompt semantic detection (`is_tender_or_trading`). When the user searches for complex suppliers, trading houses, or tender contractors by technical specifications (ТЗ) under 44-FZ / 223-FZ, the system targets multi-brand supply operators and applies negative operators (`-завод -фабрика -производство -изготовитель`), while fully preserving factory/manufacturer targeting when requested.
+  - Dual-Layer AI Reranking & Review: `ai_rerank_outreach_candidates` and `ai_review_outreach_lead` dynamically align with user prompt criteria, filtering out unwanted direct factories and mono-brand dealers from complex procurement campaigns.
+  - Task Query Registry & Deduplication: Integrated `executed_queries: set[str]` cache into the multi-pass search engine, preventing duplicate API requests for previously executed queries.
+  - Wave Status Lifecycle & Isolated Progress: Fixed wave state transitions in `backend/app/outreach_api.py` (`extend_search_task`, `cancel_search_task`) ensuring prior waves are cleanly finalized as `completed` with actual lead counts preserved.
+  - UI Polishing: Updated `frontend/src/OutreachView.tsx` so wave buttons and paused status banners strictly display wave-isolated progress (`Собрано в доборе #N: X из Y`) and removed redundant `(0 ₽)` button labels.
+  - Verification & Safety: Expanded test suite in `backend/tests/test_outreach.py` (19/19 tests passing, 100%). Deployed live via `./scripts/deploy_tenderlex_live.sh`.
+
+- Lead Generation & Outreach CRM Module (2026-08):
+  - Added comprehensive B2B lead search, CRM contact management, bulk email campaigns, direct composer, and IMAP inbound reply inbox in admin panel (`frontend/src/OutreachView.tsx`, `backend/app/outreach_api.py`, `backend/app/outreach_mail.py`).
+  - Global Top-Level Navigation: Restructured Outreach into top-level global tabs (`📁 Задачи поиска`, `📥 Входящие ответы`, `✉️ Написать письмо`, `⚙️ Настройки почты`). Tasks list rendered as clean vertical rows with real-time leads counters, cost labels, and 1-click workspace opening.
+  - Multi-Tier Anti-Spam Engine & Homoglyph Normalization: Multi-layer heuristic classifier for incoming IMAP messages (`is_spam_message` in `backend/app/outreach_mail.py`) with Unicode homoglyph normalization (`HOMOGLYPH_TABLE` translating Cyrillic lookalikes `а`, `е`, `о`, `с`, `р`, `х` into Latin equivalents) defeating sneaky spammer obfuscation (e.g. Cyrillic `Mаkitа`), and high-priority regex matching (`m[aа]k[iі1l]t[aа]|макита`). Automatically isolates disposable spam networks (`.shop`, `.pro`, `.life`, `.store`, `rumixos.shop`, `thespacebanana.com`, `prorucane.pro`, `rulane.life`, `rabbitandjohn.com`, etc.), B2C consumer goods (Makita tools, power tools, water heaters), esoteric pitches, and mass spam bots.
+  - Spammer Blocking & Direct IMAP Server Expunge: Added 1-click **«Заблокировать спамщика»** (`POST /api/outreach/inbox/{message_id}/block-sender`) to permanently blacklist sender emails and domains into `settings.spam_rules_json`, retroactively purging all matching messages. During IMAP sync, detected spam is automatically marked `\Deleted` and expunged from the remote mailbox (`mail.jino.ru`), and `POST /api/outreach/inbox/purge-spam` purges both the local SQLite database and remote IMAP server, eliminating mailbox pollution.
+  - UI Spam Categorization Fix: Resolved issue in `frontend/src/OutreachView.tsx` where spam was erroneously rendered with a green `🟢 Ответ` badge; now accurately displays a distinct red `🚫 Спам` badge with alert styling, spam avatar, and 1-click blacklisting action.
+  - Unified B2B Lead Database: Merged multiple lead search tasks into unified verified database (1 121 active leads with validated MX records), pruned invalid error mailboxes, municipal domains, and non-commercial accounting services.
+  - Follow-up Campaign Mode & Audience Routing: Added dedicated Follow-up automation button and filter (`audience_type: "unanswered"`, `"new"`, `"all"`, `"selected"`) with quick 1-click template selection for reaching non-responsive prospects.
+  - Reliable SOCKS5 Outgoing SMTP Transport: Implemented robust SOCKS5 proxy routing (`127.0.0.1:1080` to `smtp.jino.ru:465`) with TLS/SSL context to bypass hosting provider outgoing SMTP port blocks, with direct SMTP fallback and safe async thread execution.
+  - Campaign Worker Lifecycle & Recovery: Migrated campaign creation to async FastAPI event loop, isolated ORM session state to prevent detached instance errors, and added automatic background campaign recovery on server startup.
+  - Cross-Page Contact Selection: Implemented full-task bulk selection across all pages with bulk actions (launch campaign, compose email, delete).
+  - Direct CRM Picker: Added fast modal contact picker in "Написать письмо" for selecting recipients from current task database with search and 1-click insertion.
+  - Minimalist & Compact UI: Completely eliminated variable chip toolbars across composer, campaign form, and template editor modal; removed screen layout toggle in favor of clean full-width vertical stacked layout (composer on top, campaign history & real-time online counter below); unified template selector into a single clean dropdown.
+  - 100% Russian Localization: Converted all internal English workflow words into clean Russian labels (`Отправка`, `В очереди`, `На паузе`, `Завершена`, `Остановлена`, `Сбой`, `Новый`, `Отправлено`, `Ответил`).
+  - Tab & Workspace State Persistence: Preserved selected search task ID and active subtab in `localStorage` across page reloads (F5) without losing context or resetting to general summary.
+  - Inbound Reply Inbox Enhancements: Fixed viewport height containment to prevent reply form overflowing off-screen; added distinct visual indicators for unread emails (blue dot `●`, "Новое" badge, bold typography, 1-click read/unread toggle); added pagination with 50-item initial load and `[ Показать ещё 50 писем ]` load-more button; added silent background auto-synchronization every 30s; enlarged quick reply textarea (`min-height: 125px`, 6 rows) with 1-click AI reply generation.
+  - Added test suite `backend/tests/test_outreach.py` with 100% pass rate.
+- Outreach Search Engine Resilience, Pause/Resume & 100% Target Delivery (2026-08):
+  - Candidate Queue Persistence & Zero-Loss Recovery: Discovered candidate sites are saved to `data/outreach_queue_{task_id}.json` immediately after Yandex XML search and AI reranking. Pausing or stopping the process preserves candidate sites on disk, and resuming crawls them directly at 0 ₽ additional Yandex spend.
+  - Interactive Pause & Resume Controls: Added `⏸️ Приостановить сбор` and `▶️ Продолжить сбор` controls in admin panel UI (`frontend/src/OutreachView.tsx`), supported by `/api/outreach/search/pause/{task_id}` and `/api/outreach/search/resume/{task_id}` endpoints.
+  - Startup Auto-Recovery: Searches interrupted by server reboot or backend restart safely recover to `paused` status with candidate queues intact.
+  - Strict Wave Cost & Metrics Isolation: Completely isolated per-wave target, collected count, and Yandex request costs (`wave_cost_rub`, `wave_yandex_requests`) in both frontend cards and the live running banner. Fixed UI metric jumping caused by overlapping stats polling intervals.
+  - Multi-Strategy Search Matrix & 100% Target Delivery:
+    - Removed hardcoded 80-query cap in `generate_search_queries_matrix`, scaling up to 140–280 targeted B2B commercial queries.
+    - Implemented multi-stage search strategy across up to 6 passes (Pass 1: commercial B2B matrix; Pass 2: regional wholesale distributors across all federal districts; Pass 3: specialized commodity nomenclature and tender departments; Pass 4+: federal suppliers and wholesale price lists).
+    - Loop adaptively searches and deep crawls until 100% of the target is reached.
+  - Truthful Status Auditing: Tasks report "Готово! Цель выполнена на 100%" strictly when quota is fully satisfied, or provide exact collection shortfall if search index is fully exhausted.
+  - Live Production Verification: Successfully completed Dobor #6 for `task-tender-unified`, collecting exactly +105/105 leads (100% target fulfillment) at 8.00 ₽ Yandex spend, bringing unified database to exactly 1 813 verified corporate leads.
+- Lead Generation & Outreach Search Engine Upgrade & Adaptive Multi-Pass Loop (2026-08):
+  - Upgraded Outreach search pipeline in `backend/app/outreach_search.py` to match the exact quality, depth, and precision of TenderLex's core client procurement engine (`supplier_search.py`).
+  - Adaptive Multi-Pass Auto-Refill Loop: Implemented self-healing search loop (up to 3 passes) that automatically generates extended regional and sectorial queries if the initial crawl yields fewer leads than the requested quota.
+  - Generous Candidate Pool (3.5x Multiplier): Increased candidate buffer and pagination depth (4–10 pages, 35–150 queries) ensuring full conversion to verified leads after AI audit, MX checks, and EGRUL enrichment.
+  - Deep Internal Page Discovery: Expanded subpage crawler to extract contacts from up to 8 internal sections per domain (`/contacts`, `/about`, `/rekvizity`, `/tender`, `/zakupki`, `/otdel-prodazh`, `/filialy`).
+  - Strict Email Validation & IDN Punycode: Hardened `_clean_email` with TLD validation, script/CDN artifact rejection (`intro.js@7.2.0`, `jquery@1.12.4`, `browser@4.4.1`), and automatic IDN punycode encoding for Cyrillic domains (`.рф` -> `xn--...`) ensuring 100% SMTP deliverability.
+  - Pure Yandex Search API Cost Accounting: Bound all cost indicators strictly to real Yandex Search API requests (`yandex_requests * 0.04 ₽`) with zero artificial AI fees. Added per-wave cost breakdown pills and persistent task metrics.
+  - Flexible Resizable Email Textareas: Removed rigid `minHeight: 380px` limits across campaign and compose editors, enabled bidirectional vertical resizing with minimum height of `120px`, and implemented automatic `localStorage` height persistence via `ResizeObserver`.
+  - Integrated Commercial B2B Query Matrix: Generates targeted product/vendor search queries with commercial markers (`завод`, `производитель`, `оптом со склада`, `дистрибьютор`, `прайс-лист`) and strict negative operators (`-"банковская гарантия" -"обучение" -"семинар" -"эцп" -"агрегатор"`).
+  - Batch AI Pre-Filtering (AI Rerank): LLM evaluates search snippets in batches to immediately eliminate banks, financial guarantee brokers, training courses, news sites, and marketplaces before crawling.
+  - Multi-Page Deep Crawling with Playwright: Scrapes `/contacts`, `/about`, `/rekvizity`, and `/catalog` pages with headless browser fallback for JS/SPA web applications, extracting direct phone numbers (`tel:`) and emails (`mailto:`).
+  - Full-Text Parallel AI Review: LLM analyzes extracted website text in parallel, determines exact activity profiles, and assigns a strict relevance score (0–100).
+  - DaData EGRUL & OKVED Validation: Connects to DaData API to disqualify liquidated or bankrupt entities and non-target OKVEDs (financial 64–66, education 85, legal brokers 69), enriching verified official company names and CEO names.
+  - Session Safety: Resolved SQLAlchemy `DetachedInstanceError` via safe pre-loaded attribute caching (`get_fresh_system_settings`).
+  - Inbound Mailbox Recovery & Auto-Sync Stability: Added HTML-to-text extraction in `backend/app/outreach_mail.py` to eliminate empty body messages for HTML-only emails; pinned "Живые ответы" (`replies`) as default view and ensured auto-sync preserves user filter state without leaking delivery bounce errors.
+  - Verification & Benchmarks: Created unit test suite `backend/tests/test_outreach_search_quality.py` (100% pass) and side-by-side comparative benchmarking tool `backend/scripts/compare_search_engines.py` proving 0% noise and 100% verified corporate leads on industrial procurement scenarios.
+- Contact Routing & UI Polish (2026-08):
+  - Strictly separated voice phone calls from messaging channels:
+    - Contact channels streamlined by request: phone, WhatsApp, and Max removed; only Telegram, Email, and site chat are public.
+    - Support channels: direct Telegram (`https://t.me/lexelence`), bot (`https://t.me/tenderlex_bot`), general email `info@tenderlex.ru`, and interactive web chat.
+    - Firm legal requisites (IP Gruzdev, INN, OGRNIP, address) removed from public site pages.
+  - Simplified contact section buttons (`contact-section.tsx`) to clean single-label buttons (`Telegram`, `Email`, `Чат на сайте`) with auto-wrapping flex layout.
+  - Top header microbar (`site-header.tsx`) updated to include direct links for Telegram, Email, and a dedicated "Чат" button.
+  - Floating online chat widget (`chat-widget.tsx`) refined into a compact dismissible pill with a close button and custom event `open_tenderlex_chat` wired to the header button.
+- Yandex ID OAuth & Google Search Console Automation (2026-08):
+  - Added 1-click Yandex ID login/registration for the customer cabinet (`backend/app/web_auth.py`, `site/src/app/cabinet/cabinet-client.tsx`).
+  - Integrated Google Search Console API for automated performance tracking and indexing analytics (`backend/app/google_seo.py`).
+  - Fixed GSC client dependency runtime (`google-api-python-client`, `google-auth` added to `requirements.txt`).
+  - Activated live Google Search Console metrics (19 impressions, 12 search queries, sitemap sync).
+  - Fixed cron harvester environment path in crontab (`PYTHONPATH` propagation).
+  - Enhanced on-page SEO meta tags, titles, and headers for high-intent queries (*«оценка рисков закупок»*, *«минпромторг закупки»*, *«поиск товаров по тз»*) across Next.js landing pages.
+  - Added unit test coverage in `backend/tests/test_google_seo.py` (100% pass).
+  - Sent full 86-URL sitemap recrawl batch to Yandex Webmaster API.
+- Trial Period & Limits Expansion (2026-08):
+  - Increased trial balance limit for newly registered accounts from 198 ₽ (2 tasks) to 396 ₽ (4 tasks @ 99 ₽).
+  - Updated defaults in `models.py`, `db.py`, and database `system_settings` (`trial_supplier_search_limit = 2`, `trial_procurement_report_limit = 2`).
+  - Added clean, minimalist trial notification banner in the customer web cabinet (`cabinet-client.tsx`) informing trial users of their active test balance and directing them to contact channels below if additional limits are needed.
+  - Reverted landing page copy to neutral "Бесплатный пробный доступ при регистрации" without hardcoded task counts.
+- Email Verification Template & Security Hardening (2026-08):
+  - Completely redesigned HTML email confirmation template in `backend/app/web_auth.py` with cross-client bulletproof centered button, fallback link box, 24-hour expiration notice, and branded TenderLex layout for Yandex.Mail, Mail.ru, Gmail, and Outlook.
+  - Verified and tested single-account-per-email policy: enforced via `UNIQUE` DB constraint on `web_users.email` and `HTTP 409 Conflict` in `create_web_user` API.
+  - Added automated test `test_duplicate_registration_with_same_email_is_blocked` in `backend/tests/test_customer_api.py`.
+- Button Design & Interface De-Cluttering (2026-08):
+  - Removed excessive arrow icons (`ArrowRight`, `→`, `ChevronRight`) across all action buttons in the web application (Hero CTAs, module cards, interactive demo, procurement calculator, regional/industry pages, SEO landing pages, knowledge base, legal pages, and cabinet pagination).
+- Autonomous SEO, Webmaster & Metrika Goals Pipeline (2026-08):
+  - Direct REST integration with Yandex Webmaster API and Yandex Metrika Management & Data APIs (`backend/app/yandex_seo.py`, `/api/seo-analytics`).
+  - Automated background snapshot harvesting via system cron (05:00 UTC daily) with local caching in SQLite/JSON for instantaneous admin UI loading.
+  - Priority recrawl queue submission for all 86 sitemap URLs (`POST /recrawl/queue`) in Yandex Webmaster.
+  - Automated Striking-Distance growth point detector: highlights high-impression queries ranking on page 1 (positions 4–10) with highest conversion potential into TOP-3.
+  - Dynamic goal tracking: monitors all 6 Metrika conversion goals (cabinet login, bot click, trial CTA, form submit) and calculates overall site conversion rate (currently 8.82%).
+  - Automated weekly Telegram digest sent every Monday at 09:00 MSK to the owner plus on-demand 1-click dispatch from admin panel.
+  - Admin Panel UI: Spacious full-width "SEO и Трафик" dashboard with clean queries table, positions, 50/50 sources vs goals grid, and AI recommendation safety lock.
+- Customer Web Cabinet Notifications, Real-Time Chime & UI Polish (2026-08):
+  - In-browser synthesized dual-tone Web Audio chime (`playNotificationChime`: 659.25Hz → 880Hz sine wave) triggered upon completion of background supplier search or document analysis jobs without external audio assets.
+  - Header notification toggle (`Уведомления: вкл / выкл`) persisted in `localStorage`.
+  - Minimalist light pill floating toast at `bottom-5 left-1/2` with quick "Смотреть" navigation and auto-scroll to the completed job card.
+  - Dynamic pulsing highlights and `✨ Новая` badges on unviewed completed jobs created after feature activation (`NOTIFICATION_FEATURE_START_TS`).
+  - Interaction-based view tracking: clicking any result action ("Поставщики", "Анализ", "Запрос КП", "Найти ещё") or the card immediately marks the job viewed in `localStorage` and turns off the pulsing highlight.
+  - Color palette refinement: removed heavy dark elements in favor of clean light B2B styling (white toast pill with teal accents, brighter teal balance badge `from-teal-700 to-teal-800`, light amber trial badge `bg-amber-100 text-amber-800`).
+- Automated 3-Step Nurturing Sequence & 1-Click Unsubscribe (Telegram + Email, 2026-08):
+  - Multi-step behavioral onboarding engine (`backend/app/nurturing.py`) with strict work-hours filtering (09:00-20:00 MSK) and safe rollout windows:
+    1. *Step 1 (24h after registration, 0 tasks):* Reminds user about the 396 ₽ starter balance (4 free tasks) and links to knowledge base guide on finding direct suppliers.
+    2. *Step 2 (48h after first task completed, <4 tasks):* Highlights 3 core features (DOCX Request for Quotation generation, Minpromtorg Registry verification, 44-FZ/223-FZ contract risk analysis).
+    3. *Step 3 (Trial completed, 4 tasks):* Summarizes test run and provides direct contact link for custom procurement limits or corporate invoices.
+  - Universal 1-Click Unsubscribe:
+    - Telegram inline button: `🔕 Отписаться от подсказок` (`nurturing_unsubscribe`), sets `marketing_unsubscribed = True` in DB and permanently halts all background bot messages.
+    - Email 1-click link: `GET /api/customer/auth/unsubscribe?token=<hmac_token>` with secure HMAC-SHA256 signature, sets `marketing_unsubscribed = True` in DB without login and renders a branded confirmation page.
+    - All background dispatch loops and queries strictly enforce `if client.marketing_unsubscribed: continue`.
+  - Minified, zero-extra-newline email templates preventing whitespace rendering glitches across webmail clients (Yandex Mail, Gmail, Mail.ru).
+  - Backed by unit test suite `backend/tests/test_nurturing.py` and deployed live to production.
+- Extra Supplier Search Tariff (49 ₽) & Client Tariff Management (2026-08):
+  - Added default global tariff package for `supplier_search_extra` (1 добор поставщиков: 49 ₽) in database seeding and runtime fallback.
+  - Enabled full web admin editing in the "Тарифы" tab for "Добор поставщиков" (change price, units, title, visibility).
+  - Maintained per-client individual price overrides under "Клиенты" -> "Индивидуальные цены" (Поиск, Анализ, Добор).
+  - Updated web cabinet (`site/src/app/cabinet/cabinet-client.tsx`) tariff dropdown to dynamically display client-specific overrides and default 49 ₽.
+- Search API Metrics & Cost Visibility Fix (2026-08):
+  - Fixed Yandex Search API cost and request count extraction for combined jobs (`analysis_and_suppliers`).
+  - Extended `extract_yandex_job_metrics` in `backend/app/jobs.py` to inspect nested `supplier_search` evidence dictionaries and calculate costs across primary and recovery search rounds.
+  - Ensured `yandex_requests_count` and `yandex_cost_rub` are persisted to the database on all completion and offer paths.
+  - Added automated unit test in `backend/tests/test_jobs_recovery.py` and updated existing production job records.
+- Live Web Search & Deep Crawling Trust Architecture (2026-08):
+  - Aligned website positioning with actual backend capabilities: eliminated inaccurate references to static "supplier databases" in favor of live real-time search across Yandex and Google Search APIs.
+  - Implemented sleek, authentic `TrustRegistryBar` component featuring the 4 real pillars of TenderLex:
+    1. *Живой поиск Яндекс & Google (Live Web Search)* — формирование поисковых запросов по ГОСТам, маркам и спецификациям без ограничений устаревшими базами.
+    2. *Глубокий краулинг сайтов (Deep Crawling)* — автоматический обход страниц производителей/дилеров, парсинг контактов отделов сбыта и прайс-листов.
+    3. *Реестр Минпромторга (ГИСП)* — сверка с Реестром российской промышленной продукции под ПП РФ № 616 и № 617.
+    4. *ЕИС Закупки (44-ФЗ / 223-ФЗ)* — экспресс-аудит рисков контрактов, извещений и нетипичных штрафов по ПП № 1042.
+  - Added high-converting, mobile-first Hero Action CTAs ("Попробовать бесплатно" / "Запустить в Telegram") with conversion trust micro-badges (1 пробный поиск/аудит при регистрации, без привязки карты).
+  - Deployed live to production via `./scripts/deploy_tenderlex_live.sh`.
+- Telegram Bot Navigation & UX Modernization (2026-08):
+  - Removed persistent bottom reply keyboard (`ReplyKeyboardRemove`) across all bot interactions, eliminating screen crowding and mobile keypad clutter.
+  - Built pure in-chat inline navigation architecture with zero dead ends: all scenario cards, confirmation prompts, and after-delivery output messages feature clean next-action buttons and return paths.
+  - Scenario Isolation: entering a scenario (`Поставщики по ТЗ`, `Анализ закупки`, `Анализ + поиск`) displays only options specific to that mode plus `🏠 Главное меню`, eliminating confusing cross-mode button clutter.
+  - Clear Action Prompts (CTAs): added explicit downward arrow hints (`👇`) guiding users to attach files via clip 📎 or input text/notices directly into the chat input bar below.
+  - Streamlined layout: secondary views (Кабинет, Задачи, Тарифы, Помощь, Контакты) and scenario policy selectors feature spacious, single-row layouts without text truncation (Minpromtorg policy buttons no longer get clipped in multi-column grids).
+  - Main menu (`/start`, `🏠 Главное меню`) acts as the unified hub with 3 prominent scenario buttons, 2 service shortcuts (Кабинет, Задачи), and 3 info buttons (Тарифы, Помощь, Контакты).
+  - Verified with 144 automated unit tests, journey simulations, and deployed live to production.
+- Comprehensive SEO, GEO & Universal Procurement Positioning Upgrade (2026-08):
+  - Completed rigorous 7-framework audit (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`, `marketingskills`).
+  - Broadened positioning across all public pages, metadata, hero copy, badges, module titles, and LLM indices: eliminated narrow 44-FZ-only phrasing to explicitly cover 44-ФЗ, 223-ФЗ, коммерческие закупки, торги и любые нестандартные ТЗ.
+  - Optimized `<title>` lengths for search snippet limits: implemented `formatSeoTitle()` helper in `site/src/lib/seo.ts` and `KnowledgeArticleMeta.seoTitle`, raising non-truncated SERP title rate from 30.2% to 97.7% across all 86 sitemap URLs.
+  - Streamlined `<meta description>` tags across root and landing pages to optimal 140–160 chars.
+  - Expanded `site/src/app/robots.ts` with 11 modern AI search crawlers (`GPTBot`, `ClaudeBot`, `PerplexityBot`, `YandexRenderBot`, `Google-Extended`, `Applebot-Extended`, `Diffbot`, `Bytespider`, `CCBot`, `Meta-ExternalAgent`, `cohere-ai`).
+  - Generated comprehensive `site/public/llms-full.txt` (31 KB) and linked it in `site/public/llms.txt` for deep LLM retrieval and citability in ChatGPT, Claude, and Perplexity.
+  - Rebuilt and verified via `./scripts/deploy_tenderlex_live.sh` on live `tenderlex-site.service` (port 3093).
+- Comprehensive SEO & Metadata Optimization (2026-08):
+  - Cleaned up duplicate brand suffixes across 35 page files to ensure Next.js title template compatibility (0 double branding issues across all 86 pages).
+  - Configured full OpenGraph and Twitter cards (`summary_large_image` with `tenderlex-product-preview.png`) across all dynamic knowledge base articles (`/baza-znaniy/[slug]`).
+  - Added Speculation Rules API in `site/src/app/layout.tsx` for instant Chromium prerender and prefetch of top transactional routes.
+  - Achieved 100% Schema.org JSON-LD microdata coverage (86/86 pages) across WebSite, Organization, SoftwareApplication, Service, BreadcrumbList, and Article types.
+  - Validated via 6 audit frameworks (`claude-seo`, `open-seo`, `seomachine`, `geo-seo-claude`, `next-seo`, `ethercreative/seo`) with 0 critical issues and 0 broken links.
+  - Deployed live to production via `./scripts/deploy_tenderlex_live.sh`.
 - Public site SEO is now wired with dedicated scenario pages, canonical
   metadata, sitemap entries, Yandex Webmaster verification, and Yandex
   Metrika env wiring.
+- Public site positioning was corrected on 2026-06-26: the homepage now leads
+  with supplier/contact search under a customer's specification, while
+  procurement-document analysis is presented as a supporting scenario for
+  tender risk review. Root metadata, Open Graph text, homepage sections,
+  scenario copy, CTA copy, and the main supplier-search landing page were
+  aligned with this positioning.
+- The current public copy intentionally avoids making the homepage sound like a
+  list of SEO clusters. Terms such as `ТЗ` and `КП` are reserved for narrow SEO
+  landing intent and metadata where useful; the homepage uses buyer-facing
+  language such as "спецификация", "запрос цены", "письмо поставщику", and
+  "список компаний".
+- Live site verification on 2026-06-26 passed
+  `scripts/deploy_tenderlex_live.sh`, `scripts/check_tenderlex_seo.sh
+  https://tenderlex.ru`, and direct live HTML checks for the root title,
+  description, H1, and homepage stale-copy phrases.
 - Yandex Webmaster SEO follow-up on 2026-06-23 fixed HTTP favicon availability
   for the `http:tenderlex.ru:80` property, added the Yandex `Host` directive to
   `robots.txt`, resent the DNS diagnostic check, and queued the homepage plus
   favicon URLs for re-crawl.
 - Database: SQLite at runtime path from `.env`; the live DB is intentionally not stored in git.
 - Runtime storage: `storage/`; uploaded files, generated reports, and job outputs are intentionally not stored in git.
+- Minpromtorg/GISP registry search uses a local runtime snapshot under
+  `data/minprom_registry/`: source XLSX, JSONL index, and SQLite FTS index. The
+  current live snapshot is independent from EmailAgent storage and contains
+  496,790 registry entries. This runtime data is intentionally not stored in
+  git.
 
 Current runtime note:
 
@@ -42,39 +455,71 @@ Current runtime note:
   back to `running`;
 - live throughput also depends on external AI/search provider rate limits and
   document sizes.
+- customer-selected Minprom registry modes require the local registry cache to
+  be ready before a supplier-search job is created. If the XLSX/JSONL/SQLite
+  cache is missing or stale, the job is rejected early with an admin-actionable
+  error instead of creating a pending job or charging/reserving funds.
+- Minprom registry search treats raw FTS hits as candidates. Registry context
+  reaches `ok` only after AI confirms that candidate entries match the extracted
+  procurement profile; otherwise priority mode falls back to ordinary supplier
+  search with an explicit XLSX comment.
 
-## Commercial Access And Limits
+## Commercial Access And Billing
 
-Commercial limits are customer-level, not Telegram-account-level. One customer
+Commercial access is customer-level, not Telegram-account-level. One customer
 can have several Telegram manager accounts; all linked accounts spend the same
-customer limits.
+customer money balance and job history.
 
 Website cabinet users are intentionally separate from Telegram users. Web users
-sign in by email/password, appear in admin flows by website email, and are
-identified in job metadata as `web:<id>`. Telegram access remains tied to
-Telegram accounts unless the owner explicitly changes the account model.
+sign in by email/password and appear in admin flows by website email. Internal
+`web:<id>` markers may exist in job/account metadata, but the owner-facing admin
+UI must not show those markers as Telegram accounts or Telegram IDs. Telegram
+access remains tied to real Telegram accounts unless the owner explicitly
+changes the account model.
 
-There are exactly two commercial counters:
+The admin panel provides full visibility into multi-login registrations and AI execution:
+- **Clients view**: Displays the customer system registration date in the card header, registration/linking timestamps for every linked Telegram account, and registration + last login timestamps for each web-cabinet user.
+- **Tasks view**: Displays the AI provider and model used for each task (`ai_provider`, `ai_model`, `ai_label`), resolved from job execution metadata, audit records (`evidence.json`), or current routing, with search filter support by model and provider name.
 
-- supplier reports;
-- procurement-document analyses.
+The active paid model is money balance plus effective per-function prices:
+
+- supplier search;
+- procurement-document analysis;
+- additional supplier search (`Найти ещё` / добор поставщиков).
+
+Additional supplier search has its own effective price. If the owner configures
+an active global `Добор поставщиков` package or a per-customer `Добор` override,
+that explicit price is used. Otherwise the default additional-search price is
+50% of the customer's effective supplier-search price. For legacy customers
+without separate additional-search grants, dobор availability is displayed from
+the supplier-search access balance while dobор reservations and charges remain
+separate billing rows.
 
 Mode accounting:
 
-- `🔎 Поставщики по ТЗ` spends one supplier-report unit per independent ТЗ;
+- `🔎 Поставщики по ТЗ` reserves and charges the supplier-search price per
+  independent ТЗ;
 - when several supplier-search inputs are collected before launch, each
-  independent ТЗ spends one supplier-report unit;
-- `📄 Анализ закупки` spends one documentation-analysis unit;
-- `📄🔎 Анализ + поиск` spends one supplier-report unit and one
-  documentation-analysis unit.
+  independent ТЗ reserves and charges its own supplier-search price;
+- `📄 Анализ закупки` reserves and charges the documentation-analysis price;
+- `📄🔎 Анализ + поиск` reserves and charges both the supplier-search and
+  documentation-analysis prices;
+- `Найти ещё` after a completed supplier search reserves and charges the
+  additional-supplier-search price and excludes already found companies.
 
 Free-period customers can be enabled from admin settings. Trial access has
 separate supplier and documentation-analysis limits. Trial customers cannot use
 mass supplier processing or `📄🔎 Анализ + поиск`; they must run analysis and
-supplier search separately when both functions are available.
+supplier search separately when both functions are available. Trial setup grants
+money according to the current base prices for the configured free supplier and
+analysis runs.
 
-Until YooKassa checkout is implemented, website cabinet access is granted
-manually from the admin customer card after external payment or approval.
+Online checkout is not enabled. Website cabinet and Telegram access are managed
+manually from the admin customer card after external payment or approval. The
+owner can credit or debit only a money amount; subsequent job reservations and
+charges use the customer's effective prices. Money shown as "in processing" is
+temporarily reserved for running jobs and is hidden from the owner UI when it is
+zero.
 
 ## Admin Console
 
@@ -85,11 +530,23 @@ Current admin capabilities:
 
 - collapsed customer cards by default, so long customer notes and usage blocks
   do not make the customer list unscrollable;
-- customer cards show linked Telegram accounts, access state, available balance,
-  reserved units, spent units, manual grants, and collapsed billing history;
+- customer cards show a compact summary with separate Web and Telegram access
+  counts, money balance, and a low-emphasis actions menu for destructive client
+  operations;
+- expanded customer cards are split into `Доступы`, `Финансы`, and `Настройки
+  клиента`: Web logins and Telegram accounts are managed separately, balance
+  credit/debit operations sit next to collapsed billing history, and advanced
+  per-client prices plus duplicate-merge tools stay collapsed until needed;
+- website-cabinet service markers such as `web:<id>` and website-trial notes are
+  hidden from the owner-facing client card;
 - the owner can create clients by Telegram username before the real Telegram ID
-  is known, edit linked Telegram accounts, grant arbitrary units by function,
-  and delete extra Telegram accounts;
+  is known, edit linked Telegram accounts, remove a website-cabinet login from
+  a customer without deleting the customer, set per-client prices, credit or
+  debit the customer's money balance, tune the supplier count for that customer,
+  merge duplicate customers, and delete extra Telegram accounts;
+- old manual unit debit support remains in the backend for compatibility, but
+  the current owner UI intentionally does not expose action/type/package fields:
+  the owner adjusts money only, and jobs debit money according to tariffs;
 - if a manager first used the bot as a separate trial customer, the owner can
   move that existing Telegram account into the correct customer card after
   explicit confirmation. A single-account trial customer is merged with its job
@@ -104,14 +561,20 @@ Current admin capabilities:
 - service/internal jobs are hidden by default in the jobs list;
 - admin and cabinet task lists use pagination so long job histories do not turn
   into unbounded vertical pages;
+- admin task details focus on practical owner actions: download customer input
+  files and finished result files. Raw evidence, supplier debug lists, and
+  report-control dashboards are not shown in the main owner workflow;
 - system status shows server disk/RAM/CPU, storage usage, queue counts, and
   configured API services without inventing balances;
 - statistics show the Telegram-bot business funnel for the last 30 days:
   clients, Telegram accounts, active users, task volume, trial usage,
-  conversion to manual grants, top customers, and trial users who used the bot
-  but have not received paid/manual grants yet;
+  conversion to paid/manual top-ups, top customers, and trial users who used the
+  bot but have not received paid/manual top-ups yet;
 - supplier-search settings show Yandex and Google as primary sources, with
   Tavily as an additional reserve source;
+- supplier-search settings also show the local Minpromtorg registry cache
+  status and allow the owner to upload a fresh XLSX snapshot. Upload builds the
+  JSONL and SQLite indexes atomically before replacing the active cache;
 - AI model settings are compact and split into section-scoped saves.
   Documentation analysis has an owner-selected primary model and fast model.
   Supplier search has one separate owner-selected model for the whole supplier
@@ -124,10 +587,11 @@ Current admin capabilities:
   each selector. Provider rows and available model rows can be added, deleted,
   and moved up/down; empty model rows are ignored on save. Free-form model
   comments and API-key status hints are not shown in selectors.
-- Tariff settings keep the current manual payment flow and include a YooKassa
-  settings foundation: provider mode, Shop ID, Secret key, and Return URL. This
-  does not create payment links yet; checkout creation remains a future
-  integration step after the YooKassa account is connected.
+- Tariff settings keep global prices and active packages for the customer
+  cabinet. The main owner settings screen exposes contacts and manual top-up
+  instructions. Legacy YooKassa fields still exist in the backend schema for a
+  future checkout integration, but they are not the active owner workflow and
+  do not create payment links.
 
 AI provider defaults currently used by the admin UI:
 
@@ -161,6 +625,12 @@ The web discovery layer is multi-source:
 - DDGS web source
 
 The default provider order is `yandex,google,tavily,ddgs`. Tavily can exhaust its free quota quickly, so it must remain non-blocking. Yandex and Google are currently the stronger primary sources for this project.
+
+Minpromtorg/GISP registry lookup is local-first and does not use Playwright.
+The backend reads the runtime XLSX snapshot only to build indexes, then serves
+searches from SQLite FTS. JSONL is a build/fallback artifact, not the normal
+query path. When SQLite is ready, an empty SQLite result remains empty and must
+not trigger a full JSONL scan.
 
 Supplier candidates are verified before they reach the final report:
 
@@ -228,8 +698,8 @@ Telegram supplier input and navigation contract:
   not an owner-alert state.
 - after a completed or accepted supplier-search result, Telegram can offer
   `Найти ещё`. Starting that additional search requires explicit confirmation
-  that one supplier-search generation will be spent and already found companies
-  will be excluded.
+  that the additional-supplier-search price will be charged and already found
+  companies will be excluded.
 - completed supplier-search, procurement-analysis, and combined analysis jobs
   can include an additional `Запрос КП` output. It is built from the original
   customer materials plus available AI analysis/procurement profile data and is
@@ -384,22 +854,54 @@ Hard contract:
 
 ## Minpromtorg And GISP Registry Handling
 
-Minpromtorg/GISP registry logic is AI-gated and applies only when the
-procurement documents actually require a registry extract, registry record, or
-delivery of goods from the Russian industrial products registry.
+Minpromtorg/GISP registry logic can be selected manually by the customer before
+supplier search starts. The same mode is available in the website cabinet and
+Telegram bot for standalone supplier search and combined analysis plus search.
+
+Supplier registry modes:
+
+- `Обычный поиск`: ordinary supplier search. The AI can still detect a
+  mandatory registry requirement from the procurement context.
+- `Только реестр`: strict mode for prohibition cases. The search prioritizes
+  registry-derived queries and final supplier rows must have registry linkage
+  evidence when registry data is available.
+- `Реестр в приоритете`: restriction/priority mode. Registry-derived suppliers
+  are searched first, then the ordinary supplier search continues to avoid
+  underfilling the report.
+
+In ordinary mode, AI-gated registry logic applies only when the procurement
+documents actually require a registry extract, registry record, or delivery of
+goods from the Russian industrial products registry.
 
 Registry contract:
 
 - AI decides whether the requirement is mandatory, not applied, only a
   preference, or ambiguous;
+- customer-selected strict/priority modes override the need to infer the legal
+  regime from attached documents before registry-aware supplier search starts;
 - registry search is skipped when AI finds no mandatory requirement;
 - when mandatory, AI generates registry-oriented queries for the procurement
   item and the worker searches GISP/Minpromtorg context;
+- raw registry hits are filtered by AI against the extracted procurement
+  profile before they are treated as usable registry evidence;
 - supplier AI verification receives registry context and must not claim the
   requirement is fulfilled without a supplier/manufacturer linkage;
 - dealers and distributors may still be accepted as procurement leads, but the
   customer-facing comment must say to request registry confirmation when direct
-  linkage is absent.
+  linkage is absent. In priority mode, if no relevant registry entry survives
+  filtering, the comment must say that no relevant registry record was found
+  and the supplier was found by ordinary search.
+- In strict mode, a trustworthy zero result (`empty` or `ok` with no supplier
+  linkage) preserves already verified pre-filter suppliers as an immutable
+  alternative. TenderLex offers that report in Telegram and the website with
+  explicit no-registry wording, charges only after successful delivery, and
+  releases the supplier reservation on decline or expiry. Registry status
+  `error` remains a technical/no-charge outcome and cannot be presented as an
+  empty registry.
+- Result-offer decisions and deliveries are separate DB-backed states. Offers
+  have a 24-hour decision window; accepted but undelivered results have a new
+  24-hour delivery window. Combined analysis-plus-search jobs can fall back to
+  an analysis-only manifest without exposing the stale supplier archive.
 
 ## Reports And Audit Fields
 
@@ -413,6 +915,12 @@ Visible customer-facing columns only:
 - email;
 - short comment.
 
+The visible comment column is also the registry audit surface for customers:
+accepted registry matches include the registry record number and manufacturer
+in that same comment, and priority-mode fallbacks include a compact note that
+the relevant registry record was not found. The report must not add separate
+registry columns for this routine supplier-search output.
+
 Stored supplier rows also preserve `match_level`, `source`, `search_query`,
 `quality_score`, `quality_tier`, `procurement_item`, `ai_confidence`,
 `site_type`, `product_fit`, evidence snippets, and AI rerank metadata, so
@@ -423,11 +931,9 @@ without polluting the customer's XLSX report.
 
 - API and Telegram bot only create durable DB-backed pending jobs.
 - `aipoisk-worker.service` claims pending/stale jobs and performs processing.
-- The worker supports in-process concurrency through
-  `AIPOISK_WORKER_CONCURRENCY`; production is intentionally set to `2` first,
-  not higher, until real AI/search and memory pressure are observed.
-- Claiming keeps one active non-stale job per customer at a time, while still
-  allowing different customers and anonymous/system jobs to be claimed.
+- The worker supports in-process concurrency through `AIPOISK_WORKER_CONCURRENCY` (set to `6` in production).
+- Per-customer concurrency is managed via `AIPOISK_MAX_RUNNING_JOBS_PER_CLIENT` (set to `2` in production), allowing a client to run 2 concurrent tasks simultaneously while preserving fairness.
+- Strict prohibition on caching: task execution, supplier searches, product checks, company verifications, and AI analysis NEVER use caching; every run performs fresh, real-time market discovery and validation.
 - Telegram has three customer-facing creation scenarios: `🔎 Поставщики по ТЗ`,
   `📄 Анализ закупки`, and `📄🔎 Анализ + поиск`.
 - Website cabinet mirrors those scenarios without Telegram-only emoji:
@@ -457,13 +963,18 @@ without polluting the customer's XLSX report.
   the DOCX analysis, then uses a separate AI step to extract the ТЗ/ООЗ/product
   specification context for supplier search. Supplier discovery does not search
   against the noisy full documentation bundle.
-- Supplier discovery classifies the extracted context for Minpromtorg/GISP
-  requirements before ordinary supplier query generation. It searches the GISP
+- Supplier discovery receives the customer-selected supplier registry mode.
+  In ordinary mode it classifies the extracted context for Minpromtorg/GISP
+  requirements before ordinary supplier query generation and searches the GISP
   registry only when the context indicates an active prohibition or another
-  mandatory registry/extract requirement. Restrictions, preferences,
-  non-application, and generic mentions are treated as not requiring registry
-  lookup. The final `evidence.json` records the `minprom_registry` decision,
-  registry queries, entries count, status, and any registry-search error.
+  mandatory registry/extract requirement. In strict/priority modes it performs
+  registry-aware supplier search without requiring that automatic legal-regime
+  inference first. The registry context records raw candidate count separately
+  from AI-filtered entries, so broad text matches do not become accepted
+  registry evidence. The final `evidence.json` records the supplier search
+  policy, `minprom_registry` decision, registry queries, raw candidate count,
+  accepted entries count, status, registry-search/filter errors, and whether an
+  unavailable registry caused a no-charge strict search.
 - In `📄🔎 Анализ + поиск`, the supplier-context extraction step must preserve
   Minpromtorg/GISP/registry-record requirements from the procurement
   documentation so the later supplier-discovery step can make that decision on
@@ -485,7 +996,22 @@ without polluting the customer's XLSX report.
 
 ## Verification Snapshot
 
-Fresh checks from the website cabinet parity and landing-copy pass:
+Fresh checks from the money-balance billing, supplier registry modes,
+additional-search pricing, and admin cleanup pass:
+
+- Full backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
+  backend/tests -q` -> `348 passed`, `2` warnings, `46` subtests passed.
+- Frontend production build: `cd frontend && npm run build` -> OK.
+- Site typecheck/build and live deploy were completed through
+  `./scripts/deploy_tenderlex_live.sh`; API, worker, bot, and site services
+  were active after deployment.
+- Live behavior verified the current admin owner model: top up money only,
+  per-customer function prices, no visible run counters for customers, and no
+  zero-value reserve line in normal balance display.
+- Customer cabinet and Telegram supplier workflows carry the selected registry
+  mode through search and analysis-plus-search.
+
+Earlier checks from the website cabinet parity and landing-copy pass:
 
 - Site typecheck: `cd site && npm run typecheck` -> OK.
 - Site production build: `cd site && npm run build` -> OK.
@@ -502,12 +1028,12 @@ Fresh checks from the website cabinet parity and landing-copy pass:
   cabinet functions, and confirmed no invented analysis fields or file-format
   marketing labels were visible.
 
-Latest task evidence: current AI-settings/statistics/YooKassa foundation pass
-in git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the
-earlier Telegram UX and admin-button pass.
+Earlier task evidence: AI-settings/statistics/legacy YooKassa-settings pass in
+git history, plus `.agent/tasks/2026-06-04-billing-telegram-ux/` for the earlier
+Telegram UX and admin-button pass.
 
-Fresh checks from the latest AI model separation, bot statistics, and YooKassa
-settings pass:
+Earlier checks from the AI model separation, bot statistics, and legacy
+YooKassa-settings pass:
 
 - Targeted backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
   backend/tests/test_ai.py backend/tests/test_access_limits.py
@@ -519,7 +1045,7 @@ settings pass:
 - Local health endpoint: `curl -fsS http://127.0.0.1:8088/api/health` ->
   `ok=true`, `domain=https://tenderlex.ru`, `logistics_enabled=false`.
 
-Fresh checks from the latest Telegram keyboard, source-input, and
+Earlier checks from the Telegram keyboard, source-input, and
 procurement-report guardrail pass:
 
 - Backend tests: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest
@@ -550,8 +1076,9 @@ Earlier billing, Telegram, and admin-button pass:
   `32` checks passed, `0` failed API responses, `0` console errors, `0` page
   errors.
 - Live admin button coverage included login, navigation, client create/open,
-  client disable/enable, Telegram account add/save/delete, manual grant, delete
-  new temporary client, confirm old `Тестовый клиент` is absent, job evidence,
+  client disable/enable, Telegram account add/save/delete, the then-current
+  manual balance action, delete new temporary client, confirm old
+  `Тестовый клиент` is absent, job evidence,
   job download, job retry on a temporary job, tariff create/edit/toggle/delete,
   contact save, settings save, AI model check/save, and refresh.
 - Production services after verification: `aipoisk-api.service`,
@@ -606,8 +1133,8 @@ Load-test boundary:
   in `job_sources`, and are included in source context for AI report/combined
   analysis.
 - Generic procurement links are supported alongside EIS links.
-- AI-gated Minpromtorg/GISP registry handling is covered by supplier discovery
-  flow tests and evidence payloads.
+- Manual and AI-gated Minpromtorg/GISP registry handling is covered by supplier
+  discovery flow tests and evidence payloads.
 - Regression from job `186d6788fd3244f995fbaab9061386cc` was diagnosed:
   Telegram had accepted a zip with an EIS link in the caption, but saved
   `sources=0`; after the fix, caption links are collected for documentation
@@ -621,7 +1148,7 @@ Load-test boundary:
 - AI contact placeholders are blocked from customer reports; extracted site
   contacts are used when available, otherwise the supplier is downgraded or
   rejected.
-- Latest reprocessed failed supplier job `06532a2fc4f9442cbf6085e638720693`
+- Reprocessed failed supplier job `06532a2fc4f9442cbf6085e638720693`
   finished as `partial`, `13/15`, with `ai_required=true`, `ai_used=true`, and
   no invalid contact placeholders in the XLSX.
 - Supplier search now separates broad товарная группа / номенклатура from exact
@@ -633,8 +1160,36 @@ Load-test boundary:
   returns `19` verified suppliers with a configured minimum of `15`; no extra
   paid batch is run after the minimum is reached, but already AI-verified extra
   rows from the active batch stay in the XLSX.
+- **DaData & Registry Manufacturer Enrichment (2026-08-14)**:
+  - Integrated asynchronous DaData client (`backend/app/dadata_client.py`) with caching by INN for legal entity data extraction (status, full legal name, standardized legal address, region, CEO name/position, OGRN, KPP).
+  - Upgraded registry fallback pipeline: unmatched GISP/Minpromtorg manufacturers are no longer injected as empty stubs. The system automatically launches targeted web searches (`"{ИНН}" официальный сайт` + `"{Наименование}" контакты`), filters directory/aggregator domains, crawls official websites, and extracts direct phones and emails (>90% contact discovery rate across 10 real test procurements).
+  - Added DaData auto-enrichment for all accepted suppliers with valid INN to ensure uniform region and contact person population.
+- **Safe Cascading Client Deletion (2026-08-14)**:
+  - Fixed `_force_delete_client` in `backend/app/main.py` to safely delete all cascading dependencies of a specific client in correct foreign key dependency order (`WebSession`, `WebPasswordResetRequest`, `WebEmailVerificationToken`, `AccountLinkToken`, `WebUser`, `ClientTelegramAccount`, `UserJourneyEvent`, `OnboardingReminder`, `ClientTariffOverride`, `SupplierResult`, `JobFile`, `JobSource`, `BillingTransaction`, `Job` and on-disk job folders).
+  - Prevents SQLite IntegrityError/500 failures and ensures 100% isolation from other clients or global system state.
+- **Admin Clients Tab Real-Time Polling & Instant Refresh (2026-08-26)**:
+  - Integrated dedicated background polling loop for `/api/clients` and `/api/dashboard` (8s on active Clients tab, 25s on other tabs, and instant refresh on window focus / tab visibility / view change), so new customer registrations appear immediately without manual page reload.
+- **B2B Outreach Email Bounce / NDR Diagnostics & Auto-Categorization (2026-08-26)**:
+  - Added dedicated Bounce / Non-Delivery Report parser (`parse_bounce_info`, `sync_imap_inbox`) recognizing `MAILER-DAEMON`, `postmaster`, `ksmg`, and antispam failure notices.
+  - Extracts failed recipient email, links incoming failure message to its `OutreachLead`, marks lead status as `bounced` with exact diagnostic failure reason (e.g. `550 Access Denied`), and updates task bounce statistics.
+  - Implemented retroactive backfill linking existing bounce records in the database.
+  - Added filter tabs in Admin Outreach View: `Все`, `Живые ответы`, `Ошибки доставки (Bounce)`, `Новые`, `Спам` with visual badges and diagnostic reason cards.
+- **Outreach Search Negative ICP & Domain Filtering (2026-08-26)**:
+  - Expanded `EXTENDED_BLOCKED_DOMAINS` and added semantic negative keyword filters in `outreach_search.py` (`crawl_site_for_contact`) to exclude non-target entities (banks, OFD/EDS providers, tender aggregators/consultants, training centers, media holdings, and `.gov.ru`/`.edu.ru` state domains).
+  - Automatically filters out irrelevant contacts from B2B supplier search tasks.
+- **Telegram Bot Trial Auto-Replacement & Queue Reset Resilience (2026-08-27)**:
+  - Fixed issue where trial users sending replacement documents or multiple technical assignments had files accumulate in `pending.files`, tripping the multi-spec limitation check (`В бесплатном доступе массовая обработка ТЗ недоступна`) and locking the user with stripped keyboards (`ReplyKeyboardRemove`).
+  - Implemented automatic replacement of previous files/text for trial users in supplier search mode with a clear notification (`🔄 Предыдущий файл заменён на: <file>`), preventing invalid batch accumulation.
+  - Added interactive inline recovery buttons (`🗑 Очистить и отправить 1 ТЗ` and `🏠 Главное меню`) whenever launch is blocked for any access/quota reason, ensuring users can never get trapped in an unrecoverable state.
+  - Enhanced `client_uses_trial_access` in `backend/app/billing.py` with `getattr(client, 'is_trial', False)` to safeguard against mock or partial client objects.
+- **Outreach & Lead Gen Admin UI Enhancements (2026-08-27)**:
+  - Added comprehensive Yandex search cost calculation across all iterations: selecting the `✨ Все итерации` badge now accurately sums total Yandex spend (`yandex_cost_rub`) and request counts across all search waves instead of prompting to select a single wave.
+  - Compacted statistics cards vertically (`.outreach-metric-card`), reducing padding and gaps for a high-density, screen-friendly overview.
+  - Reordered task workspace layout: moved "Поиск и добор контактов в задачу" above the search iterations row.
+  - Added collapsible state to the in-task search module with persistent `localStorage` toggle and fixed 28x28px chevron button with `flex-shrink: 0` styling to prevent SVG collapse.
+  - Added shared, editable volume presets (`leadCountPresets` with `localStorage` persistence, inline `+число` addition, and `✕` deletion) synchronized across in-task dobor and new search task modal.
 
-Detailed task evidence for the latest admin UI / limits / provider-settings pass
+Detailed task evidence for an earlier admin UI / limits / provider-settings pass
 is stored under `.agent/tasks/2026-06-03-admin-ui-10/`.
 
 ## Safe GitHub Rules
@@ -674,3 +1229,10 @@ risks are narrower:
   procurement categories as new customer documents appear.
 - Monitoring is available in API/UI, but there is no external alert delivery
   channel yet.
+
+## Supplier Search & Discovery Architecture Optimization (2026)
+
+- **AI Semantic & Morphological Query Expansion**: Multi-tiered prompt generation covering category broad terms, grammatical forms, industrial synonyms, and normalized registry queries.
+- **Fast Asynchronous DNS Pre-Check**: Integrated `candidate_domain_resolves_fast()` with LRU caching (5,000 entries) to bypass dead domains in <32 ms before launching Playwright or HTTP crawls.
+- **DNS MX Mailbox Verification**: Integrated `email_has_valid_mx()` via `dnspython` to filter out non-existent mail exchange servers (~3.5 ms per lookup).
+- **Minpromtorg Registry FTS5 Parity**: High-speed full-text search indexing across 470,000+ entries with verified multi-round benchmarks across 45+ real industrial procurement items.

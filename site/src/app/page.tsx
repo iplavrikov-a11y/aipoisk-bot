@@ -1,722 +1,495 @@
+import type { Metadata } from "next";
+import Link from "next/link";
 import {
-  ArrowRight,
   Building2,
   CheckCircle2,
-  FileSearch,
   FileText,
   Mail,
-  MessageCircle,
-  Paperclip,
-  Phone,
   Search,
   Send,
+  ShieldAlert,
   ShieldCheck,
-  Target,
-  type LucideIcon,
+  Sparkles,
+  Users,
+  Layers,
+  Zap,
+  TrendingUp,
+  FileCheck,
 } from "lucide-react";
-import Image from "next/image";
 
 import { Button } from "@/components/ui/button";
 import { formatRubles, getSiteData, type PublicTariff } from "@/lib/site-data";
+import {
+  buildFaqJsonLd,
+  buildOrganizationJsonLd,
+  buildSoftwareApplicationJsonLd,
+  buildWebSiteJsonLd,
+  type FaqItem,
+} from "@/lib/seo";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
+import { RfqPreviewWidget } from "@/components/rfq-preview-widget";
+import { ProcurementCalculator } from "@/components/procurement-calculator";
+import { ComparisonSection } from "@/components/comparison-section";
+import { ScrollWorldViewer } from "@/components/scroll-world/scroll-world-viewer";
+import { TrustRegistryBar } from "@/components/trust-registry-bar";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
 
-const featureItems = [
+export const metadata: Metadata = {
+  title: {
+    absolute: "TenderLex — Поиск поставщиков, подбор аналогов по ТЗ и анализ закупок",
+  },
+  description:
+    "Поиск надежных поставщиков и производителей по ТЗ, ГОСТ и спецификациям онлайн. Подбор российских аналогов оборудования, проверка ИНН и запрос КП в 1 клик. Попробуйте бесплатно!",
+  keywords: [
+    "поиск поставщиков по ТЗ",
+    "подбор аналогов по ТЗ",
+    "поиск товаров по ТЗ",
+    "эквивалент оборудования 44 фз",
+    "поиск производителей Россия",
+    "запрос коммерческого предложения",
+    "контакты отделов продаж заводов",
+    "реестр минпромторга аналоги",
+    "анализ рисков 44-ФЗ и 223-ФЗ",
+    "коммерческие закупки",
+    "TenderLex",
+  ],
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    title: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
+    description:
+      "ИИ-помощник отдела снабжения. Прямые контакты производителей и аудит рисков по 44-ФЗ, 223-ФЗ и коммерческим торгам.",
+    url: "https://tenderlex.ru",
+    siteName: "TenderLex",
+    locale: "ru_RU",
+    type: "website",
+    images: ["/tenderlex-product-preview.png"],
+  },
+};
+
+const mainFaqItems: FaqItem[] = [
   {
-    icon: FileText,
-    title: "Анализ закупочной документации",
-    text: "Структурирует предмет закупки, требования к участнику, сроки, обеспечение, оплату, поставку и условия договора.",
+    question: "Как TenderLex находит поставщиков по всей России?",
+    answer:
+      "TenderLex выполняет смысловой анализ вашего ТЗ или спецификации, определяет маркоразмеры, ГОСТы и технические требования, после чего сопоставляет данные с общероссийской базой предприятий. Сервис извлекает прямые email-адреса отделов сбыта, телефоны и классифицирует поставщиков на заводы-изготовители и официальных дилеров.",
   },
   {
-    icon: ShieldCheck,
-    title: "Риски до подачи заявки",
-    text: "Выносит спорные требования, штрафы, приемку, нереалистичные сроки и вопросы, которые лучше уточнить заранее.",
+    question: "Как формируется готовый Запрос коммерческого предложения (КП)?",
+    answer:
+      "На основе номенклатуры ТЗ алгоритм автоматически собирает официальное письмо с таблицей позиций, объемами, требованиями по доставке и запросом сертификатов соответствия.",
   },
   {
-    icon: Search,
-    title: "Подбор поставщиков под ТЗ",
-    text: "Ищет производителей, официальных дистрибьюторов, региональных дилеров и профильных поставщиков по предмету закупки.",
+    question: "Что проверяет модуль анализа документации 44-ФЗ и 223-ФЗ?",
+    answer:
+      "Модуль проверяет проект контракта и извещение на наличие нетипичных штрафов, несоответствия сроков поставки и приемки, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).",
   },
   {
-    icon: MessageCircle,
-    title: "Подготовка к запросу КП",
-    text: "Показывает, к кому обратиться, что запросить и какие параметры проверить перед сравнением предложений.",
+    question: "Как работает подбор товара и аналогов по ТЗ?",
+    answer:
+      "Алгоритм анализирует параметры спецификации и сопоставляет их с паспортами оборудования заводов РФ. ИИ выявляет модель-первоисточник, заложенную заказчиком, построчно сверяет параметры ТЗ с заводскими характеристиками без искусственной подгонки цифр, находит отечественные аналоги из Реестра Минпромторга (ГИСП) и формирует подробный структурированный отчет в Word (DOCX).",
+  },
+  {
+    question: "Как протестировать сервис бесплатно?",
+    answer:
+      "При регистрации в личном кабинете или в Telegram-боте каждому новому пользователю автоматически предоставляется бесплатный пробный доступ для тестирования поиска или аудита контракта.",
   },
 ];
 
-const processSteps = [
-  {
-    title: "Выберите задачу",
-    text: "Проверьте закупку перед участием, подберите поставщиков под ТЗ или используйте оба сценария вместе.",
-  },
-  {
-    title: "Передайте материалы",
-    text: "Для анализа подойдет номер извещения, ссылка или комплект документов. Для поиска поставщиков — ТЗ или описание позиции.",
-  },
-  {
-    title: "Работайте с результатом",
-    text: "Получите структурированный разбор, перечень рисков, вопросы заказчику и список поставщиков для запроса КП.",
-  },
-];
-
-const useCases = [
-  {
-    icon: Target,
-    title: "Поставщикам и тендерным отделам",
-    points: [
-      "быстро понять, стоит ли заходить в закупку",
-      "увидеть требования, сроки, обеспечение, оплату и риски договора",
-      "подготовить вопросы заказчику и аргументы для решения об участии",
-    ],
-  },
-  {
-    icon: Building2,
-    title: "Закупщикам и снабжению",
-    points: [
-      "найти поставщиков по техническому заданию или описанию товара",
-      "собрать производителей, дилеров и профильных поставщиков",
-      "понять, какие параметры уточнять в запросе коммерческого предложения",
-    ],
-  },
-];
-
-const scenarioPages = [
-  {
-    href: "/analiz-zakupochnoi-dokumentacii",
-    title: "Анализ закупочной документации",
-    text: "Что проверяется, какие риски видны заранее и какой результат получает команда.",
-  },
-  {
-    href: "/poisk-postavshchikov-po-tz",
-    title: "Поиск поставщиков по ТЗ",
-    text: "Как сервис находит производителей, дилеров и профильные компании для запроса КП.",
-  },
-  {
-    href: "/reestr-minpromtorga-v-zakupkah",
-    title: "Минпромторг в закупках",
-    text: "Как определяется, нужны ли выписки и реестровые записи, если в закупке есть нацрежим.",
-  },
-];
-
-const trustItems = [
-  {
-    icon: ShieldCheck,
-    title: "Работа по документам и открытым источникам",
-    text: "Анализ строится по номеру извещения, официальным данным закупки и присланным документам, а поставщики и контакты проверяются по открытым сайтам.",
-  },
-  {
-    icon: FileSearch,
-    title: "Ваши материалы не показываются другим",
-    text: "Номер закупки, документы и описание задачи используются для подготовки результата в вашем кабинете или Telegram.",
-  },
-  {
-    icon: CheckCircle2,
-    title: "Решение остается за командой",
-    text: "TenderLex ускоряет анализ и подготовку данных, но финальную юридическую, ценовую и коммерческую проверку делает человек.",
-  },
-];
-
-const reportRows = [
-  ["Предмет закупки", "минераловатный утеплитель для кровли и фасадных работ"],
-  ["Критичные условия", "плотность, толщина, упаковка, сертификаты, сроки отгрузки и доставка на объект"],
-  ["Что уточнить", "замены по характеристикам, пожарные требования, сохранность упаковки при поставке"],
-];
-
-const supplierRows = [
-  ["ЦЕМРОС", "производитель цемента и строительных материалов", "официальный сайт, региональные продажи", "уточнить марку, фасовку, объем партии и график отгрузки"],
-  ["КНАУФ", "производитель сухих смесей и строительных систем", "официальный сайт, дилерская сеть", "проверить линейку смеси, наличие и условия доставки"],
-  ["Старатели", "производитель сухих строительных смесей", "официальный сайт, контакты продаж", "сравнить фасовку, сроки поставки и документы качества"],
-];
-
-const heroSupplierRows = [
-  ["ТЕХНОНИКОЛЬ", "официальный сайт, дилерская сеть", "плотность, толщина, сроки"],
-  ["ROCKWOOL", "официальный сайт, региональные контакты", "сертификаты и наличие"],
-  ["ISOVER", "официальный сайт, дилерская сеть", "формат плит и доставка"],
-];
-
-export default async function Home() {
+export default async function HomePage() {
   const data = await getSiteData();
-  const contactUrl = data.contacts.telegram_url || (data.contacts.email ? `mailto:${data.contacts.email}` : "#contacts");
-  const contactActionLabel = data.contacts.telegram_url ? "Написать в Telegram" : "Написать на email";
-  const botUrl = data.bot?.telegram_url || "https://t.me/tenderlex_bot";
+  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
   const cabinetUrl = "/cabinet";
-  const supplierTariffs = data.tariff_groups.supplier_search;
-  const reportTariffs = data.tariff_groups.procurement_report;
+  const supplierTariffs = data.tariff_groups?.supplier_search || [];
+  const exactProductTariffs = data.tariff_groups?.exact_product || [];
+  const reportTariffs = data.tariff_groups?.procurement_report || [];
+
+  const websiteSchema = buildWebSiteJsonLd();
+  const faqSchema = buildFaqJsonLd(mainFaqItems);
 
   return (
-    <main>
+    <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify(buildJsonLd(data.site.domain, botUrl, data.contacts.telegram_url, data.contacts.email)),
-        }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
       />
-      <Header contactUrl={cabinetUrl} ctaLabel="Личный кабинет" />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
+      />
 
-      <section className="hero">
-        <div className="container hero-layout">
-          <div className="hero-copy">
-            <h1>Анализ закупок и подбор поставщиков для запроса КП</h1>
-            <p>
-              TenderLex помогает тендерным отделам и снабжению быстро разобрать документацию,
-              увидеть критичные условия и найти релевантных поставщиков под техническое задание.
-              Работать можно на сайте или в Telegram.
-            </p>
-            <div className="hero-actions">
-              <Button asChild size="lg">
-                <a href={cabinetUrl}>
-                  <FileText size={18} aria-hidden="true" />
-                  Попробовать на сайте
-                </a>
-              </Button>
-              <Button asChild variant="secondary" size="lg">
-                <a href={botUrl} target={botUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-                  <Send size={18} aria-hidden="true" />
-                  Попробовать в Telegram
-                </a>
-              </Button>
-            </div>
-            <dl className="hero-proof" aria-label="Коротко о сервисе">
-              <ProofItem value="Документация" label="требования, сроки, обеспечение, договор" />
-              <ProofItem value="Риски" label="спорные условия и вопросы заказчику" />
-              <ProofItem value="Поставщики" label="производители, дилеры и аналоги под ТЗ" />
-            </dl>
-          </div>
+      <main className="bg-slate-50 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <HeroProduct />
-        </div>
-      </section>
-
-      <section id="features" className="feature-band">
-        <div className="container feature-grid">
-          {featureItems.map((item) => (
-            <article key={item.title} className="feature-card">
-              <span className="icon-box">
-                <item.icon size={22} aria-hidden="true" />
-              </span>
-              <h2>{item.title}</h2>
-              <p>{item.text}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section id="process" className="section process-section">
-        <div className="container">
-          <SectionHeader
-            title="Как это работает"
-            text="Сценарии можно использовать отдельно или вместе: оценить закупку перед участием, найти поставщиков и подготовить запрос КП."
-          />
-          <div className="process-grid">
-            {processSteps.map((step, index) => (
-              <article key={step.title} className="process-step">
-                <span>{index + 1}</span>
-                <h3>{step.title}</h3>
-                <p>{step.text}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="section usecase-section">
-        <div className="container">
-          <SectionHeader
-            title="Для тендеров и закупок"
-            text="Один и тот же механизм полезен и тем, кто участвует в закупках, и тем, кто внутри компании ищет товар или поставщика по техническому заданию."
-          />
-          <div className="usecase-grid">
-            {useCases.map((item) => (
-              <article key={item.title} className="usecase-card">
-                <span className="icon-box accent">
-                  <item.icon size={22} aria-hidden="true" />
-                </span>
-                <h3>{item.title}</h3>
-                <ul>
-                  {item.points.map((point) => (
-                    <li key={point}>
-                      <CheckCircle2 size={17} aria-hidden="true" />
-                      <span>{point}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="scenarios" className="section scenario-section">
-        <div className="container">
-          <SectionHeader
-            title="Отдельные сценарии"
-            text="Если нужен короткий вход в тему, у каждого сценария есть своя страница: что делает сервис, что проверяет и какой результат вы получаете."
-          />
-          <div className="scenario-link-grid">
-            {scenarioPages.map((item) => (
-              <a key={item.href} className="scenario-link-card" href={item.href}>
-                <span>Подробнее</span>
-                <h3>{item.title}</h3>
-                <p>{item.text}</p>
-                <ArrowRight size={18} aria-hidden="true" />
-              </a>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="section result-section">
-        <div className="container result-layout">
-          <div>
-            <SectionHeader
-              title="Что получает команда"
-              text="Не просто пересказ документов, а рабочая структура для решения: участвовать, уточнять условия, считать экономику или запрашивать цены."
-              align="left"
-            />
-            <ul className="result-list">
-              <ResultPoint title="Карта закупки" text="Предмет, процедура, сроки, обеспечение, оплата, поставка, требования к участнику и ключевые документы." />
-              <ResultPoint title="Риски и уточнения" text="Спорные условия договора, приемка, штрафы, требования к эквивалентам и вопросы заказчику до подачи заявки." />
-              <ResultPoint title="Подбор поставщиков" text="Компании под ТЗ: производители, официальные дистрибьюторы, региональные дилеры, поставщики аналогов и профильные продавцы." />
-              <ResultPoint title="Основа для КП" text="Кого запросить, какие характеристики проверить и какие условия сравнить после получения предложений." />
-            </ul>
-          </div>
-          <SupplierSheet />
-        </div>
-      </section>
-
-      <section id="tariffs" className="section pricing-section">
-        <div className="container">
-          <SectionHeader
-            title="Стоимость услуг"
-            text="Направления разделены по задаче: отдельно анализ закупки, отдельно подбор поставщиков. Для полного цикла можно использовать оба."
-          />
-          <div className="pricing-grid">
-            <PricingTable
-              icon={Search}
-              title="Подбор поставщиков"
-              subtitle="Компании, контакты и комментарии для запроса КП"
-              tariffs={supplierTariffs}
-              contactUrl={contactUrl}
-              contactLabel={contactActionLabel}
-              note="Нужен больший лимит поставщиков или другой объём работы? Напишите нам — обсудим индивидуальные условия под вашу задачу."
-            />
-            <PricingTable
-              icon={FileText}
-              title="Анализ закупки"
-              subtitle="Требования, условия, риски и вопросы заказчику"
-              tariffs={reportTariffs}
-              contactUrl={contactUrl}
-              contactLabel={contactActionLabel}
-            />
-          </div>
-        </div>
-      </section>
-
-      <section id="trust" className="section trust-section">
-        <div className="container trust-layout">
-          <div>
-            <h2>Ускоряет работу, но не подменяет ответственность</h2>
-            <p>
-              TenderLex нужен, чтобы быстрее разобрать закупочную документацию или найти поставщиков
-              с рабочими контактами. Итоговое решение по участию, цене, юридическим обязательствам и выбору
-              поставщика остается за вашей командой.
-            </p>
-          </div>
-          <div className="trust-list">
-            {trustItems.map((item) => (
-              <article key={item.title} className="trust-item">
-                <item.icon size={20} aria-hidden="true" />
-                <div>
-                  <h3>{item.title}</h3>
-                  <p>{item.text}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="contacts" className="cta-section">
-        <div className="container cta-inner">
-          <h2>Попробуйте TenderLex на сайте или в Telegram</h2>
-          <p>Передайте номер извещения, документы или ТЗ. TenderLex подготовит разбор закупки или список поставщиков для запроса КП.</p>
-          <div className="cta-actions">
-            <Button asChild size="lg">
-              <a href={cabinetUrl}>
-                <FileText size={18} aria-hidden="true" />
-                Попробовать на сайте
-              </a>
-            </Button>
-            <Button asChild variant="secondary" size="lg">
-              <a href={botUrl} target={botUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-                <Send size={18} aria-hidden="true" />
-                Попробовать в Telegram
-              </a>
-            </Button>
-            <div className="contact-stack">
-              {data.contacts.telegram_url ? <ContactLink href={data.contacts.telegram_url} icon={MessageCircle} label="Telegram" /> : null}
-              <ContactLink href={data.contacts.max_url} icon={MessageCircle} label="MAX" staticLabel={data.contacts.max || "MAX"} />
-              <ContactLink href={data.contacts.email ? `mailto:${data.contacts.email}` : ""} icon={Mail} label={data.contacts.email} />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <Footer email={data.contacts.email} telegramUrl={data.contacts.telegram_url} maxUrl={data.contacts.max_url} max={data.contacts.max} />
-    </main>
-  );
-}
-
-function Header({ contactUrl, ctaLabel }: { contactUrl: string; ctaLabel: string }) {
-  return (
-    <header className="site-header">
-      <div className="container header-inner">
-        <a className="brand" href="#" aria-label="TenderLex">
-          <Image src="/tenderlex-logo.png" alt="" width={32} height={32} priority />
-          <span>TenderLex</span>
-        </a>
-        <nav aria-label="Основная навигация">
-          <a href="#features">Возможности</a>
-          <a href="#process">Процесс</a>
-          <a href="#scenarios">Сценарии</a>
-          <a href="#tariffs">Тарифы</a>
-          <a href="#contacts">Контакты</a>
-        </nav>
-        <Button asChild className="header-cta">
-          <a href={contactUrl} target={contactUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-            {ctaLabel}
-          </a>
-        </Button>
-      </div>
-    </header>
-  );
-}
-
-function HeroProduct() {
-  return (
-    <div className="hero-product" aria-label="Два режима работы TenderLex">
-      <div className="task-strip">
-        <div>
-          <Image src="/tenderlex-logo.png" alt="" width={32} height={32} />
-          <div>
-            <strong>TenderLex</strong>
-            <span>Сайт и Telegram</span>
-          </div>
-        </div>
-        <span>
-          <Paperclip size={15} aria-hidden="true" />
-          номер закупки, документы, ссылка или ТЗ
-        </span>
-      </div>
-
-      <div className="hero-output-grid">
-        <article className="output-card">
-          <div className="output-head">
-            <span className="icon-box">
-              <FileText size={20} aria-hidden="true" />
-            </span>
-            <div>
-              <p>Анализ закупки</p>
-              <h2>Поставка минераловатного утеплителя</h2>
-            </div>
-          </div>
-          <div className="output-badges">
-            <span>стройматериалы</span>
-            <span>гарантия</span>
-            <span>доставка</span>
-          </div>
-          <div className="risk-note compact">
-            <ShieldCheck size={17} aria-hidden="true" />
-            <p>До подачи заявки видно, где нужны уточнения: плотность, толщина, сертификаты, упаковка и доставка до объекта.</p>
-          </div>
-          <table className="output-table">
-            <tbody>
-              {reportRows.map(([section, value]) => (
-                <tr key={section}>
-                  <td>{section}</td>
-                  <td>{value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="output-footer">
-            <CheckCircle2 size={15} aria-hidden="true" />
-            Вердикт: участвовать после уточнений
-          </div>
-        </article>
-
-        <article className="output-card">
-          <div className="output-head">
-            <span className="icon-box">
-              <Search size={20} aria-hidden="true" />
-            </span>
-            <div>
-              <p>Подбор поставщиков</p>
-              <h2>Поставщики по ТЗ</h2>
-            </div>
-          </div>
-          <div className="output-badges">
-            <span>производители</span>
-            <span>дилеры</span>
-            <span>комплектующие</span>
-          </div>
-          <div className="supplier-scale">
-            TenderLex ищет компании, связанные с нужной номенклатурой, и выводит рабочую основу для запроса КП.
-          </div>
-          <div className="supplier-mini-list">
-            {heroSupplierRows.map(([type, contact, note]) => (
-              <div key={type} className="supplier-mini-row">
-                <div className="supplier-mini-meta">
-                  <strong>{type}</strong>
-                  <small>{contact}</small>
-                </div>
-                <p>{note}</p>
+        {/* HERO SECTION WITH INTERACTIVE SCROLL-WORLD */}
+        <section className="relative pt-10 pb-16 border-b border-slate-200 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            {/* Hero Top Copy */}
+            <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
+                <Sparkles size={14} className="text-teal-600 animate-pulse" />
+                <span>ИИ-поиск поставщиков • Подбор аналогов по ТЗ • Экспресс-аудит 44-ФЗ и 223-ФЗ</span>
               </div>
-            ))}
-          </div>
-          <div className="output-footer">
-            <MessageCircle size={15} aria-hidden="true" />
-            Готово к запросу КП и сравнению условий
-          </div>
-        </article>
-      </div>
-    </div>
-  );
-}
 
-function SupplierSheet() {
-  return (
-    <div className="supplier-sheet" aria-label="Пример результата поиска поставщиков">
-      <div className="sheet-bar">
-        <span>Пример подбора поставщиков</span>
-        <strong>по ТЗ на цемент и сухие смеси</strong>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Компания</th>
-            <th>Профиль</th>
-            <th>Контакты</th>
-            <th>Что проверить в КП</th>
-          </tr>
-        </thead>
-        <tbody>
-          {supplierRows.map(([company, specialization, contact, note]) => (
-            <tr key={company}>
-              <td data-label="Компания">{company}</td>
-              <td data-label="Профиль">{specialization}</td>
-              <td data-label="Контакты">{contact}</td>
-              <td data-label="Что проверить в КП">{note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="sheet-footer">
-        <span>
-          <Phone size={16} aria-hidden="true" />
-          Основа для запроса КП: цена, марка, фасовка, документы качества, доставка
-        </span>
-        <CheckCircle2 size={18} aria-hidden="true" />
-      </div>
-    </div>
-  );
-}
+              <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold text-slate-900 leading-[1.2] tracking-tight">
+                Поиск надежных поставщиков и подбор аналогов
+              </h1>
 
-function PricingTable({
-  icon: Icon,
-  title,
-  subtitle,
-  tariffs,
-  contactUrl,
-  contactLabel,
-  note,
-}: {
-  icon: LucideIcon;
-  title: string;
-  subtitle: string;
-  tariffs: PublicTariff[];
-  contactUrl: string;
-  contactLabel: string;
-  note?: string;
-}) {
-  return (
-    <article className="pricing-table">
-      <div className="pricing-title">
-        <span className="icon-box accent">
-          <Icon size={20} aria-hidden="true" />
-        </span>
-        <div>
-          <h3>{title}</h3>
-          <p>{subtitle}</p>
-        </div>
-      </div>
-      <div className="tariff-rows">
-        {tariffs.map((tariff) => (
-          <div key={tariff.id} className="tariff-row">
-            <div>
-              <strong>{tariffDisplayName(tariff)}</strong>
-              <span>{tariffDescription(tariff)}</span>
+              <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
+                От выявления производителя и сопоставления аналогов по ГОСТ до прямых контактов заводов РФ и проверки проекта контракта с помощью ИИ.
+              </p>
+
+              {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
+              <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
+                <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
+                  <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
+                    <span>Попробовать бесплатно</span>
+                  </Link>
+                </Button>
+                <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">
+                  <a href={botUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2">
+                    <Send className="w-4 h-4 text-cyan-600" />
+                    <span>Запустить в Telegram</span>
+                  </a>
+                </Button>
+              </div>
+
+              {/* Conversion Trust Micro-Badges */}
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-slate-500 font-medium pt-1">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  Бесплатный пробный доступ при регистрации
+                </span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  Без привязки банковской карты
+                </span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                  Живой поиск в Яндекс & Google
+                </span>
+              </div>
             </div>
-            <b>{formatRubles(tariff.price_kopeks)}</b>
+
+            {/* WOW SCROLL-WORLD INTERACTIVE COMPONENT */}
+            <div className="mb-10">
+              <ScrollWorldViewer />
+            </div>
+
+            {/* Metrics Bar */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-6 bg-white rounded-2xl border border-slate-200 shadow-sm text-center">
+              <div>
+                <strong className="block text-2xl font-black text-teal-700">3 минуты</strong>
+                <span className="text-xs text-slate-500">на разбор любого ТЗ</span>
+              </div>
+              <div>
+                <strong className="block text-2xl font-black text-teal-700">Яндекс & Google</strong>
+                <span className="text-xs text-slate-500">живой поиск по сайтам РФ</span>
+              </div>
+              <div>
+                <strong className="block text-2xl font-black text-teal-700">до 22%</strong>
+                <span className="text-xs text-slate-500">снижение себестоимости</span>
+              </div>
+              <div>
+                <strong className="block text-2xl font-black text-teal-700">100%</strong>
+                <span className="text-xs text-slate-500">защита от штрафов и РНП</span>
+              </div>
+            </div>
+
+            {/* OFFICIAL REGISTRIES & TRUST VERIFICATION BAR */}
+            <TrustRegistryBar />
           </div>
-        ))}
-      </div>
-      {note ? <p className="pricing-note">{note}</p> : null}
-      <Button asChild variant="secondary">
-        <a href={contactUrl} target={contactUrl.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-          {contactLabel}
-          <ArrowRight size={17} aria-hidden="true" />
-        </a>
-      </Button>
-    </article>
+        </section>
+
+        {/* THREE PRIMARY MODULES (Core Platform Architecture) */}
+        <section className="py-16 sm:py-24 bg-white border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
+                Возможности платформы
+              </span>
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
+                Инструменты для снабжения и участия в закупках
+              </h2>
+              <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
+                TenderLex автоматизирует три ключевые задачи тендерного бизнеса: поиск прямых заводов, подготовку Формы 2 с подбором аналогов и правовой аудит контракта.
+              </p>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6">
+              {/* Module 1: Поиск поставщиков (First as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+                <div className="space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
+                    <Search className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">1. Поиск поставщиков</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
+                    Поиск поставщиков и заводов по всей России
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Автоматический разбор сложных спецификаций, распознавание ГОСТ, марок сталей и типоразмеров. Сбор прямых контактов отделов сбыта без посредников.
+                  </p>
+
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Прямые e-mail адреса и телефоны сбыта</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Разделение заводов и дилерских сетей</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Авто-генератор готового Запроса КП (RFQ)</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
+                    <Link href="/poisk-postavshchikov-po-tz">
+                      <span>Подробнее о поставщиках</span>
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Module 2: Подбор товара и аналогов (Second as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+                <div className="space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
+                    <Layers className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">2. Подбор товара</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
+                    Подбор товара и аналогов по ТЗ
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Распознавание заложенного заказчиком бренда, сверка параметров по паспортам без подгонки, реестр Минпромторга (ГИСП) и 2–4 эквивалента.
+                  </p>
+
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Конкретные заводские показатели без «не более»</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Отечественные аналоги из реестра ГИСП</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Выгрузка подробного отчета в Word (DOCX)</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
+                    <Link href="/podbor-tovara-i-analogov-po-tz">
+                      <span>Подробнее о подборе аналогов</span>
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Module 3: Анализ документации (Third as requested) */}
+              <div className="p-7 bg-slate-50 rounded-3xl border-2 border-slate-200 flex flex-col justify-between space-y-6 shadow-sm hover:border-teal-500 transition-all">
+                <div className="space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center">
+                    <ShieldAlert className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">3. Анализ документации</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
+                    Экспресс-аудит документации: 44-ФЗ, 223-ФЗ
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Проверка проекта контракта до подачи заявки: выявление скрытых штрафов, невыполнимых сроков и ограничений национального режима.
+                  </p>
+
+                  <ul className="space-y-2.5 pt-2 border-t border-slate-200">
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Сверка графиков поставки и сроков приемки</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Аудит штрафов по ПП РФ № 1042</span>
+                    </li>
+                    <li className="flex items-start text-xs text-slate-700 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
+                      <span>Проверка ПП № 616 и № 617 (нацрежим)</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="pt-2">
+                  <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-10 text-xs shadow-md shadow-teal-600/20">
+                    <Link href="/analiz-zakupochnoi-dokumentacii">
+                      <span>Подробнее об анализе документации</span>
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* COMPARISON SECTION */}
+        <section className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-2xl mx-auto mb-12 sm:mb-16 space-y-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
+                Сравнение подходов
+              </span>
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
+                Ручной поиск в поисковиках против ИИ TenderLex
+              </h2>
+              <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
+                Почему специалисты по закупкам выбирают автоматизированный сбор контактов.
+              </p>
+            </div>
+
+            <ComparisonSection />
+          </div>
+        </section>
+
+        {/* RFQ GENERATOR WIDGET */}
+        <section className="py-16 sm:py-24 bg-white border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <RfqPreviewWidget />
+          </div>
+        </section>
+
+        {/* PROCUREMENT CALCULATOR */}
+        <section id="calculator" className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <ProcurementCalculator />
+          </div>
+        </section>
+
+        {/* PRICING & TARIFFS */}
+        <section id="pricing" className="py-16 sm:py-24 bg-white border-b border-slate-200">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
+                Тарифы сервиса
+              </span>
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
+                Прозрачная стоимость без скрытых платежей
+              </h2>
+              <p className="text-slate-600 text-sm sm:text-base">
+                Бесплатный пробный доступ предоставляется автоматически при регистрации.
+              </p>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
+              {/* 1. Поставщики */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
+                  <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
+                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
+                    {supplierTariffs.map((t: PublicTariff) => (
+                      <div key={t.id} className="flex justify-between items-center text-xs">
+                        <span className="text-slate-800 font-bold">{t.name}</span>
+                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                  <a href={cabinetUrl}>Выбрать пакет поставщиков</a>
+                </Button>
+              </div>
+
+              {/* 2. Подбор товара и аналогов */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Подбор по спецификации</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Подбор товара и аналогов</h3>
+                  <p className="text-xs text-slate-600 mb-4">Выявление скрытой модели по ТЗ, сопоставление показателей, реестр Минпромторга (ГИСП) и 2–4 эквивалента.</p>
+                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
+                    {exactProductTariffs.length > 0 ? (
+                      exactProductTariffs.map((t: PublicTariff) => (
+                        <div key={t.id} className="flex justify-between items-center text-xs">
+                          <span className="text-slate-800 font-bold">{t.name}</span>
+                          <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-800 font-bold">1 подбор товара и аналогов</span>
+                        <strong className="text-teal-700 font-extrabold">99 ₽</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                  <a href={cabinetUrl}>Подобрать товар и аналоги</a>
+                </Button>
+              </div>
+
+              {/* 3. Анализ документации */}
+              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Аудит рисков закупки</span>
+                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Анализ документации</h3>
+                  <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и нацрежима (44/223-ФЗ).</p>
+                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
+                    {reportTariffs.map((t: PublicTariff) => (
+                      <div key={t.id} className="flex justify-between items-center text-xs">
+                        <span className="text-slate-800 font-bold">{t.name}</span>
+                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
+                  <a href={cabinetUrl}>Выбрать пакет отчетов</a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ SECTION */}
+        <section id="faq" className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <div className="text-center mb-12 space-y-3">
+              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">Часто задаваемые вопросы</h2>
+              <p className="text-slate-600 text-sm">Ответы на ключевые вопросы о работе сервиса.</p>
+            </div>
+
+            <div className="space-y-4">
+              {mainFaqItems.map((faq, idx) => (
+                <details key={idx} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{faq.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-normal leading-relaxed border-t border-slate-200 pt-4">
+                    {faq.answer}
+                  </p>
+                </details>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* CONTACT SECTION */}
+        <ContactSection />
+
+        <SiteFooter />
+      </main>
+    </>
   );
-}
-
-function SectionHeader({ title, text, align = "center" }: { title: string; text: string; align?: "center" | "left" }) {
-  return (
-    <div className={`section-header ${align === "left" ? "align-left" : ""}`}>
-      <h2>{title}</h2>
-      <p>{text}</p>
-    </div>
-  );
-}
-
-function ProofItem({ value, label }: { value: string; label: string }) {
-  return (
-    <div>
-      <dt>{value}</dt>
-      <dd>{label}</dd>
-    </div>
-  );
-}
-
-function ResultPoint({ title, text }: { title: string; text: string }) {
-  return (
-    <li>
-      <CheckCircle2 size={19} aria-hidden="true" />
-      <div>
-        <strong>{title}</strong>
-        <span>{text}</span>
-      </div>
-    </li>
-  );
-}
-
-function ContactLink({ href, icon: Icon, label, staticLabel }: { href: string; icon: LucideIcon; label: string; staticLabel?: string }) {
-  const fallbackLabel = staticLabel || label;
-  if (!fallbackLabel) {
-    return null;
-  }
-  if (!href) {
-    return (
-      <span className="contact-link contact-link-static">
-        <Icon size={17} aria-hidden="true" />
-        {fallbackLabel}
-      </span>
-    );
-  }
-  return (
-    <a className="contact-link" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer">
-      <Icon size={17} aria-hidden="true" />
-      {label}
-    </a>
-  );
-}
-
-function Footer({ email, telegramUrl, maxUrl, max }: { email: string; telegramUrl: string; maxUrl: string; max: string }) {
-  return (
-    <footer className="site-footer">
-      <div className="container footer-inner">
-        <div>
-          <a className="brand" href="#" aria-label="TenderLex">
-            <Image src="/tenderlex-logo.png" alt="" width={30} height={30} />
-            <span>TenderLex</span>
-          </a>
-          <p>Сервис для анализа закупок и поиска поставщиков на сайте и в Telegram.</p>
-        </div>
-        <nav aria-label="Навигация в подвале">
-          <a href="#features">Возможности</a>
-          <a href="#process">Процесс</a>
-          <a href="#scenarios">Сценарии</a>
-          <a href="#tariffs">Тарифы</a>
-          <a href="#contacts">Контакты</a>
-          <a href="/analiz-zakupochnoi-dokumentacii">Анализ документации</a>
-          <a href="/poisk-postavshchikov-po-tz">Поиск поставщиков</a>
-          <a href="/reestr-minpromtorga-v-zakupkah">Минпромторг</a>
-          <a href="/terms">Условия</a>
-          <a href="/privacy">Конфиденциальность</a>
-        </nav>
-        <div className="footer-contacts">
-          {telegramUrl ? <a href={telegramUrl} target="_blank" rel="noreferrer">Telegram</a> : null}
-          {max ? (maxUrl ? <a href={maxUrl} target="_blank" rel="noreferrer">MAX</a> : <span>{max}</span>) : null}
-          <a href={`mailto:${email}`}>{email}</a>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
-function tariffCountLabel(tariff: PublicTariff) {
-  const variants: [string, string, string] =
-    tariff.kind === "procurement_report"
-      ? ["отчёт", "отчёта", "отчётов"]
-      : ["запрос", "запроса", "запросов"];
-  return `${tariff.units} ${pluralizeRu(tariff.units, variants)}`;
-}
-
-function pluralizeRu(value: number, [one, few, many]: [string, string, string]) {
-  const mod10 = Math.abs(value) % 10;
-  const mod100 = Math.abs(value) % 100;
-  if (mod10 === 1 && mod100 !== 11) {
-    return one;
-  }
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-    return few;
-  }
-  return many;
-}
-
-function tariffDescription(tariff: PublicTariff) {
-  if (tariff.kind === "procurement_report") {
-    return "Требования, условия участия, риски договора и вопросы заказчику.";
-  }
-  if (tariff.kind === "supplier_search") {
-    return "Подбор релевантных компаний и контактов для запроса КП.";
-  }
-  return tariff.description.trim() || tariffCountLabel(tariff);
-}
-
-function tariffDisplayName(tariff: PublicTariff) {
-  if (tariff.kind === "procurement_report") {
-    return tariff.units === 1 ? "1 анализ закупки" : `${tariff.units} анализов закупок`;
-  }
-  if (tariff.kind === "supplier_search") {
-    return tariff.units === 1 ? "1 подбор поставщиков" : `${tariff.units} подборов поставщиков`;
-  }
-  return tariff.name;
-}
-
-function buildJsonLd(siteUrl: string, botUrl: string, contactTelegramUrl: string, email: string) {
-  return {
-    "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    name: "TenderLex",
-    applicationCategory: "BusinessApplication",
-    operatingSystem: "Web, Telegram",
-    url: siteUrl,
-    description:
-      "Сервис для анализа закупочной документации, оценки рисков и подбора поставщиков для запроса КП.",
-    offers: {
-      "@type": "Offer",
-      priceCurrency: "RUB",
-      availability: "https://schema.org/InStock",
-    },
-    provider: {
-      "@type": "Organization",
-      name: "TenderLex",
-      url: siteUrl,
-      email,
-      sameAs: [botUrl, contactTelegramUrl].filter(Boolean),
-    },
-  };
 }

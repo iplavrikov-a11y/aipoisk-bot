@@ -1,76 +1,55 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
   title: "Согласие на обработку персональных данных",
-  description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
-  alternates: {
-    canonical: "/personal-data",
-  },
-  openGraph: {
-    type: "website",
-    url: "/personal-data",
-    title: "Согласие на обработку персональных данных | TenderLex",
-    description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Согласие на обработку персональных данных | TenderLex",
-    description: "Согласие пользователя TenderLex на обработку данных для работы личного кабинета.",
-    images: ["/tenderlex-product-preview.png"],
-  },
+  description: "Порядок и условия согласия пользователя на обработку и хранение персональных данных сервисом TenderLex в рамках 152-ФЗ.",
+  alternates: { canonical: "/personal-data" },
 };
 
 export default function PersonalDataPage() {
   return (
-    <main className="legal-shell">
-      <article className="legal-document">
-        <a className="legal-back" href="/">TenderLex</a>
-        <h1>Согласие на обработку персональных данных</h1>
-        <p className="legal-date">Редакция от 7 июня 2026 года</p>
+    <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+      <SiteHeader />
 
-        <section>
-          <h2>1. Согласие пользователя</h2>
-          <p>
-            Создавая личный кабинет или отправляя данные через сайт TenderLex, пользователь дает согласие на обработку
-            переданных данных для работы сервиса, поддержки и учета доступных запусков.
+      <section className="py-16 sm:py-24 border-b border-slate-200">
+        <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+          <Link href="/legal" className="text-teal-700 font-bold text-xs uppercase tracking-wider hover:underline inline-block mb-4">
+            ← Правовая информация
+          </Link>
+          <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight mb-2">
+            Согласие на обработку персональных данных
+          </h1>
+          <p className="text-slate-500 text-sm mb-12">
+            Редакция от 17 июля 2026 года • Согласие субъекта персональных данных
           </p>
-        </section>
 
-        <section>
-          <h2>2. Состав данных</h2>
-          <p>
-            Обрабатываться могут email, имя, сведения о действиях в кабинете, документы и текстовые материалы,
-            которые пользователь передает для анализа закупок или поиска поставщиков.
-          </p>
-        </section>
+          <div className="space-y-8 text-sm text-slate-700 leading-relaxed">
+            <section className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-4 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">1. Текст согласия</h2>
+              <p>
+                Регистрируясь в личном кабинете на сайте tenderlex.ru или запуская Telegram-бота @tenderlex_bot,
+                пользователь свободно, своей волей и в своем интересе дает согласие оператору сервиса TenderLex на обработку своих персональных
+                данных.
+              </p>
+            </section>
 
-        <section>
-          <h2>3. Действия с данными</h2>
-          <p>
-            Сервис может собирать, записывать, хранить, уточнять, использовать, удалять данные и передавать их
-            техническим обработчикам только в объеме, необходимом для выполнения пользовательской задачи.
-          </p>
-        </section>
+            <section className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-4 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">2. Перечень действий и срок действия</h2>
+              <p>
+                Согласие дается на совершение следующих действий с персональными данными: сбор, запись, систематизацию,
+                накопление, хранение, уточнение (обновление, изменение), извлечение, использование, передачу, блокирование,
+                удаление и уничтожение. Согласие действует бессрочно до момента его отзыва путем направления письменного
+                уведомления на email: support@tenderlex.ru.
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
 
-        <section>
-          <h2>4. Срок действия согласия</h2>
-          <p>
-            Согласие действует до его отзыва пользователем или до удаления учетной записи и материалов, если более
-            длительное хранение не требуется для защиты прав и законных интересов.
-          </p>
-        </section>
-
-        <section>
-          <h2>5. Отзыв согласия</h2>
-          <p>
-            Чтобы отозвать согласие или запросить удаление данных, напишите на{" "}
-            <a href="mailto:snab@dealpartner.ru">snab@dealpartner.ru</a> или через{" "}
-            <a href="https://t.me/lexelence" target="_blank" rel="noreferrer">Telegram</a>.
-          </p>
-        </section>
-      </article>
+      <SiteFooter />
     </main>
   );
 }

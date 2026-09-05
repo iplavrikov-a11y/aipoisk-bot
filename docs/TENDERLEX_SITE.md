@@ -9,9 +9,26 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 - Dedicated scenario pages for procurement-document analysis, supplier search, and Minpromtorg-related registry context.
 - No blog, no CMS, no public admin panel.
 - Contacts and active tariffs come from the existing FastAPI backend through `GET /api/public/site`.
-- The first screen must sell two equal product scenarios: procurement-document analysis and supplier/contact search.
+- The first screen must lead with the main product promise: supplier/contact
+  search under a customer's specification or procurement task. Procurement
+  documentation analysis remains visible, but it is positioned as an optional
+  supporting check for complex tender work, not as the dominant public-site
+  message.
+- Search technology positioning: TenderLex performs live web search across Yandex
+  and Google with deep crawling of manufacturer websites and direct contact parsing,
+  rather than querying a static/stale directory.
+- Trust Architecture (`TrustRegistryBar`): Highlights 4 authentic data and technology pillars:
+  1. Live Web Search (Yandex & Google Search API queries)
+  2. Deep Crawling (direct parsing of supplier website catalogs, contacts, prices)
+  3. Minpromtorg Registry / GISP (PP 616 / 617 national regime)
+  4. EIS Zakupki (44-FZ / 223-FZ contract analysis & risk review)
 - Public copy should offer both entry points: work on the site and work in Telegram.
 - Customer-facing copy must explain the business result, not implementation details such as file formats, internal balances, protected sessions, or exact free-run counters.
+- Homepage copy should avoid leading with internal or overloaded abbreviations
+  such as `ТЗ` and `КП`. SEO landing pages may keep those phrases in metadata
+  or narrow intent pages, but visible homepage copy should use buyer-language
+  phrases such as "спецификация", "запрос цены", "письмо поставщику", and
+  "список компаний".
 - The cabinet must mirror the bot scenarios: `Одно ТЗ`, `Несколько ТЗ`, `Анализ закупки`, and `Анализ + поиск`.
 - `Анализ закупки` and `Анализ + поиск` accept a notice number, link, or uploaded procurement materials; they must not expose extra invented fields such as "what to check".
 - `Несколько ТЗ` is mass supplier search: each uploaded ТЗ is processed as a separate supplier-search job.
@@ -26,37 +43,65 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 ## Public Data Contract
 
 - `GET /api/public/site` is the only public backend endpoint used by the site.
-- It exposes safe site metadata, active tariffs, grouped tariff lists, trial counters, public contact links, and the Telegram bot link.
+- It exposes safe site metadata, active tariffs, grouped tariff lists,
+  free-period settings, public contact links, and the Telegram bot link.
 - It must not expose admin endpoints, customers, jobs, billing history, uploaded files, report files, AI provider keys, or other secrets.
 - `bot.telegram_url` is used for the Telegram work CTA such as "Попробовать в Telegram".
 - `contacts.telegram_url` is used for owner/contact and purchase CTAs such as "Выбрать пакет".
 - Current production values are `@tenderlex_bot` for bot use and `@lexelence` for owner contact.
 
+## Knowledge Base & Content Hub (`/baza-znaniy`)
+
+- The Knowledge Base (`site/src/app/baza-znaniy`) is an SEO and educational hub containing 55 comprehensive, authoritative procurement guides.
+- Structured into 8 primary procurement clusters:
+  1. *Поиск поставщиков и заводов* (8 articles)
+  2. *ИИ и сопоставление номенклатуры* (7 articles)
+  3. *ТЗ, КТРУ и стандарты ГОСТ* (7 articles)
+  4. *Госзакупки 44-ФЗ / 223-ФЗ* (7 articles)
+  5. *Нацрежим и Минпромторг* (7 articles)
+  6. *НМЦК, КП и обоснование цен* (7 articles)
+  7. *Логистика и снижение затрат на 30%* (6 articles)
+  8. *Проверка контрагентов и дилеров* (6 articles)
+- Built on a dynamic static generation architecture: `site/src/app/baza-znaniy/[slug]/page.tsx` renders all 55 articles at build time using `generateStaticParams()` and dataset in `site/src/data/knowledge-base.ts`.
+- Uses a light, clean aesthetic aligned with the homepage design system (`bg-[#f6f8f7]`, `bg-white`, `border-[#d8e3e1]`, `text-[#075b63]`, `text-[#172120]`).
+- Includes comprehensive Schema.org JSON-LD microdata on every page (`TechArticle`, `HowTo`, `FAQPage`, `BreadcrumbList`, `CollectionPage`).
+- All 55 article URLs are dynamically published in `sitemap.xml` and registered in `llms.txt` for AI/LLM search indexing.
+
 ## SEO And Verification
 
 - `site/src/app/layout.tsx` owns the public metadata, canonical URLs, Open Graph tags, and optional verification/analytics wiring.
-- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component.
-- `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster.
-- `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property.
+- `TENDERLEX_YANDEX_METRIKA_ID` enables the Yandex Metrika component (Counter ID `109753178`).
+- `TENDERLEX_YANDEX_VERIFICATION` injects the `yandex-verification` meta tag for Yandex Webmaster (`b3b74a829ce4a7c6`).
+- `TENDERLEX_GOOGLE_SITE_VERIFICATION` is available for meta-based verification, but the current Google Search Console setup uses DNS TXT verification for the domain property (`SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY`).
 - `site/public/yandex_b3b74a829ce4a7c6.html` is the Yandex Webmaster HTML verification file.
-- `site/src/app/sitemap.ts` includes the public SEO pages so Search Console and Yandex can discover them from the canonical sitemap.
-- `robots.txt` allows public pages, keeps `/cabinet` out of indexing, and declares `Host: https://tenderlex.ru` for Yandex.
-- `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths must include a `120x120` asset.
-- Yandex Webmaster has both `http:tenderlex.ru:80` and `https:tenderlex.ru:443` properties. Keep the HTTP favicon paths returning `200 OK` instead of only redirecting, because the HTTP property can diagnose `http://tenderlex.ru/favicon.ico` and `http://tenderlex.ru/favicon.png` directly.
-- On 2026-06-23 the Yandex Webmaster DNS check was resent and the following URLs were queued for re-crawl: `http://tenderlex.ru/`, `http://tenderlex.ru/favicon.ico`, `http://tenderlex.ru/favicon.png`, and `https://tenderlex.ru/` in the HTTPS property.
-- Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site can pick them up without touching backend or bot services.
+- `site/src/app/sitemap.ts` includes all public SEO pages and 55 knowledge base articles so Search Console and Yandex discover them from the canonical sitemap.
+- `robots.txt` allows public pages, keeps `/api/` and `/cabinet` out of indexing, and points crawlers to the canonical sitemap. The deprecated `Host` directive is intentionally omitted.
+- `site/src/app/layout.tsx` default metadata aligns with homepage positioning.
+- `site/src/app/favicon.ico`, `site/public/favicon.png`, `site/src/app/icon.png`, and `site/src/app/apple-icon.png` are the public icon set. The Yandex-facing favicon paths include a `120x120` asset.
+- Production SEO envs are loaded from `/etc/systemd/system/tenderlex-site.service.d/seo.conf` so the live site picks them up automatically.
 
 ## Customer API Contract
 
 - The web cabinet uses `/api/customer/*` routes behind cookie session and CSRF protection.
-- Web users are separate from Telegram users. They sign in by email/password and are represented in job/client metadata with `web:<id>`.
+- Web users are separate from Telegram users. They sign in by email/password; internal `web:<id>` markers may exist in job/client metadata but must not appear as Telegram accounts in the owner-facing admin UI.
 - Customer job creation sends the same backend modes used by the bot: `supplier_search`, `procurement_report`, and `analysis_and_suppliers`.
 - The frontend hides `target_suppliers`; the backend uses the configured default supplier target.
 - `GET /api/customer/jobs` supports pagination for the cabinet. The current UI
   page size is 15 tasks.
 - Supplier-search results that can be extended expose an additional action for
   finding more suppliers. The customer must confirm the paid extra run before
-  the backend creates the additional supplier-search job.
+  the backend creates the additional supplier-search job; this run debits the
+  additional-supplier-search price, not the full first-search price. The default
+  additional-search price is 50% of the effective supplier-search price unless
+  a global dobор package or per-customer dobор override is configured.
+- Supplier search and combined analysis-plus-search carry the customer-selected
+  supplier registry mode: `Обычный поиск`, `Только реестр`, or
+  `Реестр в приоритете`.
+- When strict registry search has no confirmed registry linkage but has verified
+  suppliers from the same run, the cabinet shows a structured alternative
+  offer with the count, reserved charge, 24-hour deadline, accept/download, and
+  decline-without-charge actions. Terminal decision and delivery outcomes stay
+  visible; stale supplier files are not downloadable after decline or expiry.
 - `GET /api/customer/jobs` and `/api/customer/auth/session` must not be cached.
   The cabinet uses no-store fetches and a shorter polling interval while active
   jobs exist so Telegram/API-side cancellation appears in the website task list
@@ -68,13 +113,22 @@ landing page and the authenticated customer cabinet at `https://tenderlex.ru`.
 The existing admin panel controls public business data without giving customers
 access to the admin panel.
 
-- Tariffs are managed from the tariff/package section.
+- Global prices and visible packages are managed from the tariff/package
+  section.
+- Per-customer effective prices for supplier search, procurement analysis, and
+  additional supplier search are managed in each admin customer card. The
+  customer session payload and Telegram cabinet must show the same effective
+  dobор price: explicit dobор override/package first, otherwise 50% of the
+  effective supplier-search price.
 - `bot_telegram` is labelled "Telegram-бот для пробного запуска и работы".
 - `contact_telegram` is labelled "Telegram для связи и оплаты".
 - `contact_max`, `contact_max_link`, `contact_email`, `contact_website`, and
   payment instructions remain existing contact/payment settings.
-- Trial counters come from existing free-period settings: supplier search limit, procurement report limit, and file limit.
-- Website access is topped up manually from the admin customer card until online payment is enabled.
+- Trial setup credits money according to the active base prices for the trial
+  supplier-search and procurement-analysis allowances.
+- Website access is topped up manually by crediting a money amount from the
+  admin customer card. The owner UI does not expose manual run grants, action
+  type, or package selection for normal balance operations.
 - Password recovery requests from `/cabinet` are handled by the admin customer tools; public responses must not reveal whether an email exists.
 
 ## Frontend Structure
@@ -112,8 +166,8 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Admin production build, when public settings UI changes: `cd frontend && npm run build`
 - Targeted backend tests for the public/customer API contract: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_customer_api.py backend/tests/test_api_guards.py backend/tests/test_access_limits.py -q`
 - Production smoke: `curl -fsS http://127.0.0.1:8088/api/public/site | jq '{bot, contacts, trial}'`
-- Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram'`
-- Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX'` should return no matches.
+- Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram|Поиск поставщиков под вашу спецификацию|Список компаний для запроса цены'`
+- Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX|Поставщики по техническому заданию|запрос КП|запрос коммерческого предложения'` should return no matches on the homepage.
 - SEO smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/sitemap.xml | rg 'analiz-zakupochnoi-dokumentacii|poisk-postavshchikov-po-tz|reestr-minpromtorga-v-zakupkah'`
 - Verification smoke: `curl -fsS --resolve tenderlex.ru:443:127.0.0.1 https://tenderlex.ru/yandex_b3b74a829ce4a7c6.html`
 - Yandex favicon smoke: `curl -sS -D - -o /tmp/tenderlex-favicon.ico http://tenderlex.ru/favicon.ico | sed -n '1,12p'` should show `200 OK`, and `identify -format '%wx%h %m\n' /tmp/tenderlex-favicon.ico` should show `120x120`.

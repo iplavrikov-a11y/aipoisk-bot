@@ -4,6 +4,7 @@ import base64
 import hashlib
 import html as html_lib
 import hmac
+import json
 import logging
 import re
 import secrets
@@ -16,11 +17,21 @@ from email.utils import formataddr
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .billing import grant_trial_balance
 from .config import config
 from .db import db_session
-from .models import Client, WebEmailVerificationToken, WebSession, WebUser, new_id, now_utc
+from .models import (
+    Client,
+    ClientTelegramAccount,
+    WebEmailVerificationToken,
+    WebSession,
+    WebUser,
+    new_id,
+    now_utc,
+)
 from .repository import get_or_create_settings
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
@@ -84,10 +95,12 @@ def create_web_user(
     db: Session,
     *,
     email: str,
-    password: str,
+    password: str = "",
     name: str = "",
     client: Client | None = None,
     email_verified: bool = False,
+    yandex_id: str | None = None,
+    commit: bool = True,
 ) -> WebUser:
     normalized_email = validate_email(email)
     if db.query(WebUser.id).filter(WebUser.email == normalized_email).first():
@@ -107,29 +120,50 @@ def create_web_user(
             is_trial=trial_enabled,
             allowed_supplier_search=True,
             allowed_procurement_report=True,
+            allowed_exact_product=True,
             monthly_job_limit=supplier_limit + report_limit,
             monthly_supplier_search_limit=supplier_limit,
             monthly_procurement_report_limit=report_limit,
             monthly_file_limit=file_limit,
             notes=(
-                f"Website trial account: {normalized_email}. Email verification required."
-                if trial_enabled
-                else f"Website account: {normalized_email}. Manual grants required."
+                f"Website trial account: {normalized_email}. Verified via Yandex ID."
+                if trial_enabled and yandex_id
+                else (
+                    f"Website trial account: {normalized_email}. Email verification required."
+                    if trial_enabled
+                    else f"Website account: {normalized_email}. Manual grants required."
+                )
             ),
         )
         db.add(client)
         db.flush()
+        if trial_enabled:
+            trial_rub = getattr(settings, "trial_balance_rub", None)
+            if trial_rub is not None and int(trial_rub or 0) > 0:
+                grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+            else:
+                grant_trial_balance(
+                    db,
+                    client,
+                    supplier_search_units=supplier_limit,
+                    procurement_report_units=report_limit,
+                )
+    password_val = password or generate_temporary_password(16)
     user = WebUser(
         client_id=client.id,
         email=normalized_email,
-        password_hash=hash_password(password),
+        yandex_id=str(yandex_id).strip() if yandex_id else None,
+        password_hash=hash_password(password_val),
         name=display_name,
         is_active=True,
         is_email_verified=bool(email_verified),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    if commit:
+        db.commit()
+        db.refresh(user)
+    else:
+        db.flush()
     return user
 
 
@@ -205,44 +239,72 @@ def _verification_sender_name() -> str:
 
 
 def _verification_sender_email() -> str:
-    return str(config.email_from_email or config.smtp_from or config.smtp_username or "").strip()
+    return str(config.email_from_email or config.smtp_from or config.smtp_username or "info@tenderlex.ru").strip()
 
 
-def _verification_email_text(link: str) -> str:
+def _verification_email_text(link: str, grant_text: str = "бесплатные задачи") -> str:
     return "\n".join(
         [
-            "Здравствуйте.",
+            "Здравствуйте!",
             "",
-            "Подтвердите email для личного кабинета TenderLex:",
+            "Вы создали личный кабинет в сервисе TenderLex.",
+            f"Подтвердите email для активации тестового доступа на {grant_text}:",
             link,
             "",
-            "После подтверждения можно запускать задачи на сайте.",
-            "Если вы не создавали кабинет, просто не открывайте эту ссылку.",
+            "Ссылка действительна в течение 24 часов.",
+            "Если вы не регистрировались на сайте tenderlex.ru, просто проигнорируйте это письмо.",
+            "",
+            "— Команда TenderLex (https://tenderlex.ru)",
         ]
     )
 
 
-def _verification_email_html(link: str) -> str:
+def _verification_email_html(link: str, grant_text: str = "бесплатные задачи") -> str:
     safe_link = html_lib.escape(link, quote=True)
-    return f"""<!doctype html>
-<html>
-  <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; line-height: 1.5; color: #172321; background: #f6f8f7;">
-    <div style="max-width: 560px; margin: 0 auto; padding: 28px 20px;">
-      <div style="background: #ffffff; border: 1px solid #dce7e5; border-radius: 10px; padding: 24px;">
-        <div style="font-size: 18px; font-weight: 700; color: #075f68; margin-bottom: 18px;">TenderLex</div>
-    <p>Здравствуйте.</p>
-    <p>Подтвердите email для личного кабинета TenderLex.</p>
-        <p style="margin: 22px 0;">
-      <a href="{safe_link}" style="display: inline-block; padding: 12px 18px; background: #075f68; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700;">
-        Подтвердить email
-      </a>
-    </p>
-        <p style="font-size: 14px; color: #4f625f;">Если кнопка не открылась, скопируйте ссылку в браузер:<br><a href="{safe_link}" style="color: #075f68;">{safe_link}</a></p>
-        <p style="font-size: 14px; color: #4f625f;">Если вы не создавали кабинет, просто не открывайте эту ссылку.</p>
-      </div>
-    </div>
-  </body>
-</html>"""
+    return (
+        '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        '<title>Подтверждение email TenderLex</title></head>'
+        '<body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#1e293b;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+        '<tr><td align="center" style="padding:16px 8px;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:580px;border-collapse:collapse;text-align:left;">'
+        '<tr><td style="padding-bottom:12px;border-bottom:2px solid #0f766e;">'
+        '<div style="font-size:22px;font-weight:bold;color:#0f766e;line-height:1.2;">TenderLex</div>'
+        '<div style="font-size:12px;color:#64748b;margin-top:2px;">Сервис подбора поставщиков и анализа ТЗ</div>'
+        '</td></tr>'
+        '<tr><td style="padding-top:16px;padding-bottom:8px;">'
+        '<div style="font-size:17px;font-weight:bold;color:#0f172a;line-height:1.3;">Подтверждение адреса электронной почты</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:8px;">'
+        '<div style="font-size:14px;line-height:1.5;color:#334155;">Здравствуйте!</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:18px;">'
+        '<div style="font-size:14px;line-height:1.5;color:#334155;">Вы создали личный кабинет в сервисе <b>TenderLex</b>. '
+        f'Подтвердите email для активации тестового доступа на {grant_text}:</div>'
+        '</td></tr>'
+        '<tr><td align="center" style="padding-bottom:18px;">'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 auto;">'
+        '<tr><td align="center" bgcolor="#0f766e" style="border-radius:8px;">'
+        f'<a href="{safe_link}" target="_blank" style="display:inline-block;padding:12px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;line-height:1.2;text-align:center;">Подтвердить email</a>'
+        '</td></tr></table>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:14px;">'
+        '<div style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;">'
+        '<div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">Прямая ссылка для перехода:</div>'
+        f'<a href="{safe_link}" target="_blank" style="color:#0f766e;font-size:11px;line-height:1.4;word-break:break-all;font-family:monospace;text-decoration:underline;">{safe_link}</a>'
+        '</div></td></tr>'
+        '<tr><td style="padding-bottom:4px;">'
+        '<div style="font-size:11px;color:#64748b;line-height:1.4;">• Ссылка действительна в течение 24 часов.</div>'
+        '</td></tr>'
+        '<tr><td style="padding-bottom:16px;">'
+        '<div style="font-size:11px;color:#94a3b8;line-height:1.4;">• Если вы не регистрировались на сайте <a href="https://tenderlex.ru" target="_blank" style="color:#64748b;text-decoration:none;">tenderlex.ru</a>, просто проигнорируйте это письмо — аккаунт не будет активирован.</div>'
+        '</td></tr>'
+        '<tr><td style="border-top:1px solid #e2e8f0;padding-top:12px;">'
+        '<div style="font-size:11px;color:#94a3b8;line-height:1.4;">© TenderLex • Сервис снабжения и аудита 44-ФЗ / 223-ФЗ • <a href="https://tenderlex.ru" target="_blank" style="color:#0f766e;text-decoration:none;font-weight:bold;">tenderlex.ru</a></div>'
+        '</td></tr></table>'
+        '</td></tr></table></body></html>'
+    )
 
 
 def _send_email_verification_via_relay(user: WebUser, subject: str, html_body: str) -> bool:
@@ -314,11 +376,18 @@ def _send_email_verification_via_smtp(user: WebUser, subject: str, text_body: st
     return True
 
 
-def send_email_verification(user: WebUser, token: str, *, public_base_url: str = "") -> bool:
+def send_email_verification(
+    user: WebUser,
+    token: str,
+    *,
+    public_base_url: str = "",
+    trial_summary: str = "",
+) -> bool:
     link = email_verification_url(token, public_base_url=public_base_url)
+    grant_text = trial_summary or "бесплатные задачи"
     subject = "Подтверждение email TenderLex"
-    text_body = _verification_email_text(link)
-    html_body = _verification_email_html(link)
+    text_body = _verification_email_text(link, grant_text)
+    html_body = _verification_email_html(link, grant_text)
     if _send_email_verification_via_relay(user, subject, html_body):
         return True
     return _send_email_verification_via_smtp(user, subject, text_body, html_body)
@@ -387,8 +456,7 @@ def require_web_context(request: Request, db: Session = Depends(db_session)) -> 
     session = get_web_session_by_token(db, request.cookies.get(CUSTOMER_COOKIE, ""))
     if not session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Войдите в личный кабинет.")
-    session.last_seen_at = now_utc()
-    db.commit()
+    touch_web_session_if_stale(db, session)
     return WebAuthContext(user=session.user, session=session)
 
 
@@ -396,9 +464,22 @@ def optional_web_context(request: Request, db: Session = Depends(db_session)) ->
     session = get_web_session_by_token(db, request.cookies.get(CUSTOMER_COOKIE, ""))
     if not session:
         return None
-    session.last_seen_at = now_utc()
-    db.commit()
+    touch_web_session_if_stale(db, session)
     return WebAuthContext(user=session.user, session=session)
+
+
+def touch_web_session_if_stale(db: Session, session: WebSession, *, interval: timedelta = timedelta(minutes=5)) -> bool:
+    current = now_utc()
+    if _as_aware_utc(session.last_seen_at) > current - interval:
+        return False
+    try:
+        session.last_seen_at = current
+        db.commit()
+        return True
+    except OperationalError as exc:
+        db.rollback()
+        logger.warning("Skipping non-critical web session touch after database error: %s", exc)
+        return False
 
 
 def require_customer_csrf(request: Request, context: WebAuthContext) -> None:
@@ -415,3 +496,441 @@ def revoke_web_session(db: Session, session: WebSession | None) -> None:
         return
     session.revoked_at = now_utc()
     db.commit()
+
+
+YANDEX_OAUTH_COOKIE = "tenderlex_yandex_oauth_state"
+
+
+def yandex_oauth_redirect_uri(public_base_url: str = "") -> str:
+    if config.yandex_oauth_redirect_url:
+        return config.yandex_oauth_redirect_url
+    base = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return f"{base}/api/customer/auth/yandex/callback"
+
+
+def build_yandex_oauth_url(*, redirect_uri: str, state: str) -> str:
+    from urllib.parse import urlencode
+
+    client_id = str(config.yandex_oauth_client_id or "").strip()
+    if not client_id:
+        raise ValueError("Yandex OAuth Client ID не настроен.")
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "force_confirm": "no",
+    }
+    return f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
+
+
+def build_telegram_oauth_url(public_base_url: str = "") -> str:
+    from urllib.parse import urlencode
+
+    bot_token = str(config.bot_token or "").strip()
+    if not bot_token or ":" not in bot_token:
+        raise ValueError("Telegram Bot Token не настроен.")
+    bot_id = bot_token.split(":", 1)[0]
+    base = str(public_base_url or config.public_base_url or "https://tenderlex.ru").strip().rstrip("/")
+    return_to = f"{base}/cabinet"
+    params = {
+        "bot_id": bot_id,
+        "origin": base,
+        "embed": "0",
+        "request_access": "write",
+        "return_to": return_to,
+    }
+    return f"https://oauth.telegram.org/auth?{urlencode(params)}"
+
+
+def set_yandex_oauth_state_cookie(response: Response, state: str) -> None:
+    secure = str(config.public_base_url or "").lower().startswith("https://")
+    response.set_cookie(
+        YANDEX_OAUTH_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/api/customer/auth/yandex",
+    )
+
+
+def clear_yandex_oauth_state_cookie(response: Response) -> None:
+    response.delete_cookie(YANDEX_OAUTH_COOKIE, path="/api/customer/auth/yandex")
+
+
+def fetch_yandex_oauth_profile(code: str, redirect_uri: str) -> dict:
+    client_id = str(config.yandex_oauth_client_id or "").strip()
+    client_secret = str(config.yandex_oauth_client_secret or "").strip()
+    if not client_id or not client_secret:
+        raise ValueError("Yandex OAuth ключи не настроены.")
+
+    token_url = "https://oauth.yandex.ru/token"
+    token_payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    if redirect_uri:
+        token_payload["redirect_uri"] = redirect_uri
+
+    with httpx.Client(timeout=15.0) as client:
+        token_res = client.post(token_url, data=token_payload)
+        if token_res.status_code != 200:
+            logger.warning("yandex_oauth_token_exchange_failed", extra={"status_code": token_res.status_code, "body": token_res.text})
+            raise ValueError(f"Ошибка получения токена Яндекса: {token_res.status_code}")
+        token_data = token_res.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError("Не получен access_token от Яндекса.")
+
+        info_res = client.get(
+            "https://login.yandex.ru/info?format=json",
+            headers={"Authorization": f"OAuth {access_token}"},
+        )
+        if info_res.status_code != 200:
+            logger.warning("yandex_oauth_profile_fetch_failed", extra={"status_code": info_res.status_code, "body": info_res.text})
+            raise ValueError(f"Ошибка получения профиля Яндекса: {info_res.status_code}")
+        profile = info_res.json()
+
+    yandex_id = str(profile.get("id") or "").strip()
+    if not yandex_id:
+        raise ValueError("В ответе Яндекса отсутствует id пользователя.")
+
+    email = str(profile.get("default_email") or "").strip()
+    if not email:
+        emails = profile.get("emails") or []
+        if emails and isinstance(emails, list):
+            email = str(emails[0] or "").strip()
+
+    if not email:
+        raise ValueError("Яндекс не предоставил доступ к email пользователя.")
+
+    real_name = str(profile.get("real_name") or "").strip()
+    first_name = str(profile.get("first_name") or "").strip()
+    last_name = str(profile.get("last_name") or "").strip()
+    display_name = str(profile.get("display_name") or "").strip()
+    combined_name = f"{first_name} {last_name}".strip()
+    name = real_name or combined_name or display_name or email.split("@")[0]
+
+    return {
+        "yandex_id": yandex_id,
+        "email": email,
+        "name": name,
+        "avatar_id": str(profile.get("default_avatar_id") or ""),
+    }
+
+
+def get_or_create_yandex_web_user(
+    db: Session,
+    *,
+    yandex_user_id: str,
+    email: str,
+    name: str = "",
+) -> tuple[WebUser, bool]:
+    clean_yandex_id = str(yandex_user_id or "").strip()
+    if not clean_yandex_id:
+        raise ValueError("Не передан идентификатор пользователя Яндекс ID.")
+    normalized_email = validate_email(email)
+    display_name = str(name or "").strip()[:255]
+
+    # 1. Match by yandex_id
+    user = db.query(WebUser).filter(WebUser.yandex_id == clean_yandex_id).first()
+    if user:
+        modified = False
+        if not user.is_email_verified:
+            user.is_email_verified = True
+            modified = True
+        if display_name and not user.name:
+            user.name = display_name
+            modified = True
+        if modified:
+            db.commit()
+            db.refresh(user)
+        return user, False
+
+    # 2. Match by email
+    user = db.query(WebUser).filter(WebUser.email == normalized_email).first()
+    if user:
+        user.yandex_id = clean_yandex_id
+        user.is_email_verified = True
+        if display_name and not user.name:
+            user.name = display_name
+        db.commit()
+        db.refresh(user)
+        return user, False
+
+    # 3. Create new user
+    user = create_web_user(
+        db,
+        email=normalized_email,
+        name=display_name,
+        email_verified=True,
+        yandex_id=clean_yandex_id,
+        commit=True,
+    )
+    return user, True
+
+
+def extract_telegram_auth_payload(params: dict) -> dict[str, str | int]:
+    if not isinstance(params, dict):
+        return {}
+    if "tgAuthResult" in params:
+        raw_b64 = str(params["tgAuthResult"] or "").strip()
+        if raw_b64:
+            raw_b64 += "=" * ((4 - len(raw_b64) % 4) % 4)
+            try:
+                raw_json = base64.urlsafe_b64decode(
+                    raw_b64.encode("utf-8")
+                ).decode("utf-8")
+                decoded = json.loads(raw_json)
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception as exc:
+                logger.warning(
+                    "failed_to_decode_tgAuthResult",
+                    extra={"error": str(exc), "raw": raw_b64},
+                )
+    return params
+
+
+def verify_telegram_auth_payload(
+    data: dict[str, str | int],
+    bot_token: str,
+    *,
+    max_age_seconds: int = 86400,
+) -> bool:
+    if not bot_token:
+        logger.warning("telegram_auth_verification_failed: bot_token_empty")
+        return False
+
+    received_hash = str(data.get("hash") or "").strip()
+    if not received_hash:
+        return False
+
+    auth_date_raw = data.get("auth_date")
+    try:
+        auth_date = int(auth_date_raw or 0)
+    except (ValueError, TypeError):
+        return False
+
+    if max_age_seconds > 0:
+        now_ts = int(now_utc().timestamp())
+        if now_ts - auth_date > max_age_seconds:
+            logger.warning(
+                "telegram_auth_verification_failed: expired_auth_date",
+                extra={"auth_date": auth_date, "now": now_ts},
+            )
+            return False
+
+    check_pairs: list[str] = []
+    for key, value in sorted(data.items()):
+        if key == "hash" or value is None:
+            continue
+        check_pairs.append(f"{key}={value}")
+
+    data_check_string = "\n".join(check_pairs)
+    secret_key = hashlib.sha256(bot_token.strip().encode("utf-8")).digest()
+    expected_hash = hmac.new(
+        secret_key, data_check_string.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(expected_hash, received_hash)
+
+
+def get_or_create_telegram_web_user(
+    db: Session,
+    *,
+    telegram_user_id: str | int,
+    username: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    photo_url: str = "",
+) -> tuple[WebUser, bool]:
+    clean_telegram_id = str(telegram_user_id or "").strip()
+    if not clean_telegram_id:
+        raise ValueError("Не передан Telegram ID пользователя.")
+
+    clean_username = str(username or "").strip().lstrip("@")
+    parts = [str(first_name or "").strip(), str(last_name or "").strip()]
+    full_name = " ".join(p for p in parts if p).strip()
+    display_name = (
+        full_name
+        or (f"@{clean_username}" if clean_username else f"TG User {clean_telegram_id}")
+    )[:255]
+
+    # 1. Match existing ClientTelegramAccount
+    tg_account = (
+        db.query(ClientTelegramAccount)
+        .filter(ClientTelegramAccount.telegram_id == clean_telegram_id)
+        .first()
+    )
+    if tg_account:
+        client = db.get(Client, tg_account.client_id)
+        if client:
+            if clean_username and tg_account.username != clean_username:
+                tg_account.username = clean_username
+            if display_name and tg_account.name != display_name:
+                tg_account.name = display_name
+
+            existing_web_user = (
+                db.query(WebUser).filter(WebUser.client_id == client.id).first()
+            )
+            if existing_web_user:
+                if display_name and not existing_web_user.name:
+                    existing_web_user.name = display_name
+                db.commit()
+                db.refresh(existing_web_user)
+                return existing_web_user, False
+
+            # Create WebUser for this existing Client
+            gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+            candidate_email = gen_email
+            counter = 1
+            while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+                candidate_email = (
+                    f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+                )
+                counter += 1
+
+            user = WebUser(
+                client_id=client.id,
+                email=candidate_email,
+                name=display_name,
+                password_hash=hash_password(generate_temporary_password(16)),
+                is_active=True,
+                is_email_verified=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            return user, False
+
+    # 2. Match Client by primary telegram_id
+    client = db.query(Client).filter(Client.telegram_id == clean_telegram_id).first()
+    if client:
+        db.add(
+            ClientTelegramAccount(
+                client_id=client.id,
+                telegram_id=clean_telegram_id,
+                username=clean_username,
+                name=display_name,
+                is_active=True,
+                notes="Telegram Login Widget auth link",
+            )
+        )
+        existing_web_user = (
+            db.query(WebUser).filter(WebUser.client_id == client.id).first()
+        )
+        if existing_web_user:
+            if display_name and not existing_web_user.name:
+                existing_web_user.name = display_name
+            db.commit()
+            db.refresh(existing_web_user)
+            return existing_web_user, False
+
+        gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+        candidate_email = gen_email
+        counter = 1
+        while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+            candidate_email = f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+            counter += 1
+
+        user = WebUser(
+            client_id=client.id,
+            email=candidate_email,
+            name=display_name,
+            password_hash=hash_password(generate_temporary_password(16)),
+            is_active=True,
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user, False
+
+    # 3. Create brand new Client + ClientTelegramAccount + WebUser
+    settings = get_or_create_settings(db)
+    trial_enabled = bool(settings.trial_enabled)
+    supplier_limit = (
+        max(0, int(settings.trial_supplier_search_limit or 0)) if trial_enabled else 0
+    )
+    report_limit = (
+        max(0, int(settings.trial_procurement_report_limit or 0))
+        if trial_enabled
+        else 0
+    )
+    file_limit = (
+        max(0, int(settings.trial_file_limit or WEB_DEFAULT_FILE_LIMIT))
+        if trial_enabled
+        else WEB_DEFAULT_FILE_LIMIT
+    )
+
+    client = Client(
+        telegram_id=clean_telegram_id,
+        name=display_name,
+        username=clean_username,
+        is_active=True,
+        is_trial=trial_enabled,
+        allowed_supplier_search=True,
+        allowed_procurement_report=True,
+        allowed_exact_product=True,
+        monthly_job_limit=supplier_limit + report_limit,
+        monthly_supplier_search_limit=supplier_limit,
+        monthly_procurement_report_limit=report_limit,
+        monthly_file_limit=file_limit,
+        notes=(
+            f"Website account created via Telegram: @{clean_username} (ID: {clean_telegram_id})"
+            if clean_username
+            else f"Website account created via Telegram (ID: {clean_telegram_id})"
+        ),
+    )
+    db.add(client)
+    db.flush()
+
+    if trial_enabled:
+        trial_rub = getattr(settings, "trial_balance_rub", None)
+        if trial_rub is not None and int(trial_rub or 0) > 0:
+            grant_trial_balance(db, client, amount_kopeks=int(trial_rub) * 100)
+        else:
+            grant_trial_balance(
+                db,
+                client,
+                supplier_search_units=supplier_limit,
+                procurement_report_units=report_limit,
+            )
+
+    db.add(
+        ClientTelegramAccount(
+            client_id=client.id,
+            telegram_id=clean_telegram_id,
+            username=clean_username,
+            name=display_name,
+            is_active=True,
+            notes="Created via Telegram Login on website",
+        )
+    )
+
+    gen_email = f"tg_{clean_telegram_id}@telegram.tenderlex.ru"
+    candidate_email = gen_email
+    counter = 1
+    while db.query(WebUser.id).filter(WebUser.email == candidate_email).first():
+        candidate_email = f"tg_{clean_telegram_id}_{counter}@telegram.tenderlex.ru"
+        counter += 1
+
+    user = WebUser(
+        client_id=client.id,
+        email=candidate_email,
+        name=display_name,
+        password_hash=hash_password(generate_temporary_password(16)),
+        is_active=True,
+        is_email_verified=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user, True
+
+

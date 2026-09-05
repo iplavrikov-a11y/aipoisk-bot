@@ -14,6 +14,12 @@
       "directive": "Business model rule: paid customers should receive a useful report/result; do not propose withholding reports as the primary quality strategy. Improve root causes first: AI/model quality, official-field checks, national-regime/Minpromtorg handling, hallucination prevention, fair billing, owner alerts, and soft customer disclaimers that AI can make mistakes and critical facts should be checked.",
       "priority": "high",
       "timestamp": "2026-06-04T16:15:00.000Z"
+    },
+    {
+      "directive": "When a remote/server thread lacks callable Chrome, Computer Use, or GUI-app tools but the task requires signed-in browser consoles or visible desktop interaction, create/fork/handoff a local Codex Desktop thread with full context instead of stopping. Use the local thread for Chrome/Jino/Yandex/Google-console actions and keep server code/deploy/log work in the remote thread.",
+      "priority": "high",
+      "context": "Browser/GUI work split between remote server and local Codex Desktop",
+      "timestamp": "2026-06-24T10:34:05.147Z"
     }
   ],
   "notes": [
@@ -76,6 +82,11 @@
       "category": "deploy",
       "content": "TenderLex site SEO/analytics configured on 2026-06-10: Yandex Webmaster HTML file at site/public/yandex_b3b74a829ce4a7c6.html; production env in /etc/systemd/system/tenderlex-site.service.d/seo.conf sets TENDERLEX_YANDEX_METRIKA_ID=109753178 and TENDERLEX_YANDEX_VERIFICATION=b3b74a829ce4a7c6. Google Search Console uses DNS TXT google-site-verification=SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY, no Google meta env needed.",
       "timestamp": "2026-06-10T07:52:56.705Z"
+    },
+    {
+      "category": "deploy",
+      "content": "2026-06-23 Yandex Webmaster SEO fix for tenderlex.ru: HTTP favicon paths /favicon.ico, /favicon.png, /icon.png must proxy to site on 127.0.0.1:3093 instead of redirecting, so Yandex property http:tenderlex.ru:80 sees 200 OK. site robots.ts includes Host: https://tenderlex.ru. Browser recheck submitted DNS check and queued http://tenderlex.ru/, http favicon URLs, and https://tenderlex.ru/ in the HTTPS property.",
+      "timestamp": "2026-06-23T14:10:42.707Z"
     }
   ]
 }

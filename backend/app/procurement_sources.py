@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import re
 import socket
@@ -19,6 +20,8 @@ URL_RE = re.compile(r"https?://[^\s<>)\"']+", re.I)
 NOTICE_NUMBER_RE = re.compile(r"(?<!\d)(\d{11}|\d{19})(?!\d)")
 TRAILING_URL_CHARS = ".,;:!?)]}»”\"'"
 OFFICIAL_FOLLOWUP_LIMIT = 4
+BLOCKED_SOURCE_HOST_SUFFIXES = (".internal", ".local", ".localhost")
+MAX_SOURCE_REDIRECTS = 5
 
 
 @dataclass(frozen=True)
@@ -61,9 +64,55 @@ def normalize_source_url(value: str) -> str:
     if not url:
         return ""
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port not in {None, 80, 443}:
+        return ""
+    if not _source_host_is_public(parsed.hostname or "", resolve=False):
         return ""
     return url
+
+
+def _source_ip_is_public(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).is_global
+    except ValueError:
+        return False
+
+
+def _source_host_is_public(hostname: str, *, resolve: bool) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host or host == "localhost" or host.endswith(BLOCKED_SOURCE_HOST_SUFFIXES):
+        return False
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return literal.is_global
+    if not resolve:
+        return True
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            if item and len(item) > 4 and item[4]
+        }
+    except OSError:
+        return False
+    return bool(addresses) and all(_source_ip_is_public(address) for address in addresses)
+
+
+def source_url_is_public(url: str, *, resolve: bool = True) -> bool:
+    normalized = normalize_source_url(url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    return _source_host_is_public(parsed.hostname or "", resolve=resolve)
 
 
 def classify_source_url(url: str) -> str:
@@ -170,8 +219,8 @@ async def fetch_source_context(kind: str, url: str) -> SourceFetchResult:
         )
 
     normalized_url = normalize_source_url(url)
-    if not normalized_url:
-        return SourceFetchResult(ok=False, source_url=url, status="invalid_url", error="Некорректная ссылка")
+    if not normalized_url or not await asyncio.to_thread(source_url_is_public, normalized_url):
+        return SourceFetchResult(ok=False, source_url=url, status="invalid_url", error="Ссылка ведёт на недоступный внутренний адрес")
 
     official_notice_number = official_notice_number_from_url(normalized_url) if kind == SOURCE_KIND_OFFICIAL else ""
     if official_notice_number:
@@ -314,7 +363,21 @@ def _is_official_followup_url(url: str) -> bool:
 
 async def fetch_source_page(client: httpx.AsyncClient, url: str, kind: str = "") -> dict | None:
     try:
-        response = await client.get(url)
+        current_url = url
+        response = None
+        for _ in range(MAX_SOURCE_REDIRECTS + 1):
+            if not await asyncio.to_thread(source_url_is_public, current_url):
+                return None
+            response = await client.get(current_url, follow_redirects=False)
+            if response.is_redirect:
+                location = response.headers.get("location", "")
+                current_url = urljoin(str(response.url), location)
+                if not normalize_source_url(current_url):
+                    return None
+                continue
+            break
+        if response is None or response.is_redirect:
+            return None
         if response.status_code >= 400:
             return None
         content_type = response.headers.get("content-type", "")
@@ -365,6 +428,7 @@ async def fetch_source_pages_with_browser(urls: list[str], kind: str = "") -> li
                     ),
                     locale="ru-RU",
                     viewport={"width": 1920, "height": 1080},
+                    ignore_https_errors=True,
                 )
                 await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
                 semaphore = asyncio.Semaphore(2)
@@ -388,8 +452,24 @@ async def fetch_source_pages_with_browser(urls: list[str], kind: str = "") -> li
 async def _fetch_source_page_in_context(context, url: str, kind: str = "") -> dict | None:
     page = await context.new_page()
     try:
+        async def guard_public_network(route) -> None:
+            request_url = str(route.request.url or "")
+            parsed = urlparse(request_url)
+            if parsed.scheme not in {"http", "https"}:
+                await route.continue_()
+                return
+            if await asyncio.to_thread(source_url_is_public, request_url):
+                await route.continue_()
+            else:
+                await route.abort("blockedbyclient")
+
+        await page.route("**/*", guard_public_network)
+        if not await asyncio.to_thread(source_url_is_public, url):
+            return None
         timeout = 18000 if kind == SOURCE_KIND_OFFICIAL else 15000
         await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+        if not await asyncio.to_thread(source_url_is_public, page.url):
+            return None
         await page.wait_for_timeout(1800 if kind == SOURCE_KIND_OFFICIAL else 1200)
         html_text = await page.content()
         return html_text_to_source_page(html_text[:500000], page.url, kind=kind)

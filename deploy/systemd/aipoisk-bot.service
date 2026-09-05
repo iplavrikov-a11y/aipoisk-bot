@@ -12,6 +12,7 @@ User=root
 WorkingDirectory=/root/projects/aipoisk-bot/backend
 Environment=PYTHONPATH=/root/projects/aipoisk-bot/backend
 Environment=OMP_THREAD_LIMIT=1
+Environment=SUPPLIER_MINPROM_REGISTRY_CACHE_DIR=/root/projects/aipoisk-bot/data/minprom_registry
 EnvironmentFile=/root/projects/aipoisk-bot/.env
 ExecStart=/root/projects/aipoisk-bot/backend/.venv/bin/python -m app.bot
 Restart=always

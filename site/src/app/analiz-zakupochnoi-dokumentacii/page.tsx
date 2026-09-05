@@ -1,259 +1,193 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { ShieldAlert, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { ContactSection } from "@/components/contact-section";
+import {
+  buildBreadcrumbJsonLd,
+  buildFaqJsonLd,
+  buildHowToJsonLd,
+  buildServiceJsonLd,
+  type FaqItem,
+} from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Анализ закупочной документации",
+  title: "Анализ закупочной документации: 44-ФЗ, 223-ФЗ и коммерческие торги",
   description:
-    "TenderLex разбирает закупочную документацию: условия участия, сроки, обеспечение, оплату, поставку, риски договора, нацрежим и вопросы заказчику. Попробуйте бесплатно.",
+    "Автоматический экспресс-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах: выявление скрытых штрафов, сжатых сроков и ограничений.",
+  keywords: [
+    "анализ закупочной документации",
+    "проверка контракта 44-ФЗ 223-ФЗ",
+    "коммерческие торги",
+    "аудит рисков закупки",
+    "анализ ТЗ договора",
+    "TenderLex",
+  ],
   alternates: {
     canonical: "/analiz-zakupochnoi-dokumentacii",
   },
-  openGraph: {
-    type: "website",
-    url: "/analiz-zakupochnoi-dokumentacii",
-    title: "Анализ закупочной документации | TenderLex",
-    description:
-      "Проверьте закупку перед участием: требования, сроки, обеспечение, риски, нацрежим и вопросы заказчику.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Анализ закупочной документации | TenderLex",
-    description:
-      "Проверьте закупку перед участием: требования, сроки, обеспечение, риски, нацрежим и вопросы заказчику.",
-    images: ["/tenderlex-product-preview.png"],
-  },
 };
 
-const faqItems = [
+const pagePath = "/analiz-zakupochnoi-dokumentacii";
+
+const faqItems: FaqItem[] = [
   {
-    question: "Что нужно предоставить для анализа?",
+    question: "Какие закупки и риски анализирует модуль документации?",
     answer:
-      "Достаточно номера извещения с ЕИС, ссылки на закупку или загруженного комплекта документов (PDF, Word, ZIP). TenderLex сам загрузит и разберёт необходимую документацию.",
+      "Сервис анализирует любые процедуры (44-ФЗ, 223-ФЗ, коммерческие торги): несоответствие сроков поставки и приемки, кабальные штрафные санкции, отсутствие аванса, завышенные требования к обеспечению и ограничения нацрежима.",
   },
   {
-    question: "Что именно проверяет TenderLex в документации?",
+    question: "Помогает ли сервис составить запрос на разъяснение положений извещения?",
     answer:
-      "Предмет и объём закупки, требования к участнику, опыт и документы качества, сроки подачи и исполнения, размер и форму обеспечения заявки и договора, порядок оплаты и приёмки, штрафные санкции, условия расторжения, нацрежим и реестровые требования Минпромторга.",
-  },
-  {
-    question: "Сколько времени занимает анализ?",
-    answer:
-      "Обычно от 3 до 10 минут. Большие комплекты документов или архивы с множеством приложений могут занять дольше. Сервис уведомит о готовности в Telegram или в личном кабинете.",
-  },
-  {
-    question: "В каком формате приходит результат?",
-    answer:
-      "Тендерный лист в формате Word: структурированный разбор закупки с ключевыми условиями, рисками, вопросами заказчику и практическими выводами по каждому блоку документации.",
-  },
-  {
-    question: "Заменяет ли анализ юридическую проверку?",
-    answer:
-      "Нет. TenderLex помогает быстро понять условия закупки и выявить точки, требующие внимания. Для правовой оценки договорных рисков и подготовки позиции по спорным условиям рекомендуется привлекать юриста.",
-  },
-  {
-    question: "Как обрабатывается национальный режим (нацрежим)?",
-    answer:
-      "Если в документации указан нацрежим, TenderLex отдельно показывает вид меры: запрет, ограничение или условие допуска. Сервис отвечает, требуются ли выписки из реестра Минпромторга или декларации производителя, и что это значит для подготовки заявки.",
-  },
-  {
-    question: "Можно ли анализировать закупки по 223-ФЗ и коммерческие тендеры?",
-    answer:
-      "Да, сервис работает с документацией по 44-ФЗ, 223-ФЗ и коммерческими закупками. Принцип один и тот же: загрузите документы или укажите ссылку — TenderLex разберёт условия независимо от типа торгов.",
-  },
-  {
-    question: "Можно ли задать вопросы по конкретным пунктам документации?",
-    answer:
-      "В Telegram-боте можно уточнить любой пункт разбора: написать вопрос о конкретном условии, попросить пояснение по риску или узнать, что именно нужно запросить у заказчика для уточнения. Бот отвечает в контексте вашей закупки.",
+      "Да. При обнаружении противоречий TenderLex готовит юридически выверенные формулировки запросов заказчику для публикации в ЕИС или отправки организатору торгов.",
   },
 ];
 
-export default function ProcurementAnalysisPage() {
-  const schemaFaq = {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    mainEntity: faqItems.map((item) => ({
-      "@type": "Question",
-      name: item.question,
-      acceptedAnswer: {
-        "@type": "Answer",
-        text: item.answer,
-      },
-    })),
-  };
+export default function AnalizZakupochnoiDokumentaciiPage() {
+  const schemaBreadcrumb = buildBreadcrumbJsonLd([
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Анализ закупочной документации", item: "https://tenderlex.ru" + pagePath },
+  ]);
 
-  const schemaHowTo = {
-    "@context": "https://schema.org",
-    "@type": "HowTo",
-    name: "Как анализировать закупочную документацию с TenderLex",
-    description:
-      "Автоматический разбор тендерной документации: от загрузки до готового тендерного листа с рисками и выводами.",
-    step: [
-      {
-        "@type": "HowToStep",
-        name: "Укажите закупку",
-        text: "Введите номер извещения, вставьте ссылку с ЕИС или загрузите комплект документов (PDF, Word, ZIP).",
-      },
-      {
-        "@type": "HowToStep",
-        name: "TenderLex загружает документацию",
-        text: "Сервис автоматически скачивает файлы с ЕИС или читает загруженные документы и извлекает текстовое содержимое.",
-      },
-      {
-        "@type": "HowToStep",
-        name: "AI разбирает условия по блокам",
-        text: "Анализируются требования к участнику, сроки, обеспечение, оплата, поставка, штрафы, нацрежим и другие ключевые блоки.",
-      },
-      {
-        "@type": "HowToStep",
-        name: "Формируется тендерный лист",
-        text: "Готовится структурированный документ: ключевые условия, выявленные риски, вопросы заказчику и практические выводы.",
-      },
-      {
-        "@type": "HowToStep",
-        name: "Скачайте результат",
-        text: "Тендерный лист в формате Word доступен для скачивания в личном кабинете или через Telegram-бот.",
-      },
+  const schemaService = buildServiceJsonLd({
+    name: "Анализ закупочной документации",
+    description: "Сервис экспресс-аудита рисков контрактов 44-ФЗ, 223-ФЗ и коммерческих закупок.",
+    path: pagePath,
+  });
+
+  const schemaFaq = buildFaqJsonLd(faqItems);
+  const schemaHowTo = buildHowToJsonLd({
+    name: "Как проверить закупочную документацию",
+    description: "Пошаговый процесс экспресс-аудита рисков любых закупок.",
+    steps: [
+      { name: "Загрузка проекта контракта", text: "Передайте файл извещения или проект договора." },
+      { name: "Смысловой ИИ-анализ условий", text: "Аудит сроков, штрафов и обеспечения." },
+      { name: "Формирование отчета о рисках", text: "Выгрузка сводки с оценкой критичности." },
+      { name: "Подготовка запроса разъяснений", text: "Готовые формулировки для обращения к заказчику." },
     ],
-  };
+  });
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }}
-      />
-      <main className="legal-shell">
-        <article className="legal-document">
-          <a className="legal-back" href="/">
-            ← TenderLex
-          </a>
-          <h1>Анализ закупочной документации</h1>
-          <p className="legal-date">
-            Для тендерных отделов, поставщиков и руководителей продаж
-          </p>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaBreadcrumb) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaService) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaFaq) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaHowTo) }} />
 
-          <section>
-            <h2>Зачем нужен анализ перед участием в закупке</h2>
-            <p>
-              Закупочная документация по 44-ФЗ и 223-ФЗ нередко занимает сотни страниц: извещение,
-              описание объекта, техническое задание, проект контракта, приложения. Прочитать всё
-              внимательно за ограниченное время — задача, с которой сталкивается каждый тендерный
-              специалист. При этом ошибка в понимании требований к обеспечению, нацрежиму или срокам
-              может стоить отклонения заявки или убытков при исполнении.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              TenderLex берёт на себя первичный разбор: читает документацию, структурирует ключевые
-              условия, выделяет риски и формулирует вопросы, которые стоит задать заказчику до подачи
-              заявки.
-            </p>
-          </section>
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
-          <section>
-            <h2>Что проверяет TenderLex</h2>
-            <p>
-              Сервис разбирает номер извещения, ссылку или комплект документов и выделяет предмет
-              закупки, сроки, требования к участнику, обеспечение заявки и договора, оплату, поставку,
-              приёмку, штрафы, проект договора и условия, которые могут повлиять на решение об участии.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Отдельно анализируются: квалификационные требования и необходимые документы, условия
-              допуска по нацрежиму, реестровые требования Минпромторга, ограничения по стране
-              происхождения, требования к гарантии и постгарантийному обслуживанию. Всё это собирается
-              в один структурированный документ.
-            </p>
-          </section>
+        {/* HERO */}
+        <section className="relative overflow-hidden pt-12 pb-20 border-b border-slate-200/90 bg-gradient-to-b from-teal-50/60 via-slate-50 to-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
+              <ShieldAlert size={14} className="text-teal-600" />
+              <span>Экспресс-аудит проекта контракта за 60 секунд</span>
+            </div>
 
-          <section>
-            <h2>Что получает пользователь</h2>
-            <p>
-              В результате команда получает рабочую карту закупки — тендерный лист в формате Word:
-              ключевые условия, риски до подачи заявки, вопросы заказчику, спорные формулировки,
-              практические выводы и ориентир, где нужно дополнительно проверить цену, логистику,
-              документы качества или юридические обязательства.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Тендерный лист структурирован по разделам и готов к передаче коллегам: юристу, финансисту,
-              логисту или руководителю. Не нужно пересказывать содержимое документации — все нужные
-              данные уже выделены и сформулированы.
-            </p>
-          </section>
+            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
+              Анализ закупочной документации: 44-ФЗ, 223-ФЗ и коммерческие закупки
+            </h1>
 
-          <section>
-            <h2>Нацрежим и Минпромторг</h2>
-            <p>
-              Если в документации есть национальный режим, TenderLex отдельно показывает вид меры:
-              запрет иностранных товаров, ограничение допуска или условие допуска. Сервис отвечает,
-              требуются ли выписки из реестра Минпромторга, декларации производителя или иные
-              подтверждающие документы.
+            <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
+              Выявите скрытые штрафы, невыполнимые сроки поставки и ловушки заказчика до подачи заявки на участие в торгах.
             </p>
-            <p style={{ marginTop: 14 }}>
-              Сервис не подменяет юридическую проверку, но помогает быстро увидеть, где требование
-              реально влияет на допуск и подготовку заявки, а где носит формальный характер.
-            </p>
-          </section>
 
-          <section>
-            <h2>Когда это полезно</h2>
-            <p>
-              Анализ помогает быстро решить, стоит ли заходить в закупку, какие условия уточнить до
-              подачи заявки, что передать юристу или снабжению и какие риски учесть при расчёте цены
-              и сроков исполнения.
-            </p>
-            <p style={{ marginTop: 14 }}>
-              Типичные сценарии использования: первичный разбор новой закупки перед принятием решения
-              об участии, подготовка списка вопросов заказчику в период приёма заявок, проверка рисков
-              перед подписанием контракта, сравнение условий нескольких похожих закупок за короткое
-              время.
-            </p>
-          </section>
+            <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
+              <a
+                href="/cabinet"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
+              >
+                <span>Проверить документацию</span>
+              </a>
+              <a
+                href="https://t.me/tenderlex_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
+              >
+                <Send size={16} className="text-teal-600" />
+                <span>Запустить в Telegram</span>
+              </a>
+            </div>
+          </div>
+        </section>
 
-          <section>
-            <h2>Часто задаваемые вопросы</h2>
-            <div style={{ display: "grid", gap: 20, marginTop: 8 }}>
-              {faqItems.map((item, i) => (
-                <div
-                  key={i}
-                  style={{
-                    borderTop: i > 0 ? "1px solid var(--line)" : undefined,
-                    paddingTop: i > 0 ? 20 : 0,
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 900 }}>
-                    {item.question}
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: "var(--ink-soft)",
-                      fontSize: 15,
-                      lineHeight: 1.65,
-                    }}
-                  >
+        {/* BENEFITS */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-white">
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Защита от РНП</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Отказ от заведомо неисполнимых контрактов до блокировки средств обеспечения заявки.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Контроль штрафов</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Проверка соответствия санкций Постановлению № 1042 и выявление незаконных удержаний.
+                </p>
+              </div>
+
+              <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
+                <h3 className="text-lg font-black text-slate-900">Запросы заказчику</h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  Автоматическая подготовка текста запроса на разъяснение положений извещения.
+                </p>
+              </div>
+            </div>
+
+            {/* Cross-linking Banner: Заточка в ТЗ? Подберите эквивалент */}
+            <div className="mt-12 p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-teal-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="space-y-2 max-w-xl text-left">
+                <span className="text-xs font-bold text-teal-300 uppercase tracking-wider bg-teal-400/20 px-3 py-1 rounded-full border border-teal-400/30 inline-block">
+                  Смежный модуль
+                </span>
+                <h3 className="text-xl sm:text-2xl font-extrabold text-white">
+                  Аудит выявил заложенного монопольного производителя?
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                  Используйте модуль «Подбор товара и аналогов», чтобы распознать скрытую модель по параметрам, подобрать от 2 до 4 российских аналогов из реестра Минпромторга и выгрузить подробный отчет в Word (DOCX).
+                </p>
+              </div>
+              <Link
+                href="/podbor-tovara-i-analogov-po-tz"
+                className="shrink-0 px-6 py-3.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md transition-all hover:scale-102"
+              >
+                Подобрать аналоги по ТЗ →
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+            <h2 className="text-2xl sm:text-4xl font-black text-slate-900 text-center mb-12">
+              Часто задаваемые вопросы
+            </h2>
+            <div className="space-y-4">
+              {faqItems.map((item, index) => (
+                <details key={index} className="group bg-white p-6 rounded-2xl border-2 border-slate-200 text-left shadow-2xs">
+                  <summary className="font-bold text-slate-900 text-base cursor-pointer flex justify-between items-center list-none">
+                    <span>{item.question}</span>
+                    <span className="transition group-open:rotate-180 text-teal-700">▼</span>
+                  </summary>
+                  <p className="mt-4 text-sm text-slate-700 font-medium leading-relaxed border-t border-slate-200 pt-4">
                     {item.answer}
                   </p>
-                </div>
+                </details>
               ))}
             </div>
-          </section>
+          </div>
+        </section>
 
-          <section>
-            <h2>Запустить анализ</h2>
-            <p>
-              Откройте{" "}
-              <a href="/cabinet">личный кабинет</a> или отправьте материалы в{" "}
-              <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
-                Telegram-бот TenderLex
-              </a>
-              . Новые пользователи могут попробовать один анализ бесплатно. Если нужно обсудить
-              индивидуальные условия или объём — напишите нам напрямую.
-            </p>
-          </section>
-        </article>
+        <ContactSection />
+
+        <SiteFooter />
       </main>
     </>
   );

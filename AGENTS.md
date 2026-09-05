@@ -9,6 +9,17 @@
 - Customer-facing product name is `TenderLex` for the Telegram bot, public site, reports, filenames, and admin-visible branding. `AI Poisk`/`aipoisk-bot` is only a repository/service identifier and must not appear in customer-facing copy.
 - Tenderplan/API procurement access is an internal data source. Do not expose the Tenderplan name in customer-facing Telegram messages, DOCX/XLSX titles, output filenames, report text, or customer-visible errors. Name output files and report headings by the procurement subject/product when it is available.
 - Public website and cabinet copy must speak in client-result language: what the user can do and what decision/result they get. Do not sell with file-format labels like DOCX/XLSX, technical account details like "web balance" or "protected session", or exact free-run counters. If examples are needed, use professional procurement scenarios close to real work, not random artificial company names.
+- **Exact Product & Analogs Report Format Rule**: The exact product and analogue selection report (`exact_product`) is generated EXCLUSIVELY in Word format (`.docx`). There is NO Excel/XLSX report for this feature. NEVER state, promise, or write that exact product produces Excel/XLSX reports.
+- **Form 2 & Badges Naming Rule**: Do NOT put `(Форма 2)` in headings, cards, badges, or navigation links (not all users know what Form 2 is). Use plain client-facing naming: `Подбор товара и аналогов` or `Подбор аналогов`. Do NOT put `NEW` / `Новая функция` badges in header or cards.
+- **Platform Modules & Tariffs Strict Order**: Always present the three core modules and tariff packages in the exact order:
+  1. `Поиск поставщиков`
+  2. `Подбор товара и аналогов`
+  3. `Анализ документации`
+
+## Strict Prohibition on Caching for Client Tasks
+
+- **NEVER use caching for task execution, supplier searches, product checks, company verifications, market data, or AI reasoning.**
+- Every client task MUST be executed fresh in real-time. Client specifications, technical requirements, and market conditions change dynamically (companies open/close, product lines discontinue, websites change). Reusing cached results is strictly forbidden because it yields outdated information.
 
 ## Public Site Contract
 
@@ -16,6 +27,13 @@
 - Do not expose admin-only endpoints, client data, secrets, AI provider keys, jobs, or billing history to the public site.
 - Public domain canonical URL: `https://tenderlex.ru`.
 - `www.tenderlex.ru` should redirect to `https://tenderlex.ru`.
+
+## Browser/Webmaster Access
+
+- For TenderLex SEO, indexing, webmaster, ranking, or search-quality diagnostics that require a real logged-in browser session, use `kimi-webbridge` first. This includes Linkbuilder, Yandex Webmaster, Google Search Console, Google search results, Yandex search results, and already-open user tabs.
+- Before claiming that browser control is unavailable, check WebBridge with `curl -s http://127.0.0.1:10086/status` or `~/.kimi-webbridge/bin/kimi-webbridge status`.
+- When WebBridge is healthy (`running: true`, `extension_connected: true`), use `http://127.0.0.1:10086/command` with `list_tabs` / `find_tab` / `snapshot` / `click` / `fill` / `evaluate`; do not treat missing `DISPLAY` or absent local Chrome processes in the remote shell as failure.
+- If WebBridge is unhealthy, follow `~/.codex/skills/kimi-webbridge/references/operations.md` before falling back to Playwright or static web checks.
 
 ## Working Commands
 
@@ -32,3 +50,10 @@
 - TenderLex site should listen on `127.0.0.1:3093` and fetch public site data from `http://127.0.0.1:8088/api/public/site`.
 - After changing site, cabinet, admin, or backend behavior that must be visible to users, do not stop at code edits or local builds. Run `./scripts/deploy_tenderlex_live.sh` and verify the live local service URLs (`127.0.0.1:8088` for API, `127.0.0.1:3093` for site) before reporting the change as deployed.
 - For Telegram bot behavior changes, also verify that `./scripts/deploy_tenderlex_live.sh` actually restarted `aipoisk-bot.service`. If the script prints `skipping api/worker/bot restart because active jobs are present`, wait for active `pending`/`running` jobs to clear and rerun the deploy or otherwise verify a fresh bot service start before reporting the bot change as live.
+
+## Safe Git & Documentation Automation
+
+- When requested to update documentation and GitHub ("обнови документацию и гитхаб"), perform safe git add, commit, and push automatically without stopping to ask for interactive approval.
+- Follow safe GitHub practices strictly:
+  - NEVER commit `.env`, secrets, API keys, credentials, SQLite databases (`.db`), backups, customer data, or `storage/` runtime dumps.
+  - Commit only source code, tests, configs, clean docs (`PROJECT_STATUS.md`, `README.md`), and tracked frontend distribution assets required for nginx runtime serving.
