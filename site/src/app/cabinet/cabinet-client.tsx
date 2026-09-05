@@ -2058,14 +2058,14 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-200/90 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowReferralModal(true);
               }}
-              title="Реферальная программа: дарите коллегам 1 000 ₽ и получайте 1 000 ₽ на свой баланс"
+              title="Пригласить коллегу: +1 000 ₽ на баланс за рекомендацию"
             >
-              <Gift size={13} className="text-amber-700 shrink-0" aria-hidden="true" />
-              <span>🎁 Пригласить (+1 000 ₽)</span>
+              <Gift size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>Пригласить (+1 000 ₽)</span>
             </button>
           </div>
 
@@ -3824,7 +3824,7 @@ export function CabinetClient() {
         );
       })() : null}
 
-      {/* Referral Program Modal (Spacious, Clean, Emerald/Amber Branded, Strict Module Order, No Separate Page) */}
+      {/* Referral Program Modal (Compact, Clean, No Scroll, Design System Cohesive) */}
       {showReferralModal ? (() => {
         const refCode = session?.referral?.referral_code || "ref";
         const webLink = session?.referral?.invite_url_web || `https://tenderlex.ru/cabinet?ref=${refCode}`;
@@ -3834,13 +3834,13 @@ export function CabinetClient() {
         const earned = session?.referral?.bonus_earned_rub ?? 0;
 
         const shareMessage = `Коллега, держи сервис для подготовки к закупкам и тендерам — TenderLex.
-Он за 2 минуты:
-1. Находит реальных производителей и дилеров по ТЗ с прямыми телефонами и email.
-2. Подбирает точную модель товара и аналоги под первую часть заявки, в том числе из реестра Минпромторга (ГИСП).
-3. Формирует полный структурированный отчет по закупке (ТЗ, условия оплаты, сроки, логистика и требования к товару).
+Он помогает:
+1. Найти реальных производителей и дилеров по ТЗ с прямыми контактами
+2. Подобрать точную модель товара и аналоги под первую часть заявки
+3. Сформировать структурированный отчет и анализ требований закупки
 
-По моей ссылке тебе сразу начислят 1 000 ₽ на баланс (хватит на 10 задач):
-👉 ${webLink}`;
+По ссылке сразу начислят 1 000 ₽ на баланс:
+${webLink}`;
 
         function copyLink(textToCopy: string, key: string) {
           if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -3853,237 +3853,162 @@ export function CabinetClient() {
 
         return (
           <div
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) setShowReferralModal(false);
             }}
           >
             <section
-              className="bg-white rounded-2xl sm:rounded-3xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans max-h-[90vh]"
+              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans"
               role="dialog"
               aria-modal="true"
               aria-labelledby="referral-modal-title"
             >
-              {/* Header */}
-              <header className="bg-gradient-to-r from-emerald-950 via-teal-900 to-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 shrink-0 shadow-inner">
-                    <Gift size={20} aria-hidden="true" />
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                    <Gift size={18} aria-hidden="true" />
                   </div>
                   <div>
-                    <h2 id="referral-modal-title" className="text-base sm:text-lg font-extrabold text-white leading-tight flex items-center gap-2">
-                      Реферальная программа TenderLex
-                      <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">
-                        +1 000 ₽ за друга
-                      </span>
+                    <h2 id="referral-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                      Пригласить коллегу
                     </h2>
-                    <p className="text-xs text-teal-200/90 font-medium mt-0.5">
-                      Дарите коллегам 1 000 ₽ на первый запуск и получайте 1 000 ₽ на свой баланс
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Дарите 1 000 ₽ на баланс коллеге и получайте 1 000 ₽ за его первую задачу
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
                   onClick={() => setShowReferralModal(false)}
-                  aria-label="Закрыть"
+                  aria-label="Закрыть окно"
                 >
-                  <X size={20} aria-hidden="true" />
+                  <X size={18} />
                 </button>
-              </header>
+              </div>
 
-              {/* Body */}
-              <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1">
-                {/* How it works cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-                    <div>
-                      <div className="w-6 h-6 rounded-lg bg-teal-100 text-teal-800 text-xs font-black flex items-center justify-center mb-2">
-                        1
-                      </div>
-                      <h3 className="text-xs font-bold text-slate-900">Скопируйте ссылку</h3>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Отправьте персональную ссылку коллеге или партнеру в Telegram или рабочий чат.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-                    <div>
-                      <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 text-xs font-black flex items-center justify-center mb-2">
-                        2
-                      </div>
-                      <h3 className="text-xs font-bold text-slate-900">Коллега получает 1 000 ₽</h3>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Бонус начисляется сразу на баланс (хватит на 10 любых отчетов и задач).
-                      </p>
-                    </div>
-                  </div>
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-                    <div>
-                      <div className="w-6 h-6 rounded-lg bg-amber-100 text-amber-800 text-xs font-black flex items-center justify-center mb-2">
-                        3
-                      </div>
-                      <h3 className="text-xs font-bold text-slate-900">Вам 1 000 ₽ на баланс</h3>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Как только коллега выполнит первую задачу — вам автоматически начисляется 1 000 ₽.
-                      </p>
-                    </div>
-                  </div>
+              {/* Statistics Row */}
+              <div className="grid grid-cols-3 gap-2.5 shrink-0">
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                  <div className="text-lg sm:text-xl font-black text-slate-900">{invited}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Приглашено</div>
                 </div>
-
-                {/* Links Section */}
-                <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                    Ваши персональные ссылки для приглашения
-                  </h3>
-                  
-                  {/* Web link */}
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                      Ссылка для сайта (кабинет):
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={webLink}
-                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => copyLink(webLink, "web")}
-                        className="px-3 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
-                      >
-                        {referralCopiedKey === "web" ? (
-                          <>
-                            <Check size={14} />
-                            <span>Скопировано</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={14} />
-                            <span>Скопировать</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Telegram bot link */}
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                      Ссылка для Telegram-бота:
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={botLink}
-                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => copyLink(botLink, "bot")}
-                        className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
-                      >
-                        {referralCopiedKey === "bot" ? (
-                          <>
-                            <Check size={14} />
-                            <span>Скопировано</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={14} />
-                            <span>Скопировать</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                  <div className="text-lg sm:text-xl font-black text-teal-700">{activated}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Выполнили задачу</div>
                 </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                  <div className="text-lg sm:text-xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Начислено бонусов</div>
+                </div>
+              </div>
 
-                {/* Statistics Cards */}
+              {/* Links Section */}
+              <div className="space-y-2 shrink-0">
                 <div>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-2.5">
-                    Ваша статистика рекомендаций
-                  </h3>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
-                      <div className="text-xl sm:text-2xl font-black text-slate-900">{invited}</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">Приглашено коллег</div>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
-                      <div className="text-xl sm:text-2xl font-black text-teal-700">{activated}</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">Выполнили 1-ю задачу</div>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs text-center">
-                      <div className="text-xl sm:text-2xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">Начислено бонусов</div>
-                    </div>
+                  <div className="text-[11px] font-semibold text-slate-600 mb-1">
+                    Ссылка для сайта (кабинет):
                   </div>
-                </div>
-
-                {/* 3 Core Modules Breakdown in Strict Order */}
-                <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-2.5">
-                  <h4 className="text-xs font-bold text-slate-800">
-                    Что получают ваши коллеги в сервисе (3 ключевых модуля):
-                  </h4>
-                  <ul className="text-xs text-slate-600 space-y-1.5">
-                    <li className="flex items-start gap-2">
-                      <span className="font-bold text-teal-800 shrink-0">1. Поиск поставщиков:</span>
-                      <span>проверенные заводы и дилеры по ТЗ с прямыми телефонами, email и формой запроса КП (Excel + Word RFQ).</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <span className="font-bold text-teal-800 shrink-0">2. Подбор товара и аналогов:</span>
-                      <span>модель, характеристики для первой части заявки, подбор в том числе из реестра Минпромторга РФ (ГИСП) (Word .docx).</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <span className="font-bold text-teal-800 shrink-0">3. Анализ документации:</span>
-                      <span>полный структурированный отчет по закупке (44/223-ФЗ) с таблицей ТЗ, условиями оплаты, графиком поставки и логистикой (Word .docx).</span>
-                    </li>
-                  </ul>
-                </div>
-
-                {/* Quick Share Template Box */}
-                <div className="p-4 rounded-xl bg-emerald-50/60 border border-emerald-200/80 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-emerald-950">
-                      Готовый текст для пересылки коллегам в чаты
-                    </h4>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={webLink}
+                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                    />
                     <button
                       type="button"
-                      onClick={() => copyLink(shareMessage, "msg")}
-                      className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-100/80 px-2.5 py-1 rounded-lg border border-emerald-300 transition-colors cursor-pointer"
+                      onClick={() => copyLink(webLink, "web")}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
                     >
-                      {referralCopiedKey === "msg" ? (
+                      {referralCopiedKey === "web" ? (
                         <>
                           <Check size={13} />
-                          <span>Текст скопирован!</span>
+                          <span>Скопировано</span>
                         </>
                       ) : (
                         <>
                           <Copy size={13} />
-                          <span>Скопировать сообщение</span>
+                          <span>Скопировать</span>
                         </>
                       )}
                     </button>
                   </div>
-                  <pre className="text-[11px] text-slate-700 bg-white/90 p-3 rounded-lg border border-emerald-200/60 whitespace-pre-wrap font-sans leading-relaxed">
-                    {shareMessage}
-                  </pre>
+                </div>
+
+                <div>
+                  <div className="text-[11px] font-semibold text-slate-600 mb-1">
+                    Ссылка для Telegram-бота:
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={botLink}
+                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => copyLink(botLink, "bot")}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
+                    >
+                      {referralCopiedKey === "bot" ? (
+                        <>
+                          <Check size={13} />
+                          <span>Скопировано</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={13} />
+                          <span>Скопировать</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Ready-to-send Message Box */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 shrink-0">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-700">
+                    Текст для пересылки коллегам:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copyLink(shareMessage, "msg")}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 transition-colors cursor-pointer"
+                  >
+                    {referralCopiedKey === "msg" ? (
+                      <>
+                        <Check size={13} />
+                        <span>Скопировано!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={13} />
+                        <span>Скопировать сообщение</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200/80 leading-relaxed font-sans whitespace-pre-wrap select-all">
+                  {shareMessage}
                 </div>
               </div>
 
               {/* Footer */}
-              <footer className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+              <div className="flex justify-end pt-1 shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowReferralModal(false)}
-                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
                 >
                   Закрыть
                 </button>
-              </footer>
+              </div>
             </section>
           </div>
         );
