@@ -27,7 +27,7 @@ type Option54Variant = {
 };
 
 export default function DemoButtonsPage() {
-  const [selected54, setSelected54] = useState<string>("5.4A");
+  const [selected54, setSelected54] = useState<string>("5.4C");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const copyCode = (code: string) => {
@@ -89,9 +89,9 @@ export default function DemoButtonsPage() {
     },
     {
       code: "5.4C",
-      name: "Плотный изумруд с белым текстом (Solid)",
-      badgeStyle: "Насыщенная изумрудная плашка, контрастный белый шрифт",
-      description: "Четкий, уверенный акцент на бонусе. Выглядит солидно и не размывается на сером фоне.",
+      name: "Плотный изумруд с белым текстом (Утвержден)",
+      badgeStyle: "Насыщенная изумрудная плашка, контрастный белый шрифт 10px",
+      description: "Четкий, уверенный акцент на бонусе с увеличенным до 10px шрифтом. Выглядит солидно и отлично читается.",
       renderButton: (size = "normal") => (
         <button
           type="button"
@@ -103,7 +103,7 @@ export default function DemoButtonsPage() {
           <span>Пригласить</span>
           <span
             className={`${
-              size === "large" ? "text-[11px] px-2 py-0.5" : "text-[9px] px-1.5 py-0.5"
+              size === "large" ? "text-[12px] px-2.5 py-0.5" : "text-[10px] px-1.5 py-0.5"
             } rounded bg-emerald-600 text-white font-black tracking-tight leading-none shadow-2xs`}
           >
             +1 000 ₽

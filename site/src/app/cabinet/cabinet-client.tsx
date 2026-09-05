@@ -2064,8 +2064,11 @@ export function CabinetClient() {
               }}
               title="Пригласить коллегу: +1 000 ₽ на баланс за рекомендацию"
             >
-              <Gift size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>Пригласить (+1 000 ₽)</span>
+              <Gift size={13} className="text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Пригласить</span>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white font-black text-[10px] tracking-tight leading-none shadow-2xs">
+                +1 000 ₽
+              </span>
             </button>
           </div>
 
