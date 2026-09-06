@@ -12,13 +12,14 @@ Date: 2026-09-06
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Outreach Deliverability Hardening, Placeholder Shield & Bounce Cleanup (2026-09-06):
-  - Diagnosed and resolved root cause of delivery failure notices (NDR / bounce flood) arriving at `info@tenderlex.ru`: background HH scraper bot (`hh-agent`) extracted placeholder emails (`example@mail.ru`, `mail@domen.com`) and static asset files (`jquery.mcustomscrollbar@3.1.3.css`) from employer vacancy pages and attempted dispatch via relay `79.133.182.215` (`relay.dealpartner.ru`).
-  - Added strict email format validation, placeholder prefix blacklist (`example`, `test`, `sample`, `dummy`, `user`, etc.), dummy domain blacklist (`domen.com`, `*.local`, etc.), and file asset extension filtering.
-  - Implemented pre-flight DNS MX verification in `hh-agent` (`verify_email_has_mx`) with in-memory caching before any email or followup is dispatched.
-  - Added `POST /api/outreach/inbox/purge-bounces` endpoint in `aipoisk-bot` backend and a 1-click "Очистить все ошибки" button in the admin inbox UI (`OutreachView.tsx`).
-  - Purged 316 historical bounce records from `outreach_inbox`, restoring the admin inbox view to exclusively genuine customer replies and auto-replies.
-  - Re-verified strict project mail isolation: `emailagent` operates independently with `snab@dealpartner.ru`, while `TenderLex` operates independently with `info@tenderlex.ru`.
+- Outreach Deliverability Hardening, Relay Bounce Isolation & Inbox Protection (2026-09-06):
+  - Diagnosed and completely resolved root cause of delivery failure notices (NDR bounces from `mailer-daemon@dealpartner.ru`) appearing in TenderLex admin inbox:
+    - Background HH vacancy outreach sent cold pitches via relay VPS `79.133.182.215` (`relay.dealpartner.ru`). When enterprise recipient servers (such as FESCO) rejected emails (`550 Security block`), Postfix generated NDR reports addressed to `info@tenderlex.ru` from `mailer-daemon@dealpartner.ru`.
+    - Historical bounce emails (331 messages) remained stored in the Jino IMAP mailbox; previous local database deletions were re-populated whenever the background IMAP worker synced recent messages.
+  - **Tier 1 (Relay Postfix Discard)**: Configured `transport_maps = hash:/etc/postfix/transport` on `79.133.182.215` with `tenderlex.ru discard:`. Postfix silently drops any NDR bounce directed to `tenderlex.ru` on the relay without network dispatch to Jino. `emailagent` (`snab@dealpartner.ru`) is completely unaffected and continues normal operation.
+  - **Tier 2 (Jino IMAP Purge)**: Expunged all 331 residual `mailer-daemon` / `Undelivered Mail` messages directly from the Jino IMAP mailbox via authenticated IMAP session, preventing historical re-sync.
+  - **Tier 3 (Inbox Protection & Auto-Expunge in `outreach_mail.py`)**: Modified `sync_imap_inbox` and `backfill_existing_bounces` to flag bounce and `mailer-daemon` emails as `\Deleted` in IMAP and call `expunge()` immediately. If matched to a lead, the lead's status is updated to `bounced` with diagnostics, but the message is strictly prevented from being inserted into `outreach_inbox`. The admin panel inbox displays 0 delivery errors and remains dedicated to authentic client replies and auto-replies.
+  - Enhanced `POST /api/outreach/inbox/purge-bounces` in `backend/app/outreach_api.py` and added regression test `test_bounce_and_mailer_daemon_handling` in `backend/tests/test_outreach.py` (22/22 passed). Live production verified via `./scripts/deploy_tenderlex_live.sh`.
 - Two-Sided Referral Program, Anti-Abuse Engine & Clean In-Cabinet UX (2026-09-05):
   - Economic Model & Ledger Rules:
     - 1 000 ₽ welcome balance credited to new invitees upon valid referral registration (`ref_welcome_*` transaction).
