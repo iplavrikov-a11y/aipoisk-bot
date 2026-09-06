@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-05
+Date: 2026-09-06
 
 ## Current Production State
 
@@ -12,6 +12,13 @@ Date: 2026-09-05
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Outreach Deliverability Hardening, Placeholder Shield & Bounce Cleanup (2026-09-06):
+  - Diagnosed and resolved root cause of delivery failure notices (NDR / bounce flood) arriving at `info@tenderlex.ru`: background HH scraper bot (`hh-agent`) extracted placeholder emails (`example@mail.ru`, `mail@domen.com`) and static asset files (`jquery.mcustomscrollbar@3.1.3.css`) from employer vacancy pages and attempted dispatch via relay `79.133.182.215` (`relay.dealpartner.ru`).
+  - Added strict email format validation, placeholder prefix blacklist (`example`, `test`, `sample`, `dummy`, `user`, etc.), dummy domain blacklist (`domen.com`, `*.local`, etc.), and file asset extension filtering.
+  - Implemented pre-flight DNS MX verification in `hh-agent` (`verify_email_has_mx`) with in-memory caching before any email or followup is dispatched.
+  - Added `POST /api/outreach/inbox/purge-bounces` endpoint in `aipoisk-bot` backend and a 1-click "Очистить все ошибки" button in the admin inbox UI (`OutreachView.tsx`).
+  - Purged 316 historical bounce records from `outreach_inbox`, restoring the admin inbox view to exclusively genuine customer replies and auto-replies.
+  - Re-verified strict project mail isolation: `emailagent` operates independently with `snab@dealpartner.ru`, while `TenderLex` operates independently with `info@tenderlex.ru`.
 - Two-Sided Referral Program, Anti-Abuse Engine & Clean In-Cabinet UX (2026-09-05):
   - Economic Model & Ledger Rules:
     - 1 000 ₽ welcome balance credited to new invitees upon valid referral registration (`ref_welcome_*` transaction).
