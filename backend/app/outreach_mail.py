@@ -1022,20 +1022,21 @@ def backfill_existing_bounces(db: Session) -> int:
         is_bounce, matched_id, target_em, reason = parse_bounce_info(
             msg.sender_email, msg.sender_name, msg.subject, body, email_map, domain_map
         )
-        if is_bounce:
-            msg.is_spam = False
-            if msg.category != "bounce":
-                msg.category = "bounce"
-                updated_count += 1
-            if matched_id and msg.lead_id != matched_id:
-                msg.lead_id = matched_id
-                updated_count += 1
-            if msg.lead_id:
-                lead = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+        is_mailer_daemon = (
+            "mailer-daemon" in (msg.sender_email or "").lower()
+            or "dealpartner" in (msg.sender_email or "").lower()
+            or "undelivered mail" in (msg.subject or "").lower()
+            or "mail delivery" in (msg.sender_name or "").lower()
+        )
+        if is_bounce or is_mailer_daemon:
+            target_lead_id = matched_id or msg.lead_id
+            if target_lead_id:
+                lead = db.query(OutreachLead).filter(OutreachLead.id == target_lead_id).first()
                 if lead and lead.status != "bounced":
                     lead.status = "bounced"
                     lead.notes = f"Ошибка доставки: {reason}"
-                    updated_count += 1
+            db.delete(msg)
+            updated_count += 1
             continue
 
         # 3. Check Auto-Reply vs Live Reply
@@ -1146,6 +1147,13 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                 sender_email, sender_name, subject, body_text, email_map, domain_map
             )
 
+            is_mailer_daemon = (
+                "mailer-daemon" in sender_email
+                or "dealpartner" in sender_email
+                or "undelivered mail" in subject.lower()
+                or "mail delivery" in sender_name.lower()
+            )
+
             if is_spam:
                 lead_id = None
                 category = "spam"
@@ -1154,10 +1162,18 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                     client.store(m_id, "+FLAGS", "\\Deleted")
                 except Exception as de:
                     logger.debug(f"Could not flag spam as \\Deleted in IMAP: {de}")
-            elif is_bounce:
-                lead_id = matched_bounce_id
-                category = "bounce"
-                is_spam_val = False
+            elif is_bounce or is_mailer_daemon:
+                if matched_bounce_id:
+                    lead_obj = db.query(OutreachLead).filter(OutreachLead.id == matched_bounce_id).first()
+                    if lead_obj and lead_obj.status != "bounced":
+                        lead_obj.status = "bounced"
+                        lead_obj.notes = f"Ошибка доставки: {bounce_reason}"
+                try:
+                    client.store(m_id, "+FLAGS", "\\Deleted")
+                except Exception as de:
+                    logger.debug(f"Could not flag bounce as \\Deleted in IMAP: {de}")
+                # Do NOT save bounce in outreach_inbox — keep user inbox clean
+                continue
             else:
                 lead_id = matched_lead_id
                 category = "auto_reply" if is_auto_reply_message(subject, body_text, sender_name, sender_email) else "reply"

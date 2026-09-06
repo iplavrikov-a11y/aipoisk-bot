@@ -833,6 +833,72 @@ def test_html_to_plain_text_and_body_extraction():
     assert "<table" in htm_c
 
 
+def test_bounce_and_mailer_daemon_handling():
+    from datetime import datetime, timezone
+    from app.db import SessionLocal
+    from app.outreach_models import OutreachIncomingEmail, OutreachLead
+    from app.outreach_api import purge_inbox_bounces
+    from app.outreach_mail import parse_bounce_info, backfill_existing_bounces
+
+    # 1. Test bounce parser
+    is_bounce, lead_id, target, reason = parse_bounce_info(
+        sender_email="mailer-daemon@dealpartner.ru",
+        sender_name="Mail Delivery System",
+        subject="Undelivered Mail Returned to Sender",
+        body_text="This is the mail system at host relay.dealpartner.ru. Remote server said: 550 Blocked",
+        email_map={},
+        domain_map={},
+    )
+    assert is_bounce is True
+
+    # 2. Test purge endpoint purges bounces and mailer-daemon
+    db = SessionLocal()
+    try:
+        msg_bounce = OutreachIncomingEmail(
+            message_id="test-bounce-msg-1",
+            sender_email="mailer-daemon@dealpartner.ru",
+            sender_name="Mail Delivery System",
+            recipient_email="info@tenderlex.ru",
+            subject="Undelivered Mail Returned to Sender",
+            body_text="Delivery failure",
+            body_html="<p>Delivery failure</p>",
+            category="bounce",
+            is_spam=False,
+            date_received=datetime.now(timezone.utc),
+        )
+        msg_reply = OutreachIncomingEmail(
+            message_id="test-reply-msg-1",
+            sender_email="client@factory.ru",
+            sender_name="Завод",
+            recipient_email="info@tenderlex.ru",
+            subject="Re: Предложение",
+            body_text="Здравствуйте, пришлите КП",
+            body_html="<p>Здравствуйте, пришлите КП</p>",
+            category="reply",
+            is_spam=False,
+            date_received=datetime.now(timezone.utc),
+        )
+        db.add_all([msg_bounce, msg_reply])
+        db.commit()
+
+        res = purge_inbox_bounces(db=db)
+        assert res["ok"] is True
+        assert res["deleted_count"] >= 1
+
+        remaining = db.query(OutreachIncomingEmail).filter(
+            OutreachIncomingEmail.message_id.in_(["test-bounce-msg-1", "test-reply-msg-1"])
+        ).all()
+        rem_ids = [m.message_id for m in remaining]
+        assert "test-bounce-msg-1" not in rem_ids
+        assert "test-reply-msg-1" in rem_ids
+
+        db.delete(msg_reply)
+        db.commit()
+    finally:
+        db.close()
+
+
+
 
 
 
