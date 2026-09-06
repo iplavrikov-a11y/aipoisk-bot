@@ -1917,6 +1917,19 @@ export function OutreachView() {
     }
   }
 
+  // Purge all bounce messages
+  const handlePurgeBounces = async () => {
+    if (!confirm(`Вы действительно хотите удалить все (${inboxCounts.bounces}) отчеты об ошибках доставки?`)) return
+    try {
+      const res = await outreachFetch<any>('/api/outreach/inbox/purge-bounces', { method: 'POST' })
+      showSuccess(`Удалено ${res.deleted_count || 0} отчетов об ошибках`)
+      if (selectedMsg?.category === 'bounce') setSelectedMsg(null)
+      fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
+    } catch (e: any) {
+      showError(e.message)
+    }
+  }
+
   // Add Custom Spam Rule
   const handleAddSpamRule = async () => {
     const val = newSpamRuleVal.trim().toLowerCase()
@@ -4246,6 +4259,19 @@ export function OutreachView() {
               >
                 <Trash2 size={12} />
                 <span>Очистить весь спам ({inboxCounts.spam})</span>
+              </button>
+            )}
+
+            {inboxFilter === 'bounces' && inboxCounts.bounces > 0 && (
+              <button
+                type="button"
+                onClick={handlePurgeBounces}
+                className="outreach-btn"
+                style={{ padding: '4px 10px', fontSize: 11, minHeight: 30, background: '#fef2f2', color: '#b91c1c', border: '1px solid #fca5a5' }}
+                title="Удалить все отчеты об ошибках доставки"
+              >
+                <Trash2 size={12} />
+                <span>Очистить все ошибки ({inboxCounts.bounces})</span>
               </button>
             )}
 

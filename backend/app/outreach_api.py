@@ -1345,6 +1345,17 @@ def purge_inbox_spam(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"ok": True, "deleted_count": count}
 
 
+@router.post("/inbox/purge-bounces")
+def purge_inbox_bounces(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Deletes all bounce/non-delivery error reports from the inbox."""
+    bounce_msgs = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.category == "bounce").all()
+    count = len(bounce_msgs)
+    for m in bounce_msgs:
+        db.delete(m)
+    db.commit()
+    return {"ok": True, "deleted_count": count}
+
+
 @router.post("/inbox/{message_id}/block-sender")
 def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Permanently blocks the sender and domain of this message and purges matching spam."""
