@@ -5034,9 +5034,11 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
             child_files = admin_job_result_files(child_rerun)
             data["admin_rerun"] = {
                 "id": child_rerun.id,
+                "job_number": getattr(child_rerun, "job_number", None),
                 "status": child_rerun.status,
                 "progress": child_rerun.progress,
                 "message": child_rerun.message,
+                "verified_count": getattr(child_rerun, "verified_count", 0) or 0,
                 "files": child_files,
                 "yandex_requests_count": getattr(child_rerun, "yandex_requests_count", 0) or 0,
                 "yandex_cost_rub": getattr(child_rerun, "yandex_cost_rub", 0.0) or 0.0,

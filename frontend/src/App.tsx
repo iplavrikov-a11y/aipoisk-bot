@@ -241,9 +241,11 @@ type Job = {
   is_admin_rerun?: boolean
   admin_rerun?: {
     id: string
+    job_number?: number | null
     status: string
     progress: number
     message: string
+    verified_count?: number
     files: JobResultFile[]
     yandex_requests_count?: number
     yandex_cost_rub?: number
@@ -4411,7 +4413,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
   const filteredJobs = useMemo(() => jobs
-    .filter(job => showInternalJobs || !job.is_internal)
+    .filter(job => showInternalJobs || (!job.is_internal && (!job.is_admin_rerun || !job.parent_job_id)))
     .filter(job => !statusFilter || job.status === statusFilter)
     .filter(job => !modeFilter || job.mode === modeFilter)
     .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
@@ -4419,9 +4421,13 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
       if (!normalizedQuery) return true
       const inputNames = (job.input_files || []).map(f => f.original_filename)
       const resultNames = (job.result_files || []).map(f => f.filename)
+      const rerunNumber = job.admin_rerun?.job_number
       return [
         job.job_number ? `#${job.job_number}` : '',
         job.job_number ? String(job.job_number) : '',
+        rerunNumber ? `#${rerunNumber}` : '',
+        rerunNumber ? String(rerunNumber) : '',
+        job.admin_rerun?.id,
         job.human_title,
         job.title,
         job.client_name,
@@ -4746,7 +4752,7 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 {job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files && job.admin_rerun.files.length > 0 && (
                   <div className="admin-rerun-strip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid #cbd5e1' }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: '#047857', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      <Crown size={12} /> Админ-итог:
+                      <Crown size={12} /> Админ-итог{job.admin_rerun.verified_count ? ` (${job.admin_rerun.verified_count} пост.` : ''}{job.admin_rerun.yandex_cost_rub ? ` · ${job.admin_rerun.yandex_cost_rub.toFixed(2)} ₽)` : job.admin_rerun.verified_count ? ')' : ''}:
                     </span>
                     {job.admin_rerun.files.map(file => (
                       <button
@@ -4769,7 +4775,10 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
               <div className="job-progress-compact" style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}>
                 <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                   <Loader2 size={13} className="spin" />
-                  <span>Идет экспертный админ-перерасчет ({job.admin_rerun.progress}%): {job.admin_rerun.message || humanStatus(job.admin_rerun.status)}</span>
+                  <span>
+                    Идет экспертный админ-перерасчет {job.admin_rerun.job_number ? `(#${job.admin_rerun.job_number}) ` : ''}
+                    ({job.admin_rerun.progress}%): {job.admin_rerun.message || humanStatus(job.admin_rerun.status)}
+                  </span>
                 </div>
                 <Progress value={job.admin_rerun.progress} note={job.admin_rerun.message || humanStatus(job.admin_rerun.status)} />
               </div>
