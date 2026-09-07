@@ -385,6 +385,7 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    job_number: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
     client_id: Mapped[str | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     created_by_telegram_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")

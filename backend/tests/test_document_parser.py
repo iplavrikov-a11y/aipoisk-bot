@@ -113,7 +113,31 @@ class DocumentParserTests(unittest.TestCase):
             
             text, status = document_parser.extract_text(no_ext_file)
             self.assertTrue(status in ("ok", "docx_libreoffice_ok"))
-            self.assertIn("??????-???????? ????? ??????", text)
+            self.assertIn("PUMP TYPE Z 12-205 JMW", text)
+
+    def test_docx_with_scanned_images_triggers_media_ocr(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_docx", return_value=""),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value="\ufeff\n\n\n\n\n"),
+            patch.object(document_parser, "_extract_docx_xml", return_value=""),
+            patch.object(document_parser, "_extract_docx_media_ocr", return_value="Технические требования на АКБ"),
+        ):
+            text, status = document_parser.extract_text(Path("scanned_tz.docx"))
+
+        self.assertEqual(status, "docx_ocr_ok")
+        self.assertIn("Технические требования на АКБ", text)
+
+    def test_doc_with_short_text_triggers_office_pdf_ocr(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_doc", return_value=""),
+            patch.object(document_parser, "_extract_office_via_pdf_ocr", return_value="Технические условия ГОСТ 12345"),
+        ):
+            text, status = document_parser.extract_text(Path("scanned_tz.doc"))
+
+        self.assertEqual(status, "doc_ocr_ok")
+        self.assertIn("Технические условия ГОСТ 12345", text)
+
 
 if __name__ == "__main__":
     unittest.main()
+

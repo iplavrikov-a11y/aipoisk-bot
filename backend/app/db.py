@@ -152,6 +152,7 @@ def _ensure_schema() -> None:
             "admin_supplement_at": "DATETIME NULL",
             "parent_job_id": "VARCHAR(32) DEFAULT ''",
             "is_admin_rerun": "BOOLEAN DEFAULT 0",
+            "job_number": "INTEGER NULL",
         }
         billing_transactions_existing = _existing_columns(inspector, "billing_transactions")
         client_tariff_overrides_existing = _existing_columns(inspector, "client_tariff_overrides")
@@ -259,6 +260,18 @@ def _ensure_schema() -> None:
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))
+        connection.execute(text("UPDATE jobs SET job_number = rowid WHERE job_number IS NULL"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_job_number ON jobs(job_number) WHERE job_number IS NOT NULL"))
+        connection.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_number
+            AFTER INSERT ON jobs
+            WHEN NEW.job_number IS NULL
+            BEGIN
+                UPDATE jobs
+                SET job_number = (SELECT COALESCE(MAX(job_number), 0) + 1 FROM jobs)
+                WHERE id = NEW.id;
+            END;
+        """))
         for column, definition in billing_transaction_additions.items():
             if billing_transactions_existing and column not in billing_transactions_existing:
                 connection.execute(text(f"ALTER TABLE billing_transactions ADD COLUMN {column} {definition}"))

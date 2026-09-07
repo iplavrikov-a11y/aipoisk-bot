@@ -19,10 +19,20 @@ ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 DEFAULT_DOCUMENT_OPTIONS = {
     "ocr_enabled": True,
     "pdf_ocr_pages": 12,
+    "docx_ocr_images": 20,
     "archive_max_files": 80,
     "archive_max_mb": 250,
     "archive_depth": 2,
 }
+
+
+def _clean_text(value: str) -> str:
+    return str(value or "").replace("\ufeff", "").replace("\u200b", "").strip()
+
+
+def _natural_sort_key(s: str) -> list[int | str]:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(s))]
+
 
 
 def sanitize_filename(value: str) -> str:
@@ -100,28 +110,44 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             except Exception:
                 text = ""
 
-            if len(text.strip()) < 80:
+            cleaned = _clean_text(text)
+            if len(cleaned) < 80:
                 fallback_lo = _extract_via_libreoffice(
                     file_path,
                     ".txt",
                     lambda converted: converted.read_text(encoding="utf-8", errors="ignore"),
                 )
-                if len(fallback_lo.strip()) > len(text.strip()):
+                if len(_clean_text(fallback_lo)) > len(cleaned):
                     text = fallback_lo
+                    cleaned = _clean_text(text)
                     status = "docx_libreoffice_ok"
 
-            if len(text.strip()) < 80:
+            if len(cleaned) < 80:
                 fallback_xml = _extract_docx_xml(file_path)
-                if len(fallback_xml.strip()) > len(text.strip()):
+                if len(_clean_text(fallback_xml)) > len(cleaned):
                     text = fallback_xml
+                    cleaned = _clean_text(text)
                     status = "docx_xml_ok"
 
-            if text.strip():
+            if len(cleaned) < 80 and options.get("ocr_enabled"):
+                docx_ocr_images = int(options.get("docx_ocr_images") or 20)
+                media_ocr = _extract_docx_media_ocr(file_path, docx_ocr_images)
+                if media_ocr.strip():
+                    text = f"{text.strip()}\n\n{media_ocr}".strip() if cleaned else media_ocr
+                    return text, "docx_ocr_ok"
+
+                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
+                if lo_pdf_ocr.strip():
+                    text = f"{text.strip()}\n\n{lo_pdf_ocr}".strip() if cleaned else lo_pdf_ocr
+                    return text, "docx_pdf_ocr_ok"
+
+            if _clean_text(text):
                 return text, status
 
             if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
                 text, archive_status = _extract_archive(file_path, options, depth)
-                if text.strip():
+                if _clean_text(text):
                     return text, f"docx_archive_{archive_status}"
 
             return "", "docx_empty"
@@ -143,7 +169,7 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             return text, "ok" if text.strip() else "parser_not_connected_yet"
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
-            if len(text.strip()) < 80 and options.get("ocr_enabled"):
+            if len(_clean_text(text)) < 80 and options.get("ocr_enabled"):
                 ocr_text = _extract_pdf_ocr(file_path, int(options.get("pdf_ocr_pages") or 0))
                 if ocr_text.strip():
                     return ocr_text, "pdf_ocr_ok"
@@ -157,12 +183,18 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             if zipfile.is_zipfile(file_path):
                 try:
                     text = _extract_docx(file_path)
-                    if text.strip():
+                    if _clean_text(text):
                         return text, "ok"
                 except Exception:
                     pass
             text = _extract_doc(file_path)
-            return text, "ok" if text.strip() else "parser_not_connected_yet"
+            cleaned = _clean_text(text)
+            if len(cleaned) < 80 and options.get("ocr_enabled"):
+                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                doc_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
+                if doc_ocr.strip():
+                    return doc_ocr, "doc_ocr_ok"
+            return text, "ok" if _clean_text(text) else "parser_not_connected_yet"
         if suffix in {".rtf", ".odt", ".pptx"}:
             text = _extract_via_pandoc(file_path) or _extract_via_libreoffice(
                 file_path,
@@ -390,6 +422,59 @@ def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
         return "\n".join(texts)
     except Exception:
         return ""
+
+
+def _extract_docx_media_ocr(path: Path, max_images: int = 20) -> str:
+    if not path.is_file() or max_images <= 0 or not shutil.which("tesseract"):
+        return ""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = [
+                n for n in z.namelist()
+                if n.startswith("word/media/") and Path(n).suffix.lower() in IMAGE_EXTENSIONS
+            ]
+            if not names:
+                return ""
+            names = sorted(names, key=_natural_sort_key)
+            blocks: list[str] = []
+            with tempfile.TemporaryDirectory(prefix="aipoisk-docx-ocr-") as tmp:
+                for idx, name in enumerate(names[:max_images], start=1):
+                    ext = Path(name).suffix.lower()
+                    img_file = Path(tmp) / f"img_{idx}{ext}"
+                    img_file.write_bytes(z.read(name))
+                    img_text = _extract_image_ocr(img_file)
+                    if _clean_text(img_text):
+                        blocks.append(f"\n=== OCR IMAGE {idx}: {Path(name).name} ===\n{img_text.strip()}")
+            return "\n\n".join(blocks).strip()
+    except Exception:
+        return ""
+
+
+def _extract_office_via_pdf_ocr(path: Path, max_pages: int = 12) -> str:
+    if not shutil.which("libreoffice") or not shutil.which("tesseract") or max_pages <= 0:
+        return ""
+    with tempfile.TemporaryDirectory(prefix="aipoisk-doc-pdf-") as tmp:
+        result = subprocess.run(
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp,
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return ""
+        candidates = sorted(Path(tmp).glob("*.pdf"))
+        if not candidates:
+            return ""
+        return _extract_pdf_ocr(candidates[0], max_pages)
 
 
 def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:

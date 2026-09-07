@@ -193,6 +193,7 @@ type GrantDraft = {
 
 type Job = {
   id: string
+  job_number?: number | null
   client_id: string
   client_name: string
   telegram_id: string
@@ -4419,6 +4420,8 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
       const inputNames = (job.input_files || []).map(f => f.original_filename)
       const resultNames = (job.result_files || []).map(f => f.filename)
       return [
+        job.job_number ? `#${job.job_number}` : '',
+        job.job_number ? String(job.job_number) : '',
         job.human_title,
         job.title,
         job.client_name,
@@ -4614,6 +4617,11 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
             <div className="job-card-top">
               <div className="job-title-group">
                 <div className="job-title-row">
+                  {job.job_number ? (
+                    <span className="job-number-badge" title={`Номер задачи #${job.job_number}`}>
+                      #{job.job_number}
+                    </span>
+                  ) : null}
                   <h2 title={job.title}>{job.human_title || humanMode(job.mode)}</h2>
                   <StatusBadge status={job.status} />
                 </div>
@@ -4961,7 +4969,9 @@ function AdminSupplementModal({
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
           <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
-            <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>{job.human_title || job.title}</div>
+            <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
+              {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
+            </div>
             <div style={{ color: '#64748b', fontSize: 12 }}>
               Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
             </div>

@@ -126,6 +126,14 @@ def job_dir(job_id: str) -> Path:
     return config.storage_path / "jobs" / job_id
 
 
+def next_job_number(db: Session) -> int:
+    max_num = db.execute(select(func.max(Job.job_number))).scalar()
+    if not max_num:
+        count = db.execute(select(func.count(Job.id))).scalar()
+        return (count or 0) + 1
+    return int(max_num) + 1
+
+
 def create_job(
     db: Session,
     *,
@@ -155,6 +163,7 @@ def create_job(
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
+        job_number=next_job_number(db),
         client_id=client_id,
         created_by_telegram_id=str(created_by_telegram_id or ""),
         mode=mode,

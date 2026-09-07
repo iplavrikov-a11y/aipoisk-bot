@@ -32,6 +32,21 @@ class DatabaseConfigTests(unittest.TestCase):
         )
         self.assertEqual(db._sqlite_connect_args("postgresql://example"), {})
 
+    def test_job_number_assigned_and_incremented(self) -> None:
+        from app.models import Job
+        from app.jobs import create_job
+
+        session = db.SessionLocal()
+        try:
+            job = create_job(session, client_id=None, mode="supplier_search", title="Test Job Number", target_suppliers=5, files=[])
+            self.assertIsNotNone(job.job_number)
+            self.assertGreaterEqual(job.job_number, 1)
+
+            job2 = create_job(session, client_id=None, mode="supplier_search", title="Test Job Number 2", target_suppliers=5, files=[])
+            self.assertEqual(job2.job_number, job.job_number + 1)
+        finally:
+            session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

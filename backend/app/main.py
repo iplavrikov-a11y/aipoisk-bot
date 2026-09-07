@@ -91,6 +91,7 @@ from .jobs import (
     cleanup_expired_jobs,
     create_job,
     enqueue_job,
+    next_job_number,
     job_dir,
     package_job_output_items,
     package_job_outputs,
@@ -2283,9 +2284,21 @@ def list_jobs(
     return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
 
 
+def resolve_admin_job(job_identifier: str, db: Session) -> Job | None:
+    ident = str(job_identifier or "").strip()
+    if not ident:
+        return None
+    clean_num = ident.lstrip("#")
+    if clean_num.isdigit():
+        found = db.query(Job).filter(Job.job_number == int(clean_num)).first()
+        if found:
+            return found
+    return db.get(Job, ident)
+
+
 @app.get("/api/jobs/{job_id}", dependencies=[Depends(require_admin)])
 def get_job(job_id: str, db: Session = Depends(db_session)) -> dict:
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     settings = get_or_create_settings(db)
@@ -2294,7 +2307,7 @@ def get_job(job_id: str, db: Session = Depends(db_session)) -> dict:
 
 @app.get("/api/jobs/{job_id}/download", dependencies=[Depends(require_admin)])
 def download_job(job_id: str, db: Session = Depends(db_session)):
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     output = package_job_outputs(job)
@@ -2418,7 +2431,7 @@ def admin_rerun_job(
     policy: str | None = Query(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
-    parent_job = db.get(Job, job_id)
+    parent_job = resolve_admin_job(job_id, db)
     if not parent_job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -2431,6 +2444,7 @@ def admin_rerun_job(
 
     new_job = Job(
         id=new_job_id,
+        job_number=next_job_number(db),
         client_id=parent_job.client_id,
         created_by_telegram_id="",
         mode=parent_job.mode,
@@ -2503,7 +2517,7 @@ def admin_rerun_job(
 
 @app.get("/api/jobs/{job_id}/supplement-candidates", dependencies=[Depends(require_admin)])
 def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)) -> dict:
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -2549,7 +2563,7 @@ def get_job_supplement_candidates(job_id: str, db: Session = Depends(db_session)
 
 @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_admin)])
 def cancel_job(job_id: str, db: Session = Depends(db_session)) -> dict:
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in TERMINAL_JOB_STATUSES:
@@ -2610,7 +2624,7 @@ def resolve_all_failed_jobs(db: Session = Depends(db_session)) -> dict:
 @app.post("/api/jobs/{job_id}/resolve", dependencies=[Depends(require_admin)])
 def resolve_single_job(job_id: str, db: Session = Depends(db_session)) -> dict:
     """Mark a single failed job as resolved."""
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     job.status = "resolved"
@@ -2631,7 +2645,7 @@ async def upload_admin_supplement(
     file_kind: str = Form(default=""),
     db: Session = Depends(db_session),
 ) -> dict:
-    job = db.get(Job, job_id)
+    job = resolve_admin_job(job_id, db)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -4960,6 +4974,7 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
     data = {
         "id": job.id,
+        "job_number": getattr(job, "job_number", None),
         "client_id": job.client_id,
         "client_name": job.client.name if job.client else "",
         "client_email": (job.client.users[0].email if (job.client and getattr(job.client, "users", None) and len(job.client.users) > 0) else "") if job.client else "",
