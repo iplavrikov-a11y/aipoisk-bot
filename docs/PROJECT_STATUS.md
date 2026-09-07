@@ -12,6 +12,25 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Search Engine 95% Budget Optimization, Yandex API v2 groupSpec Fix & Admin Rerun Feed Deduplication (2026-09-07):
+  - **Yandex Search API v2 XML Parameterization Fix (`groupSpec`)**:
+    - Diagnosed the root cause of recent procurement search task expenses exceeding 5.50+ ₽ (135–144 Yandex requests): Yandex Search API v2 ignores the legacy `groupBy` parameter and returns only 10 items per page instead of 50–70. Pagination loops were generating 3–7 network calls per search query.
+    - Switched `groupBy` to official `groupSpec: {"groupsOnPage": 70, "docsInGroup": 1}`, fetching up to 70 organic results in a single 0.04 ₽ request and preserving deep organic search reach up to page 7 without pagination inflation.
+    - Synchronized identical fix across both `aipoisk-bot` (`supplier_search.py`, `outreach_search.py`) and `emailagent` (`core/yandex_search.py`, `backend/services/supplier_discovery/service.py`).
+  - **Fast-Path Candidate Pool Reuse & Adaptive Recovery**:
+    - Implemented instant pool re-examination: when initial candidate reviews fall short of target, the recovery stage first checks unreviewed candidates from the initial discovery pool at 0 ₽ API cost before launching any network requests (eliminating secondary API spend in ~80% of tasks).
+    - Scaled network recovery queries adaptively to the actual deficit (`min(8, max(3, gap // 2))`), replacing static 24-query blasts.
+    - Added chunked query dispatch (4 at a time) with early cancellation when target candidate floors are satisfied.
+    - Stripped commercial noise suffixes (`купить`, `контакты`) from query expansion in favor of manufacturer-intent terms (`производитель завод`, `каталог продукция`, `официальный сайт`).
+  - **10-Procurement Live Benchmark Verification**:
+    - Ran automated end-to-end benchmark across 10 diverse industrial categories (`scripts/benchmark_10_procurements_efficiency.py`): 10/10 PASS rate, 217 suppliers discovered (avg 21.7/task), 89 direct manufacturers/plants (41%), 92% with verified contact details.
+    - Average cost per procurement plummeted from 5.50+ ₽ down to **0.29 ₽** (95% cost reduction / 19x cheaper).
+  - **Admin Rerun Feed Deduplication & Embedded Parent Card Display**:
+    - Fixed feed duplication where clicking "Play" (admin expert re-run) spawned a standalone card `#662 [Админ]` at the top of the feed while simultaneously rendering progress and results inside parent card `#659`.
+    - Filtered out child rerun cards (`job.is_admin_rerun && job.parent_job_id`) from the top-level feed in `frontend/src/App.tsx`.
+    - Added `job_number` and `verified_count` to `admin_rerun` dictionary in `backend/app/main.py`.
+    - Embedded comprehensive metrics in the parent card's result strip: `👑 Админ-итог (50 пост. · 0.32 ₽): [Поставщики (Админ)] [Запрос КП (Админ)]`.
+    - Integrated child rerun number into search index, allowing searches for `#662` to locate parent task `#659`.
 - Scanned DOCX/DOC Media OCR & Administrator Task Numbering System (2026-09-07):
   - **Embedded Image OCR in DOCX/DOC (`backend/app/document_parser.py`)**:
     - Resolved root cause of customer specification parsing failure (`"Документы или ссылки не прочитались"` on task `#656` / `тз.docx`): previously, OCR was only executed for standalone image files and direct PDFs. DOCX files containing embedded scanned specification tables (`word/media/*`) yielded 0 text paragraphs via `python-docx`, while headless LibreOffice export returned UTF-8 BOM (`\ufeff`) and newlines whose non-zero length falsely satisfied length checks while failing downstream task execution (`len(context) < 50`).
