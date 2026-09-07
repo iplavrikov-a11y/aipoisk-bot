@@ -164,6 +164,7 @@ class Client(Base):
     __tablename__ = "clients"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    client_number: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
     telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     username: Mapped[str] = mapped_column(String(255), default="")

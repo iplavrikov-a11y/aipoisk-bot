@@ -141,6 +141,7 @@ from .repository import (
     requested_function_units,
     seed_owner_client,
     supplier_target_for_client,
+    next_client_number,
 )
 from .report_builder import write_quote_request_docx
 from .schemas import (
@@ -1564,6 +1565,14 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
         .order_by(Client.created_at.desc())
         .all()
     )
+    job_counts = dict(
+        db.query(Job.client_id, func.count(Job.id))
+        .filter(Job.client_id.isnot(None))
+        .group_by(Job.client_id)
+        .all()
+    )
+    for client in clients:
+        setattr(client, "_jobs_count", job_counts.get(client.id, 0))
     return [client_to_dict(client, db=db) for client in clients]
 
 
@@ -1594,6 +1603,7 @@ def create_client(data: ClientCreate, db: Session = Depends(db_session)) -> dict
     payload = data.model_dump(exclude={"telegram_usernames"})
     payload["telegram_id"] = telegram_id or new_pending_telegram_id()
     payload["username"] = usernames[0] if usernames else normalize_telegram_username(data.username)
+    payload["client_number"] = next_client_number(db)
     client = Client(**payload)
     db.add(client)
     db.flush()
@@ -2278,7 +2288,13 @@ def list_jobs(
     db: Session = Depends(db_session),
 ) -> list[dict]:
     safe_limit = max(1, min(10000, int(limit or 2000)))
-    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(safe_limit * 2).all()
+    jobs = (
+        db.query(Job)
+        .options(selectinload(Job.client).selectinload(Client.web_users))
+        .order_by(Job.created_at.desc())
+        .limit(safe_limit * 2)
+        .all()
+    )
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
     settings = get_or_create_settings(db)
     return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
@@ -4619,7 +4635,7 @@ def client_recent_usage(db: Session, client: Client, *, limit: int = 5) -> list[
     items: list[dict] = []
     for job in jobs:
         supplier_units, report_units = requested_function_units(str(job.mode or ""))
-        if supplier_units <= 0 and report_units <= 0:
+        if supplier_units <= 0 and report_units <= 0 and str(job.mode or "") != MODE_EXACT_PRODUCT:
             continue
         items.append(
             {
@@ -4886,8 +4902,17 @@ def now_iso() -> str:
 
 def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
     primary_telegram_id = "" if is_pending_telegram_id(client.telegram_id) else client.telegram_id
+    jobs_count = getattr(client, "_jobs_count", None)
+    if jobs_count is None and db is not None:
+        jobs_count = (
+            db.query(func.count(Job.id))
+            .filter(Job.client_id == client.id)
+            .scalar()
+            or 0
+        )
     return {
         "id": client.id,
+        "client_number": getattr(client, "client_number", None),
         "telegram_id": primary_telegram_id,
         "is_pending": is_pending_telegram_id(client.telegram_id),
         "name": client.name,
@@ -4904,6 +4929,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "monthly_file_limit": client.monthly_file_limit,
         "supplier_target_min": client.supplier_target_min,
         "notes": client.notes,
+        "jobs_count": int(jobs_count or 0),
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
         "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],
         "source": "web" if client.web_users else "telegram",
@@ -4972,12 +4998,41 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
     confirmation_outcome = str(getattr(job, "confirmation_outcome", "") or "")
     offer_delivery_outcome = str(getattr(job, "offer_delivery_outcome", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    client_email = ""
+    client_web_users = getattr(job.client, "web_users", None) or [] if job.client else []
+    if client_web_users:
+        users_with_email = [u for u in client_web_users if getattr(u, "email", None)]
+        if users_with_email:
+            client_email = users_with_email[0].email or ""
+
+    created_by_raw = str(getattr(job, "created_by_telegram_id", "") or "").strip()
+    created_by_label = ""
+    if created_by_raw.startswith("web:"):
+        web_user_id = created_by_raw[4:]
+        matched_user = next((u for u in client_web_users if str(getattr(u, "id", "")) == web_user_id), None)
+        if matched_user and matched_user.email:
+            created_by_label = f"Веб: {matched_user.email}"
+        elif client_email:
+            created_by_label = f"Веб: {client_email}"
+        else:
+            created_by_label = "Веб-кабинет"
+    elif created_by_raw:
+        if created_by_raw.startswith("@"):
+            created_by_label = f"TG: {created_by_raw}"
+        else:
+            created_by_label = f"TG ID: {created_by_raw}"
+    elif job.client and job.client.telegram_id and not is_pending_telegram_id(job.client.telegram_id):
+        tg_id = job.client.telegram_id
+        created_by_label = f"TG: {tg_id}" if tg_id.startswith("@") else f"TG ID: {tg_id}"
+
     data = {
         "id": job.id,
         "job_number": getattr(job, "job_number", None),
         "client_id": job.client_id,
+        "client_number": getattr(job.client, "client_number", None) if job.client else None,
         "client_name": job.client.name if job.client else "",
-        "client_email": (job.client.users[0].email if (job.client and getattr(job.client, "users", None) and len(job.client.users) > 0) else "") if job.client else "",
+        "client_email": client_email,
+        "created_by_label": created_by_label,
         "client_username": job.client.username if job.client else "",
         "telegram_id": job.client.telegram_id if job.client else "",
         "created_by_telegram_id": job.created_by_telegram_id,

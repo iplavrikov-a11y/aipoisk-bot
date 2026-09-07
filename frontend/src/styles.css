@@ -511,6 +511,24 @@ td input[type="checkbox"] { width: 16px; min-height: 16px; }
 .client-summary-pills .pill.balance { background: #ecfdf5; color: #065f46; }
 .client-summary-pills .pill.web { background: #eff6ff; color: #1e40af; }
 .client-summary-pills .pill.pending { background: #fffbeb; color: #92400e; }
+.client-summary-pills .pill.jobs {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.client-summary-pills .pill.jobs:hover {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+.client-summary-pills .pill.jobs.zero {
+  background: #f8fafc;
+  color: #94a3b8;
+  border: 1px solid #e2e8f0;
+  cursor: default;
+}
 .client-state { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; align-items: center; }
 .client-actions-menu {
   position: relative;
@@ -946,6 +964,31 @@ a.api-service-row.configured:hover {
   letter-spacing: 0.3px;
   flex-shrink: 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.client-number-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f766e;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  padding: 1px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.job-client-link {
+  font-weight: 600;
+  color: #0f766e;
+  transition: color 0.15s ease;
+}
+.job-client-link:hover {
+  color: #0d9488;
+  text-decoration: underline;
 }
 .job-subline {
   margin: 2px 0 0;

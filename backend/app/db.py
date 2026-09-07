@@ -122,6 +122,7 @@ def _ensure_schema() -> None:
             "referral_reward_granted": "BOOLEAN DEFAULT 0",
             "referral_code": "VARCHAR(32) DEFAULT ''",
             "registration_ip": "VARCHAR(64) DEFAULT ''",
+            "client_number": "INTEGER NULL",
         }
         jobs_existing = _existing_columns(inspector, "jobs")
         job_additions = {
@@ -257,6 +258,36 @@ def _ensure_schema() -> None:
             connection.execute(text("UPDATE clients SET monthly_supplier_search_limit = monthly_job_limit"))
         if "monthly_procurement_report_limit" in added_client_columns and "monthly_job_limit" in clients_existing:
             connection.execute(text("UPDATE clients SET monthly_procurement_report_limit = monthly_job_limit"))
+        if "created_at" in clients_existing or "created_at" in added_client_columns:
+            connection.execute(
+                text(
+                    "UPDATE clients SET client_number = ("
+                    "SELECT COUNT(*) FROM clients c2 WHERE c2.created_at <= clients.created_at"
+                    ") WHERE client_number IS NULL"
+                )
+            )
+        else:
+            connection.execute(text("UPDATE clients SET client_number = rowid WHERE client_number IS NULL"))
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_clients_client_number "
+                "ON clients(client_number) WHERE client_number IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                """
+            CREATE TRIGGER IF NOT EXISTS trg_clients_assign_number
+            AFTER INSERT ON clients
+            WHEN NEW.client_number IS NULL
+            BEGIN
+                UPDATE clients
+                SET client_number = (SELECT COALESCE(MAX(client_number), 0) + 1 FROM clients)
+                WHERE id = NEW.id;
+            END;
+        """
+            )
+        )
         for column, definition in job_additions.items():
             if column not in jobs_existing:
                 connection.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {definition}"))

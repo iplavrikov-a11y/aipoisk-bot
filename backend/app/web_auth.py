@@ -32,7 +32,7 @@ from .models import (
     new_id,
     now_utc,
 )
-from .repository import get_or_create_settings
+from .repository import get_or_create_settings, next_client_number
 
 CUSTOMER_COOKIE = "tenderlex_customer_session"
 CSRF_HEADER = "x-csrf-token"
@@ -113,6 +113,7 @@ def create_web_user(
         report_limit = max(0, int(settings.trial_procurement_report_limit or 0)) if trial_enabled else 0
         file_limit = max(0, int(settings.trial_file_limit or WEB_DEFAULT_FILE_LIMIT)) if trial_enabled else WEB_DEFAULT_FILE_LIMIT
         client = Client(
+            client_number=next_client_number(db),
             telegram_id=f"web:{new_id()}",
             name=display_name,
             username="",
@@ -869,6 +870,7 @@ def get_or_create_telegram_web_user(
     )
 
     client = Client(
+        client_number=next_client_number(db),
         telegram_id=clean_telegram_id,
         name=display_name,
         username=clean_username,

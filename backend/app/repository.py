@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import re
 
-from sqlalchemy import func, not_, or_
+from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from .billing import OP_GRANT, access_error_for_units, client_uses_trial_access, grant_trial_balance, resolve_requested_billing_kinds
@@ -29,6 +29,11 @@ def normalize_telegram_username(value: str) -> str:
 
 def is_pending_telegram_id(value: str) -> bool:
     return str(value or "").startswith(PENDING_TELEGRAM_ID_PREFIX)
+
+
+def next_client_number(db: Session) -> int:
+    max_num = db.execute(select(func.max(Client.client_number))).scalar()
+    return (max_num or 0) + 1
 
 
 def new_pending_telegram_id() -> str:
@@ -91,6 +96,7 @@ def seed_owner_client(db: Session) -> None:
         ensure_client_telegram_account(db, existing, telegram_id)
         return
     client = Client(
+        client_number=next_client_number(db),
         telegram_id=telegram_id,
         name="Owner",
         username="",
@@ -365,6 +371,7 @@ def get_or_create_trial_client_by_telegram_id(
         return None, "Не удалось определить Telegram ID."
     display_name = str(name or username or f"Trial {normalized}").strip()
     client = Client(
+        client_number=next_client_number(db),
         telegram_id=normalized,
         name=display_name,
         username=username,

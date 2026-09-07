@@ -62,6 +62,7 @@ type Dashboard = {
 
 type Client = {
   id: string
+  client_number?: number | null
   telegram_id: string
   is_pending: boolean
   source: 'telegram' | 'web' | string
@@ -78,6 +79,7 @@ type Client = {
   monthly_file_limit: number
   supplier_target_min: number
   notes: string
+  jobs_count?: number
   telegram_accounts: TelegramAccount[]
   web_users: WebUser[]
   usage: ClientUsage | null
@@ -195,7 +197,11 @@ type Job = {
   id: string
   job_number?: number | null
   client_id: string
+  client_number?: number | null
   client_name: string
+  client_email?: string
+  client_username?: string
+  created_by_label?: string
   telegram_id: string
   created_by_telegram_id: string
   mode: string
@@ -1020,7 +1026,13 @@ export function App() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
+  const [selectedClientForJobs, setSelectedClientForJobs] = useState<string>('')
   const loadAllRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
+
+  function handleNavigateToClientJobs(clientId: string) {
+    setSelectedClientForJobs(clientId)
+    setView('jobs')
+  }
 
   function setView(nextView: View) {
     setViewState(nextView)
@@ -1403,8 +1415,23 @@ export function App() {
           />
         )}
         {isReady && view === 'seo' && <SeoView data={seoAnalytics} loading={loadingSeo} onRefresh={() => void loadSeoAnalytics(true)} />}
-        {isReady && view === 'clients' && <ClientsView clients={clients} passwordResets={passwordResets} onChange={loadAll} />}
-        {isReady && view === 'jobs' && <JobsView jobs={jobs} onChange={loadAll} />}
+        {isReady && view === 'clients' && (
+          <ClientsView
+            clients={clients}
+            passwordResets={passwordResets}
+            onChange={loadAll}
+            onNavigateToClientJobs={handleNavigateToClientJobs}
+          />
+        )}
+        {isReady && view === 'jobs' && (
+          <JobsView
+            jobs={jobs}
+            clients={clients}
+            selectedClientId={selectedClientForJobs}
+            onClearSelectedClient={() => setSelectedClientForJobs('')}
+            onChange={loadAll}
+          />
+        )}
         {isReady && view === 'outreach' && <OutreachView />}
         {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
@@ -3423,10 +3450,12 @@ function ClientsView({
   clients,
   passwordResets,
   onChange,
+  onNavigateToClientJobs,
 }: {
   clients: Client[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
+  onNavigateToClientJobs?: (clientId: string) => void
 }) {
   const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
@@ -3494,6 +3523,8 @@ function ClientsView({
       const username = (client.username || '').toLowerCase()
       const tgId = String(client.telegram_id || '').toLowerCase()
       const notes = (client.notes || '').toLowerCase()
+      const clientNumberStr = client.client_number ? String(client.client_number) : ''
+      const clientNumberHash = client.client_number ? `#${client.client_number}` : ''
       const tgAccounts = (client.telegram_accounts || []).some(a =>
         (a.username || '').toLowerCase().includes(q) ||
         String(a.telegram_id || '').toLowerCase().includes(q) ||
@@ -3503,7 +3534,16 @@ function ClientsView({
         (u.email || '').toLowerCase().includes(q) ||
         (u.name || '').toLowerCase().includes(q)
       )
-      return name.includes(q) || username.includes(q) || tgId.includes(q) || notes.includes(q) || tgAccounts || webUsers
+      return (
+        name.includes(q) ||
+        username.includes(q) ||
+        tgId.includes(q) ||
+        notes.includes(q) ||
+        clientNumberStr === q ||
+        clientNumberHash.includes(q) ||
+        tgAccounts ||
+        webUsers
+      )
     })
   }, [clients, searchQuery, clientFilter])
 
@@ -3956,6 +3996,11 @@ function ClientsView({
                   </button>
                   <div className="client-name-wrap">
                     <div className="client-name-line">
+                      {client.client_number ? (
+                        <span className="client-number-badge" title={`Клиент #${client.client_number}`}>
+                          #{client.client_number}
+                        </span>
+                      ) : null}
                       <h2>{client.name || 'Без имени'}</h2>
                       {!client.is_active && <StatusBadge status="disabled" />}
                     </div>
@@ -3973,6 +4018,18 @@ function ClientsView({
                   </div>
                 </div>
                 <div className="client-summary-pills compact">
+                  <span
+                    className={`pill jobs ${(client.jobs_count || 0) > 0 ? '' : 'zero'}`}
+                    title={(client.jobs_count || 0) > 0 ? 'Перейти к задачам клиента' : 'У клиента пока нет задач'}
+                    onClick={(e) => {
+                      if ((client.jobs_count || 0) > 0 && onNavigateToClientJobs) {
+                        e.stopPropagation()
+                        onNavigateToClientJobs(client.id)
+                      }
+                    }}
+                  >
+                    Задач: {client.jobs_count ?? 0}
+                  </span>
                   {webUsers.length > 0 && <span className="pill web">Web: {webUsers.length}</span>}
                   <span className="pill tg">TG: {connectedCount}</span>
                   {pendingCount > 0 && <span className="pill pending">Ожидают: {pendingCount}</span>}
@@ -3984,6 +4041,18 @@ function ClientsView({
                       <MoreHorizontal size={15} />
                     </summary>
                     <div className="client-actions-popover">
+                      {onNavigateToClientJobs && (
+                        <button
+                          className="small-text"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onNavigateToClientJobs(client.id)
+                          }}
+                        >
+                          <FileText size={13} />
+                          Задачи клиента ({client.jobs_count ?? 0})
+                        </button>
+                      )}
                       <button
                         className="danger small-text"
                         onClick={(e) => void deleteClient(client, e)}
@@ -4376,7 +4445,19 @@ function fallbackDownloadName(job: Job, extension: string) {
   return `${base || 'TenderLex'}.${extension}`
 }
 
-function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<void> }) {
+function JobsView({
+  jobs,
+  clients = [],
+  selectedClientId = '',
+  onClearSelectedClient,
+  onChange,
+}: {
+  jobs: Job[]
+  clients?: Client[]
+  selectedClientId?: string
+  onClearSelectedClient?: () => void
+  onChange: () => Promise<void>
+}) {
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
   const [supplementModalJob, setSupplementModalJob] = useState<Job | null>(null)
@@ -4407,13 +4488,50 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   }
 
   const [showInternalJobs, setShowInternalJobs] = useState(false)
+  const [clientFilter, setClientFilter] = useState(selectedClientId || '')
   const [statusFilter, setStatusFilter] = useState('')
   const [modeFilter, setModeFilter] = useState('')
   const [policyFilter, setPolicyFilter] = useState('')
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
+
+  useEffect(() => {
+    if (selectedClientId) {
+      setClientFilter(selectedClientId)
+      setPage(1)
+    }
+  }, [selectedClientId])
+
+  const clientOptions = useMemo(() => {
+    const jobCounts: Record<string, number> = {}
+    for (const j of jobs) {
+      if (j.client_id) {
+        jobCounts[j.client_id] = (jobCounts[j.client_id] || 0) + 1
+      }
+    }
+    const list = clients.map(c => {
+      const email = c.web_users?.[0]?.email || ''
+      const count = jobCounts[c.id] || c.jobs_count || 0
+      const numPrefix = c.client_number ? `#${c.client_number} ` : ''
+      const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
+      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'задача' : count < 5 ? 'задачи' : 'задач'}` : ' · нет задач'
+      return {
+        id: c.id,
+        name: c.name || 'Без имени',
+        count,
+        label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
+      }
+    })
+    list.sort((a, b) => {
+      if (a.count !== b.count) return b.count - a.count
+      return a.name.localeCompare(b.name, 'ru')
+    })
+    return list
+  }, [clients, jobs])
+
   const filteredJobs = useMemo(() => jobs
     .filter(job => showInternalJobs || (!job.is_internal && (!job.is_admin_rerun || !job.parent_job_id)))
+    .filter(job => !clientFilter || job.client_id === clientFilter)
     .filter(job => !statusFilter || job.status === statusFilter)
     .filter(job => !modeFilter || job.mode === modeFilter)
     .filter(job => !policyFilter || (job.supplier_search_policy || 'normal') === policyFilter)
@@ -4425,21 +4543,24 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
       return [
         job.job_number ? `#${job.job_number}` : '',
         job.job_number ? String(job.job_number) : '',
+        job.client_number ? `#${job.client_number}` : '',
+        job.client_number ? String(job.client_number) : '',
         rerunNumber ? `#${rerunNumber}` : '',
         rerunNumber ? String(rerunNumber) : '',
         job.admin_rerun?.id,
         job.human_title,
         job.title,
         job.client_name,
-        (job as any).client_email,
-        (job as any).client_username,
+        job.client_email,
+        job.client_username,
+        job.created_by_label,
         job.telegram_id,
         job.created_by_telegram_id,
         job.message,
         ...inputNames,
         ...resultNames,
       ].some(value => String(value || '').toLowerCase().includes(normalizedQuery))
-    }), [jobs, showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
+    }), [jobs, showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
   const pageCount = Math.max(1, Math.ceil(filteredJobs.length / pageSize))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * pageSize
@@ -4468,19 +4589,23 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
   const shownFrom = filteredJobs.length ? pageStart + 1 : 0
   const shownTo = Math.min(filteredJobs.length, pageStart + visibleJobs.length)
   const registryFallbackJobsCount = useMemo(() => filteredJobs.filter(job => Boolean(registryFallbackOffer(job))).length, [filteredJobs])
-  const hasActiveFilters = Boolean(statusFilter || modeFilter || policyFilter || query.trim())
+  const hasActiveFilters = Boolean(statusFilter || modeFilter || policyFilter || clientFilter || query.trim())
 
   function resetFilters() {
     setStatusFilter('')
     setModeFilter('')
     setPolicyFilter('')
+    setClientFilter('')
     setQuery('')
     setPage(1)
+    if (onClearSelectedClient) {
+      onClearSelectedClient()
+    }
   }
 
   useEffect(() => {
     setPage(1)
-  }, [showInternalJobs, statusFilter, modeFilter, policyFilter, normalizedQuery])
+  }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function adminRerun(job: Job) {
     try {
@@ -4565,10 +4690,29 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
         <div className="list-toolbar-filters">
           <input
             className="toolbar-search"
-            placeholder="Найти задачу, клиента или Telegram ID"
+            placeholder="Найти задачу, клиента, email или #номер"
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
+          <select
+            value={clientFilter}
+            onChange={e => {
+              setClientFilter(e.target.value)
+              setPage(1)
+              if (!e.target.value && onClearSelectedClient) {
+                onClearSelectedClient()
+              }
+            }}
+            style={{ maxWidth: 260 }}
+            title="Фильтр по клиенту"
+          >
+            <option value="">Все клиенты</option>
+            {clientOptions.map(opt => (
+              <option key={opt.id} value={opt.id}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
           <select value={modeFilter} onChange={e => setModeFilter(e.target.value)}>
             <option value="">Все типы</option>
             {modeOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
@@ -4634,9 +4778,28 @@ function JobsView({ jobs, onChange }: { jobs: Job[]; onChange: () => Promise<voi
                 <p className="job-subline">
                   {formatDate(job.created_at)}
                   {formatJobDuration(job, nowTs) ? ` · ${formatJobDuration(job, nowTs)}` : ''}
-                  {' · '}{job.client_name || 'клиент не указан'}
-                  {(job as any).client_email ? ` (${(job as any).client_email})` : ''}
-                  {' · '}менеджер {job.created_by_telegram_id || job.telegram_id || 'не указан'}
+                  {' · '}
+                  <span
+                    className="job-client-link"
+                    title="Показать только задачи этого клиента"
+                    onClick={() => {
+                      if (job.client_id) {
+                        setClientFilter(job.client_id)
+                        setPage(1)
+                      }
+                    }}
+                    style={{ cursor: job.client_id ? 'pointer' : 'default' }}
+                  >
+                    {job.client_number ? `#${job.client_number} ` : ''}
+                    {job.client_name || 'клиент не указан'}
+                    {job.client_email ? ` (${job.client_email})` : ''}
+                  </span>
+                  {' · '}
+                  {job.created_by_label || (
+                    String(job.created_by_telegram_id || '').startsWith('web:')
+                      ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
+                      : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
+                  )}
                 </p>
               </div>
               <div className="job-card-top-right">
