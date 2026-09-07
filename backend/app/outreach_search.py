@@ -374,7 +374,7 @@ async def fetch_yandex_search_candidates(
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
                 "folderId": folder_id,
                 "responseFormat": "FORMAT_XML",
-                "groupBy": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
+                "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             try:
                 res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)

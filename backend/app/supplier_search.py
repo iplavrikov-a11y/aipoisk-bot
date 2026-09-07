@@ -200,6 +200,11 @@ BLOCKED_HOST_SUFFIXES = (
     ".by",
 )
 
+DOBOR_MINUS_WORDS = (
+    '-статья -форум -отзывы -реферат -avito -ozon -wildberries -tiu -pulscen '
+    '-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы'
+)
+
 
 def _clean_email(email_str: str) -> str:
     if not email_str:
@@ -1820,7 +1825,7 @@ async def _discover_suppliers_impl(
         discovered, search_meta = await discover_candidates(
             settings,
             queries,
-            max_results=max(len(queries) * 4, 60) if is_registry_only else max(delivery_target * 10, 120),
+            max_results=max(len(queries) * 4, 60) if is_registry_only else max(delivery_target * 4, 160),
             excluded_domains=excluded_domains,
             primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(delivery_target),
             fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(delivery_target),
@@ -1830,6 +1835,7 @@ async def _discover_suppliers_impl(
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
     candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
+    initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
     rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
     candidates = rerank.candidates
@@ -1855,9 +1861,63 @@ async def _discover_suppliers_impl(
         # to chase the optional surplus.
         if len(accepted) >= minimum_target:
             break
-        await _emit_progress(progress_callback, 92 + recovery_attempt, f"Расширяю поиск (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
         accepted_before_recovery = len(accepted)
-        recovery_queries = await _build_supplier_recovery_queries_with_ai(
+
+        # FAST-PATH: First review unreviewed candidates from initial pool without web requests
+        reviewed_domains = {base_domain(str(item.get("site") or "")) for item in reviewed}
+        reviewed_domains.update(excluded_domains)
+        unreviewed_from_pool = [
+            c for c in initial_candidate_pool
+            if c.domain and base_domain(c.domain) not in reviewed_domains and not is_blocked(c.domain)
+        ]
+        needed_gap = max(1, minimum_target - len(accepted))
+        if unreviewed_from_pool:
+            fast_candidates = unreviewed_from_pool[: max(needed_gap * 3, 20)]
+            await _emit_progress(
+                progress_callback,
+                92,
+                f"Добираю поставщиков из первичного пула ({len(fast_candidates)} кандидатов): подтверждено {len(accepted)}",
+            )
+            fp_accepted, fp_reviewed, fp_review_meta = await _review_candidates_until_target(
+                settings,
+                fast_candidates,
+                context,
+                needed_gap,
+                profile=profile,
+                registry_context=minprom_context,
+                policy=policy,
+                excluded_domains=excluded_domains,
+                excluded_company_keys=excluded_company_keys,
+                progress_callback=progress_callback,
+            )
+            reviewed.extend(fp_reviewed)
+            accepted = _accepted_supplier_results(
+                reviewed,
+                minimum_target,
+                profile=profile,
+                policy=policy,
+                limit_to_target=False,
+                excluded_domains=excluded_domains,
+                excluded_company_keys=excluded_company_keys,
+            )
+            recovery_rounds.append({
+                "status": "ok_fast_path",
+                "source": "unreviewed_pool",
+                "candidate_count": len(fast_candidates),
+                "accepted_before": accepted_before_recovery,
+                "accepted_after": len(accepted),
+                "yandex_requests_count": 0,
+                "yandex_cost_rub": 0.0,
+                "review": fp_review_meta,
+            })
+            if len(accepted) >= minimum_target:
+                break
+
+        # If still needed after fast-path, do targeted adaptive web recovery
+        needed_gap = max(1, minimum_target - len(accepted))
+        await _emit_progress(progress_callback, 93 + recovery_attempt, f"Расширяю поиск в сети (раунд {recovery_attempt + 1}): подтверждено {len(accepted)}")
+        accepted_before_web = len(accepted)
+        raw_recovery_queries = await _build_supplier_recovery_queries_with_ai(
             settings,
             context,
             profile,
@@ -1866,10 +1926,12 @@ async def _discover_suppliers_impl(
             accepted,
             minimum_target,
         )
+        max_rec_queries = min(8, max(3, (needed_gap + 1) // 2))
+        recovery_queries = raw_recovery_queries[:max_rec_queries]
         recovery_round = {
             "status": "empty_queries",
             "queries": recovery_queries,
-            "accepted_before": len(accepted),
+            "accepted_before": accepted_before_web,
             "accepted_after": len(accepted),
         }
         if recovery_queries:
@@ -1877,10 +1939,10 @@ async def _discover_suppliers_impl(
                 recovery_candidates, recovery_search_meta = await discover_candidates(
                     settings,
                     recovery_queries,
-                    max_results=max(minimum_target * 8, 80),
+                    max_results=max(needed_gap * 4, 40),
                     excluded_domains=excluded_domains,
-                    primary_candidate_floor=_primary_candidate_floor(minimum_target),
-                    fallback_candidate_limit=_fallback_candidate_limit(minimum_target),
+                    primary_candidate_floor=needed_gap,
+                    fallback_candidate_limit=_fallback_candidate_limit(needed_gap),
                 )
                 seen_domains = {candidate.domain for candidate in candidates}
                 seen_domains.update(excluded_domains)
@@ -1890,19 +1952,19 @@ async def _discover_suppliers_impl(
                     for candidate in recovery_candidates
                     if candidate.domain and candidate.domain not in seen_domains
                 ]
-                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(minimum_target * 5, 60)]
+                recovery_candidates = _rank_candidates(recovery_candidates, context)[: max(needed_gap * 4, 40)]
                 recovery_rerank = await ai_rerank_candidates(
                     settings,
                     profile,
                     recovery_candidates,
-                    max(1, minimum_target - len(accepted)),
+                    needed_gap,
                     registry_context=minprom_context,
                 )
                 recovery_accepted, recovery_reviewed, recovery_review_meta = await _review_candidates_until_target(
                     settings,
                     recovery_rerank.candidates,
                     context,
-                    max(1, minimum_target - len(accepted)),
+                    needed_gap,
                     profile=profile,
                     registry_context=minprom_context,
                     policy=policy,
@@ -1924,7 +1986,7 @@ async def _discover_suppliers_impl(
                     "status": "ok",
                     "queries": recovery_queries,
                     "candidate_count": len(recovery_candidates),
-                    "accepted_before": accepted_before_recovery,
+                    "accepted_before": accepted_before_web,
                     "accepted_after": len(accepted),
                     "search": recovery_search_meta,
                     "candidate_rerank": recovery_rerank.meta,
@@ -1934,7 +1996,7 @@ async def _discover_suppliers_impl(
                 recovery_round = {
                     "status": "error",
                     "queries": recovery_queries,
-                    "accepted_before": len(accepted),
+                    "accepted_before": accepted_before_web,
                     "accepted_after": len(accepted),
                     "error": _exception_summary(exc),
                 }
@@ -3823,7 +3885,15 @@ def _provider_query_limit(settings: SystemSettings, provider: str) -> int:
     try:
         return max(1, min(48, int(configured)))
     except ValueError:
-        return 16 if provider == "google" else 24
+        return 16 if provider == "google" else 14
+
+
+def _yandex_groups_on_page(settings: SystemSettings) -> int:
+    configured = os.getenv("AIPOISK_YANDEX_GROUPS_ON_PAGE", "")
+    try:
+        return max(10, min(100, int(configured)))
+    except ValueError:
+        return 70
 
 
 def _yandex_max_pages_per_query(settings: SystemSettings) -> int:
@@ -3831,7 +3901,7 @@ def _yandex_max_pages_per_query(settings: SystemSettings) -> int:
     try:
         return max(1, min(10, int(configured)))
     except ValueError:
-        return 3
+        return 1
 
 
 def _merge_candidates(
@@ -3900,6 +3970,8 @@ async def _search_with_yandex(
             return str(data.get("response", {}).get("rawData") or "")
         return ""
 
+    groups_on_page = _yandex_groups_on_page(settings)
+
     async def search_one_page(client: httpx.AsyncClient, query: str, page: int) -> list[Candidate]:
         nonlocal requests_count, headers
         async with semaphore:
@@ -3907,7 +3979,7 @@ async def _search_with_yandex(
                 "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page)},
                 "folderId": folder_id,
                 "responseFormat": "FORMAT_XML",
-                "groupBy": {"groupsOnPage": 10, "docsInGroup": 1},
+                "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             requests_count += 1
             response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
@@ -3932,29 +4004,34 @@ async def _search_with_yandex(
                     seen_domains.add(c.domain)
                     all_candidates.append(c)
                     new_added += 1
-            if new_added == 0 or len(all_candidates) >= 30:
+            if new_added == 0 or len(all_candidates) >= groups_on_page:
                 break
         return all_candidates
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
     candidates: list[Candidate] = []
     seen = set(existing_domains or set())
+    chunk_size = 4
     async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
-        tasks = [asyncio.create_task(search_one(client, query)) for query in search_queries]
-        for task in asyncio.as_completed(tasks):
-            for candidate in await task:
-                if candidate.domain in seen:
-                    continue
-                seen.add(candidate.domain)
-                candidates.append(candidate)
+        for start in range(0, len(search_queries), chunk_size):
+            chunk = search_queries[start : start + chunk_size]
+            tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]
+            for task in asyncio.as_completed(tasks):
+                for candidate in await task:
+                    if candidate.domain in seen:
+                        continue
+                    seen.add(candidate.domain)
+                    candidates.append(candidate)
+                    if len(candidates) >= max_results:
+                        for pending in tasks:
+                            if not pending.done():
+                                pending.cancel()
+                        break
                 if len(candidates) >= max_results:
-                    for pending in tasks:
-                        if not pending.done():
-                            pending.cancel()
                     break
+            await asyncio.gather(*tasks, return_exceptions=True)
             if len(candidates) >= max_results:
                 break
-        await asyncio.gather(*tasks, return_exceptions=True)
     return candidates[:max_results], requests_count
 
 
@@ -4265,11 +4342,8 @@ def _expand_search_queries(queries: list[str], *, max_queries: int) -> list[str]
         base_queries.append(clean)
         variants = [
             f"{clean} официальный сайт",
-            f"{clean} контакты",
-            f"{clean} каталог",
-            f"{clean} производитель",
-            f"{clean} поставщик",
-            f"{clean} купить",
+            f"{clean} производитель завод",
+            f"{clean} каталог продукция",
         ]
         for item in variants:
             secondary_variants.append(item)
