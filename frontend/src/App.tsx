@@ -3472,6 +3472,7 @@ function ClientsView({
 
   // Pagination & Filtering state
   const [searchQuery, setSearchQuery] = useState('')
+  const [selectedClientId, setSelectedClientId] = useState('')
   const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
@@ -3493,6 +3494,20 @@ function ClientsView({
     } catch {}
   }
 
+  const recentClients = useMemo(() => clients.slice(0, 20), [clients])
+  const otherClients = useMemo(() => (clients.length > 20 ? clients.slice(20) : []), [clients])
+
+  function formatClientOptionLabel(c: Client): string {
+    const num = c.client_number ? `#${c.client_number} ` : ''
+    const name = c.name || 'Без имени'
+    const email = c.web_users?.[0]?.email
+    const tg = c.username ? `@${c.username}` : (c.telegram_accounts?.[0]?.username ? `@${c.telegram_accounts[0].username}` : '')
+    const contact = email ? ` (${email})` : (tg ? ` (${tg})` : '')
+    const tasks = c.jobs_count ?? 0
+    const tasksStr = ` · ${tasks} ${tasks === 1 ? 'зад.' : 'зад.'}`
+    return `${num}${name}${contact}${tasksStr}`
+  }
+
   const webClientsCount = useMemo(
     () => clients.filter(c => c.web_users && c.web_users.length > 0).length,
     [clients]
@@ -3509,6 +3524,9 @@ function ClientsView({
   const filteredClients = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     return clients.filter(client => {
+      if (selectedClientId && client.id !== selectedClientId) {
+        return false
+      }
       if (clientFilter === 'web') {
         if (!client.web_users || client.web_users.length === 0) return false
       } else if (clientFilter === 'tg') {
@@ -3868,12 +3886,61 @@ function ClientsView({
           )}
         </div>
         <div className="list-toolbar-filters">
+          <select
+            value={selectedClientId}
+            onChange={e => {
+              setSelectedClientId(e.target.value)
+              if (e.target.value) setSearchQuery('')
+              setPage(1)
+            }}
+            style={{
+              maxWidth: 320,
+              fontSize: 13,
+              fontWeight: selectedClientId ? 600 : 400,
+              borderColor: selectedClientId ? '#0f766e' : undefined,
+              background: selectedClientId ? '#f0fdf4' : undefined,
+            }}
+            title="Быстрый выбор клиента (последние 20)"
+          >
+            <option value="">Выбрать клиента (последние 20)...</option>
+            <optgroup label="Последние 20 клиентов">
+              {recentClients.map(c => (
+                <option key={c.id} value={c.id}>
+                  {formatClientOptionLabel(c)}
+                </option>
+              ))}
+            </optgroup>
+            {otherClients.length > 0 && (
+              <optgroup label="Остальные клиенты">
+                {otherClients.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {formatClientOptionLabel(c)}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {selectedClientId && (
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ color: '#ef4444', fontSize: 12, padding: '4px 8px' }}
+              onClick={() => {
+                setSelectedClientId('')
+                setPage(1)
+              }}
+              title="Сбросить выбранного клиента"
+            >
+              ✕ Сброс
+            </button>
+          )}
           <input
             className="toolbar-search"
-            placeholder="Найти клиента по имени, email, Telegram нику или ID..."
+            placeholder="Поиск по имени, email, Telegram нику или ID..."
             value={searchQuery}
             onChange={e => {
               setSearchQuery(e.target.value)
+              if (e.target.value) setSelectedClientId('')
               setPage(1)
             }}
           />
@@ -4502,31 +4569,45 @@ function JobsView({
     }
   }, [selectedClientId])
 
-  const clientOptions = useMemo(() => {
+  const recentClientOptions = useMemo(() => {
     const jobCounts: Record<string, number> = {}
     for (const j of jobs) {
       if (j.client_id) {
         jobCounts[j.client_id] = (jobCounts[j.client_id] || 0) + 1
       }
     }
-    const list = clients.map(c => {
+    return clients.slice(0, 20).map(c => {
       const email = c.web_users?.[0]?.email || ''
       const count = jobCounts[c.id] || c.jobs_count || 0
       const numPrefix = c.client_number ? `#${c.client_number} ` : ''
       const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
-      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'задача' : count < 5 ? 'задачи' : 'задач'}` : ' · нет задач'
+      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
       return {
         id: c.id,
-        name: c.name || 'Без имени',
-        count,
         label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
       }
     })
-    list.sort((a, b) => {
-      if (a.count !== b.count) return b.count - a.count
-      return a.name.localeCompare(b.name, 'ru')
+  }, [clients, jobs])
+
+  const otherClientOptions = useMemo(() => {
+    if (clients.length <= 20) return []
+    const jobCounts: Record<string, number> = {}
+    for (const j of jobs) {
+      if (j.client_id) {
+        jobCounts[j.client_id] = (jobCounts[j.client_id] || 0) + 1
+      }
+    }
+    return clients.slice(20).map(c => {
+      const email = c.web_users?.[0]?.email || ''
+      const count = jobCounts[c.id] || c.jobs_count || 0
+      const numPrefix = c.client_number ? `#${c.client_number} ` : ''
+      const contactPart = email ? ` (${email})` : (c.username ? ` (@${c.username})` : '')
+      const countPart = count > 0 ? ` · ${count} ${count === 1 ? 'зад.' : 'зад.'}` : ' · 0 зад.'
+      return {
+        id: c.id,
+        label: `${numPrefix}${c.name || 'Без имени'}${contactPart}${countPart}`,
+      }
     })
-    return list
   }, [clients, jobs])
 
   const filteredJobs = useMemo(() => jobs
@@ -4703,16 +4784,48 @@ function JobsView({
                 onClearSelectedClient()
               }
             }}
-            style={{ maxWidth: 260 }}
-            title="Фильтр по клиенту"
+            style={{
+              maxWidth: 300,
+              fontSize: 13,
+              fontWeight: clientFilter ? 600 : 400,
+              borderColor: clientFilter ? '#0f766e' : undefined,
+              background: clientFilter ? '#f0fdf4' : undefined,
+            }}
+            title="Фильтр по клиенту (последние 20)"
           >
-            <option value="">Все клиенты</option>
-            {clientOptions.map(opt => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
+            <option value="">Выбрать клиента (последние 20)...</option>
+            <optgroup label="Последние 20 клиентов">
+              {recentClientOptions.map(opt => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </optgroup>
+            {otherClientOptions.length > 0 && (
+              <optgroup label="Остальные клиенты">
+                {otherClientOptions.map(opt => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
+          {clientFilter && (
+            <button
+              type="button"
+              className="ghost small-text"
+              style={{ color: '#ef4444', fontSize: 12, padding: '4px 8px' }}
+              onClick={() => {
+                setClientFilter('')
+                setPage(1)
+                if (onClearSelectedClient) onClearSelectedClient()
+              }}
+              title="Сбросить фильтр по клиенту"
+            >
+              ✕ Сброс
+            </button>
+          )}
           <select value={modeFilter} onChange={e => setModeFilter(e.target.value)}>
             <option value="">Все типы</option>
             {modeOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
