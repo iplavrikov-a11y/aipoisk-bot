@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # AI & search helpers for compatibility and patching in tests
-from ..ai import call_llm
+from .llm_bridge import call_llm
 from ..supplier_search import _search_with_yandex, _yandex_credentials
 from .docx_report import write_exact_product_docx
 from .evidence_miner import mine_tender_evidence

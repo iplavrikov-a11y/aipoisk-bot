@@ -305,15 +305,25 @@ async def find_minprom_gisp_match_ai(
 
 
 async def find_minprom_registry_matches_ai(
-    settings: SystemSettings,
+    settings: Any = None,
     brand: str = "",
     manufacturer: str = "",
     model: str = "",
     name_in_tz: str = "",
     okpd2: str = "",
     max_entries: int = 6,
+    **kwargs,
 ) -> List[Dict[str, Any]]:
     """Поиск кандидатов в реестре Минпромторга для начального наполнения (Minprom-First)."""
+    if isinstance(settings, str):
+        # Called positionally without settings: find_minprom_registry_matches_ai(brand, manufacturer, ...)
+        brand, manufacturer, model, name_in_tz, okpd2 = settings, brand, manufacturer, model, name_in_tz
+        settings = None
+
+    if settings is None or not hasattr(settings, "has_active_ai_provider"):
+        from .llm_bridge import get_settings
+        settings = get_settings()
+
     sqlite_path = _minprom_registry_sqlite_path()
     if not sqlite_path or not sqlite_path.is_file():
         shared_path = Path("/root/projects/emailagent/storage/minprom_registry/minprom_registry.sqlite")
@@ -321,6 +331,7 @@ async def find_minprom_registry_matches_ai(
             sqlite_path = shared_path
         else:
             return []
+
 
     queries = _build_gisp_fts_query_grid(brand, manufacturer, model, name_in_tz)
     results: List[Dict[str, Any]] = []

@@ -74,6 +74,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   supplier search (`Найти ещё` / добор поставщиков), and exact product detection
   (`🎯 Точный товар и аналоги по ТЗ` — 99 ₽). `📄🔎 Анализ + поиск`
   reserves and charges the supplier-search and analysis prices together.
+- Exact Product & Analogs Engine (100% Architecture & Code Parity with EmailAgent Rule 14):
+  - Deep multi-source engineering pipeline ported 1-to-1 from EmailAgent (`detect_exact_products_deep`, `evidence_miner`, `matcher`, `deep`): zero product-specific regexes or hardcoded keywords, strictly generic AI prompts with Rule 14 procurement evidence mining.
+  - Multi-tier matching workflow: Tier-0 procurement evidence mining -> characteristic-first candidate discovery -> multi-query Yandex search and targeted PDF passport downloads -> multi-source model fusion -> AI matrix parameter evaluation (`BUILD_EVALUATION_MATRIX_PROMPT`) -> grounded document verification (`_is_grounded_in_text`) -> standards resolution (GOST/TU/STO) -> anti-false-95% deterministic scoring.
+  - Automatic candidate rotation (`auto_rotate_clean_analogs`) prioritizes conforming candidates with 0 mismatches over defective originals, preserving strict Form 2 comparison tables and generating verified Word (`.docx`) reports exclusively.
 - Exact Product & Analogs Public Landing Page & SEO Hub:
   - Commercial landing page `/podbor-tovara-i-analogov-po-tz` with structured Schema.org (`Service`, `FAQPage`, `HowTo`, `BreadcrumbList`), interactive Form 2 specification preview, Deep Search benefits, and direct 1-click supplier transition.
   - Three-module core platform grid on homepage `/` (1. Поиск поставщиков, 2. Подбор товара и аналогов по ТЗ, 3. Экспресс-аудит документации 44/223-ФЗ).
