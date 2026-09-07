@@ -185,14 +185,73 @@ def extract_high_signal_evidence_text(full_text: str, max_chars: int = 40000) ->
 
 
 def strip_under_table_ai_blocks(text: str) -> str:
+    """Удаляет из текста подтабличные и приписанные догадки ИИ («Для позиции «...»», «Точный товар: ...», «Аналог 1: ...»)."""
     if not text:
         return ""
     text = re.sub(
-        r"(?is)(?:^|\n)[ \t]*[-*•]\s*\*{0,2}(?:Для позиции|Точный товар|Аналог\s*\d*)[\s:«\"'`*].+?(?=(?:#+\s*|=== FILE:|### Файл:|\Z))",
+        r"(?is)(?:^|\n)[ \t]*(?:[-*•]\s*)?\*{0,2}(?:Для позиции|Точный товар|Аналог\s*\d*)[\s:«\"'`*].+?(?=(?:#+\s*|=== TABLE|=== FILE:|### Файл:|\n\s*Условия|\Z))",
         "\n",
         text,
     )
     return text.strip()
+
+
+def isolate_tz_table_content(raw_text: str) -> str:
+    """
+    Извлекает ИСКЛЮЧИТЕЛЬНО табличную часть технического задания.
+    Полностью отсекает всё, что идет до или ниже таблицы:
+    - Предшествующие догадки ИИ («Точный товар: ...», «Аналог 1: ...», «Для позиции «...»»)
+    - Условия поставки, сроки, гарантию, оплату
+    - Служебные примечания и комментарии
+    """
+    if not raw_text:
+        return ""
+    text = raw_text.strip()
+
+    # 1. HTML-таблица (<table ...>...</table>)
+    if "<table" in text.lower():
+        end_idx = text.lower().rfind("</table>")
+        if end_idx != -1:
+            end_pos = end_idx + len("</table>")
+            start_idx = 0
+            m_title = re.search(
+                r"(?i)(?:ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|#+\s*(?:4\.5\s*)?ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|##\s*Спецификация|##\s*Товары)",
+                text[:end_pos],
+            )
+            if m_title:
+                start_idx = m_title.start()
+            return text[start_idx:end_pos].strip()
+
+    # 2. Markdown / docx-таблица (| ... | или === TABLE)
+    lines = text.splitlines()
+    table_line_indices = [
+        i for i, line in enumerate(lines)
+        if (line.strip().startswith("|") and line.strip().endswith("|"))
+        or " | " in line
+        or line.strip().startswith("=== TABLE")
+    ]
+    if table_line_indices:
+        first_tbl = table_line_indices[0]
+        last_tbl = first_tbl
+        for idx in table_line_indices[1:]:
+            if idx - last_tbl <= 3:
+                last_tbl = idx
+            else:
+                break
+
+        start_idx = first_tbl
+        for j in range(first_tbl - 1, max(-1, first_tbl - 6), -1):
+            l = lines[j].strip()
+            if not l:
+                continue
+            if any(h in l.lower() for h in ("техническое задание", "спецификация", "товары")) or l.startswith("#") or l.startswith("**"):
+                start_idx = j
+            elif start_idx == first_tbl:
+                start_idx = j
+
+        return "\n".join(lines[start_idx : last_tbl + 1]).strip()
+
+    return text
 
 
 def align_facts_to_requirements(

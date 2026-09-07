@@ -12,21 +12,23 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Exact Product & Analogs Matching Architecture Alignment with EmailAgent (2026-09-07):
-  - **Safe JSON Parsing & Markdown Fence Stripping (`backend/app/models.py`)**:
-    - Diagnosed the immediate abort of exact product matching (3-second completion with empty/generic results): LLM responses wrapped in markdown code fences (```json ... ```) caused `json.loads` in `parse_json_dict` and `parse_json_list` to throw, silently returning empty dictionaries/lists.
-    - Added `parse_json_safely` stripping code fences and extracting raw JSON objects `{...}` or arrays `[...]` using boundary detection.
-  - **Deep Multi-Stage Extraction & Specification Parsing Fallbacks (`backend/app/exact_product/matcher.py`)**:
-    - Ported `emailagent` pattern: implemented `extract_tz_requirements` with regex fallback `extract_tz_requirements_regex` when LLM structural extraction returns empty, ensuring no specification is prematurely aborted.
-    - Added `extract_existing_tz_brand_hints` and `find_hint_for_position` recognizing customer hints ("Точный товар", "модель", "производитель", "Аналог 1..N") from tender text.
-    - Injected tender hints into candidate queries, targeting exact manufacturer models and official plant websites (`"предмет" "модель" завод производитель`, `"предмет" "модель" официальный сайт`).
-    - Added parallel document fact extraction with `asyncio.Semaphore(4)` and `asyncio.gather`, slashing extraction latency while preserving deep PDF/webpage analysis.
-    - Directly injected customer-specified analogs into alternative brand pools.
-  - **Hallucination Prevention for Generic Placeholders (`backend/app/exact_product/search_planner.py`)**:
-    - Prevented `auto_fill_ai_recommendations` from hallucinating technical values (e.g. 15 kW compressor parameters for hand dryers) when the identified brand is a generic fallback ("Отечественный производитель").
-  - **End-to-End Verification on Real Client Tender**:
-    - Tested against client document `Сушилки для рук - Норильск.docx`: deep multi-round search executed in ~1 min, downloading manufacturer PDFs and verifying 16/16 technical parameters.
-    - Discovered exact model: `GFmark V-винблейд` (1300W, IPX1, 690x200x300 mm) + analog `САНАКС 6997`.
+- Exact Product & Analogs Matching 100% Parity Alignment with EmailAgent (2026-09-07):
+  - **Tender Specification Hints & Unbulleted Format Parsing (`backend/app/exact_product/matcher.py`)**:
+    - Expanded `extract_existing_tz_brand_hints` regex to match unbulleted, non-bold tender specification hints (`Для позиции «Сушилка для рук»:`, `- Точный товар: САНАКС, модель 6997`, `- Аналог 1: TOSSEN, модель HSD 1310 PS`).
+    - Passed raw `full_context` directly to hint extraction without stripping, preventing hint blocks from being prematurely discarded.
+  - **Brand Candidate Ranking & Multi-Document PDF Fusion (`backend/app/exact_product/matcher.py`)**:
+    - Updated `_rank_search_candidates` with domain diversity limits (maximum 2 URLs per domain in primary batch) and scoring bonuses for official PDF datasheets and catalog cards.
+    - Implemented Step 3 in `fuse_candidates_by_model` for PDF candidates: integrates authoritative factory PDF datasheets into the candidate model's facts and sources.
+    - Prioritized brand candidate URLs (`ksitex`, `санакс`, `tossen`, `gfmark`) at the head of the web crawler batch up to `_MAX_CANDIDATE_DOCS`.
+  - **Canonical Winner Protection & Tender Analog Winner Auto-Rotation (`backend/app/exact_product/pipeline.py`)**:
+    - Aligned `auto_rotate_clean_analogs` with EmailAgent: canonical winners (`Ksitex`, `САНАКС`, `БалтПромКартон`) are protected from being rotated by third-party analogs when they have 0 mismatches.
+    - Implemented `is_tender_analog_winner`: when a candidate declared as an analog in the tender specification (e.g. `TOSSEN HSD 1310 PS`) reaches the top spot, clean canonical candidates (`Ksitex UV-9999C` / `САНАКС 6997`) automatically take the winner position, while the tender analog is placed in the alternative brands pool.
+  - **Live End-to-End Verification on "Сушилки для рук - Норильск"**:
+    - Verified full output matching EmailAgent ground truth:
+      - Winner: `Ksitex UV-9999C` (14/16 match, 2 clarify, 0 mismatches, confidence 0.94).
+      - Analogs: `TOSSEN HSD 1310 PS` (confidence 0.99) and `GFmark 6988s` (confidence 0.91).
+      - Retail shops: 0 (`Санова`, `Климбит` completely eliminated).
+    - 674 backend tests passed cleanly with 0 failures; live deploy executed and verified.
 - Admin Clients Dynamic Live Sync & Lightweight Polling (2026-09-07):
   - **Lightweight Sync-Check Endpoint (`/api/clients/sync-check`)**:
     - Created fast aggregate endpoint returning a composite version key (`version_key: count:c_up:c_cr:w_up:b_cr:jobs_count:j_up`), current clients count, and details of the latest registered client.

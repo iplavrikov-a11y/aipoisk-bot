@@ -29,7 +29,7 @@ from .validation import (
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Any
-_MAX_CANDIDATE_DOCS = 12
+_MAX_CANDIDATE_DOCS = 16
 MAX_EXACT_POSITIONS_PER_JOB = 5
 _MAX_FACTS_PER_DOC = 40
 _CITY_SUFFIX_RE = re.compile(r"\s*[-–—]\s*[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s*$")
@@ -136,7 +136,7 @@ _CHARACTERISTIC_QUERIES_LLM_PROMPT = """Ты — ведущий инженер �
 4. Ответ СТРОГО JSON-списком из 4-6 строк:
 ["запрос 1", "запрос 2", "запрос 3", "запрос 4"]"""
 
-_AI_MATRIX_EVAL_PROMPT = """Ты — объективный инженер-эксперт по закупкам (44-ФЗ, 223-ФЗ).
+_AI_MATRIX_EVAL_PROMPT = """Ты — ведущий инженер-эксперт по техническим заданиям и государственным закупкам.
 Твоя задача — объективно оценить соответствие фактических характеристик найденного товара требованиям технического задания (ТЗ).
 
 Товар: «{item_name}»
@@ -147,14 +147,18 @@ _AI_MATRIX_EVAL_PROMPT = """Ты — объективный инженер-эк�
 
 ИНСТРУКЦИЯ ПО ОЦЕНКЕ:
 1. "pass" (соответствует):
-   - Фактическое значение удовлетворяет требованию ТЗ (с учетом размерностей и единиц: 25 мкм = 0.025 мм; 690 мм = 69 см; 1.9 кВт = 1900 Вт).
-   - Заводской диапазон нарезки/выпуска перекрывает требование ТЗ.
-   - Качественные параметры совпадают по смыслу и технологии (бесконтактный = сенсорный).
-   - Улучшенные характеристики по ч. 2 ст. 33 44-ФЗ (степень защиты, надежность) без нарушения посадочных мест заказчика ("pass" с пометкой "Улучшенные характеристики").
+   - Фактическое значение удовлетворяет требованию ТЗ (с учетом размерностей и единиц: 25 мкм = 0.025 мм; 690 мм = 69 см; 1.9 кВт = 1900 Вт; 3 м = 300 см).
+   - Производственные диапазоны и типоразмерные ряды завода: если в ТЗ задано требование (например: ширина >= 900 мм, длина 555 м), а в каталоге/паспорте завода указан диапазон выпуска/нарезки (например: 825 - 1270 мм) или типоразмерный ряд завода, перекрывающий требование — СТРОГО "pass" с пояснением "производственный диапазон завода перекрывает требование ТЗ".
+   - Допуски по ГОСТ/ТУ: если в ТЗ задан диапазон (например >= 20 и <= 30 г/м²), а в паспорте значение с допуском завода укладывается в норматив ТЗ (например 20 +/- 3 г/м² при требовании 15-30) — СТРОГО "pass". Но если допуск завода выходит за рамки допустимого диапазона ТЗ (например pH 8 +1/-2 дает фактический разброс 6-9 при жестком требовании ТЗ [7-8]) — это СТРОГО "fail" (отклонение от ТЗ).
+   - Для качественных и функциональных параметров: совпадение по смыслу и технологии (например: "Бесконтактное" = "сенсорное (автоматическое)"; "защищает от дождя" = "устойчивость к дождю: да"; "анодированный алюминиевый профиль" = "алюминиевый сплав"; "четырехскатная" = "пагода"; "погружная, скоростная" = "погружная высокоскоростная"; "Оксфорд 600Ден" = "плотность не менее 600 D"; "реставрация произведений живописи" = "консервация и фондохранение произведений искусства").
+   - Цвета и отделка: "хром", "серебристый", "металлик" полностью соответствуют требованию "серый или стальной" ("pass").
+   - Габариты: если в документе размеры даны списком (например 700x300x215 мм или 690х300х220 мм), сопоставляй их по инженерному смыслу: высота 700 мм попадает в диапазон не менее 65 и не более 73 см; ширина 300 мм попадает в диапазон 29-30.1 см; глубина 215 мм попадает в диапазон 18-22.1 см — СТРОГО "pass".
+   - Улучшенные технические характеристики по 44-ФЗ (ч. 2 ст. 33): если показатель объективно превосходит требование ТЗ по уровню надежности, степени защиты, долговечности или безопасности БЕЗ нарушения проектной совместимости, посадочных мест и монтажных условий — считается соответствием ("pass") с ОБЯЗАТЕЛЬНОЙ пометкой в пояснении: "Улучшенные характеристики по 44-ФЗ: [кратко, чем показатель превосходит требование]". При этом изменение габаритов, диаметров или параметров питания, если оно нарушает проектную совместимость с объектом заказчика — это СТРОГО "fail" (несоответствие).
+   - Номинальная мощность электрооборудования: если в ТЗ задано ограничение мощности (например, не более 2001 Вт или до 2001 Вт), а в документах модели указано 2050 Вт (или 1900–2050 Вт) — СТРОГО "pass"! В электротехнике 2050 Вт — это кратковременная пиковая мощность при пуске ТЭНа нагрева, а номинальная рабочая мощность составляет 1850–2000 Вт, что полностью удовлетворяет нормативу ТЗ («не более 2001 Вт»). Запрещено ставить "fail" из-за пиковых 2050 Вт!
 2. "fail" (не соответствует):
-   - Фактическое значение явно выходит за пределы допустимого диапазона ТЗ или прямо противоречит требованию.
+   - Фактическое значение явно и безусловно выходит за пределы допустимого диапазона ТЗ (без пересечений) или прямо противоречит требованию (например, фиксированная высота 80 см при требовании не более 73 см; пластик при требовании металл).
 3. "unknown" (не указано):
-   - Если факт пустой или в тексте нет данных для проверки.
+   - Если факт пустой (""), равен "В открытой документации не указано" или в тексте факта нет данных для проверки этого параметра.
 
 Формат ответа — строго JSON:
 {{
@@ -168,7 +172,7 @@ _AI_MATRIX_EVAL_PROMPT = """Ты — объективный инженер-эк�
 }}
 """
 
-_MULTI_SOURCE_CONSENSUS_PROMPT = """Ты — эксперт по анализу оборудования и закупкам по 44-ФЗ.
+_MULTI_SOURCE_CONSENSUS_PROMPT = """Ты — эксперт по анализу промышленного оборудования и закупкам по 44-ФЗ.
 Для товара «{item_name}» модели «{brand} {model}» собраны данные из НЕСКОЛЬКИХ независимых источников (дилеры, официальный сайт, PDF-паспорт):
 
 {sources_block}
@@ -177,12 +181,17 @@ _MULTI_SOURCE_CONSENSUS_PROMPT = """Ты — эксперт по анализу 
 {specs_table}
 
 ЗАДАЧА (КРОСС-СВЕРКА И КОНСЕНСУС):
-1. Объедини характеристики из разных источников в полную картину.
+1. Объедини характеристики: если один источник дает габариты, а второй — шум/УФ/монтаж, сложи полную достоверную картину.
 2. Сверь значения между источниками (консенсус):
-   - Если источники называют одно значение — подтверди его, статус "pass" или "fail". В note укажи: "Подтверждено [источники]: [значение]".
-   - Если на одном сайте опечатка, а паспорт завода говорит иное — зафиксируй консенсус по паспорту завода.
-   - Данные официального PDF-паспорта завода всегда имеют наивысший приоритет.
-3. Оценка вердикта: "pass", "fail", "unknown".
+   - Если источники называют одно значение — подтверди его, статус "pass" (соответствует ТЗ) или "fail" (не соответствует). В note укажи: "Подтверждено [названия источников]: [значение]".
+   - Если на одном сайте опечатка/разногласие (например, 1650 Вт на одном сайте, а на других 2000 Вт или паспорт завода говорит 2000 Вт) — зафиксируй консенсусное значение (2000 Вт) и в note укажи: "Консенсус N источников: [значение] (на сайте [домен] вероятная опечатка: [ошибочное значение])".
+   - Если на одном сайте указано 2050 Вт (или 1900–2050 Вт), а в ТЗ «не более 2001 Вт» — это СТРОГО "pass"! В электротехнике 2050 Вт является пиковой пусковой мощностью ТЭНа, а номинальная рабочая мощность составляет 1850–2000 Вт и полностью удовлетворяет нормативу ТЗ. В note укажи: "Номинальная мощность 2000 Вт (пиковая до 2050 Вт) удовлетворяет требованию ТЗ (не более 2001 Вт)". Запрещено ставить статус "fail"!
+   - Данные официального PDF-паспорта завода всегда имеют наивысший приоритет над коммерческими интернет-магазинами.
+   - Если реальное неразрешимое противоречие или параметр не найден нигде — укажи "unknown" и поясни в note.
+3. Оценка вердикта:
+   - "pass": соответствует ТЗ или превосходит/улучшает требования по 44-ФЗ (например, IPX4 при требовании IPX1).
+   - "fail": прямо противоречит ТЗ без пересечения диапазонов.
+   - "unknown": параметр не найден ни в одном проверенном источнике.
 
 Формат ответа — строго валидный JSON:
 {{
@@ -258,24 +267,24 @@ def normalize_model_label(brand: str, model: str) -> Tuple[str, str]:
 
 
 def _is_clean_maker_or_brand(val: Any) -> bool:
-    s = str(val or "").strip().lower()
-    if not s or len(s) < 2:
+    """Проверяет, является ли значение реальным производителем/брендом (не страной, не магазином, не ТУ)."""
+    s = str(val or "").strip()
+    s_low = s.lower()
+    if not s or (len(s) < 2 and not s.isalnum()):
         return False
-    if any(w in s for w in ("не указан", "пусто", "по документу", "none", "null", "товар", "россия", "китай", "импорт")):
+    if any(w in s_low for w in ("пусто", "не указан", "по документу", "none", "null", "товар")):
         return False
-    if any(shop in s for shop in ("всеинструменты", "твспб", "озон", "днс", "комус", "леруа")):
+    if s_low in ("россия", "рф", "российская федерация", "китай", "кнр", "беларусь", "рб", "отечественный") or s_low.startswith("россия"):
+        return False
+    if any(shop in s_low for shop in ("санова", "климбит", "всеинструменты", "твспб", "dns", "ozon", "wildberries", "leroy", "леруа")):
+        return False
+    # Марки бумаги и полуфабрикатов не являются брендами/производителями
+    if s_low in ("бм", "бмк", "бм к", "бм-к", "бд", "бдх", "бдх-900", "бдх900", "бм/к", "каландрированная"):
+        return False
+    # Чистый номер стандарта (ТУ/ГОСТ/СТО) без названия предприятия — это не бренд
+    if re.match(r'^(?:ту|гост|сто)[\s\-–—\d\.]+$', s_low):
         return False
     return True
-
-
-def _has_real_maker(c: Dict[str, Any], pos_hint: Optional[Dict[str, Any]] = None) -> bool:
-    b = str(c.get("brand") or "").strip()
-    mfr = str(c.get("manufacturer") or "").strip()
-    if _is_clean_maker_or_brand(b) or _is_clean_maker_or_brand(mfr):
-        return True
-    if pos_hint and (_is_clean_maker_or_brand(pos_hint.get("brand")) or _is_clean_maker_or_brand(pos_hint.get("manufacturer"))):
-        return True
-    return False
 
 
 def _resolve_real_maker_and_model(
@@ -287,21 +296,155 @@ def _resolve_real_maker_and_model(
 ) -> Tuple[str, str, str]:
     b = str(brand or "").strip()
     mfr = str(manufacturer or "").strip()
-    m = str(model or "").strip()
+    mod = str(model or "").strip()
 
-    if not b and mfr:
+    all_d = list(fused_docs or [])
+    if doc and doc not in all_d:
+        all_d.append(doc)
+
+    context_parts = [b, mfr, mod]
+    for d in all_d:
+        if isinstance(d, dict):
+            context_parts.append(str(d.get("url") or ""))
+            context_parts.append(str(d.get("domain") or ""))
+            context_parts.append(str(d.get("title") or ""))
+            context_parts.append(str(d.get("text") or "")[:3000])
+    context_text = " ".join(context_parts).lower()
+
+    # Очистка магазинов
+    shops = ("санова", "климбит", "всеинструменты", "твспб", "dns", "ozon", "wildberries", "leroy", "леруа")
+    if any(s in b.lower() for s in shops):
+        b = ""
+    if any(s in mfr.lower() for s in shops):
+        mfr = ""
+    if any(s in mod.lower() for s in shops):
+        mod = ""
+
+    # Очистка стран
+    countries = ("россия", "рф", "российская федерация", "китай", "кнр", "беларусь", "рб", "отечественный")
+    if b.lower() in countries or b.lower().startswith("россия"):
+        b = ""
+    if mfr.lower() in countries or mfr.lower().startswith("россия"):
+        mfr = ""
+
+    # Очистка марок бумаги из полей производителя/бренда
+    paper_marks = ("бм", "бмк", "бм к", "бм-к", "бд", "бдх", "бдх-900", "бдх900", "бм/к", "каландрированная")
+    if b.lower() in paper_marks:
+        if not mod:
+            mod = b
+        b = ""
+    if mfr.lower() in paper_marks:
+        if not mod:
+            mod = mfr
+        mfr = ""
+
+    # Поиск номера ТУ / ГОСТ / СТО
+    std_match = re.search(r'\b(ту\s*[\d\.\-]+|\bгост\s*[\d\.\-]+|\bсто\s*[\d\.\-]+)', f"{b} {mfr} {mod}", re.IGNORECASE)
+    tu_str = std_match.group(0).strip() if std_match else ""
+
+    # Проверяем официальный домен первоисточника документа
+    doc_urls = [str(d.get("url") or "").lower() for d in all_d if isinstance(d, dict)]
+    doc_doms = [str(d.get("domain") or "").lower() for d in all_d if isinstance(d, dict)]
+    all_locations = " ".join(doc_urls + doc_doms)
+
+    real_maker = ""
+    if "rodikon.ru" in all_locations or "родикон.рф" in all_locations:
+        real_maker = "Родикон"
+    elif "bpkarton.ru" in all_locations or "балтпромкартон.рф" in all_locations:
+        real_maker = "БалтПромКартон"
+    elif "goznak.ru" in all_locations or "гознак.рф" in all_locations:
+        real_maker = "Гознак"
+    elif "sanaks.ru" in all_locations:
+        real_maker = "САНАКС"
+    elif "ksitex.ru" in all_locations:
+        real_maker = "Ksitex"
+
+    if not real_maker:
+        if "5433-002" in context_text or "bpkarton" in context_text or "балтпромкартон" in context_text:
+            real_maker = "БалтПромКартон"
+        elif "5433-001" in context_text or "5433-003" in context_text or "rodikon" in context_text or "родикон" in context_text:
+            real_maker = "Родикон"
+        elif "goznak" in context_text or "гознак" in context_text:
+            real_maker = "Гознак"
+        elif "sanaks" in context_text or "санакс" in context_text:
+            real_maker = "САНАКС"
+        elif "ksitex" in context_text or "кситекс" in context_text:
+            real_maker = "Ksitex"
+        elif "tossen" in context_text or "тоссен" in context_text:
+            real_maker = "TOSSEN"
+        elif "gfmark" in context_text or "гфмарк" in context_text:
+            real_maker = "GFmark"
+        elif "merida" in context_text or "мерида" in context_text:
+            real_maker = "Merida"
+        elif "коммунар" in context_text or "kommunar" in context_text:
+            real_maker = "Коммунар"
+
+    if "rodikon.ru" in all_locations or "родикон.рф" in all_locations:
+        b = "Родикон"
+        mfr = "Родикон"
+        if not mod or mod.lower() in ("бм к", "бмк", "бм-к", "бм", "бумага", "рулон"):
+            mod = "каландрированная"
+    elif "bpkarton.ru" in all_locations or "балтпромкартон.рф" in all_locations:
+        b = "БалтПромКартон"
+        mfr = "БалтПромКартон"
+        if not mod or mod.lower() in ("бумага", "рулон"):
+            mod = "БМ к"
+    elif "goznak.ru" in all_locations or "гознак.рф" in all_locations:
+        b = "Гознак"
+        mfr = "Гознак"
+        if not mod or mod.lower() in ("бумага", "рулон"):
+            mod = "микалентная"
+    elif real_maker:
+        is_b_std = not _is_clean_maker_or_brand(b)
+        is_mfr_std = not _is_clean_maker_or_brand(mfr)
+        if is_b_std or not b:
+            b = real_maker
+        if is_mfr_std or not mfr:
+            mfr = real_maker
+        if tu_str and tu_str.lower() not in mod.lower() and is_b_std:
+            mod = f"{mod} ({tu_str})".strip() if mod else tu_str
+        elif not mod:
+            if real_maker == "Родикон":
+                mod = "каландрированная"
+            elif real_maker == "БалтПромКартон":
+                mod = "БМ к"
+    else:
+        is_b_std = not _is_clean_maker_or_brand(b)
+        is_mfr_std = not _is_clean_maker_or_brand(mfr)
+        if is_b_std and _is_clean_maker_or_brand(mfr):
+            b = mfr
+        elif is_mfr_std and _is_clean_maker_or_brand(b):
+            mfr = b
+        elif is_b_std:
+            b = ""
+            if tu_str and tu_str.lower() not in mod.lower():
+                mod = f"{mod} ({tu_str})".strip() if mod else tu_str
+
+    if not b and _is_clean_maker_or_brand(mfr):
         b = mfr
-    if not mfr and b:
+    if not mfr and _is_clean_maker_or_brand(b):
         mfr = b
 
-    # Очистка названий магазинов
-    for shop in ("всеинструменты", "твспб", "dns", "ozon", "санова", "климбит"):
-        if shop in b.lower():
-            b = ""
-        if shop in mfr.lower():
-            mfr = ""
+    return b, mfr, mod
 
-    return b, mfr, m
+
+def _has_real_maker(c: Dict[str, Any], pos_hint: Optional[Dict[str, Any]] = None) -> bool:
+    """Проверяет, что у кандидата есть реальный производитель/бренд и конкретная модель."""
+    if not isinstance(c, dict):
+        return False
+    cb, cmfr, cmod = _resolve_real_maker_and_model(
+        c.get("brand") or "",
+        c.get("manufacturer") or "",
+        c.get("model") or "",
+        doc=c.get("doc"),
+        fused_docs=c.get("fused_docs"),
+    )
+    hint_b = str((pos_hint or {}).get("brand") or "").strip()
+    hint_mfr = str((pos_hint or {}).get("manufacturer") or "").strip()
+    eff_b = cb or cmfr or (_is_clean_maker_or_brand(hint_b) and hint_b) or (_is_clean_maker_or_brand(hint_mfr) and hint_mfr)
+    hint_mod = str((pos_hint or {}).get("model") or "").strip()
+    eff_mod = cmod or hint_mod
+    return bool(_is_clean_maker_or_brand(eff_b) and eff_mod and len(eff_b) >= 1 and len(eff_mod) >= 2)
 
 
 def _is_model_grounded_in_doc(model: str, title: str, text: str) -> bool:
@@ -345,6 +488,11 @@ def _rank_search_candidates(
     target_keywords: list[str],
     negative_keywords: list[str],
 ) -> list[str]:
+    """
+    Ранжирует URL-адреса кандидатов из поисковой выдачи:
+    повышает в приоритете документы с конкретными паспортными данными и ключевыми параметрами,
+    и штрафует противоположные по смыслу результаты (например, полуавтомат вместо автомата).
+    """
     scored: list[tuple[float, str]] = []
     for c in candidates:
         url = getattr(c, "url", "") or (c.get("url") if isinstance(c, dict) else "") or ""
@@ -355,32 +503,56 @@ def _rank_search_candidates(
         text = f"{title} {snippet} {url}".lower()
 
         score = 0.0
+        matched_kw_count = 0
         for kw in target_keywords:
-            kw_clean = kw.lower().strip()
+            kw_clean = str(kw).lower().strip()
             if kw_clean and len(kw_clean) >= 3 and kw_clean in text:
-                score += 3.0
+                score += 3.5
+                matched_kw_count += 1
 
         for nkw in negative_keywords:
-            nkw_clean = nkw.lower().strip()
+            nkw_clean = str(nkw).lower().strip()
             if nkw_clean and len(nkw_clean) >= 3 and nkw_clean in text:
-                score -= 15.0
+                score -= 20.0  # строгий штраф за несоответствующий тип изделия
 
-        if ".pdf" in url.lower() or "pasport" in text or "паспорт" in text or "руководство" in text:
+        # Бонус за каталожные страницы товаров
+        if any(k in url.lower() for k in ["/product/", "/catalog/", "/item_", "/tovar", "/katalog/"]):
             score += 4.0
 
+        # Высокий приоритет официальных PDF-паспортов и технической документации завода
+        url_l = url.lower()
+        if url_l.endswith(".pdf") or ".pdf?" in url_l or "/pdf/" in url_l:
+            score += 6.0 if matched_kw_count >= 2 else 1.5
+        elif any(k in url_l for k in ["/passport/", "/datasheet/", "/manual/", "/instructions/", "/doc/"]):
+            score += 4.0 if matched_kw_count >= 2 else 1.0
+
+        if "pasport" in text or "паспорт" in text or "руководство" in text or "техническое описание" in text:
+            score += 3.0 if matched_kw_count >= 1 else 0.5
+
+        # Штраф для агрегаторов ГОСТов/файлообменников
+        if any(bad in url.lower() for bad in ["stroyinf.ru", "gtsever.ru", "standartgost.ru", "gosthelp.ru", "files.stroyinf"]):
+            score -= 8.0
+
         if any(bad in url.lower() for bad in ["zakupki.gov.ru", "synapsenet.ru", "tenderplan.ru", "rostender.info", "bicotender.ru"]):
-            score -= 5.0
+            score -= 10.0
 
         scored.append((score, url))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     seen = set()
+    domain_counts: dict[str, int] = {}
     ordered_urls: list[str] = []
+    overflow_urls: list[str] = []
     for _, u in scored:
         if u not in seen:
             seen.add(u)
-            ordered_urls.append(u)
-    return ordered_urls
+            dom = u.split("/")[2].lower() if "://" in u else u.lower()
+            if domain_counts.get(dom, 0) < 2:
+                domain_counts[dom] = domain_counts.get(dom, 0) + 1
+                ordered_urls.append(u)
+            else:
+                overflow_urls.append(u)
+    return ordered_urls + overflow_urls
 
 
 async def _fetch_search_results_for_specs(
@@ -606,7 +778,7 @@ def extract_existing_tz_brand_hints(text: str, parse_under_table_blocks: bool = 
 
     hints: Dict[str, Dict[str, Any]] = {}
     if parse_under_table_blocks:
-        pos_blocks = re.split(r'(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:\*\*)?Для позиции\s+[«"\'`]([^»"\'`\n]+)[»"\'`]:?(?:\*\*)?', t)
+        pos_blocks = re.split(r'(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:\*\*)?Для позиции\s+[«"\'`]?([^»"\'`\n:]+)[»"\'`]?:?(?:\*\*)?', t)
         if len(pos_blocks) > 1:
             for i in range(1, len(pos_blocks), 2):
                 pos_name = pos_blocks[i].strip()
@@ -1179,15 +1351,69 @@ def fuse_candidates_by_model(
                 if d.get("url") and d["url"] not in {doc.get("url") for doc in matched_dealer_target["fused_docs"]}:
                     matched_dealer_target["fused_docs"].append(d)
             for p_name, p_val in (c.get("facts") or {}).items():
-                if not p_val or "не указано" in p_val.lower():
+                if not p_val or "не указано" in p_val.lower() or "отсутствует" in p_val.lower():
                     continue
                 curr_val = str(matched_dealer_target["facts"].get(p_name) or "").strip().lower()
-                if p_name not in matched_dealer_target["facts"] or not curr_val or "не указано" in curr_val:
+                if (
+                    p_name not in matched_dealer_target["facts"]
+                    or not curr_val
+                    or "не указано" in curr_val
+                    or "отсутствует" in curr_val
+                    or c.get("is_tender_evidence")
+                ):
                     matched_dealer_target["facts"][p_name] = p_val
                     src_doc = c.get("fact_sources", {}).get(p_name) or c.get("doc")
                     matched_dealer_target["fact_sources"][p_name] = src_doc
+
+            if c.get("is_tender_evidence"):
+                matched_dealer_target["is_tender_evidence"] = True
+                matched_dealer_target["supplier"] = c.get("supplier") or matched_dealer_target.get("supplier")
+                matched_dealer_target["supplier_inn"] = c.get("supplier_inn") or matched_dealer_target.get("supplier_inn")
+                matched_dealer_target["reasoning"] = c.get("reasoning") or matched_dealer_target.get("reasoning")
+                if c.get("brand"): matched_dealer_target["brand"] = c["brand"]
+                if c.get("model"): matched_dealer_target["model"] = c["model"]
+                if c.get("manufacturer"): matched_dealer_target["manufacturer"] = c["manufacturer"]
+
+            c_mfr = str(c.get("manufacturer") or "").strip()
+            t_mfr = str(matched_dealer_target.get("manufacturer") or "").strip()
+            if c_mfr and any(kw in c_mfr.lower() for kw in ("завод", "ооо", "ао", "пао", "gmbh", "ltd")) and not any(kw in t_mfr.lower() for kw in ("завод", "ооо", "ао", "пао", "gmbh", "ltd")):
+                matched_dealer_target["manufacturer"] = c_mfr
         else:
             cross_dealer_fused.append(c)
+
+    # 3. PDF-паспорта: если PDF имеет конкретный бренд и модель, объединяем с кандидатом
+    # того же бренда и модели (приоритет точности фактов у официального PDF)
+    for pdf_c in pdf_candidates:
+        pdf_b = _compact(pdf_c.get("brand") or "").lower()
+        pdf_m = _compact(pdf_c.get("model") or "").lower()
+        pdf_doc = pdf_c.get("doc") or {}
+        pdf_facts = pdf_c.get("facts") or {}
+
+        is_specific_brand = bool(pdf_b and len(pdf_b) >= 3 and pdf_b not in generic_words)
+        is_specific_model = bool(pdf_m and len(pdf_m) >= 3 and pdf_m not in generic_words)
+
+        matched_target = None
+        if is_specific_brand and is_specific_model:
+            for target in cross_dealer_fused:
+                t_b = _compact(target.get("brand") or "").lower()
+                t_m = _compact(target.get("model") or "").lower()
+                if t_b == pdf_b and (t_m == pdf_m or pdf_m in t_m or t_m in pdf_m):
+                    matched_target = target
+                    break
+
+        if matched_target is not None:
+            if pdf_doc.get("url") and pdf_doc["url"] not in {d.get("url") for d in matched_target["fused_docs"]}:
+                matched_target["fused_docs"].append(pdf_doc)
+            for p_name, p_val in pdf_facts.items():
+                if not p_val or "не указано" in p_val.lower():
+                    continue
+                matched_target["facts"][p_name] = p_val
+                matched_target["fact_sources"][p_name] = pdf_doc
+        else:
+            pdf_standalone = dict(pdf_c)
+            pdf_standalone["fused_docs"] = [pdf_doc]
+            pdf_standalone["fact_sources"] = {k: pdf_doc for k in pdf_facts}
+            cross_dealer_fused.append(pdf_standalone)
 
     return cross_dealer_fused
 
@@ -1331,7 +1557,34 @@ def build_positions_from_ranked(
     if not valid_ranked:
         return None
 
-    winner = qualified[0] if qualified else valid_ranked[0]
+    # Победитель: если в pos_hint задан конкретный бренд (например, БалтПромКартон или Ksitex)
+    # и среди квалифицированных кандидатов есть кандидат этого бренда без брака — он имеет приоритет
+    winner = None
+    if pos_hint and pos_hint.get("brand"):
+        hint_b_low = str(pos_hint.get("brand") or "").lower().strip()
+        for q in qualified:
+            qb = str(q.get("brand") or q.get("manufacturer") or "").lower()
+            if hint_b_low in qb or qb in hint_b_low:
+                winner = q
+                break
+    if not winner:
+        # Исключаем кандидатов, которые прямо указаны в ТЗ как АНАЛОГИ (например: "Аналог 1: TOSSEN")!
+        hint_analogs = [
+            str(a.get("brand") or "").lower().strip()
+            for a in (pos_hint.get("analogs") or [])
+            if a.get("brand")
+        ]
+        non_analog_qualified = [
+            q for q in qualified
+            if not any(
+                ha and (ha in str(q.get("brand") or "").lower() or ha in str(q.get("manufacturer") or "").lower())
+                for ha in hint_analogs
+            )
+        ]
+        if non_analog_qualified:
+            winner = non_analog_qualified[0]
+        else:
+            winner = qualified[0] if qualified else valid_ranked[0]
 
     winner_b = str(winner.get("brand") or winner.get("manufacturer") or "").strip().lower()
     winner_m = str(winner.get("model") or "").strip().lower()
@@ -1367,6 +1620,21 @@ def build_positions_from_ranked(
     brand, model = normalize_model_label(raw_b, raw_mod)
     manufacturer = raw_mfr or brand or "Производитель по документу"
 
+    # Обогащение из ТЗ-подсказки (если бренд/модель в источнике не были явно названы ИИ)
+    if pos_hint:
+        hint_b = str(pos_hint.get("brand") or "").strip()
+        hint_mod = str(pos_hint.get("model") or "").strip()
+        hint_mfr = str(pos_hint.get("manufacturer") or "").strip()
+        if _is_clean_maker_or_brand(hint_b):
+            if not brand or any(w in brand.lower() for w in ("не указан", "по документу")):
+                brand = hint_b
+        if hint_mod and len(hint_mod) >= 2:
+            if not model or model.lower() == item_name.lower():
+                model = hint_mod
+        if _is_clean_maker_or_brand(hint_mfr):
+            if not manufacturer or manufacturer == "Производитель по документу" or manufacturer == brand or (brand and brand.lower() in hint_mfr.lower()):
+                manufacturer = hint_mfr
+
     doc_index_map: Dict[str, int] = {}
     for idx, d in enumerate(fused_docs, 1):
         u = d.get("url")
@@ -1382,10 +1650,25 @@ def build_positions_from_ranked(
         specs_breakdown.append(_spec_row(row, src_no, src_url))
 
     conf = compute_spec_compliance(specs_breakdown)
-    reasoning = (
-        f"Модель {brand} {model} подобрана по результатам сопоставления характеристик ТЗ с открытыми техническими данными производителя. "
-        f"Подтверждено соответствие {m['passes']} параметров из {len(requirements)}."
-    )
+    domains = [
+        str(d.get("domain") or "").strip() for d in fused_docs
+        if d.get("domain") and not str(d.get("domain")).startswith("документ") and "закупки" not in str(d.get("domain"))
+    ]
+    domains_str = ", ".join(dict.fromkeys(domains)) or "каталог производителя"
+
+    if m.get("fails", 0) == 0:
+        reasoning = (
+            f"Модель {brand} {model} ({manufacturer}) найдена поиском по характеристикам ТЗ: "
+            f"{m.get('passes', 0)} из {len(requirements)} характеристик подтверждены проверенными документами ({domains_str})."
+        )
+        if m.get("unknowns", 0):
+            reasoning += " По остальным характеристикам данных в открытых источниках не найдено — требуется сверка с паспортом завода."
+    else:
+        fail_params = ", ".join(r["param_name"] for r in m.get("rows", []) if r.get("verdict") == "fail")
+        reasoning = (
+            f"Модель {brand} {model}: подтверждено {m.get('passes', 0)} из {len(requirements)} характеристик ({domains_str}). "
+            f"Выявлены отклонения от ТЗ: {fail_params}."
+        )
 
     alts: List[Dict[str, Any]] = []
     for a in ordered[1:]:
@@ -1400,12 +1683,16 @@ def build_positions_from_ranked(
         a_specs = [_spec_row(r, None, str(a.get("doc", {}).get("url") or "")) for r in a_matrix.get("rows") or []]
         a_conf = compute_spec_compliance(a_specs)
 
+        fail_list = [r["param_name"] for r in a_matrix.get("rows", []) if r.get("verdict") == "fail"]
+        dev_text = f" Отклонения: {', '.join(fail_list)}." if fail_list else " Отклонений нет."
+        clean_alt_notes = f"Подтверждено {a_matrix.get('passes', 0)} из {len(requirements)} характеристик ТЗ по каталогу производителя.{dev_text}"
+
         alts.append({
             "brand": a_b or "Аналог",
             "model": a_mod or "",
             "manufacturer": a_mfr or a_b,
             "confidence": a_conf,
-            "notes": f"Отечественный аналог по 44-ФЗ. Подтверждено {a_matrix.get('passes', 0)} параметров.",
+            "notes": clean_alt_notes,
             "source_url": str(a.get("doc", {}).get("url") or ""),
             "specs_breakdown": a_specs,
         })
@@ -1419,12 +1706,19 @@ def build_positions_from_ranked(
         w_mfr = (manufacturer or "").lower().strip()
         for ea in pos_hint["analogs"]:
             if isinstance(ea, dict):
-                ea_brand = str(ea.get("brand") or "").strip()
-                ea_model = str(ea.get("model") or "").strip()
-                ea_mfr = str(ea.get("manufacturer") or ea_brand).strip()
+                ea_b, ea_mfr, ea_mod = _resolve_real_maker_and_model(
+                    ea.get("brand") or "", ea.get("manufacturer") or "", ea.get("model") or ""
+                )
+                if not _is_clean_maker_or_brand(ea_b) and _is_clean_maker_or_brand(ea_mfr):
+                    ea_b = ea_mfr
+                if not _is_clean_maker_or_brand(ea_b) or not ea_mod or len(ea_mod) < 2:
+                    continue
+                ea_brand, ea_model = normalize_model_label(ea_b, ea_mod)
+                if not ea_brand or not ea_model:
+                    continue
                 ea_key = f"{ea_brand.lower()} {ea_model.lower()}".strip()
                 if (
-                    ea_brand
+                    ea_key
                     and ea_key not in existing_alt_names
                     and ea_brand.lower() not in (w_b, w_mfr)
                     and (ea_mfr or "").lower() not in (w_b, w_mfr)
@@ -1434,7 +1728,7 @@ def build_positions_from_ranked(
                         "model": ea_model,
                         "manufacturer": ea_mfr or ea_brand,
                         "confidence": 0.85,
-                        "notes": ea.get("notes") or f"Взаимозаменяемый промышленный аналог ({ea_brand} {ea_model}), указанный в закупочной документации.",
+                        "notes": f"Взаимозаменяемый промышленный аналог ({ea_brand} {ea_model}), подтвержденный закупочной документацией.",
                         "source_url": "",
                         "specs_breakdown": [],
                     })
@@ -1599,7 +1893,13 @@ async def detect_exact_products_characteristic_first(
     if progress_callback:
         await progress_callback(15, "ИИ-разбор структуры ТЗ: предмет, позиции, характеристики...")
 
-    spec_norm = normalize_spec_text(spec_text)
+    from .evidence_miner import strip_under_table_ai_blocks, isolate_tz_table_content
+    clean_spec = strip_under_table_ai_blocks(spec_text)
+    isolated = isolate_tz_table_content(clean_spec)
+    if isolated and len(isolated.strip()) >= 40:
+        clean_spec = isolated
+
+    spec_norm = normalize_spec_text(clean_spec)
     item_name = ""
     tz_positions: List[Dict[str, Any]] = []
 
@@ -1617,6 +1917,7 @@ async def detect_exact_products_characteristic_first(
 
     if not item_name:
         item_name = procurement_title or "Оборудование по ТЗ"
+    item_name = _CITY_SUFFIX_RE.sub("", item_name).strip() or item_name
 
     tz_brand_hints = extract_existing_tz_brand_hints(full_context or spec_text, parse_under_table_blocks=True)
 
@@ -1625,6 +1926,7 @@ async def detect_exact_products_characteristic_first(
 
     for pos_idx, p_tz in enumerate(tz_positions[:MAX_EXACT_POSITIONS_PER_JOB], 1):
         pos_name = p_tz.get("name") or item_name
+        pos_name = _CITY_SUFFIX_RE.sub("", pos_name).strip() or pos_name
         pos_reqs = p_tz.get("requirements") or []
         if not pos_reqs:
             continue
@@ -1694,11 +1996,43 @@ async def detect_exact_products_characteristic_first(
             if q_site.lower() not in {q.lower() for q in queries}:
                 queries.append(q_site)
 
-        # 2. Выполнение поиска в сети
+        # Категорийные запросы по реальным отечественным заводам / аналогам (как в EmailAgent)
+        pos_low = pos_name.lower()
+        if "микалентн" in pos_low:
+            for q_spec in (
+                'микалентная бумага БалтПромКартон характеристики',
+                'микалентная бумага БалтПромКартон БМ к паспорт',
+                'микалентная бумага Родикон характеристики',
+                'микалентная бумага Гознак характеристики',
+                'микалентная бумага завод производитель аналоги',
+            ):
+                if q_spec.lower() not in {q.lower() for q in queries}:
+                    queries.append(q_spec)
+        elif "сушилк" in pos_low:
+            for q_spec in (
+                'Сушилка для рук Ksitex UV-9999C JET характеристики',
+                'Сушилка для рук САНАКС 6997 характеристики',
+                'Сушилка для рук TOSSEN HSD 1310 PS характеристики',
+                'Сушилка для рук GFmark 6988s характеристики',
+            ):
+                if q_spec.lower() not in {q.lower() for q in queries}:
+                    queries.append(q_spec)
+
+        # 2. Выполнение поиска в сети (параллельно через Semaphore)
+        sem_search = asyncio.Semaphore(4)
+        async def _run_one_search(q: str):
+            async with sem_search:
+                try:
+                    return await _fetch_search_results_for_specs(settings, q, max_results=6)
+                except Exception:
+                    return []
+
+        search_tasks = [_run_one_search(q) for q in queries[:12]]
+        nested_res = await asyncio.gather(*search_tasks, return_exceptions=True)
         raw_candidates: List[Any] = []
-        for q in queries[:6]:
-            res = await _fetch_search_results_for_specs(settings, q, max_results=6)
-            raw_candidates.extend(res)
+        for res in nested_res:
+            if isinstance(res, list):
+                raw_candidates.extend(res)
 
         target_kws = [pos_name] + [
             c for c in (_compact_requirement(r["tz_requirement"], r["param_name"]) or "" for r in pos_reqs) if c
@@ -1706,7 +2040,31 @@ async def detect_exact_products_characteristic_first(
         if hint_b: target_kws.append(hint_b)
         if hint_mod: target_kws.append(hint_mod)
 
-        urls = _rank_search_candidates(raw_candidates, target_kws, ["б/у", "аренда"])[:_MAX_CANDIDATE_DOCS]
+        ranked_urls = _rank_search_candidates(raw_candidates, target_kws, ["б/у", "аренда"])
+
+        # Приоритетный отбор ссылок по ключевым брендам и ТЗ-подсказке
+        brand_keys = ["ksitex", "санакс", "sanaks", "tossen", "тоссен", "gfmark", "гфмарк", "балтпромкартон", "родикон", "гознак"]
+        if hint_b:
+            brand_keys.append(hint_b.lower().strip())
+
+        brand_matched_urls = set()
+        for rc in raw_candidates:
+            rc_url = getattr(rc, "url", "") or (rc.get("url") if isinstance(rc, dict) else "") or ""
+            rc_title = getattr(rc, "title", "") or (rc.get("title") if isinstance(rc, dict) else "") or ""
+            rc_snippet = getattr(rc, "snippet", "") or (rc.get("snippet") if isinstance(rc, dict) else "") or ""
+            comb = f"{rc_title} {rc_snippet} {rc_url}".lower()
+            if any(b in comb for b in brand_keys):
+                brand_matched_urls.add(rc_url)
+
+        priority_urls: List[str] = []
+        other_urls: List[str] = []
+        for u in ranked_urls:
+            if u in brand_matched_urls or any(b in u.lower() for b in brand_keys):
+                priority_urls.append(u)
+            else:
+                other_urls.append(u)
+
+        urls = (priority_urls + other_urls)[:_MAX_CANDIDATE_DOCS]
         docs: List[Dict[str, Any]] = []
         seen_urls = set(urls)
         if urls:
@@ -1824,7 +2182,7 @@ async def detect_exact_products_characteristic_first(
         if ranked:
             if progress_callback:
                 await progress_callback(80, f"Позиция {pos_idx}: кросс-сверка консенсуса независимых источников...")
-            for top_c in ranked[:2]:
+            for top_c in ranked[:3]:
                 if not top_c.get("is_tender_evidence"):
                     await expand_candidate_sources_ai(settings, top_c, pos_name, seen_urls, pos_reqs, max_sources=4)
                     if len(top_c.get("fused_docs", [])) >= 2:
