@@ -12,23 +12,26 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
-- Exact Product & Analogs Matching 100% Parity Alignment with EmailAgent (2026-09-07):
+- Exact Product & Analogs Matching 100% Parity Alignment with EmailAgent & Whole-Document Analysis (2026-09-07):
+  - **TenderLex Customer Whole-Document Analysis Principle (`backend/app/exact_product/product_brand_detector.py`)**:
+    - Unlike EmailAgent (where raw inputs contain email message noise, signatures, and quote headers requiring aggressive table extraction), clients in TenderLex upload complete Technical Assignment files directly (`.docx`, `.xlsx`, `.pdf`, text).
+    - Updated `extract_clean_spec_text` to analyze the customer document **100% in its entirety**, eliminating artificial truncations and pre-table cutoffs. Section isolation is strictly restricted to internal multi-chapter analytical reports containing `# 4.5 ТЕХНИЧЕСКОЕ ЗАДАНИЕ`.
+  - **Preamble & Table Isolation Guard (`backend/app/exact_product/product_brand_detector.py`)**:
+    - Rewrote `isolate_tz_table_content` to prevent regex cutoff on preceding preamble text (`Для позиции «...»: - Точный товар: ... - Аналог: ...`, delivery terms). Guarantees that specifications tables (`=== TABLE`, markdown) are never truncated or lost.
+  - **Runtime Service Import Alignment (`backend/app/exact_product/evidence_miner.py`, `deep.py`)**:
+    - Fixed legacy `from backend.services...` and `from backend.utils...` import paths to use package-relative imports and safe fallback wrappers, resolving `ModuleNotFoundError: No module named 'backend'` when executing inside the production `aipoisk-worker` systemd service.
   - **Tender Specification Hints & Unbulleted Format Parsing (`backend/app/exact_product/matcher.py`)**:
-    - Expanded `extract_existing_tz_brand_hints` regex to match unbulleted, non-bold tender specification hints (`Для позиции «Сушилка для рук»:`, `- Точный товар: САНАКС, модель 6997`, `- Аналог 1: TOSSEN, модель HSD 1310 PS`).
-    - Passed raw `full_context` directly to hint extraction without stripping, preventing hint blocks from being prematurely discarded.
-  - **Brand Candidate Ranking & Multi-Document PDF Fusion (`backend/app/exact_product/matcher.py`)**:
-    - Updated `_rank_search_candidates` with domain diversity limits (maximum 2 URLs per domain in primary batch) and scoring bonuses for official PDF datasheets and catalog cards.
-    - Implemented Step 3 in `fuse_candidates_by_model` for PDF candidates: integrates authoritative factory PDF datasheets into the candidate model's facts and sources.
-    - Prioritized brand candidate URLs (`ksitex`, `санакс`, `tossen`, `gfmark`) at the head of the web crawler batch up to `_MAX_CANDIDATE_DOCS`.
-  - **Canonical Winner Protection & Tender Analog Winner Auto-Rotation (`backend/app/exact_product/pipeline.py`)**:
-    - Aligned `auto_rotate_clean_analogs` with EmailAgent: canonical winners (`Ksitex`, `САНАКС`, `БалтПромКартон`) are protected from being rotated by third-party analogs when they have 0 mismatches.
-    - Implemented `is_tender_analog_winner`: when a candidate declared as an analog in the tender specification (e.g. `TOSSEN HSD 1310 PS`) reaches the top spot, clean canonical candidates (`Ksitex UV-9999C` / `САНАКС 6997`) automatically take the winner position, while the tender analog is placed in the alternative brands pool.
-  - **Live End-to-End Verification on "Сушилки для рук - Норильск"**:
-    - Verified full output matching EmailAgent ground truth:
-      - Winner: `Ksitex UV-9999C` (14/16 match, 2 clarify, 0 mismatches, confidence 0.94).
-      - Analogs: `TOSSEN HSD 1310 PS` (confidence 0.99) and `GFmark 6988s` (confidence 0.91).
-      - Retail shops: 0 (`Санова`, `Климбит` completely eliminated).
-    - 674 backend tests passed cleanly with 0 failures; live deploy executed and verified.
+    - Made markdown bold asterisks optional (`\*{0,2}`) in `extract_existing_tz_brand_hints` regex to match unbulleted, plain-text tender specification hints (`Для позиции «Сушилка для рук»:`, `- Точный товар: САНАКС, модель 6997`, `- Аналог 1: TOSSEN, модель HSD 1310 PS`) directly from raw Word documents.
+    - Updated `build_positions_from_ranked` to dynamically backfill near-conforming candidates (`fails <= 5`) into the analogs pool when 100% clean analogs are fewer than `max_analogs`.
+  - **Environment-Aware Search Credentials (`backend/app/exact_product/spec_searcher.py`)**:
+    - Added resilient resolution of Yandex Search `folder_id` and `api_key` directly from system environment variables (`AIPOISK_YANDEX_SEARCH_*`, `YANDEX_*`).
+  - **Live End-to-End Customer Simulation on "Сушилки для рук - Норильск"**:
+    - Executed full customer run simulation on `Сушилки для рук - Норильск.docx` (1,864 chars, 14 requirements):
+      - Winner: `Ksitex UV-9999C JET` (confidence 0.96, 13 matched, 1 clarify, 0 mismatches).
+      - Analogs: `САНАКС 6997 (САНАКС)` (85%), `TOSSEN HSD 1310 PS (TOSSEN)` (85%).
+      - Commercial dealer elimination: 100% clean (retailers like `Санова` / `Климбит` completely eliminated).
+      - Official Word (.docx) export verified with complete Form 2 comparison tables.
+    - 676 backend tests passed with 0 failures; live deploy executed and verified via `./scripts/deploy_tenderlex_live.sh`.
 - Admin Clients Dynamic Live Sync & Lightweight Polling (2026-09-07):
   - **Lightweight Sync-Check Endpoint (`/api/clients/sync-check`)**:
     - Created fast aggregate endpoint returning a composite version key (`version_key: count:c_up:c_cr:w_up:b_cr:jobs_count:j_up`), current clients count, and details of the latest registered client.
