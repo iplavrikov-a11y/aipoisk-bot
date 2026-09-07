@@ -48,6 +48,11 @@ async def analyze_exact_product(
             except Exception:
                 pass
 
+    from ..document_parser import is_substantive_tz_text
+    is_substantive, validation_err = is_substantive_tz_text(context)
+    if not is_substantive:
+        raise ValueError(validation_err)
+
     # Основной запуск: глубокий инженерный подбор из EmailAgent (detect_exact_products_deep)
     positions_raw = await detect_exact_products_deep(
         report_text=context,

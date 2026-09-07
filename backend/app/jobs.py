@@ -710,15 +710,16 @@ def _process_job_sync(job_id: str) -> None:
 
         file_context = document_parser.combined_document_context(parsed)
         context = "\n\n".join([*source_blocks, file_context]).strip()
-        if len(context.strip()) < 50:
-            release_job_reservation(db, job, note="Резерв возвращён: документы или ссылки не прочитались")
+        is_substantive, validation_err = document_parser.is_substantive_tz_text(context)
+        if not is_substantive:
+            release_job_reservation(db, job, note=f"Резерв возвращён: {validation_err}")
             _set_job(
                 db,
                 job,
                 status="failed",
                 progress=100,
-                message="Текст закупки не извлечён",
-                error="Документы или ссылки не прочитались.",
+                message="В документе нет содержимого",
+                error=validation_err,
             )
             job.completed_at = now_utc()
             db.commit()

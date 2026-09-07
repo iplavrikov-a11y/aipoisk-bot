@@ -970,6 +970,8 @@ def _friendly_stage_text(message: str) -> str:
 
 def _friendly_error_text(error: str) -> str:
     lowered = str(error or "").lower()
+    if "нет содержимого" in lowered or "шаблон" in lowered or "пустой" in lowered or "недостаточно данных" in lowered:
+        return str(error or "в документе нет содержательного текста ТЗ")
     if "supplier query generation" in lowered:
         return "не удалось подготовить поисковые запросы для поставщиков"
     if "procurement profile" in lowered:
@@ -981,6 +983,7 @@ def _friendly_error_text(error: str) -> str:
     if "текст документов" in lowered or "documents" in lowered:
         return "не удалось прочитать текст документа"
     return "возникла техническая ошибка при обработке"
+
 
 
 def _format_duration(seconds: float) -> str:
@@ -1059,7 +1062,20 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
             ]
         )
     if snapshot.status == "failed":
-        if "реестр" in (snapshot.error or "").lower() or "реестр" in (snapshot.message or "").lower():
+        err_lower = (snapshot.error or "").lower()
+        msg_lower = (snapshot.message or "").lower()
+        if "нет содержимого" in err_lower or "шаблон" in err_lower or "пустой" in err_lower or "нет содержимого" in msg_lower:
+            return "\n".join(
+                [
+                    "⚠️ В документе нет содержимого",
+                    "",
+                    snapshot.error or "В загруженном файле отсутствует текст ТЗ (обнаружен шаблон «Введите текст технического задания...»).",
+                    "",
+                    "💳 Баланс не списан (0 ₽).",
+                    "Пожалуйста, загрузите файл с заполненным текстом ТЗ или отправьте характеристики текстом прямо в этот чат.",
+                ]
+            )
+        if "реестр" in err_lower or "реестр" in msg_lower:
             return "\n".join(
                 [
                     "📋 В реестре Минпромторга записи не найдены",

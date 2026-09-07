@@ -545,8 +545,55 @@ def combined_document_context(items: list[tuple[str, str]]) -> str:
     return "\n".join(parts).strip()
 
 
+PLACEHOLDER_TZ_PATTERNS = (
+    r"введите\s+текст\s+технического\s+задания",
+    r"введите\s+текст(?:\s+задания)?",
+    r"вставьте\s+текст(?:\s+задания)?",
+    r"текст\s+технического\s+задания",
+    r"шаблон\s+(?:технического\s+задания|тз)",
+    r"в\s+документе\s+нет\s+содержимого",
+    r"образец\s+технического\s+задания",
+    r"заполните\s+спецификацию",
+    r"\[\s*введите\s+текст[^\]]*\]",
+    r"\[\s*текст\s+тз[^\]]*\]",
+    r"\[\s*спецификация[^\]]*\]",
+)
+
+
+def is_substantive_tz_text(text: str) -> tuple[bool, str]:
+    """
+    Проверяет, содержит ли извлечённый текст реальные содержательные требования ТЗ,
+    а не пустой шаблон, заглушку редактора или один лишь заголовок.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False, "В загруженных документах отсутствует текст (файл пустой)."
+
+    # Убираем системные разделители файлов и страниц
+    cleaned = re.sub(r"===\s*(?:FILE|ARCHIVE FILE):\s*[^\n]+===", " ", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"---\s*PAGE\s*\d+\s*---", " ", cleaned, flags=re.IGNORECASE)
+
+    has_placeholder = False
+    stripped_placeholder = cleaned
+    for pat in PLACEHOLDER_TZ_PATTERNS:
+        if re.search(pat, cleaned, flags=re.IGNORECASE):
+            has_placeholder = True
+            stripped_placeholder = re.sub(pat, " ", stripped_placeholder, flags=re.IGNORECASE)
+
+    meaningful_chars = re.sub(r"[\s\W_]+", "", stripped_placeholder, flags=re.UNICODE)
+
+    if has_placeholder and len(meaningful_chars) < 25:
+        return False, "В документе нет содержимого (обнаружен шаблон «Введите текст технического задания...»). Загрузите файл с сохранённым текстом ТЗ или характеристиками товара."
+
+    if len(meaningful_chars) < 5:
+        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 5 значимых символов). Загрузите файл со спецификацией."
+
+    return True, "ok"
+
+
 def read_json_file(path: str | Path, default):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return default
+
