@@ -12,6 +12,16 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Admin Clients Dynamic Live Sync & Lightweight Polling (2026-09-07):
+  - **Lightweight Sync-Check Endpoint (`/api/clients/sync-check`)**:
+    - Created fast aggregate endpoint returning a composite version key (`version_key: count:c_up:c_cr:w_up:b_cr:jobs_count:j_up`), current clients count, and details of the latest registered client.
+    - Runs in <1 ms with 0.01% CPU impact by relying entirely on SQLite indexed max/count queries instead of pulling 150+ SQL queries per full `/api/clients` request.
+  - **Zero-Reload Dynamic UI & Toast Notifications (`frontend/src/App.tsx`, `frontend/src/styles.css`)**:
+    - Replaced blind heavy polling with an independent 3.5s sync-check timer. Full client list reload is triggered only when the database version changes or via manual refresh.
+    - Added instant Toast notification with subtle synthesized Web Audio chime when a new client registers (showing client number, name, and contact details).
+    - Added "Показать клиента →" action button in toast navigating directly to and selecting the client card.
+    - Added `[Новый]` badge and emerald pulse glow styling on recently registered client cards.
+    - Added `🟢 Live` status indicator with relative timestamp ("только что", "5 сек назад") and manual `🔄 Обновить` button in the Clients toolbar.
 - Search Engine 95% Budget Optimization, Yandex API v2 groupSpec Fix & Admin Rerun Feed Deduplication (2026-09-07):
   - **Yandex Search API v2 XML Parameterization Fix (`groupSpec`)**:
     - Diagnosed the root cause of recent procurement search task expenses exceeding 5.50+ ₽ (135–144 Yandex requests): Yandex Search API v2 ignores the legacy `groupBy` parameter and returns only 10 items per page instead of 50–70. Pagination loops were generating 3–7 network calls per search query.

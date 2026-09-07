@@ -1576,6 +1576,52 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
     return [client_to_dict(client, db=db) for client in clients]
 
 
+@app.get("/api/clients/sync-check", dependencies=[Depends(require_admin)])
+def clients_sync_check(db: Session = Depends(db_session)) -> dict:
+    clients_count = db.query(func.count(Client.id)).scalar() or 0
+    max_client_updated = db.query(func.max(Client.updated_at)).scalar()
+    max_client_created = db.query(func.max(Client.created_at)).scalar()
+    max_web_user_updated = db.query(func.max(WebUser.updated_at)).scalar()
+    max_billing_created = db.query(func.max(BillingTransaction.created_at)).scalar()
+    jobs_count = db.query(func.count(Job.id)).scalar() or 0
+    max_job_updated = db.query(func.max(Job.updated_at)).scalar()
+
+    latest_client = (
+        db.query(Client)
+        .options(selectinload(Client.web_users), selectinload(Client.telegram_accounts))
+        .order_by(Client.created_at.desc())
+        .first()
+    )
+    latest_info = None
+    if latest_client:
+        email = latest_client.web_users[0].email if latest_client.web_users else ""
+        tg = latest_client.username or (latest_client.telegram_accounts[0].username if latest_client.telegram_accounts else "")
+        source = "web" if latest_client.web_users else "telegram"
+        contact = email or (f"@{tg}" if tg else (latest_client.telegram_id or ""))
+        latest_info = {
+            "id": latest_client.id,
+            "client_number": latest_client.client_number,
+            "name": latest_client.name or "Без имени",
+            "source": source,
+            "contact": contact,
+            "created_at": latest_client.created_at.isoformat() if latest_client.created_at else "",
+        }
+
+    c_up = max_client_updated.isoformat() if max_client_updated else ""
+    c_cr = max_client_created.isoformat() if max_client_created else ""
+    w_up = max_web_user_updated.isoformat() if max_web_user_updated else ""
+    b_cr = max_billing_created.isoformat() if max_billing_created else ""
+    j_up = max_job_updated.isoformat() if max_job_updated else ""
+    version_key = f"{clients_count}:{c_up}:{c_cr}:{w_up}:{b_cr}:{jobs_count}:{j_up}"
+
+    return {
+        "version_key": version_key,
+        "clients_count": clients_count,
+        "jobs_count": jobs_count,
+        "latest_client": latest_info,
+    }
+
+
 def _normalized_usernames(values: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()

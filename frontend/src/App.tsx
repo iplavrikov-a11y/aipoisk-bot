@@ -32,6 +32,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
   Upload,
   Users,
@@ -95,6 +96,29 @@ type Client = {
     last_reason_code: string
     last_event_at: string | null
   } | null
+}
+
+type AdminSyncCheckResponse = {
+  version_key: string
+  clients_count: number
+  jobs_count: number
+  latest_client?: {
+    id: string
+    client_number?: number | null
+    name: string
+    source: string
+    contact: string
+    created_at: string
+  } | null
+}
+
+type AdminToast = {
+  id: string
+  title: string
+  message: string
+  type?: 'client' | 'job' | 'info'
+  clientId?: string
+  createdAt: number
 }
 
 type ClientUsage = {
@@ -994,6 +1018,91 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: MOSCOW_TIME_ZONE })
 }
 
+function playNotificationChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15)
+    gain.gain.setValueAtTime(0.12, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.35)
+  } catch {}
+}
+
+function useTimeAgo(timestamp?: number) {
+  const [text, setText] = useState('только что')
+  useEffect(() => {
+    if (!timestamp) return
+    function update() {
+      const sec = Math.max(0, Math.floor((Date.now() - (timestamp || Date.now())) / 1000))
+      if (sec < 5) setText('только что')
+      else if (sec < 60) setText(`${sec} сек назад`)
+      else setText(`${Math.floor(sec / 60)} мин назад`)
+    }
+    update()
+    const timer = setInterval(update, 3000)
+    return () => clearInterval(timer)
+  }, [timestamp])
+  return text
+}
+
+function ToastContainer({
+  toasts,
+  onDismiss,
+  onSelectClient,
+}: {
+  toasts: AdminToast[]
+  onDismiss: (id: string) => void
+  onSelectClient?: (clientId: string) => void
+}) {
+  if (!toasts.length) return null
+  return (
+    <div className="admin-toast-container" role="region" aria-live="polite" aria-label="Уведомления">
+      {toasts.map(toast => (
+        <div key={toast.id} className={`admin-toast-card ${toast.type || 'client'}`}>
+          <div className="admin-toast-icon">
+            {toast.type === 'job' ? <Sparkles size={16} /> : <Users size={16} />}
+          </div>
+          <div className="admin-toast-body">
+            <div className="admin-toast-title">{toast.title}</div>
+            <div className="admin-toast-msg">{toast.message}</div>
+            {toast.clientId && onSelectClient && (
+              <div className="admin-toast-actions">
+                <button
+                  type="button"
+                  className="admin-toast-view-btn"
+                  onClick={() => {
+                    onSelectClient(toast.clientId!)
+                    onDismiss(toast.id)
+                  }}
+                >
+                  Показать клиента →
+                </button>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="admin-toast-close"
+            onClick={() => onDismiss(toast.id)}
+            aria-label="Закрыть"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai'] as const
 
 function getInitialView(): View {
@@ -1032,6 +1141,33 @@ export function App() {
   function handleNavigateToClientJobs(clientId: string) {
     setSelectedClientForJobs(clientId)
     setView('jobs')
+  }
+
+  const [toasts, setToasts] = useState<AdminToast[]>([])
+  const [isClientsSyncing, setIsClientsSyncing] = useState(false)
+  const [lastClientsSyncAt, setLastClientsSyncAt] = useState<number>(() => Date.now())
+  const [recentNewClientIds, setRecentNewClientIds] = useState<Set<string>>(() => new Set())
+  const [selectedClientIdForView, setSelectedClientIdForView] = useState<string>('')
+  const lastSyncVersionKeyRef = useRef<string>('')
+  const prevClientsCountRef = useRef<number>(-1)
+
+  const addToast = useCallback((toast: Omit<AdminToast, 'id' | 'createdAt'>) => {
+    const id = Math.random().toString(36).slice(2, 9)
+    const newToast: AdminToast = { ...toast, id, createdAt: Date.now() }
+    setToasts(prev => [newToast, ...prev].slice(0, 5))
+    playNotificationChime()
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 8000)
+  }, [])
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
+
+  function handleSelectClient(clientId: string) {
+    setSelectedClientIdForView(clientId)
+    setView('clients')
   }
 
   function setView(nextView: View) {
@@ -1225,21 +1361,19 @@ export function App() {
               }
             }
 
-            // Live polling for clients & dashboard
+            // Live polling for dashboard & password resets
             const now = Date.now()
-            const pollInterval = view === 'clients' ? 8000 : 25000
+            const pollInterval = view === 'clients' ? 15000 : 30000
             if (now - lastClientsPoll >= pollInterval) {
               lastClientsPoll = now
-              const promises: [Promise<Client[] | null>, Promise<Dashboard | null>, Promise<PasswordResetRequest[] | null>?] = [
-                api<Client[]>('/api/clients').catch(() => null),
+              const promises: [Promise<Dashboard | null>, Promise<PasswordResetRequest[] | null>?] = [
                 api<Dashboard>('/api/dashboard').catch(() => null),
               ]
               if (view === 'clients') {
                 promises.push(api<PasswordResetRequest[]>('/api/web-password-resets?status=open').catch(() => null))
               }
-              const [cData, dData, pData] = await Promise.all(promises)
+              const [dData, pData] = await Promise.all(promises)
               if (!cancelled) {
-                if (cData) setClients(cData)
                 if (dData) setDashboard(dData)
                 if (pData) setPasswordResets(pData)
               }
@@ -1260,9 +1394,6 @@ export function App() {
       if (!document.hidden && authenticated) {
         void api<Job[]>('/api/jobs?include_internal=true&limit=2000').then(updatedJobs => {
           if (!cancelled && updatedJobs) setJobs(updatedJobs)
-        }).catch(() => {})
-        void api<Client[]>('/api/clients').then(cData => {
-          if (!cancelled && cData) setClients(cData)
         }).catch(() => {})
         void api<Dashboard>('/api/dashboard').then(dData => {
           if (!cancelled && dData) setDashboard(dData)
@@ -1285,6 +1416,102 @@ export function App() {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
     }
   }, [authenticated, view])
+
+  const handleManualClientsSync = useCallback(async () => {
+    setIsClientsSyncing(true)
+    try {
+      const [cData, syncData, dData] = await Promise.all([
+        api<Client[]>('/api/clients').catch(() => null),
+        api<AdminSyncCheckResponse>('/api/clients/sync-check').catch(() => null),
+        api<Dashboard>('/api/dashboard').catch(() => null),
+      ])
+      if (cData) setClients(cData)
+      if (syncData) {
+        lastSyncVersionKeyRef.current = syncData.version_key
+        prevClientsCountRef.current = syncData.clients_count
+      }
+      if (dData) setDashboard(dData)
+      setLastClientsSyncAt(Date.now())
+    } catch {
+    } finally {
+      setIsClientsSyncing(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!authenticated) return
+
+    let cancelled = false
+    let timerId: any = null
+
+    async function checkSync() {
+      if (cancelled || document.hidden) return
+      try {
+        const syncData = await api<AdminSyncCheckResponse>('/api/clients/sync-check')
+        if (!cancelled && syncData) {
+          setLastClientsSyncAt(Date.now())
+          const isFirstCheck = lastSyncVersionKeyRef.current === ''
+          const versionChanged = syncData.version_key !== lastSyncVersionKeyRef.current
+          const prevCount = prevClientsCountRef.current
+          lastSyncVersionKeyRef.current = syncData.version_key
+
+          if (isFirstCheck) {
+            prevClientsCountRef.current = syncData.clients_count
+          } else if (versionChanged) {
+            prevClientsCountRef.current = syncData.clients_count
+
+            // If a new client was registered
+            if (prevCount >= 0 && syncData.clients_count > prevCount && syncData.latest_client) {
+              const lc = syncData.latest_client
+              const clientLabel = lc.client_number ? `#${lc.client_number} ${lc.name}` : lc.name
+              addToast({
+                type: 'client',
+                title: 'Новый клиент в системе',
+                message: `${clientLabel} (${lc.contact || 'контакт не указан'} · ${lc.source === 'web' ? 'Web' : 'Telegram'})`,
+                clientId: lc.id,
+              })
+              setRecentNewClientIds(prev => new Set([...prev, lc.id]))
+            }
+
+            // Background reload clients and dashboard
+            setIsClientsSyncing(true)
+            const [cData, dData] = await Promise.all([
+              api<Client[]>('/api/clients').catch(() => null),
+              api<Dashboard>('/api/dashboard').catch(() => null),
+            ])
+            if (!cancelled) {
+              if (cData) setClients(cData)
+              if (dData) setDashboard(dData)
+            }
+            setIsClientsSyncing(false)
+          }
+        }
+      } catch {
+        // Ignore network glitches
+      }
+    }
+
+    const intervalMs = view === 'clients' ? 3500 : 12000
+    timerId = setInterval(() => {
+      void checkSync()
+    }, intervalMs)
+
+    function handleFocusOrVisible() {
+      if (!document.hidden && authenticated) {
+        void checkSync()
+      }
+    }
+
+    window.addEventListener('focus', handleFocusOrVisible)
+    document.addEventListener('visibilitychange', handleFocusOrVisible)
+
+    return () => {
+      cancelled = true
+      if (timerId) clearInterval(timerId)
+      window.removeEventListener('focus', handleFocusOrVisible)
+      document.removeEventListener('visibilitychange', handleFocusOrVisible)
+    }
+  }, [authenticated, view, addToast])
 
   useEffect(() => {
     function handleUnhandled(event: PromiseRejectionEvent) {
@@ -1421,6 +1648,12 @@ export function App() {
             passwordResets={passwordResets}
             onChange={loadAll}
             onNavigateToClientJobs={handleNavigateToClientJobs}
+            isSyncing={isClientsSyncing}
+            lastSyncAt={lastClientsSyncAt}
+            onManualSync={handleManualClientsSync}
+            recentNewClientIds={recentNewClientIds}
+            selectedClientIdFromParent={selectedClientIdForView}
+            onClearSelectedClientFromParent={() => setSelectedClientIdForView('')}
           />
         )}
         {isReady && view === 'jobs' && (
@@ -1459,7 +1692,7 @@ export function App() {
                 </div>
                 <div className={`server-grid-item ${opsStatus.server.disk_free_gb < 10 ? 'warning' : ''}`}>
                   <div className="server-grid-item-title"><HardDrive size={14} /> SSD</div>
-                  <div className="server-grid-item-value">{Math.floor(opsStatus.server.disk_free_gb)} GB</div>
+                  <div className="server-grid-item-value">{Math.floor(opsStatus.server.disk_free_gb)} ГБ</div>
                 </div>
               </div>
 
@@ -1513,6 +1746,11 @@ export function App() {
           </div>
         )}
 
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={dismissToast}
+          onSelectClient={handleSelectClient}
+        />
       </main>
     </div>
   )
@@ -3451,11 +3689,23 @@ function ClientsView({
   passwordResets,
   onChange,
   onNavigateToClientJobs,
+  isSyncing,
+  lastSyncAt,
+  onManualSync,
+  recentNewClientIds,
+  selectedClientIdFromParent,
+  onClearSelectedClientFromParent,
 }: {
   clients: Client[]
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
   onNavigateToClientJobs?: (clientId: string) => void
+  isSyncing?: boolean
+  lastSyncAt?: number
+  onManualSync?: () => void
+  recentNewClientIds?: Set<string>
+  selectedClientIdFromParent?: string
+  onClearSelectedClientFromParent?: () => void
 }) {
   const [form, setForm] = useState({ name: '', telegram_usernames: '', telegram_id: '', notes: '' })
   const [accountForms, setAccountForms] = useState<Record<string, AccountDraft>>({})
@@ -3472,7 +3722,15 @@ function ClientsView({
 
   // Pagination & Filtering state
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedClientId, setSelectedClientId] = useState('')
+  const [selectedClientId, setSelectedClientId] = useState(selectedClientIdFromParent || '')
+  const lastSyncText = useTimeAgo(lastSyncAt)
+
+  useEffect(() => {
+    if (selectedClientIdFromParent) {
+      setSelectedClientId(selectedClientIdFromParent)
+      setPage(1)
+    }
+  }, [selectedClientIdFromParent])
   const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
@@ -3865,6 +4123,27 @@ function ClientsView({
               <span className="inline-note">Всего в базе: {clients.length}</span>
             )}
           </div>
+          <div className="list-toolbar-sync">
+            <span className="live-status-pill" title="Автоматическая синхронизация каждые 3-4 секунды без перезагрузки страницы">
+              <span className={`live-dot ${isSyncing ? 'syncing' : ''}`} />
+              Live
+            </span>
+            <span className="live-time-label">
+              {lastSyncText}
+            </span>
+            {onManualSync && (
+              <button
+                type="button"
+                className="sync-manual-btn"
+                onClick={onManualSync}
+                disabled={isSyncing}
+                title="Принудительно обновить список клиентов прямо сейчас"
+              >
+                <RefreshCw size={12} className={isSyncing ? 'spin-icon' : ''} />
+                {isSyncing ? 'Синхронизация...' : 'Обновить'}
+              </button>
+            )}
+          </div>
           {filteredClients.length > pageSize && (
             <div className="list-pagination toolbar-pagination">
               <button
@@ -3927,6 +4206,7 @@ function ClientsView({
               style={{ color: '#ef4444', fontSize: 12, padding: '4px 8px' }}
               onClick={() => {
                 setSelectedClientId('')
+                if (onClearSelectedClientFromParent) onClearSelectedClientFromParent()
                 setPage(1)
               }}
               title="Сбросить выбранного клиента"
@@ -4038,6 +4318,10 @@ function ClientsView({
       ) : (
         <div className="client-card-list">
           {pagedClients.map(client => {
+          const isNewClient = Boolean(
+            (recentNewClientIds && recentNewClientIds.has(client.id)) ||
+            (client.created_at && (Date.now() - new Date(client.created_at).getTime()) < 3 * 3600 * 1000)
+          )
           const draft = accountDraft(client)
           const accounts = (client.telegram_accounts || []).filter(account => !isSyntheticWebTelegramAccount(account))
           const webUsers = client.web_users?.length ? client.web_users : []
@@ -4050,7 +4334,7 @@ function ClientsView({
           const connectedCount = accounts.filter(account => !account.is_pending).length
           const pendingCount = accounts.filter(account => account.is_pending).length
           return (
-            <article className={`client-card compact ${expanded ? 'expanded' : ''}`} key={client.id}>
+            <article className={`client-card compact ${expanded ? 'expanded' : ''} ${isNewClient ? 'is-new-client' : ''}`} key={client.id}>
               <div className="client-card-head compact">
                 <div className="client-title-row compact">
                   <button
@@ -4069,6 +4353,11 @@ function ClientsView({
                         </span>
                       ) : null}
                       <h2>{client.name || 'Без имени'}</h2>
+                      {isNewClient && (
+                        <span className="badge-new-client" title="Зарегистрирован недавно">
+                          Новый
+                        </span>
+                      )}
                       {!client.is_active && <StatusBadge status="disabled" />}
                     </div>
                     <p>{clientSummaryLine(client, accounts)}</p>
