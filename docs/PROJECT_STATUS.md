@@ -12,6 +12,25 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Substantive Specification Validation & Empty/Placeholder Template Rejection (2026-09-07):
+  - **Root Cause & Obninsk Case Analysis**:
+    - Investigated issue where "Органайзеры - Обнинск" produced office stationery (`Attache Line 6 отделений`) instead of medical PPE dispensers from polycarbonate.
+    - Discovered that uploaded file in job `616013cca0924a0b90a214f87249f9c4` was an unpopulated Word template containing literally 1 paragraph: `Введите текст технического задания...` (96 characters with header, 0 tables, 0 requirements).
+    - Because the previous length threshold was only 50 characters, the empty template bypassed validation. Lacking any medical/PPE specifications, search defaulted to general desktop stationery.
+    - Verified real file `Органайзеры - Обнинск (1).docx` (38 KB, 3 positions): TenderLex Exact Product engine correctly identified **all 3 positions (100%)**:
+      1. `Органайзер-2 секции`: **Evdar D2020** (ООО «РАСТ» / Merida, 100% compliance, 300×150×300 мм, transparent polycarbonate, alcohol disinfectant resistance), analog **Медресурс М23020** (СВИТ).
+      2. `Органайзер-3 секции`: **Медресурс М3020** (СВИТ, 100% compliance, 450×150×300 мм), analogs **Evdar O14010**, **Evdar O23010**, **HACCPER** (Россия).
+      3. `Органайзер-5 секций`: **Медресурс М23020** (СВИТ) / **Evdar O24010** серия O-5000 (100% compliance, 300×120×940 мм, 5 секций для СИЗ), analogs **HACCPER Control Point**, **Evdar O14010**.
+  - **Pre-Flight Validation & Reservation Protection (`backend/app/document_parser.py`, `jobs.py`, `pipeline.py`)**:
+    - Implemented `is_substantive_tz_text(text: str) -> tuple[bool, str]` in `document_parser.py`: strips document headers and matches editor placeholder phrases (`Введите текст технического задания...`, `[текст тз]`, `шаблон тз`, `в документе нет содержимого` и др.).
+    - In `jobs.py`: immediately fails unpopulated template jobs before pipeline execution, sets status `failed` with message `В документе нет содержимого`, refunds client balance/reservation via `release_job_reservation` (0 ₽ charge), and eliminates search API costs and hallucinated outputs.
+    - In `analyze_exact_product` (`pipeline.py`): added defense-in-depth check raising `ValueError` on empty/placeholder context.
+  - **Telegram Bot User Experience (`backend/app/bot.py`)**:
+    - Updated `_friendly_error_text` and failed status rendering in Telegram bot: outputs a clean advisory card explaining that an unfilled template was uploaded, balance was not charged (0 ₽), and prompting user to upload the filled document or send specifications directly as text in chat.
+  - **Automated Verification & Deploy**:
+    - Added unit test suite `backend/tests/test_tz_validation.py` (6 tests).
+    - Verified full backend test suite: 682 passed, 0 failed.
+    - Verified live deploy via `./scripts/deploy_tenderlex_live.sh` (API 8088, Site 3093, worker and bot active).
 - Exact Product & Analogs Matching 100% Parity Alignment with EmailAgent & Whole-Document Analysis (2026-09-07):
   - **TenderLex Customer Whole-Document Analysis Principle (`backend/app/exact_product/product_brand_detector.py`)**:
     - Unlike EmailAgent (where raw inputs contain email message noise, signatures, and quote headers requiring aggressive table extraction), clients in TenderLex upload complete Technical Assignment files directly (`.docx`, `.xlsx`, `.pdf`, text).
