@@ -4769,29 +4769,24 @@ function JobsView({
           )}
         </div>
         <div className="list-toolbar-filters">
-          <input
-            className="toolbar-search"
-            placeholder="Найти задачу, клиента, email или #номер"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-          />
           <select
             value={clientFilter}
             onChange={e => {
               setClientFilter(e.target.value)
+              if (e.target.value) setQuery('')
               setPage(1)
               if (!e.target.value && onClearSelectedClient) {
                 onClearSelectedClient()
               }
             }}
             style={{
-              maxWidth: 300,
+              maxWidth: 320,
               fontSize: 13,
               fontWeight: clientFilter ? 600 : 400,
               borderColor: clientFilter ? '#0f766e' : undefined,
               background: clientFilter ? '#f0fdf4' : undefined,
             }}
-            title="Фильтр по клиенту (последние 20)"
+            title="Выбрать клиента (последние 20)"
           >
             <option value="">Выбрать клиента (последние 20)...</option>
             <optgroup label="Последние 20 клиентов">
@@ -4826,6 +4821,20 @@ function JobsView({
               ✕ Сброс
             </button>
           )}
+          <input
+            className="toolbar-search"
+            autoComplete="off"
+            placeholder="Поиск по названию задачи, файлу или #номеру..."
+            value={query}
+            onChange={e => {
+              setQuery(e.target.value)
+              if (e.target.value) {
+                setClientFilter('')
+                if (onClearSelectedClient) onClearSelectedClient()
+              }
+              setPage(1)
+            }}
+          />
           <select value={modeFilter} onChange={e => setModeFilter(e.target.value)}>
             <option value="">Все типы</option>
             {modeOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.label}</option>)}
