@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-06
+Date: 2026-09-07
 
 ## Current Production State
 
@@ -12,6 +12,19 @@ Date: 2026-09-06
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Scanned DOCX/DOC Media OCR & Administrator Task Numbering System (2026-09-07):
+  - **Embedded Image OCR in DOCX/DOC (`backend/app/document_parser.py`)**:
+    - Resolved root cause of customer specification parsing failure (`"Документы или ссылки не прочитались"` on task `#656` / `тз.docx`): previously, OCR was only executed for standalone image files and direct PDFs. DOCX files containing embedded scanned specification tables (`word/media/*`) yielded 0 text paragraphs via `python-docx`, while headless LibreOffice export returned UTF-8 BOM (`\ufeff`) and newlines whose non-zero length falsely satisfied length checks while failing downstream task execution (`len(context) < 50`).
+    - Added `_clean_text` helper stripping UTF-8 BOM (`\ufeff`) and zero-width spaces across all parsing stages.
+    - Implemented `_extract_docx_media_ocr`: extracts embedded raster images from `word/media/*` (sorted naturally: `image1`, `image2`, ...), running Tesseract OCR (`rus+eng`) over embedded specification tables.
+    - Added tertiary fallback `_extract_office_via_pdf_ocr` rendering DOCX/DOC into PDF via LibreOffice and extracting text via `_extract_pdf_ocr`.
+    - Verified on client file `тз.docx`: extracted 3 241 characters of structured technical parameters and tables (`docx_ocr_ok`). Full test suite verified (`backend/tests/test_document_parser.py`, 11/11 passed).
+  - **Administrator Internal Task Numbering System**:
+    - Added `job_number` column to `Job` model (`backend/app/models.py`), backed by an automatic dense backfill of historical jobs (`1..N`, rowid-aligned) and an SQLite trigger `trg_jobs_assign_number` ensuring atomic monotonic sequential number generation on every insert.
+    - Historical failed task received permanent reference `#656`, with subsequent tasks continuing `#657`, `#658`, `#659`, etc.
+    - Enhanced backend API (`backend/app/main.py`): `job_to_dict` outputs `job_number`; `resolve_admin_job` helper transparently resolves jobs by integer number (e.g. `656` or `#656`) or UUID across all admin endpoints (`/api/jobs/{id}`, download, resolve, rerun, supplement, cancel).
+    - Updated Admin Panel UI (`frontend/src/App.tsx`, `frontend/src/styles.css`): prominent monospace badge `#{job.job_number}` displayed in every task card header and modal dialogs; instant search filter supports querying by `#<number>` or `<number>`. Strict visibility isolation: numbering is visible exclusively in the administrator panel and is completely hidden from customer-facing web cabinet and Telegram bot interfaces.
+    - Verified live with 673 automated tests passed, Vite admin build, and live production deployment via `./scripts/deploy_tenderlex_live.sh`.
 - Outreach Deliverability Hardening, Relay Bounce Isolation & Inbox Protection (2026-09-06):
   - Diagnosed and completely resolved root cause of delivery failure notices (NDR bounces from `mailer-daemon@dealpartner.ru`) appearing in TenderLex admin inbox:
     - Background HH vacancy outreach sent cold pitches via relay VPS `79.133.182.215` (`relay.dealpartner.ru`). When enterprise recipient servers (such as FESCO) rejected emails (`550 Security block`), Postfix generated NDR reports addressed to `info@tenderlex.ru` from `mailer-daemon@dealpartner.ru`.
