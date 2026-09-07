@@ -417,13 +417,13 @@ def extract_existing_tz_brand_hints(text: str, parse_under_table_blocks: bool = 
 
     hints: Dict[str, Dict[str, Any]] = {}
     if parse_under_table_blocks:
-        pos_blocks = re.split(r'(?:^|\n)[ \t]*[-*•]\s*\*\*Для позиции\s+[«"\'`]([^»"\'`\n]+)[»"\'`]:?\*\*', t)
+        pos_blocks = re.split(r'(?:^|\n)[ \t]*[-*•]?\s*\*{0,2}Для позиции\s+[«"\'`]([^»"\'`\n]+)[»"\'`]:?\*{0,2}', t)
         if len(pos_blocks) > 1:
             for i in range(1, len(pos_blocks), 2):
                 pos_name = pos_blocks[i].strip()
                 block_body = pos_blocks[i + 1] if i + 1 < len(pos_blocks) else ""
 
-                main_m = re.search(r'[-*•]\s*\*\*Точный товар:\*\*\s*([^\n]+)', block_body)
+                main_m = re.search(r'[-*•]?\s*\*{0,2}Точный товар:\*{0,2}\s*([^\n]+)', block_body)
                 main_desc = main_m.group(1).strip() if main_m else ""
 
                 brand, model, mfr = "", "", ""
@@ -445,7 +445,7 @@ def extract_existing_tz_brand_hints(text: str, parse_under_table_blocks: bool = 
                 brand, mfr, model = _resolve_real_maker_and_model(brand, mfr, model)
 
                 analogs = []
-                for alt_m in re.finditer(r'[-*•]\s*\*\*Аналог\s*\d*:\*\*\s*([^\n]+)', block_body):
+                for alt_m in re.finditer(r'[-*•]?\s*\*{0,2}Аналог\s*\d*:\*{0,2}\s*([^\n]+)', block_body):
                     alt_desc = alt_m.group(1).strip()
                     a_brand, a_model, a_mfr = "", "", ""
                     a_mod_m = re.search(r'модель\s+\*\*([^*]+)\*\*|модель\s+([^,]+)', alt_desc, re.IGNORECASE)
@@ -1992,9 +1992,17 @@ def build_positions_from_ranked(
     winner_m = str(winner.get("model") or "").strip().lower()
     winner_key = f"{winner_b} {winner_m}".strip()
 
+    # Формируем пул аналогов: сначала кандидаты без отклонений, затем близкие аналоги с минимальными отклонениями
     seen_alt_keys = {winner_key}
     analogs_pool = []
     clean_analogs = [c for c in ranked if c["matrix"]["fails"] == 0 and _has_real_maker(c, pos_hint)]
+    if len(clean_analogs) < max_analogs:
+        near_analogs = [
+            c for c in ranked
+            if c != winner and c["matrix"]["fails"] <= 5 and _has_real_maker(c, pos_hint) and c not in clean_analogs
+        ]
+        clean_analogs.extend(near_analogs)
+
     for c in clean_analogs:
         c_b = str(c.get("brand") or c.get("manufacturer") or "").strip().lower()
         c_m = str(c.get("model") or "").strip().lower()

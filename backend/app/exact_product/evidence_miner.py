@@ -194,7 +194,7 @@ def align_facts_to_requirements(
     if not requirements:
         return dict(raw_facts)
 
-    from backend.services.exact_product_matcher import _normalize_param_name
+    from .matcher import _normalize_param_name
 
     exact_map = {r["param_name"].strip().lower(): r["param_name"] for r in requirements}
     norm_map = {_normalize_param_name(r["param_name"]): r["param_name"] for r in requirements}

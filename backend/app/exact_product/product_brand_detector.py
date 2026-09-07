@@ -17,60 +17,79 @@ logger = logging.getLogger(__name__)
 def isolate_tz_table_content(raw_text: str) -> str:
     """
     Извлекает ИСКЛЮЧИТЕЛЬНО табличную часть технического задания.
-    Полностью отсекает всё, что идет ниже таблицы.
+    Полностью отсекает всё, что идет ниже таблицы (условия поставки, догадки ИИ).
+    При этом сохраняет заголовок/преамбулу и саму таблицу, даже если в преамбуле
+    присутствуют вводные пометки.
     """
     if not raw_text:
         return ""
     text = raw_text.strip()
 
-    # 1. Жесткая отсечка на первом маркере подтабличной части
+    # 1. HTML-таблица (<table ...>...</table>)
+    if "<table" in text.lower():
+        end_idx = text.lower().rfind("</table>")
+        if end_idx != -1:
+            end_pos = end_idx + len("</table>")
+            start_pos = text.lower().find("<table")
+            m_title = re.search(
+                r"(?i)(?:ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|#+\s*(?:4\.5\s*)?ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|##\s*Спецификация|##\s*Товары)",
+                text[:start_pos],
+            )
+            preamble = text[m_title.start():start_pos].strip() if m_title else text[:min(start_pos, 300)].strip()
+            return f"{preamble}\n\n{text[start_pos:end_pos]}".strip()
+
+    # 2. Таблицы формата docx (=== TABLE) или Markdown/pipe (| ... | или col1 | col2)
+    lines = text.splitlines()
+    table_line_indices = []
+    for i, line in enumerate(lines):
+        l_str = line.strip()
+        if re.match(r"^===\s*TABLE", l_str, re.IGNORECASE):
+            table_line_indices.append(i)
+        elif "|" in l_str and (l_str.startswith("|") or len(l_str.split("|")) >= 3):
+            table_line_indices.append(i)
+
+    if table_line_indices:
+        first_tbl = table_line_indices[0]
+        last_tbl = table_line_indices[-1]
+
+        # Захватываем заголовок из преамбулы (строки до первой таблицы)
+        preamble_lines = []
+        for j in range(first_tbl):
+            l = lines[j].strip()
+            # Если в преамбуле пошли условия поставки или догадки ИИ — останавливаем преамбулу на этом месте
+            if re.match(r"(?i)^(?:[-*•]\s*\*{0,2}(?:Для позиции|Точный товар|Аналог)|Для позиции|#+\s*Условия|Условия\s+поставки)", l):
+                break
+            preamble_lines.append(lines[j])
+
+        # Ищем конец таблицы и отсекаем подтабличные блоки
+        end_tbl = last_tbl
+        for k in range(last_tbl + 1, len(lines)):
+            l = lines[k].strip()
+            if not l:
+                continue
+            if re.match(r"(?i)^(?:[-*•]\s*\*{0,2}(?:Для позиции|Точный товар|Аналог)|#+\s*Условия|Условия\s+поставки)", l):
+                break
+            if "|" in l or re.match(r"^===\s*TABLE", l):
+                end_tbl = k
+            elif k - end_tbl <= 2:
+                # возможное продолжение ячейки таблицы
+                end_tbl = k
+            else:
+                break
+
+        preamble = "\n".join(preamble_lines).strip()
+        table_part = "\n".join(lines[first_tbl : end_tbl + 1]).strip()
+        if preamble:
+            return f"{preamble}\n\n{table_part}"
+        return table_part
+
+    # 3. Документ без таблиц — обычный текст: отсекаем подтабличные блоки
     cutoff = re.search(
         r"(?im)^(?:\s*[-*•]\s*\*{0,2}(?:Для позиции|Точный товар|Аналог\s*\d*)|#+\s*Условия\s+поставки|###?\s*Условия|Условия\s+поставки\s*:)",
         text,
     )
     if cutoff:
-        text = text[: cutoff.start()].strip()
-
-    # 2. HTML-таблица (<table ...>...</table>)
-    if "<table" in text.lower():
-        end_idx = text.lower().rfind("</table>")
-        if end_idx != -1:
-            end_pos = end_idx + len("</table>")
-            start_idx = 0
-            m_title = re.search(
-                r"(?i)(?:ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|#+\s*(?:4\.5\s*)?ТЕХНИЧЕСКОЕ\s+ЗАДАНИЕ|##\s*Спецификация|##\s*Товары)",
-                text[:end_pos],
-            )
-            if m_title:
-                start_idx = m_title.start()
-            return text[start_idx:end_pos].strip()
-
-    # 3. Markdown-таблица (| ... |)
-    lines = text.splitlines()
-    table_line_indices = [
-        i for i, line in enumerate(lines)
-        if line.strip().startswith("|") and line.strip().endswith("|")
-    ]
-    if table_line_indices:
-        first_tbl = table_line_indices[0]
-        last_tbl = first_tbl
-        for idx in table_line_indices[1:]:
-            if idx - last_tbl <= 3:
-                last_tbl = idx
-            else:
-                break
-
-        start_idx = first_tbl
-        for j in range(first_tbl - 1, max(-1, first_tbl - 6), -1):
-            l = lines[j].strip()
-            if not l:
-                continue
-            if any(h in l.lower() for h in ("техническое задание", "спецификация", "товары")) or l.startswith("#") or l.startswith("**"):
-                start_idx = j
-            elif start_idx == first_tbl:
-                start_idx = j
-
-        return "\n".join(lines[start_idx : last_tbl + 1]).strip()
+        return text[: cutoff.start()].strip()
 
     return text
 

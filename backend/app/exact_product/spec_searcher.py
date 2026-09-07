@@ -27,8 +27,19 @@ async def _fetch_search_results_for_specs(query: Union[str, list], max_results: 
     seen_urls = set()
 
     # 1. Yandex Search FIRST (primary engine for Russian B2B, catalogues, factory passports)
-    folder_id = getattr(settings, "yandex_folder_id", "") or ""
-    api_key = getattr(settings, "yandex_api_key", "") or ""
+    import os
+    folder_id = str(
+        getattr(settings, "yandex_search_folder_id", "")
+        or getattr(settings, "yandex_folder_id", "")
+        or os.getenv("AIPOISK_YANDEX_SEARCH_FOLDER_ID", "")
+        or os.getenv("YANDEX_FOLDER_ID", "")
+    ).strip()
+    api_key = str(
+        getattr(settings, "yandex_search_api_key", "")
+        or getattr(settings, "yandex_api_key", "")
+        or os.getenv("AIPOISK_YANDEX_SEARCH_API_KEY", "")
+        or os.getenv("YANDEX_API_KEY", "")
+    ).strip()
 
     if folder_id and api_key:
         yandex = YandexSearchEngine(folder_id, api_key)

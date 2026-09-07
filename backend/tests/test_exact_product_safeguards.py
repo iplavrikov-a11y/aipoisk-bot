@@ -123,3 +123,44 @@ async def test_resolve_clarify_query_budget_cap():
 
             # mock_search should be called at most 2 times
             assert mock_search.call_count == 2
+
+
+def test_isolate_tz_table_content_preserves_table_after_preamble():
+    from app.exact_product.product_brand_detector import isolate_tz_table_content
+
+    raw_text = """ТЕХНИЧЕСКОЕ ЗАДАНИЕ
+Сушилки для рук - Норильск
+Для позиции «Сушилка для рук»:
+- Точный товар: САНАКС, модель 6997
+- Аналог 1: TOSSEN, модель HSD 1310 PS
+- Аналог 2: Санова, модель Климбит
+Условия поставки
+Срок поставки: до 30.10.2026
+
+=== TABLE 1 ===
+№ | Наименование | Характеристики | Ед.изм. | Кол-во
+1 | Сушилка для рук | высота, см: не менее 65; мощность 1500 Вт | шт. | 10
+"""
+    isolated = isolate_tz_table_content(raw_text)
+    assert "TABLE 1" in isolated
+    assert "высота, см: не менее 65" in isolated
+    assert "мощность 1500 Вт" in isolated
+
+
+def test_extract_existing_tz_brand_hints_plain_text():
+    from app.exact_product.matcher import extract_existing_tz_brand_hints
+
+    text = """ТЕХНИЧЕСКОЕ ЗАДАНИЕ
+Сушилки для рук - Норильск
+Для позиции «Сушилка для рук»:
+- Точный товар: САНАКС, модель 6997
+- Аналог 1: TOSSEN, модель HSD 1310 PS
+- Аналог 2: Санова, модель Климбит
+"""
+    hints = extract_existing_tz_brand_hints(text)
+    assert "сушилка для рук" in hints
+    pos = hints["сушилка для рук"]
+    assert pos["brand"] == "САНАКС"
+    assert pos["model"] == "6997"
+    assert any(a["brand"] == "TOSSEN" and a["model"] == "HSD 1310 PS" for a in pos["analogs"])
+

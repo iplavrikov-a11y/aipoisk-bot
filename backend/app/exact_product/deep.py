@@ -1106,9 +1106,9 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
     except Exception as pw_exc:
         logger.debug("playwright_fallback_failed", url=url, error=str(pw_exc))
 
-    # 2. Резервная попытка через crawl4ai
+    # 2. Резервная попытка через crawl4ai (если доступен)
     try:
-        from backend.utils.crawl4ai_adapter import parse_public_url_with_crawl4ai
+        from app.utils.crawl4ai_adapter import parse_public_url_with_crawl4ai  # type: ignore
         payload = await parse_public_url_with_crawl4ai(url)
         content = str((payload or {}).get("content") or "").strip()
         if len(content) > 80:
@@ -1119,6 +1119,8 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
                 "title": f"Каталог / Спецификация ({domain})",
                 "text": content[:25000],
             }
+    except (ImportError, ModuleNotFoundError):
+        pass
     except Exception as exc:
         logger.debug("crawl4ai_fallback_failed", url=url, error=str(exc))
 
@@ -2665,14 +2667,18 @@ async def detect_exact_products_deep(
     try:
         try:
             from app.supplier_search import search_minprom_registry_entries
-        except ImportError:
-            from backend.services.supplier_search_v2 import search_gisp_product_registry_entries as search_minprom_registry_entries
-        gisp_queries = [item_name]
-        if key_params:
-            gisp_pool = " ".join(str(kp).strip() for kp in key_params if str(kp).strip())
-            if gisp_pool:
-                gisp_queries.append(f"{item_name} {gisp_pool[:250]}")
-        gisp_entries = await search_minprom_registry_entries(gisp_queries, max_results=10)
+        except (ImportError, ModuleNotFoundError):
+            try:
+                from ..supplier_search import search_minprom_registry_entries
+            except (ImportError, ModuleNotFoundError):
+                search_minprom_registry_entries = None
+        if search_minprom_registry_entries:
+            gisp_queries = [item_name]
+            if key_params:
+                gisp_pool = " ".join(str(kp).strip() for kp in key_params if str(kp).strip())
+                if gisp_pool:
+                    gisp_queries.append(f"{item_name} {gisp_pool[:250]}")
+            gisp_entries = await search_minprom_registry_entries(gisp_queries, max_results=10)
         if gisp_entries:
             gisp_blocks = ["\n=== ОФИЦИАЛЬНЫЙ РЕЕСТР МИНПРОМТОРГА РФ (ГИСП): ОТЕЧЕСТВЕННЫЕ ПРОИЗВОДИТЕЛИ И МОДЕЛИ ДЛЯ АНАЛОГОВ ==="]
             for g_idx, entry in enumerate(gisp_entries, start=1):
