@@ -507,6 +507,180 @@ async def parse_tz_structure(
     }
 
 
+def extract_tz_requirements_regex(spec_text: str) -> List[Dict[str, str]]:
+    if not spec_text:
+        return []
+    reqs: List[Dict[str, str]] = []
+    seen = set()
+
+    def add_pair(param: str, req: str) -> None:
+        param = param.strip(" \t-–—•")
+        req = req.strip()
+        param_l = param.lower()
+        if not param or not req or len(param_l) < 3 or len(req) < 2:
+            return
+        if param_l in seen:
+            return
+        seen.add(param_l)
+        reqs.append({"param_name": param, "tz_requirement": req})
+
+    colon_pattern = re.compile(
+        r"(?:^|[;\n\r]|(?<=\.)\s)\s*([A-Za-zА-ЯЁа-яё0-9][^:;.\n\r]{2,70}?)\s*:\s*([^:;\n\r]{2,200}?)(?=[;\n\r]|$)",
+        re.MULTILINE,
+    )
+    for m in colon_pattern.finditer(spec_text):
+        add_pair(m.group(1), m.group(2))
+        if len(reqs) >= 25:
+            break
+
+    if len(reqs) < 25:
+        dash_pattern = re.compile(
+            r"(?:^|[;\n\r]|(?<=\.)\s)\s*([A-Za-zА-ЯЁа-яё][\wа-яё \t]{4,60}?)\s*[–—-]\s*((?=[^;\n\r]*\d)[^;\n\r]{2,120}?)(?=[;\n\r]|$)",
+            re.MULTILINE,
+        )
+        for m in dash_pattern.finditer(spec_text):
+            add_pair(m.group(1), m.group(2))
+            if len(reqs) >= 25:
+                break
+
+    return reqs
+
+
+async def extract_tz_requirements(
+    settings: SystemSettings,
+    spec_text: str,
+) -> List[Dict[str, str]]:
+    if not spec_text:
+        return []
+
+    try:
+        tz_struct = await parse_tz_structure(settings, spec_text)
+        if tz_struct and tz_struct.get("positions"):
+            all_reqs = []
+            seen = set()
+            for pos in tz_struct["positions"]:
+                for r in pos.get("requirements") or []:
+                    pk = str(r.get("param_name") or "").strip().lower()
+                    if pk and pk not in seen:
+                        seen.add(pk)
+                        all_reqs.append(r)
+            if all_reqs:
+                return all_reqs
+    except Exception as exc:
+        logger.debug("extract_tz_via_struct_failed: %s", exc)
+
+    try:
+        raw = await call_llm(
+            settings,
+            prompt=_TZ_REQUIREMENTS_LLM_PROMPT.format(spec=str(spec_text or "")[:12000]),
+            system_prompt="Ты извлекаешь требования ТЗ дословно, без выдумывания. Отвечай только валидным JSON-списком.",
+            json_mode=True,
+            tier="light",
+            routing_key="procurement_brand_detection",
+        )
+        if raw:
+            data = parse_json_list(raw)
+            if isinstance(data, list) and data:
+                reqs = []
+                seen = set()
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    p = str(item.get("param_name") or "").strip()
+                    t = str(item.get("tz_requirement") or "").strip()
+                    if p and t and p.lower() not in seen:
+                        seen.add(p.lower())
+                        reqs.append({"param_name": p, "tz_requirement": t})
+                if reqs:
+                    return reqs
+    except Exception as exc:
+        logger.debug("tz_requirements_llm_failed: %s", exc)
+
+    return extract_tz_requirements_regex(spec_text)
+
+
+def extract_existing_tz_brand_hints(text: str, parse_under_table_blocks: bool = True) -> Dict[str, Dict[str, Any]]:
+    t = str(text or "").strip()
+    if not t:
+        return {}
+
+    hints: Dict[str, Dict[str, Any]] = {}
+    if parse_under_table_blocks:
+        pos_blocks = re.split(r'(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:\*\*)?Для позиции\s+[«"\'`]([^»"\'`\n]+)[»"\'`]:?(?:\*\*)?', t)
+        if len(pos_blocks) > 1:
+            for i in range(1, len(pos_blocks), 2):
+                pos_name = pos_blocks[i].strip()
+                block_body = pos_blocks[i + 1] if i + 1 < len(pos_blocks) else ""
+
+                main_m = re.search(r'(?:[-*•]\s*)?(?:\*\*)?Точный товар:?(?:\*\*)?\s*([^\n]+)', block_body)
+                main_desc = main_m.group(1).strip() if main_m else ""
+
+                brand, model, mfr = "", "", ""
+                if main_desc:
+                    mod_m = re.search(r'модель\s+\*\*([^*]+)\*\*|модель\s+([^,]+)', main_desc, re.IGNORECASE)
+                    if mod_m:
+                        model = (mod_m.group(1) or mod_m.group(2) or "").strip()
+                    mfr_m = re.search(r'производитель\s+\*\*([^*]+)\*\*|производитель\s+([^,]+)', main_desc, re.IGNORECASE)
+                    if mfr_m:
+                        mfr = (mfr_m.group(1) or mfr_m.group(2) or "").strip()
+                    b_m = re.search(r'^\s*\*\*([^*]+)\*\*', main_desc)
+                    if b_m:
+                        brand = b_m.group(1).strip()
+                    elif not brand:
+                        first_part = re.split(r',|\bмодель\b|\bпроизводитель\b', main_desc)[0].strip(' *')
+                        if first_part and len(first_part) > 1:
+                            brand = first_part
+
+                brand, mfr, model = _resolve_real_maker_and_model(brand, mfr, model)
+
+                analogs = []
+                for alt_m in re.finditer(r'(?:[-*•]\s*)?(?:\*\*)?Аналог\s*\d*:?(?:\*\*)?\s*([^\n]+)', block_body):
+                    alt_desc = alt_m.group(1).strip()
+                    a_brand, a_model, a_mfr = "", "", ""
+                    a_mod_m = re.search(r'модель\s+\*\*([^*]+)\*\*|модель\s+([^,]+)', alt_desc, re.IGNORECASE)
+                    if a_mod_m:
+                        a_model = (a_mod_m.group(1) or a_mod_m.group(2) or "").strip()
+                    a_mfr_m = re.search(r'производитель\s+\*\*([^*]+)\*\*|производитель\s+([^,]+)', alt_desc, re.IGNORECASE)
+                    if a_mfr_m:
+                        a_mfr = (a_mfr_m.group(1) or a_mfr_m.group(2) or "").strip()
+                    a_b_m = re.search(r'^\s*\*\*([^*]+)\*\*', alt_desc)
+                    if a_b_m:
+                        a_brand = a_b_m.group(1).strip()
+                    else:
+                        a_first = re.split(r',|\bмодель\b|\bпроизводитель\b', alt_desc)[0].strip(' *')
+                        if a_first and len(a_first) > 1:
+                            a_brand = a_first
+
+                    a_brand, a_mfr, a_model = _resolve_real_maker_and_model(a_brand, a_mfr, a_model)
+                    if a_brand and a_model:
+                        analogs.append({"brand": a_brand, "model": a_model, "manufacturer": a_mfr or a_brand})
+
+                if brand or model or mfr or analogs:
+                    hints[pos_name.lower()] = {
+                        "pos_name": pos_name,
+                        "brand": brand,
+                        "model": model,
+                        "manufacturer": mfr,
+                        "analogs": analogs,
+                    }
+
+    return hints
+
+
+def find_hint_for_position(hints: Dict[str, Dict[str, Any]], pos_name: str) -> Optional[Dict[str, Any]]:
+    if not hints:
+        return None
+    pos_lower = str(pos_name or "").lower().strip()
+    if pos_lower in hints:
+        return hints[pos_lower]
+    for k, v in hints.items():
+        if k != "default" and (k in pos_lower or pos_lower in k):
+            return v
+    if len(hints) == 1 and "default" not in hints:
+        return next(iter(hints.values()))
+    return hints.get("default")
+
+
 async def extract_doc_facts(
     settings: SystemSettings,
     doc: Dict[str, Any],
@@ -1236,6 +1410,36 @@ def build_positions_from_ranked(
             "specs_breakdown": a_specs,
         })
 
+    if pos_hint and pos_hint.get("analogs"):
+        existing_alt_names = {
+            f"{(a.get('brand') or '').lower()} {(a.get('model') or '').lower()}".strip()
+            for a in alts
+        }
+        w_b = (brand or "").lower().strip()
+        w_mfr = (manufacturer or "").lower().strip()
+        for ea in pos_hint["analogs"]:
+            if isinstance(ea, dict):
+                ea_brand = str(ea.get("brand") or "").strip()
+                ea_model = str(ea.get("model") or "").strip()
+                ea_mfr = str(ea.get("manufacturer") or ea_brand).strip()
+                ea_key = f"{ea_brand.lower()} {ea_model.lower()}".strip()
+                if (
+                    ea_brand
+                    and ea_key not in existing_alt_names
+                    and ea_brand.lower() not in (w_b, w_mfr)
+                    and (ea_mfr or "").lower() not in (w_b, w_mfr)
+                ):
+                    alts.append({
+                        "brand": ea_brand,
+                        "model": ea_model,
+                        "manufacturer": ea_mfr or ea_brand,
+                        "confidence": 0.85,
+                        "notes": ea.get("notes") or f"Взаимозаменяемый промышленный аналог ({ea_brand} {ea_model}), указанный в закупочной документации.",
+                        "source_url": "",
+                        "specs_breakdown": [],
+                    })
+                    existing_alt_names.add(ea_key)
+
     primary_url = ""
     for d in fused_docs:
         u = str(d.get("url") or "").strip()
@@ -1396,14 +1600,25 @@ async def detect_exact_products_characteristic_first(
         await progress_callback(15, "ИИ-разбор структуры ТЗ: предмет, позиции, характеристики...")
 
     spec_norm = normalize_spec_text(spec_text)
-    tz_structure = await parse_tz_structure(settings, spec_norm)
-    if not tz_structure:
-        return None
+    item_name = ""
+    tz_positions: List[Dict[str, Any]] = []
 
-    item_name = tz_structure.get("item_name") or procurement_title or "Оборудование по ТЗ"
-    tz_positions = tz_structure.get("positions") or []
+    tz_structure = await parse_tz_structure(settings, spec_norm)
+    if tz_structure:
+        item_name = tz_structure.get("item_name") or ""
+        tz_positions = tz_structure.get("positions") or []
+
     if not tz_positions:
-        return None
+        requirements = await extract_tz_requirements(settings, spec_norm)
+        if len(requirements) < 2:
+            return None
+        base_name = item_name or procurement_title or "Оборудование по ТЗ"
+        tz_positions = [{"name": base_name, "requirements": requirements}]
+
+    if not item_name:
+        item_name = procurement_title or "Оборудование по ТЗ"
+
+    tz_brand_hints = extract_existing_tz_brand_hints(full_context or spec_text, parse_under_table_blocks=True)
 
     all_found_positions: List[Dict[str, Any]] = []
     all_found_docs: List[Dict[str, Any]] = []
@@ -1414,10 +1629,28 @@ async def detect_exact_products_characteristic_first(
         if not pos_reqs:
             continue
 
-        hint_b = p_tz.get("brand_hint") or ""
-        hint_mod = p_tz.get("model_hint") or ""
-        hint_mfr = p_tz.get("manufacturer_hint") or ""
-        hint_analogs = p_tz.get("analogs") or []
+        pos_hint = find_hint_for_position(tz_brand_hints, pos_name)
+        hint_b = p_tz.get("brand_hint") or (pos_hint.get("brand") if pos_hint else "") or ""
+        hint_mod = p_tz.get("model_hint") or (pos_hint.get("model") if pos_hint else "") or ""
+        hint_mfr = p_tz.get("manufacturer_hint") or (pos_hint.get("manufacturer") if pos_hint else "") or ""
+        hint_analogs = p_tz.get("analogs") or (pos_hint.get("analogs") if pos_hint else []) or []
+
+        eff_pos_hint = dict(p_tz)
+        if pos_hint:
+            if not eff_pos_hint.get("brand_hint") and pos_hint.get("brand"):
+                eff_pos_hint["brand_hint"] = pos_hint["brand"]
+            if not eff_pos_hint.get("model_hint") and pos_hint.get("model"):
+                eff_pos_hint["model_hint"] = pos_hint["model"]
+            if not eff_pos_hint.get("manufacturer_hint") and pos_hint.get("manufacturer"):
+                eff_pos_hint["manufacturer_hint"] = pos_hint["manufacturer"]
+            if not eff_pos_hint.get("analogs") and pos_hint.get("analogs"):
+                eff_pos_hint["analogs"] = pos_hint["analogs"]
+
+        analogs_str = ", ".join(
+            f"{a.get('brand', '')} {a.get('model', '')}".strip()
+            for a in hint_analogs
+            if isinstance(a, dict)
+        )
 
         # 1. Поисковые запросы через ИИ
         queries = []
@@ -1431,7 +1664,7 @@ async def detect_exact_products_characteristic_first(
                     brand_hint=hint_b,
                     model_hint=hint_mod,
                     manufacturer_hint=hint_mfr,
-                    analogs_hint="",
+                    analogs_hint=analogs_str,
                 ),
                 system_prompt="Ты инженер-эксперт по закупкам. Отвечай только валидным JSON-списком строк.",
                 json_mode=True,
@@ -1451,6 +1684,16 @@ async def detect_exact_products_characteristic_first(
                 f"{pos_name} паспорт PDF",
             ]
 
+        # Прямые запросы по марке/модели и официальному сайту
+        if hint_mod and len(hint_mod) >= 2:
+            clean_item_short = pos_name.split("(")[0].strip()
+            q_mfr = f'"{clean_item_short}" "{hint_mod}" завод производитель'
+            if q_mfr.lower() not in {q.lower() for q in queries}:
+                queries.append(q_mfr)
+            q_site = f'"{clean_item_short}" "{hint_mod}" официальный сайт'
+            if q_site.lower() not in {q.lower() for q in queries}:
+                queries.append(q_site)
+
         # 2. Выполнение поиска в сети
         raw_candidates: List[Any] = []
         for q in queries[:6]:
@@ -1469,11 +1712,18 @@ async def detect_exact_products_characteristic_first(
         if urls:
             docs = await fetch_batch_web_documents(urls, max_docs=_MAX_CANDIDATE_DOCS)
 
-        # 3. Извлечение фактов из документов
+        # 3. Извлечение фактов из документов (параллельно через Semaphore)
         candidates: List[Dict[str, Any]] = []
-        for d in docs:
-            ext = await extract_doc_facts(settings, d, pos_reqs)
-            if ext and ext.get("facts"):
+        if docs:
+            sem = asyncio.Semaphore(4)
+            async def _extract_single(d: Dict[str, Any]) -> Any:
+                async with sem:
+                    return await extract_doc_facts(settings, d, pos_reqs)
+
+            extracted = await asyncio.gather(*(_extract_single(d) for d in docs), return_exceptions=True)
+            for d, ext in zip(docs, extracted):
+                if isinstance(ext, Exception) or not ext or not ext.get("facts"):
+                    continue
                 candidates.append({
                     "doc": d,
                     "brand": ext.get("brand"),
@@ -1539,17 +1789,23 @@ async def detect_exact_products_characteristic_first(
 
             if urls2:
                 docs2 = await fetch_batch_web_documents(urls2, max_docs=6)
-                for d2 in docs2:
+                sem2 = asyncio.Semaphore(4)
+                async def _extract_single2(d: Dict[str, Any]) -> Any:
+                    async with sem2:
+                        return await extract_doc_facts(settings, d, pos_reqs)
+
+                extracted2 = await asyncio.gather(*(_extract_single2(d) for d in docs2), return_exceptions=True)
+                for d2, ext2 in zip(docs2, extracted2):
                     docs.append(d2)
-                    ext2 = await extract_doc_facts(settings, d2, pos_reqs)
-                    if ext2 and ext2.get("facts"):
-                        candidates.append({
-                            "doc": d2,
-                            "brand": ext2.get("brand"),
-                            "model": ext2.get("model"),
-                            "manufacturer": ext2.get("manufacturer"),
-                            "facts": ext2.get("facts") or {},
-                        })
+                    if isinstance(ext2, Exception) or not ext2 or not ext2.get("facts"):
+                        continue
+                    candidates.append({
+                        "doc": d2,
+                        "brand": ext2.get("brand"),
+                        "model": ext2.get("model"),
+                        "manufacturer": ext2.get("manufacturer"),
+                        "facts": ext2.get("facts") or {},
+                    })
 
                 if candidates:
                     candidates = fuse_candidates_by_model(candidates, pos_reqs)
@@ -1578,7 +1834,7 @@ async def detect_exact_products_characteristic_first(
             best = ranked[0] if ranked else None
 
         if best is not None:
-            built = build_positions_from_ranked(ranked, pos_reqs, pos_name, pos_hint=p_tz)
+            built = build_positions_from_ranked(ranked, pos_reqs, pos_name, pos_hint=eff_pos_hint)
             if built:
                 built[0]["position_no"] = pos_idx
                 all_found_positions.extend(built)

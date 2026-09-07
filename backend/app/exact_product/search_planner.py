@@ -823,7 +823,8 @@ async def auto_fill_ai_recommendations(
         for brand_name, model_name, mfr_name, specs_list in targets:
             missing_specs = [
                 s for s in specs_list
-                if s.status == "clarify" or "не указано" in s.product_fact.lower() or not s.product_fact.strip()
+                if (s.status == "clarify" or "не указано" in s.product_fact.lower() or not s.product_fact.strip())
+                and not (s.tz_requirement.strip().lower() == "по спецификации тз" and ("отечественный" in brand_name.lower() or "оборудование" in brand_name.lower()))
             ]
             if not missing_specs:
                 continue

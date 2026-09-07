@@ -613,17 +613,56 @@ class PartnerPayoutRequest(Base):
     client: Mapped[Client] = relationship(foreign_keys=[client_id])
 
 
-def parse_json_list(value: str) -> list[dict]:
+def parse_json_safely(raw_text: str) -> dict | list | None:
+    if not raw_text or not isinstance(raw_text, str):
+        return None
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
     try:
-        parsed = json.loads(value or "[]")
+        data = json.loads(cleaned)
+        if isinstance(data, (dict, list)):
+            return data
     except Exception:
-        return []
-    return parsed if isinstance(parsed, list) else []
+        pass
+
+    # Extract dict {...}
+    start_dict = cleaned.find("{")
+    end_dict = cleaned.rfind("}")
+    if start_dict != -1 and end_dict > start_dict:
+        try:
+            data = json.loads(cleaned[start_dict : end_dict + 1])
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    # Extract list [...]
+    start_list = cleaned.find("[")
+    end_list = cleaned.rfind("]")
+    if start_list != -1 and end_list > start_list:
+        try:
+            data = json.loads(cleaned[start_list : end_list + 1])
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+
+    return None
+
+
+def parse_json_list(value: str) -> list[dict]:
+    res = parse_json_safely(value)
+    return res if isinstance(res, list) else []
 
 
 def parse_json_dict(value: str) -> dict:
-    try:
-        parsed = json.loads(value or "{}")
-    except Exception:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    res = parse_json_safely(value)
+    return res if isinstance(res, dict) else {}
+

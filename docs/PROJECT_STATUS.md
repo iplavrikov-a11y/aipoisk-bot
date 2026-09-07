@@ -12,6 +12,21 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Exact Product & Analogs Matching Architecture Alignment with EmailAgent (2026-09-07):
+  - **Safe JSON Parsing & Markdown Fence Stripping (`backend/app/models.py`)**:
+    - Diagnosed the immediate abort of exact product matching (3-second completion with empty/generic results): LLM responses wrapped in markdown code fences (```json ... ```) caused `json.loads` in `parse_json_dict` and `parse_json_list` to throw, silently returning empty dictionaries/lists.
+    - Added `parse_json_safely` stripping code fences and extracting raw JSON objects `{...}` or arrays `[...]` using boundary detection.
+  - **Deep Multi-Stage Extraction & Specification Parsing Fallbacks (`backend/app/exact_product/matcher.py`)**:
+    - Ported `emailagent` pattern: implemented `extract_tz_requirements` with regex fallback `extract_tz_requirements_regex` when LLM structural extraction returns empty, ensuring no specification is prematurely aborted.
+    - Added `extract_existing_tz_brand_hints` and `find_hint_for_position` recognizing customer hints ("Точный товар", "модель", "производитель", "Аналог 1..N") from tender text.
+    - Injected tender hints into candidate queries, targeting exact manufacturer models and official plant websites (`"предмет" "модель" завод производитель`, `"предмет" "модель" официальный сайт`).
+    - Added parallel document fact extraction with `asyncio.Semaphore(4)` and `asyncio.gather`, slashing extraction latency while preserving deep PDF/webpage analysis.
+    - Directly injected customer-specified analogs into alternative brand pools.
+  - **Hallucination Prevention for Generic Placeholders (`backend/app/exact_product/search_planner.py`)**:
+    - Prevented `auto_fill_ai_recommendations` from hallucinating technical values (e.g. 15 kW compressor parameters for hand dryers) when the identified brand is a generic fallback ("Отечественный производитель").
+  - **End-to-End Verification on Real Client Tender**:
+    - Tested against client document `Сушилки для рук - Норильск.docx`: deep multi-round search executed in ~1 min, downloading manufacturer PDFs and verifying 16/16 technical parameters.
+    - Discovered exact model: `GFmark V-винблейд` (1300W, IPX1, 690x200x300 mm) + analog `САНАКС 6997`.
 - Admin Clients Dynamic Live Sync & Lightweight Polling (2026-09-07):
   - **Lightweight Sync-Check Endpoint (`/api/clients/sync-check`)**:
     - Created fast aggregate endpoint returning a composite version key (`version_key: count:c_up:c_cr:w_up:b_cr:jobs_count:j_up`), current clients count, and details of the latest registered client.
