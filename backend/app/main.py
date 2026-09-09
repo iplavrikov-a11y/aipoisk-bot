@@ -5128,29 +5128,31 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "sources": [source_to_dict(item) for item in job.sources],
     }
     if db and not getattr(job, "is_admin_rerun", False):
-        child_rerun = (
+        child_reruns = (
             db.query(Job)
             .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
             .order_by(Job.created_at.desc())
-            .first()
+            .all()
         )
-        if child_rerun:
-            child_files = admin_job_result_files(child_rerun)
-            data["admin_rerun"] = {
-                "id": child_rerun.id,
-                "job_number": getattr(child_rerun, "job_number", None),
-                "status": child_rerun.status,
-                "progress": child_rerun.progress,
-                "message": child_rerun.message,
-                "verified_count": getattr(child_rerun, "verified_count", 0) or 0,
-                "files": child_files,
-                "yandex_requests_count": getattr(child_rerun, "yandex_requests_count", 0) or 0,
-                "yandex_cost_rub": getattr(child_rerun, "yandex_cost_rub", 0.0) or 0.0,
-                "created_at": child_rerun.created_at.isoformat() if child_rerun.created_at else None,
+        data["admin_reruns"] = [
+            {
+                "id": r.id,
+                "job_number": getattr(r, "job_number", None),
+                "status": r.status,
+                "progress": r.progress,
+                "message": r.message,
+                "verified_count": getattr(r, "verified_count", 0) or 0,
+                "files": admin_job_result_files(r),
+                "yandex_requests_count": getattr(r, "yandex_requests_count", 0) or 0,
+                "yandex_cost_rub": getattr(r, "yandex_cost_rub", 0.0) or 0.0,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
             }
-        else:
-            data["admin_rerun"] = None
+            for r in child_reruns
+        ]
+        data["admin_rerun"] = data["admin_reruns"][0] if data["admin_reruns"] else None
     else:
+        data["admin_reruns"] = []
         data["admin_rerun"] = None
     if include_files:
         data["files"] = [file_to_dict(item) for item in job.files]
@@ -5160,15 +5162,27 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
 
 def admin_job_result_files(job: Job) -> list[dict]:
     result: list[dict] = []
+    default_time = (
+        job.completed_at.isoformat()
+        if getattr(job, "completed_at", None)
+        else (job.created_at.isoformat() if getattr(job, "created_at", None) else None)
+    )
     if getattr(job, "evidence_path", None) or getattr(job, "status", "") == "completed":
         for item in package_job_output_items(job):
             path = Path(str(item.get("path") or ""))
             kind = str(item.get("kind") or path.stem).strip()
+            file_time = default_time
+            if path.exists():
+                try:
+                    file_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+                except Exception:
+                    pass
             result.append(
                 {
                     "kind": kind,
                     "label": _customer_result_file_label(kind, str(item.get("label") or "")),
                     "filename": path.name,
+                    "created_at": file_time,
                 }
             )
     for supp in get_job_admin_supplements(job):
@@ -5178,6 +5192,7 @@ def admin_job_result_files(job: Job) -> list[dict]:
                 "label": supp["label"],
                 "filename": supp["name"],
                 "is_admin_supplement": True,
+                "created_at": supp.get("created_at") or default_time,
             }
         )
     return result
@@ -5190,6 +5205,7 @@ def file_to_dict(file: JobFile) -> dict:
         "parse_status": file.parse_status,
         "extracted_chars": file.extracted_chars,
         "error": file.error,
+        "created_at": file.created_at.isoformat() if getattr(file, "created_at", None) else None,
     }
 
 

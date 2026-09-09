@@ -272,18 +272,22 @@ type Job = {
   sources?: JobSource[]
   parent_job_id?: string
   is_admin_rerun?: boolean
-  admin_rerun?: {
-    id: string
-    job_number?: number | null
-    status: string
-    progress: number
-    message: string
-    verified_count?: number
-    files: JobResultFile[]
-    yandex_requests_count?: number
-    yandex_cost_rub?: number
-    created_at?: string | null
-  } | null
+  admin_rerun?: JobAdminRerunInfo | null
+  admin_reruns?: JobAdminRerunInfo[]
+}
+
+type JobAdminRerunInfo = {
+  id: string
+  job_number?: number | null
+  status: string
+  progress: number
+  message: string
+  verified_count?: number
+  files: JobResultFile[]
+  yandex_requests_count?: number
+  yandex_cost_rub?: number
+  created_at?: string | null
+  completed_at?: string | null
 }
 
 type JobResultOffer = {
@@ -305,6 +309,7 @@ type JobResultFile = {
   kind: string
   label: string
   filename: string
+  created_at?: string | null
 }
 
 type JobInputFile = {
@@ -313,6 +318,7 @@ type JobInputFile = {
   parse_status: string
   extracted_chars: number
   error: string
+  created_at?: string | null
 }
 
 type JobSource = {
@@ -5242,9 +5248,13 @@ function JobsView({
           const hasInput = inputFiles.length > 0 || inputSources.length > 0 || job.file_count > 0
           const primaryReport = getPrimaryReport(job)
           const isLegacyArchive = !primaryReport && hasResult
-          const adminRerunFiles = (job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files) || []
+          const completedAdminReruns = (job.admin_reruns && job.admin_reruns.length > 0
+            ? job.admin_reruns.filter(r => r.status === 'completed' && r.files && r.files.length > 0)
+            : (job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files ? [job.admin_rerun] : [])
+          )
+          const allAdminFilesCount = completedAdminReruns.reduce((acc, r) => acc + (r.files ? r.files.length : 0), 0)
           const clientResultFiles = job.result_files || []
-          const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + adminRerunFiles.length
+          const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + allAdminFilesCount
           const isFilesDropdownOpen = activeFilesDropdownJobId === job.id
 
           return (
@@ -5439,42 +5449,69 @@ function JobsView({
                         </div>
 
                         <div className="dropdown-popover-body">
-                          {/* Admin Rerun Files */}
-                          {adminRerunFiles.length > 0 && (
-                            <div className="dropdown-popover-section admin-section">
-                              <div className="dropdown-section-title">
-                                <Crown size={12} />
-                                <span>Экспертный админ-итог ({job.admin_rerun?.verified_count || 0} пост.)</span>
-                              </div>
-                              {adminRerunFiles.map(file => (
-                                <button
-                                  key={`admin-${file.kind}`}
-                                  type="button"
-                                  className="dropdown-file-item admin-item"
-                                  onClick={() => {
-                                    void download({ id: job.admin_rerun!.id } as Job, file)
-                                    setActiveFilesDropdownJobId(null)
-                                  }}
-                                  title={file.filename}
-                                >
-                                  <div className="dropdown-file-info">
-                                    <span className="file-kind-badge admin">
-                                      {file.filename?.endsWith('.docx') || file.kind === 'docx' ? 'DOCX' : 'XLSX'}
+                          {/* Admin Reruns (all expert results) */}
+                          {completedAdminReruns.map((rerun, rIdx) => {
+                            const files = rerun.files || []
+                            if (files.length === 0) return null
+                            const isLatest = rIdx === 0 && completedAdminReruns.length > 1
+                            const dateLabel = rerun.completed_at || rerun.created_at
+                            return (
+                              <div key={`rerun-${rerun.id}`} className="dropdown-popover-section admin-section">
+                                <div className="dropdown-section-title">
+                                  <div className="dropdown-title-left">
+                                    <Crown size={12} />
+                                    <span>
+                                      Экспертный итог {rerun.job_number ? `#${rerun.job_number} ` : ''}
+                                      ({rerun.verified_count || 0} {job.mode === 'exact_product' ? 'тов.' : 'пост.'})
+                                      {isLatest ? ' · Свежий' : ''}
                                     </span>
-                                    <span className="file-name">{file.label} (Админ)</span>
                                   </div>
-                                  <Download size={12} className="download-icon" />
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                                  {dateLabel && (
+                                    <span className="dropdown-section-time">{formatDate(dateLabel)}</span>
+                                  )}
+                                </div>
+                                {files.map(file => (
+                                  <button
+                                    key={`admin-${rerun.id}-${file.kind}`}
+                                    type="button"
+                                    className="dropdown-file-item admin-item"
+                                    onClick={() => {
+                                      void download({ id: rerun.id } as Job, file)
+                                      setActiveFilesDropdownJobId(null)
+                                    }}
+                                    title={file.filename}
+                                  >
+                                    <div className="dropdown-file-info">
+                                      <span className="file-kind-badge admin">
+                                        {file.filename?.endsWith('.docx') || file.kind === 'docx' ? 'DOCX' : 'XLSX'}
+                                      </span>
+                                      <span className="file-name">{file.label} (Админ)</span>
+                                    </div>
+                                    <div className="dropdown-file-meta">
+                                      {(file.created_at || dateLabel) && (
+                                        <span className="dropdown-file-time">
+                                          {formatDate(file.created_at || dateLabel)}
+                                        </span>
+                                      )}
+                                      <Download size={12} className="download-icon" />
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )
+                          })}
 
                           {/* Client Result Files */}
                           {clientResultFiles.length > 0 && (
                             <div className="dropdown-popover-section">
                               <div className="dropdown-section-title">
-                                <FileCheck size={12} />
-                                <span>{adminRerunFiles.length > 0 ? 'Исходные отчеты клиента' : 'Итоговые отчеты'}</span>
+                                <div className="dropdown-title-left">
+                                  <FileCheck size={12} />
+                                  <span>{completedAdminReruns.length > 0 ? 'Исходные отчеты клиента' : 'Итоговые отчеты'}</span>
+                                </div>
+                                {(job.completed_at || job.created_at) && (
+                                  <span className="dropdown-section-time">{formatDate(job.completed_at || job.created_at)}</span>
+                                )}
                               </div>
                               {clientResultFiles.map(file => (
                                 <button
@@ -5493,7 +5530,14 @@ function JobsView({
                                     </span>
                                     <span className="file-name">{file.label}</span>
                                   </div>
-                                  <Download size={12} className="download-icon" />
+                                  <div className="dropdown-file-meta">
+                                    {(file.created_at || job.completed_at || job.created_at) && (
+                                      <span className="dropdown-file-time">
+                                        {formatDate(file.created_at || job.completed_at || job.created_at)}
+                                      </span>
+                                    )}
+                                    <Download size={12} className="download-icon" />
+                                  </div>
                                 </button>
                               ))}
                             </div>
@@ -5503,8 +5547,13 @@ function JobsView({
                           {inputFiles.length > 0 && (
                             <div className="dropdown-popover-section">
                               <div className="dropdown-section-title">
-                                <FileText size={12} />
-                                <span>Входные материалы клиента</span>
+                                <div className="dropdown-title-left">
+                                  <FileText size={12} />
+                                  <span>Входные материалы клиента</span>
+                                </div>
+                                {job.created_at && (
+                                  <span className="dropdown-section-time">{formatDate(job.created_at)}</span>
+                                )}
                               </div>
                               {inputFiles.map(file => (
                                 <button
@@ -5521,7 +5570,14 @@ function JobsView({
                                     <span className="file-kind-badge input">ТЗ</span>
                                     <span className="file-name" title={file.original_filename}>{file.original_filename}</span>
                                   </div>
-                                  <Download size={12} className="download-icon" />
+                                  <div className="dropdown-file-meta">
+                                    {(file.created_at || job.created_at) && (
+                                      <span className="dropdown-file-time">
+                                        {formatDate(file.created_at || job.created_at)}
+                                      </span>
+                                    )}
+                                    <Download size={12} className="download-icon" />
+                                  </div>
                                 </button>
                               ))}
                             </div>
@@ -5897,6 +5953,11 @@ function AdminSupplementModal({
                                     {cand.is_admin_rerun && (
                                       <span style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
                                         👑 Доработка
+                                      </span>
+                                    )}
+                                    {cand.created_at && (
+                                      <span style={{ fontSize: 11, color: '#64748b' }}>
+                                        · {formatDate(cand.created_at)}
                                       </span>
                                     )}
                                   </div>
