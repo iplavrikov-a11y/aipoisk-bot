@@ -136,11 +136,11 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                     text = f"{text.strip()}\n\n{media_ocr}".strip() if cleaned else media_ocr
                     return text, "docx_ocr_ok"
 
-                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
-                lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
-                if lo_pdf_ocr.strip():
-                    text = f"{text.strip()}\n\n{lo_pdf_ocr}".strip() if cleaned else lo_pdf_ocr
-                    return text, "docx_pdf_ocr_ok"
+                if not cleaned:
+                    pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                    lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
+                    if lo_pdf_ocr.strip():
+                        return lo_pdf_ocr, "docx_pdf_ocr_ok"
 
             if _clean_text(text):
                 return text, status
@@ -169,8 +169,9 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
             return text, "ok" if text.strip() else "parser_not_connected_yet"
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
-            if len(_clean_text(text)) < 80 and options.get("ocr_enabled"):
-                ocr_text = _extract_pdf_ocr(file_path, int(options.get("pdf_ocr_pages") or 0))
+            if _pdf_needs_ocr(file_path, text) and options.get("ocr_enabled"):
+                max_pages = max(int(options.get("pdf_ocr_pages") or 20), 20)
+                ocr_text = _extract_pdf_ocr(file_path, max_pages)
                 if ocr_text.strip():
                     return ocr_text, "pdf_ocr_ok"
             return text, "ok"
@@ -308,6 +309,47 @@ def _extract_xlsx(path: Path) -> str:
     return "\n".join(blocks)
 
 
+SIGNATURE_AND_STAMP_PATTERNS = (
+    r"ДОКУМЕНТ\s+ПОДПИСАН(?:\s+УКЭП)?(?:\s+ЭЛЕКТРОННОЙ\s+ПОДПИСЬЮ)?",
+    r"СВЕДЕНИЯ\s+О\s+СЕРТИФИКАТЕ(?:\s+ЭП)?",
+    r"Сертификат:\s*[0-9A-Fa-f\s]+",
+    r"Владелец:\s*[^\n]+",
+    r"Срок\s+действия(?:\s+с\s+[0-9.]+\s+по\s+[0-9.]+)?",
+    r"Акционерное\s+общество\s+[\"«]Гринатом[\"»]",
+    r"Федеральное\s+казначейство",
+    r"Квалифицированный\s+сертификат",
+)
+
+
+def _strip_signatures_and_stamps(text: str) -> str:
+    cleaned = str(text or "")
+    for pat in SIGNATURE_AND_STAMP_PATTERNS:
+        cleaned = re.sub(pat, " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _pdf_needs_ocr(path: Path, text: str) -> bool:
+    clean_substantive = _clean_text(_strip_signatures_and_stamps(text))
+    if len(clean_substantive) < 80:
+        return True
+    try:
+        import fitz
+
+        doc = fitz.open(str(path))
+        total_pages = len(doc)
+        if total_pages >= 2:
+            scanned_pages = 0
+            for page in doc:
+                p_text = _clean_text(_strip_signatures_and_stamps(page.get_text("text")))
+                if len(p_text) < 50 and len(page.get_images()) > 0:
+                    scanned_pages += 1
+            if scanned_pages / total_pages >= 0.3:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _extract_pdf(path: Path) -> str:
     try:
         import pdf_inspector
@@ -315,7 +357,8 @@ def _extract_pdf(path: Path) -> str:
         res = pdf_inspector.process_pdf(str(path))
         if res and res.markdown and not res.has_encoding_issues and res.pdf_type != "scanned":
             text = str(res.markdown or "").strip()
-            if len(text) > 50:
+            # If markdown is only digital signature metadata, do not treat as complete text
+            if len(_clean_text(_strip_signatures_and_stamps(text))) > 80:
                 return text
     except Exception:
         pass
@@ -413,12 +456,27 @@ def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
         with tempfile.TemporaryDirectory(prefix="aipoisk-pdf-ocr-") as tmp:
             for page_index in range(min(max_pages, len(doc))):
                 page = doc[page_index]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                image_path = Path(tmp) / f"page-{page_index + 1}.png"
-                pix.save(str(image_path))
-                page_text = _extract_image_ocr(image_path)
-                if page_text.strip():
-                    texts.append(f"\n=== OCR PAGE {page_index + 1} ===\n{page_text}")
+                page_raw = page.get_text("text").strip()
+                substantive = _clean_text(_strip_signatures_and_stamps(page_raw))
+                images = page.get_images()
+
+                # If page already has rich digital text or has no images, keep it directly
+                if (not images and page_raw) or len(substantive) >= 80:
+                    texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
+                    continue
+
+                # If page is empty scan or has images with negligible text, OCR the page
+                if images or not page_raw:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image_path = Path(tmp) / f"page-{page_index + 1}.png"
+                    pix.save(str(image_path))
+                    page_text = _extract_image_ocr(image_path)
+                    if page_text.strip():
+                        texts.append(f"\n=== OCR PAGE {page_index + 1} ===\n{page_text.strip()}")
+                    elif page_raw:
+                        texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
+                elif page_raw:
+                    texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
         return "\n".join(texts)
     except Exception:
         return ""
@@ -580,13 +638,22 @@ def is_substantive_tz_text(text: str) -> tuple[bool, str]:
             has_placeholder = True
             stripped_placeholder = re.sub(pat, " ", stripped_placeholder, flags=re.IGNORECASE)
 
+    has_signature = False
+    for pat in SIGNATURE_AND_STAMP_PATTERNS:
+        if re.search(pat, stripped_placeholder, flags=re.IGNORECASE):
+            has_signature = True
+            stripped_placeholder = re.sub(pat, " ", stripped_placeholder, flags=re.IGNORECASE)
+
     meaningful_chars = re.sub(r"[\s\W_]+", "", stripped_placeholder, flags=re.UNICODE)
 
     if has_placeholder and len(meaningful_chars) < 25:
         return False, "В документе нет содержимого (обнаружен шаблон «Введите текст технического задания...»). Загрузите файл с сохранённым текстом ТЗ или характеристиками товара."
 
-    if len(meaningful_chars) < 5:
-        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 5 значимых символов). Загрузите файл со спецификацией."
+    if has_signature and len(meaningful_chars) < 25:
+        return False, "В документе отсутствуют требования к товару (обнаружен только штамп электронной подписи). Загрузите файл со спецификацией или текстом ТЗ."
+
+    if len(meaningful_chars) < 10:
+        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 10 значимых символов). Загрузите файл со спецификацией."
 
     return True, "ok"
 

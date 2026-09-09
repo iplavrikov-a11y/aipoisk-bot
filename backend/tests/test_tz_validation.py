@@ -52,6 +52,21 @@ def test_is_substantive_tz_text_real_procurement():
     assert err == "ok"
 
 
+def test_is_substantive_tz_text_rejects_electronic_signature_only():
+    sig_text = """
+    === FILE: ЗЗК (166-1231856) Т2 - Тех. часть.pdf ===
+    ДОКУМЕНТ ПОДПИСАН УКЭП ЭЛЕКТРОННОЙ ПОДПИСЬЮ
+    СВЕДЕНИЯ О СЕРТИФИКАТЕ ЭП
+    Акционерное общество "Гринатом",
+    Сертификат: 06 DA AB D4 00 D2 B3 C4 83 4C C0 EC F5 98 AF A7 A9
+    Владелец: easelezneva@vniia.ru
+    Срок действия с 14.01.2026 по 14.04.2027
+    """
+    ok, err = is_substantive_tz_text(sig_text)
+    assert not ok
+    assert "электронной подписи" in err.lower() or "недостаточно данных" in err.lower()
+
+
 @pytest.mark.asyncio
 async def test_analyze_exact_product_rejects_empty_or_placeholder():
     settings = SystemSettings()
@@ -61,3 +76,21 @@ async def test_analyze_exact_product_rejects_empty_or_placeholder():
             context="=== FILE: Органайзеры - Обнинск.docx ===\n\nВведите текст технического задания...",
             procurement_title="Органайзеры - Обнинск",
         )
+
+
+def test_normalize_procurement_profile_filters_generic_names():
+    from app.supplier_search import _normalize_procurement_profile
+
+    raw = {
+        "summary": "предмет закупки не определен",
+        "items": [
+            {"id": "item-1", "name": "не определено", "category_terms": ["оборудование"]},
+            {"id": "item-2", "name": "undefined", "category_terms": ["прочее"]},
+            {"id": "item-3", "name": "Зачистная машина", "category_terms": ["станки"]},
+        ],
+    }
+    profile = _normalize_procurement_profile(raw)
+    assert len(profile.items) == 1
+    assert profile.items[0].name == "Зачистная машина"
+    assert profile.summary == ""
+
