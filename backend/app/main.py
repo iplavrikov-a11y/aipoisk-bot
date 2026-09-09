@@ -957,13 +957,15 @@ def customer_jobs_api(
     clean_q = str(q or "").strip()
     if clean_q:
         pattern = f"%{clean_q}%"
-        query = query.filter(
-            or_(
-                func.coalesce(Job.title, "").ilike(pattern),
-                func.coalesce(Job.message, "").ilike(pattern),
-                Job.files.any(JobFile.original_filename.ilike(pattern)),
-            )
-        )
+        filters = [
+            func.coalesce(Job.title, "").ilike(pattern),
+            func.coalesce(Job.message, "").ilike(pattern),
+            Job.files.any(JobFile.original_filename.ilike(pattern)),
+        ]
+        clean_num = clean_q.lstrip("#").strip()
+        if clean_num.isdigit():
+            filters.append(Job.job_number == int(clean_num))
+        query = query.filter(or_(*filters))
     clean_mode = str(mode or "").strip()
     if clean_mode in {MODE_SUPPLIER_SEARCH, MODE_EXACT_PRODUCT, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS}:
         query = query.filter(Job.mode == clean_mode)
@@ -3594,6 +3596,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         status_lbl = "нет в реестре"
     data = {
         "id": job.id,
+        "job_number": getattr(job, "job_number", None),
         "client_id": job.client_id,
         "mode": job.mode,
         "mode_label": mode_label(job.mode),

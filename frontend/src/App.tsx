@@ -4978,6 +4978,16 @@ function JobsView({
   }, [showInternalJobs, clientFilter, statusFilter, modeFilter, policyFilter, normalizedQuery])
 
   async function adminRerun(job: Job) {
+    if (job.admin_rerun && (job.admin_rerun.status === 'pending' || job.admin_rerun.status === 'running')) {
+      alert(`По задаче #${job.job_number || job.id} уже выполняется экспертный перерасчет (${job.admin_rerun.progress}%). Дождитесь завершения.`)
+      return
+    }
+    if (job.admin_rerun && job.admin_rerun.status === 'completed') {
+      const ok = window.confirm(
+        `По задаче #${job.job_number || job.id} уже есть готовый админ-итог (${job.admin_rerun.verified_count || 0} пост.).\n\nЗапустить новый перерасчет? В карточке отобразится самый свежий результат.`
+      )
+      if (!ok) return
+    }
     try {
       await api(`/api/jobs/${job.id}/admin-rerun`, { method: 'POST' })
       await onChange()
@@ -5214,7 +5224,7 @@ function JobsView({
                 </p>
               </div>
               <div className="job-card-top-right">
-                <JobTimeline job={job} hasInput={hasInput} />
+                {job.status !== 'completed' && <JobTimeline job={job} hasInput={hasInput} />}
                 <div className="job-card-actions">
                   {hasResult && !job.result_files?.length && (
                     <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={13} /></button>
@@ -5235,10 +5245,21 @@ function JobsView({
                   </button>
                   <button
                     className="icon-button small"
+                    disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
                     onClick={() => void adminRerun(job)}
-                    title="Экспертный перезапуск администратора (создает новую доработанную задачу без затирания исходного отчета клиента)"
+                    title={
+                      job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
+                        ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
+                        : job.admin_rerun?.status === 'completed'
+                        ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
+                        : 'Экспертный перезапуск администратора (создает новую доработанную задачу без затирания исходного отчета клиента)'
+                    }
                   >
-                    <Play size={13} />
+                    {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
+                      <Loader2 size={13} className="spin" />
+                    ) : (
+                      <Play size={13} />
+                    )}
                   </button>
                 </div>
               </div>
@@ -5268,15 +5289,6 @@ function JobsView({
                 {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
                 {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
                 {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
-                {(job.ai_model || job.ai_provider_name || job.ai_provider) && (
-                  <span
-                    className="badge-pill ai-model"
-                    title={`ИИ: ${job.ai_provider_name || job.ai_provider || 'Провайдер не указан'} · Модель: ${job.ai_model || 'не указана'}`}
-                  >
-                    <BrainCircuit size={12} className="pill-icon" />
-                    <span className="pill-label">{job.ai_label || [job.ai_provider_name || job.ai_provider, job.ai_model].filter(Boolean).join(' · ')}</span>
-                  </span>
-                )}
                 <span className="badge-pill count">
                   {job.mode === 'procurement_report'
                     ? 'Анализ ТЗ'

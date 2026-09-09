@@ -127,6 +127,7 @@ type SessionPayload = {
 
 type CustomerJob = {
   id: string;
+  job_number?: number | null;
   mode: JobMode;
   mode_label: string;
   supplier_search_policy?: string;
@@ -2427,7 +2428,7 @@ export function CabinetClient() {
               type="text"
               value={jobSearchQuery}
               onChange={(e) => setJobSearchQuery(e.target.value)}
-              placeholder="Поиск по названию задачи..."
+              placeholder="Поиск по названию или номеру #..."
               className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all font-medium shadow-2xs"
             />
             {jobSearchQuery ? (
@@ -2526,6 +2527,11 @@ export function CabinetClient() {
                 >
                   <div className="col-span-12 md:col-span-3 flex flex-col gap-0.5 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      {job.job_number ? (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-bold bg-slate-200/90 text-slate-700 select-all shrink-0" title={`Номер задачи: #${job.job_number}`}>
+                          #{job.job_number}
+                        </span>
+                      ) : null}
                       <strong className="font-bold text-xs text-slate-900 leading-snug break-words">{job.human_title}</strong>
                       {isUnviewed ? (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-600 text-white animate-pulse shadow-2xs shrink-0">

@@ -181,6 +181,7 @@ class JobProgressSnapshot:
     message: str
     error: str
     created_at: datetime | None
+    job_number: int | None = None
     confirmation_kind: str = ""
     confirmation_outcome: str = ""
     offer_delivery_outcome: str = ""
@@ -909,27 +910,28 @@ def _progress_bar(progress: int) -> str:
 
 
 def _progress_heading(snapshot: JobProgressSnapshot) -> str:
+    num_suffix = f" (#{snapshot.job_number})" if getattr(snapshot, "job_number", None) else ""
     if snapshot.status == "cancelled":
-        return "⛔ Задача отменена"
+        return f"⛔ Задача отменена{num_suffix}"
     if snapshot.status == "failed":
-        return "⚠️ Не удалось подготовить файл"
+        return f"⚠️ Не удалось подготовить файл{num_suffix}"
     if snapshot.status == STATUS_AWAITING_CUSTOMER_CONFIRMATION:
-        return "⚠️ Нужно подтвердить выдачу отчёта"
+        return f"⚠️ Нужно подтвердить выдачу отчёта{num_suffix}"
     if snapshot.status == STATUS_CUSTOMER_DECLINED:
-        return "Отчёт не отправлен"
+        return f"Отчёт не отправлен{num_suffix}"
     if snapshot.status == STATUS_CONFIRMATION_EXPIRED:
-        return "Подтверждение истекло"
+        return f"Подтверждение истекло{num_suffix}"
     if snapshot.status == "delivery_expired":
-        return "Срок выдачи результата истёк"
+        return f"Срок выдачи результата истёк{num_suffix}"
     if snapshot.status == "partial":
-        return "✅ Готово частично"
+        return f"✅ Готово частично{num_suffix}"
     if snapshot.status in {"completed", "needs_review"}:
-        return "✅ Файл готов"
+        return f"✅ Файл готов{num_suffix}"
     if snapshot.mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return "📄🔎 Готовлю анализ и поставщиков"
+        return f"📄🔎 Готовлю анализ и поставщиков{num_suffix}"
     if snapshot.mode == MODE_PROCUREMENT_REPORT:
-        return "📄 Анализирую документацию"
-    return "🔎 Ищу поставщиков"
+        return f"📄 Анализирую документацию{num_suffix}"
+    return f"🔎 Ищу поставщиков{num_suffix}"
 
 
 def _friendly_stage_text(message: str) -> str:
@@ -1216,6 +1218,7 @@ def _job_snapshot(job: Job, db=None) -> JobProgressSnapshot:
         message=job.message,
         error=job.error,
         created_at=job.created_at,
+        job_number=getattr(job, "job_number", None),
         confirmation_kind=confirmation_kind,
         confirmation_outcome=str((offer or {}).get("decision_outcome") or getattr(job, "confirmation_outcome", "") or ""),
         offer_delivery_outcome=str((offer or {}).get("delivery_outcome") or getattr(job, "offer_delivery_outcome", "") or ""),
@@ -2935,6 +2938,7 @@ def format_exact_product_telegram_summary(report_data: dict) -> str:
 
 
 def _output_caption_for_item(mode: str, kind: str, output: Path, job: Job | None = None) -> str:
+    prefix = f"Задача #{job.job_number} · " if (job and getattr(job, "job_number", None)) else ""
     if kind in {"exact_product", "exact_product_table", "exact_product_spec", "spec", "table"} or mode == MODE_EXACT_PRODUCT:
         if job and getattr(job, "evidence_path", None):
             try:
@@ -2945,17 +2949,17 @@ def _output_caption_for_item(mode: str, kind: str, output: Path, job: Job | None
                     if isinstance(ep_data, dict):
                         summary_card = format_exact_product_telegram_summary(ep_data)
                         if summary_card:
-                            return summary_card
+                            return f"📄 {prefix}{summary_card}" if prefix else summary_card
             except Exception:
                 pass
-        return "Подбор товара, характеристики и аналоги во вложении."
+        return f"{prefix}Подбор товара, характеристики и аналоги во вложении."
     if kind == "quote_request":
-        return "Запрос КП во вложении."
+        return f"{prefix}Запрос КП во вложении."
     if kind == "analysis":
-        return "Анализ документации во вложении."
+        return f"{prefix}Анализ документации во вложении."
     if kind == "suppliers":
-        return "Поставщики по ТЗ во вложении."
-    return _output_caption(mode, output)
+        return f"{prefix}Поставщики по ТЗ во вложении."
+    return f"{prefix}{_output_caption(mode, output)}"
 
 
 def _output_caption(mode: str, output: Path) -> str:
