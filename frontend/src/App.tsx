@@ -14,7 +14,9 @@ import {
   Database,
   Download,
   ExternalLink,
+  FileCheck,
   FileText,
+  FolderArchive,
   Globe,
   HardDrive,
   KeyRound,
@@ -26,6 +28,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCw,
   Save,
   Search,
   Server,
@@ -4801,6 +4804,48 @@ function fallbackDownloadName(job: Job, extension: string) {
   return `${base || 'TenderLex'}.${extension}`
 }
 
+function getPrimaryReport(job: Job): { file: JobResultFile; isAdmin: boolean; jobId: string; label: string } | null {
+  // 1. If admin rerun completed and has files, admin result is top priority
+  if (job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files && job.admin_rerun.files.length > 0) {
+    const files = job.admin_rerun.files
+    const target = job.mode === 'exact_product'
+      ? (files.find(f => f.kind === 'docx' || f.kind === 'word' || f.filename?.endsWith('.docx')) || files[0])
+      : (files.find(f => f.kind === 'excel' || f.kind === 'xlsx' || f.kind === 'suppliers' || f.filename?.endsWith('.xlsx')) || files[0])
+    if (target) {
+      const isXlsx = target.filename?.endsWith('.xlsx') || target.kind === 'excel' || target.kind === 'xlsx'
+      const isDocx = target.filename?.endsWith('.docx') || target.kind === 'docx' || target.kind === 'word'
+      const ext = isXlsx ? 'Excel' : isDocx ? 'Word' : ''
+      return {
+        file: target,
+        isAdmin: true,
+        jobId: job.admin_rerun.id,
+        label: `Админ-отчёт${ext ? ` (${ext})` : ''}`,
+      }
+    }
+  }
+
+  // 2. Client result files
+  if (job.result_files && job.result_files.length > 0) {
+    const files = job.result_files
+    const target = job.mode === 'exact_product'
+      ? (files.find(f => f.kind === 'docx' || f.kind === 'word' || f.filename?.endsWith('.docx')) || files[0])
+      : (files.find(f => f.kind === 'excel' || f.kind === 'xlsx' || f.kind === 'suppliers' || f.filename?.endsWith('.xlsx')) || files[0])
+    if (target) {
+      const isXlsx = target.filename?.endsWith('.xlsx') || target.kind === 'excel' || target.kind === 'xlsx'
+      const isDocx = target.filename?.endsWith('.docx') || target.kind === 'docx' || target.kind === 'word'
+      const ext = isXlsx ? 'Excel' : isDocx ? 'Word' : ''
+      return {
+        file: target,
+        isAdmin: false,
+        jobId: job.id,
+        label: `Отчёт${ext ? ` (${ext})` : ''}`,
+      }
+    }
+  }
+
+  return null
+}
+
 function JobsView({
   jobs,
   clients = [],
@@ -4817,6 +4862,19 @@ function JobsView({
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
   const [supplementModalJob, setSupplementModalJob] = useState<Job | null>(null)
+  const [activeFilesDropdownJobId, setActiveFilesDropdownJobId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!activeFilesDropdownJobId) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('.files-dropdown-wrapper')) {
+        setActiveFilesDropdownJobId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [activeFilesDropdownJobId])
+
   useEffect(() => {
     const timer = setInterval(() => setNowTs(Date.now()), 1000)
     return () => clearInterval(timer)
@@ -5182,9 +5240,19 @@ function JobsView({
           const inputFiles = job.input_files || []
           const inputSources = job.sources || []
           const hasInput = inputFiles.length > 0 || inputSources.length > 0 || job.file_count > 0
+          const primaryReport = getPrimaryReport(job)
+          const isLegacyArchive = !primaryReport && hasResult
+          const adminRerunFiles = (job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files) || []
+          const clientResultFiles = job.result_files || []
+          const totalFileCount = inputFiles.length + inputSources.length + clientResultFiles.length + adminRerunFiles.length
+          const isFilesDropdownOpen = activeFilesDropdownJobId === job.id
 
           return (
-          <article className={`job-card compact mode-${job.mode} status-${job.status} ${job.is_internal ? 'service' : ''}`} key={job.id}>
+          <article
+            className={`job-card compact mode-${job.mode} status-${job.status} ${job.is_internal ? 'service' : ''}`}
+            key={job.id}
+            style={{ zIndex: isFilesDropdownOpen ? 50 : undefined, position: 'relative' }}
+          >
             <div className="job-card-top">
               <div className="job-title-group">
                 <div className="job-title-row">
@@ -5225,135 +5293,308 @@ function JobsView({
               </div>
               <div className="job-card-top-right">
                 {job.status !== 'completed' && <JobTimeline job={job} hasInput={hasInput} />}
-                <div className="job-card-actions">
-                  {hasResult && !job.result_files?.length && (
-                    <button className="icon-button small" onClick={() => void download(job)} title="Скачать архив"><Download size={13} /></button>
-                  )}
-                  {(job.status === 'running' || job.status === 'pending') && (
-                    <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
-                  )}
-                  {job.status === 'failed' && (
-                    <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
-                  )}
-                  <button
-                    className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
-                    style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
-                    onClick={() => setSupplementModalJob(job)}
-                    title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
-                  >
-                    <MessageSquarePlus size={13} />
-                  </button>
-                  <button
-                    className="icon-button small"
-                    disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
-                    onClick={() => void adminRerun(job)}
-                    title={
-                      job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
-                        ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
-                        : job.admin_rerun?.status === 'completed'
-                        ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
-                        : 'Экспертный перезапуск администратора (создает новую доработанную задачу без затирания исходного отчета клиента)'
-                    }
-                  >
-                    {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
-                      <Loader2 size={13} className="spin" />
-                    ) : (
-                      <Play size={13} />
-                    )}
-                  </button>
-                </div>
+                {(job.status === 'running' || job.status === 'pending') && (
+                  <button className="icon-button small danger" onClick={() => void cancelJob(job)} title="Отменить"><XCircle size={13} /></button>
+                )}
+                {job.status === 'failed' && (
+                  <button className="icon-button small" style={{ color: '#059669', borderColor: '#a7f3d0', background: '#ecfdf5' }} onClick={() => void resolveJob(job)} title="Отметить решённым (устранено)"><CheckCircle2 size={13} /></button>
+                )}
               </div>
             </div>
 
             <div className="job-card-meta-line">
-              <div className="job-meta-badges">
+              <div className="job-meta-bar">
                 {(job.is_admin_rerun || (job.title && job.title.startsWith('[Админ]')) || Boolean(job.parent_job_id)) && (
                   <span
-                    className="badge-pill"
-                    style={{ background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d', fontWeight: 700 }}
+                    className="meta-tag admin-task"
                     title="Задача создана администратором для экспертной доработки"
                   >
-                    <Crown size={12} className="pill-icon" />
+                    <Crown size={11} />
                     Админ-доработка
                   </span>
                 )}
-                <span className={`badge-pill mode mode-${job.mode}`}>{job.mode_label || humanMode(job.mode)}</span>
-                {supplierPolicyLabel && <span className={`badge-pill supplier-policy ${job.supplier_search_policy || 'normal'}`}>{supplierPolicyLabel}</span>}
-                {supplierRunLabel && <span className="badge-pill supplier-policy additional">{supplierRunLabel}</span>}
-                {fallbackStatusLabel && <span className="badge-pill supplier-policy registry-fallback">{fallbackStatusLabel}</span>}
-                {job.has_admin_supplement && (
-                  <span className="badge-pill" style={{ background: '#ccfbf1', color: '#0f766e', borderColor: '#99f6e4', fontWeight: 600 }} title={job.admin_comment || 'Дополнено администратором'}>
-                    ✨ Дополнено{job.admin_supplement_name ? `: ${job.admin_supplement_name}` : ''}
-                  </span>
-                )}
-                {fallbackOffer && <span className="badge-pill">Вне реестра: {fallbackOffer.count}</span>}
-                {fallbackOffer && <span className="badge-pill">Решение: {registryFallbackDecisionLabel(fallbackOffer.decision)}</span>}
-                {fallbackOffer?.delivery && <span className="badge-pill">Выдача: {registryFallbackDeliveryLabel(fallbackOffer.delivery)}</span>}
-                <span className="badge-pill count">
-                  {job.mode === 'procurement_report'
-                    ? 'Анализ ТЗ'
-                    : job.mode === 'exact_product'
-                    ? `Товаров: ${job.verified_count || 1}`
-                    : `Поставщиков: ${supplierCountLabel(job)}`}
+                <span className={`job-module-badge mode-${job.mode}`}>
+                  {job.mode_label || humanMode(job.mode)}
                 </span>
-                {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
-                  <span className="badge-pill yandex-cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
-                    🔍 {job.yandex_requests_count ? `${job.yandex_requests_count} запр. · ` : ''}{(job.yandex_cost_rub || 0).toFixed(2)} ₽
-                  </span>
-                ) : job.mode === 'exact_product' ? (
-                  <span className="badge-pill yandex-cost" title="Подбор товара выполнен без платных запросов к Яндекс Поиску">
-                    ⚡ Без Яндекс API (0.00 ₽)
-                  </span>
-                ) : null}
-              </div>
-              <div className="job-inline-downloads">
-                {inputFiles.map(file => (
-                  <button
-                    key={`in-${job.id}-${file.id}`}
-                    className="download-pill input-file"
-                    onClick={() => void downloadInputFile(job, file)}
-                    title={`Входной файл клиента: ${file.original_filename}`}
-                  >
-                    <FileText size={12} className="pill-icon" />
-                    <span className="pill-filename">{file.original_filename}</span>
-                  </button>
-                ))}
-                {inputSources.map(source => (
-                  <span key={`src-${job.id}-${source.id}`} className="download-pill input-source" title={source.value}>
-                    <Globe size={11} className="pill-icon" />
-                    <span className="pill-label">{source.label || 'Ссылка'}: {source.value}</span>
-                  </span>
-                ))}
-                {job.result_files && job.result_files.length > 0 && job.result_files.map(file => (
-                  <button
-                    key={`${job.id}-${file.kind}`}
-                    className="download-pill result-file"
-                    onClick={() => void download(job, file)}
-                    title={file.filename}
-                  >
-                    <Download size={12} className="pill-icon" />
-                    <span className="pill-label">{file.label}</span>
-                  </button>
-                ))}
-                {job.admin_rerun && job.admin_rerun.status === 'completed' && job.admin_rerun.files && job.admin_rerun.files.length > 0 && (
-                  <div className="admin-rerun-strip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid #cbd5e1' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#047857', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      <Crown size={12} /> Админ-итог{job.admin_rerun.verified_count ? ` (${job.admin_rerun.verified_count} пост.` : ''}{job.admin_rerun.yandex_cost_rub ? ` · ${job.admin_rerun.yandex_cost_rub.toFixed(2)} ₽)` : job.admin_rerun.verified_count ? ')' : ''}:
+
+                <div className="job-meta-details">
+                  {supplierPolicyLabel && (
+                    <span className={`meta-item policy ${job.supplier_search_policy || 'normal'}`}>
+                      {supplierPolicyLabel}
                     </span>
-                    {job.admin_rerun.files.map(file => (
-                      <button
-                        key={`rerun-${job.admin_rerun!.id}-${file.kind}`}
-                        className="download-pill result-file"
-                        style={{ background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46', fontWeight: 600 }}
-                        onClick={() => void download({ id: job.admin_rerun!.id } as Job, file)}
-                        title={`Скачать/открыть свежий экспертный результат: ${file.filename}`}
-                      >
-                        <Download size={12} className="pill-icon" />
-                        <span className="pill-label">{file.label} (Админ)</span>
-                      </button>
-                    ))}
+                  )}
+
+                  {supplierRunLabel && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-item">{supplierRunLabel}</span>
+                    </>
+                  )}
+
+                  {fallbackStatusLabel && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-item fallback">{fallbackStatusLabel}</span>
+                    </>
+                  )}
+
+                  <span className="meta-sep">·</span>
+                  <span className="meta-item count">
+                    {job.mode === 'procurement_report'
+                      ? 'Анализ ТЗ'
+                      : job.mode === 'exact_product'
+                      ? `${job.verified_count || 1} тов.`
+                      : `${supplierCountLabel(job)} пост.`}
+                  </span>
+
+                  {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) ? (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-item cost" title={`Запросов Yandex Search API: ${job.yandex_requests_count || 0}`}>
+                        🔍 {job.yandex_requests_count ? `${job.yandex_requests_count} запр. · ` : ''}{(job.yandex_cost_rub || 0).toFixed(2)} ₽
+                      </span>
+                    </>
+                  ) : job.mode === 'exact_product' ? (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-item cost-free" title="Подбор товара выполнен без платных запросов к Яндекс Поиску">
+                        ⚡ 0.00 ₽
+                      </span>
+                    </>
+                  ) : null}
+
+                  {job.has_admin_supplement && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-tag supplement" title={job.admin_comment || 'Дополнено администратором'}>
+                        ✨ Дополнено{job.admin_supplement_name ? `: ${job.admin_supplement_name}` : ''}
+                      </span>
+                    </>
+                  )}
+
+                  {job.admin_rerun && job.admin_rerun.status === 'completed' && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-tag admin-result" title="Есть экспертный результат администратора">
+                        <Crown size={11} /> Админ: {job.admin_rerun.verified_count || 0} пост.{job.admin_rerun.yandex_cost_rub ? ` (${job.admin_rerun.yandex_cost_rub.toFixed(2)} ₽)` : ''}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="job-actions-strip">
+                {/* 1. Primary Download Button */}
+                {primaryReport ? (
+                  <button
+                    type="button"
+                    className={`btn-primary-download ${primaryReport.isAdmin ? 'is-admin' : ''}`}
+                    onClick={() => void download({ id: primaryReport.jobId } as Job, primaryReport.file)}
+                    title={`Скачать итоговый отчёт: ${primaryReport.file.filename}`}
+                  >
+                    <Download size={13} />
+                    <span>{primaryReport.label}</span>
+                  </button>
+                ) : isLegacyArchive ? (
+                  <button
+                    type="button"
+                    className="btn-primary-download"
+                    onClick={() => void download(job)}
+                    title="Скачать архив результатов"
+                  >
+                    <Download size={13} />
+                    <span>Скачать архив</span>
+                  </button>
+                ) : null}
+
+                {/* 2. Files Dropdown (when multiple files exist) */}
+                {totalFileCount > 1 ? (
+                  <div className="files-dropdown-wrapper">
+                    <button
+                      type="button"
+                      className={`btn-files-dropdown ${isFilesDropdownOpen ? 'active' : ''}`}
+                      onClick={e => {
+                        e.stopPropagation()
+                        setActiveFilesDropdownJobId(isFilesDropdownOpen ? null : job.id)
+                      }}
+                      title="Все файлы задачи: исходное ТЗ, отчеты, админ-версии"
+                    >
+                      <FolderArchive size={13} />
+                      <span>Файлы ({totalFileCount})</span>
+                      <ChevronDown size={11} className={`dropdown-chevron ${isFilesDropdownOpen ? 'open' : ''}`} />
+                    </button>
+
+                    {isFilesDropdownOpen && (
+                      <div className="files-dropdown-popover" onClick={e => e.stopPropagation()}>
+                        <div className="dropdown-popover-header">
+                          <span>Файлы задачи #{job.job_number || job.id.slice(0, 8)}</span>
+                          <button
+                            type="button"
+                            className="dropdown-close-btn"
+                            onClick={() => setActiveFilesDropdownJobId(null)}
+                            title="Закрыть"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+
+                        <div className="dropdown-popover-body">
+                          {/* Admin Rerun Files */}
+                          {adminRerunFiles.length > 0 && (
+                            <div className="dropdown-popover-section admin-section">
+                              <div className="dropdown-section-title">
+                                <Crown size={12} />
+                                <span>Экспертный админ-итог ({job.admin_rerun?.verified_count || 0} пост.)</span>
+                              </div>
+                              {adminRerunFiles.map(file => (
+                                <button
+                                  key={`admin-${file.kind}`}
+                                  type="button"
+                                  className="dropdown-file-item admin-item"
+                                  onClick={() => {
+                                    void download({ id: job.admin_rerun!.id } as Job, file)
+                                    setActiveFilesDropdownJobId(null)
+                                  }}
+                                  title={file.filename}
+                                >
+                                  <div className="dropdown-file-info">
+                                    <span className="file-kind-badge admin">
+                                      {file.filename?.endsWith('.docx') || file.kind === 'docx' ? 'DOCX' : 'XLSX'}
+                                    </span>
+                                    <span className="file-name">{file.label} (Админ)</span>
+                                  </div>
+                                  <Download size={12} className="download-icon" />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Client Result Files */}
+                          {clientResultFiles.length > 0 && (
+                            <div className="dropdown-popover-section">
+                              <div className="dropdown-section-title">
+                                <FileCheck size={12} />
+                                <span>{adminRerunFiles.length > 0 ? 'Исходные отчеты клиента' : 'Итоговые отчеты'}</span>
+                              </div>
+                              {clientResultFiles.map(file => (
+                                <button
+                                  key={`client-${file.kind}`}
+                                  type="button"
+                                  className="dropdown-file-item"
+                                  onClick={() => {
+                                    void download(job, file)
+                                    setActiveFilesDropdownJobId(null)
+                                  }}
+                                  title={file.filename}
+                                >
+                                  <div className="dropdown-file-info">
+                                    <span className="file-kind-badge">
+                                      {file.filename?.endsWith('.docx') || file.kind === 'docx' ? 'DOCX' : 'XLSX'}
+                                    </span>
+                                    <span className="file-name">{file.label}</span>
+                                  </div>
+                                  <Download size={12} className="download-icon" />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Input Files */}
+                          {inputFiles.length > 0 && (
+                            <div className="dropdown-popover-section">
+                              <div className="dropdown-section-title">
+                                <FileText size={12} />
+                                <span>Входные материалы клиента</span>
+                              </div>
+                              {inputFiles.map(file => (
+                                <button
+                                  key={`in-${file.id}`}
+                                  type="button"
+                                  className="dropdown-file-item input-item"
+                                  onClick={() => {
+                                    void downloadInputFile(job, file)
+                                    setActiveFilesDropdownJobId(null)
+                                  }}
+                                  title={`Скачать входной файл: ${file.original_filename}`}
+                                >
+                                  <div className="dropdown-file-info">
+                                    <span className="file-kind-badge input">ТЗ</span>
+                                    <span className="file-name" title={file.original_filename}>{file.original_filename}</span>
+                                  </div>
+                                  <Download size={12} className="download-icon" />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Web Sources */}
+                          {inputSources.length > 0 && (
+                            <div className="dropdown-popover-section">
+                              <div className="dropdown-section-title">
+                                <Globe size={12} />
+                                <span>Ссылки</span>
+                              </div>
+                              {inputSources.map(source => (
+                                <div key={`src-${source.id}`} className="dropdown-source-item" title={source.value}>
+                                  <Globe size={11} className="source-icon" />
+                                  <span className="source-label">{source.label || 'Ссылка'}:</span>
+                                  <a href={source.value} target="_blank" rel="noreferrer" className="source-link" onClick={e => e.stopPropagation()}>
+                                    {source.value}
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
+                ) : totalFileCount === 1 && !primaryReport && inputFiles.length === 1 ? (
+                  <button
+                    type="button"
+                    className="btn-files-dropdown"
+                    onClick={() => void downloadInputFile(job, inputFiles[0])}
+                    title={`Входной файл клиента: ${inputFiles[0].original_filename}`}
+                  >
+                    <FileText size={12} />
+                    <span className="pill-filename" style={{ maxWidth: 180 }}>{inputFiles[0].original_filename}</span>
+                  </button>
+                ) : null}
+
+                {/* Supplement button */}
+                <button
+                  type="button"
+                  className={`icon-button small ${job.has_admin_supplement ? 'accent-active' : ''}`}
+                  style={job.has_admin_supplement ? { color: '#0d9488', borderColor: '#99f6e4', background: '#f0fdfa' } : undefined}
+                  onClick={() => setSupplementModalJob(job)}
+                  title={job.has_admin_supplement ? 'Редактировать дополнение эксперта' : 'Дополнить отчет / отправить клиенту'}
+                >
+                  <MessageSquarePlus size={13} />
+                </button>
+
+                {/* Admin Rerun button */}
+                <button
+                  type="button"
+                  className={`icon-button small ${job.admin_rerun?.status === 'completed' ? 'has-rerun' : ''}`}
+                  style={job.admin_rerun?.status === 'completed' ? { color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' } : undefined}
+                  disabled={job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'}
+                  onClick={() => void adminRerun(job)}
+                  title={
+                    job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running'
+                      ? `Идет экспертный перерасчет (${job.admin_rerun.progress}%)...`
+                      : job.admin_rerun?.status === 'completed'
+                      ? `Повторный экспертный перерасчет (уже есть итог: ${job.admin_rerun.verified_count || 0} пост.)`
+                      : 'Экспертный перезапуск администратора'
+                  }
+                >
+                  {job.admin_rerun?.status === 'pending' || job.admin_rerun?.status === 'running' ? (
+                    <Loader2 size={13} className="spin" />
+                  ) : job.admin_rerun?.status === 'completed' ? (
+                    <RotateCw size={13} />
+                  ) : (
+                    <Play size={13} />
+                  )}
+                </button>
               </div>
             </div>
 
