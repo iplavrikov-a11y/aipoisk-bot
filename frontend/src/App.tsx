@@ -5851,245 +5851,226 @@ function AdminSupplementModal({
 
   return (
     <div className="server-modal-backdrop" onClick={onClose}>
-      <div className="server-modal-card" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
+      <div className="server-modal-card supplement-modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
         <div className="server-modal-header">
           <h3>ДОПОЛНИТЬ ОТЧЕТ ЭКСПЕРТОМ</h3>
-          <button className="server-modal-close" onClick={onClose}>
-            <X size={18} />
+          <button className="server-modal-close" onClick={onClose} title="Закрыть">
+            <X size={16} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
-          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
-            <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
-              {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
-            </div>
-            <div style={{ color: '#64748b', fontSize: 12 }}>
-              Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
-            </div>
-            {job.admin_supplement_name && (
-              <div style={{ marginTop: 6, fontSize: 12, color: '#0f766e', fontWeight: 600 }}>
-                ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
+        <form onSubmit={handleSubmit} className="supplement-modal-form">
+          <div className="supplement-modal-scroll-body">
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
+              <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: 2 }}>
+                {job.job_number ? `[#${job.job_number}] ` : ''}{job.human_title || job.title}
               </div>
-            )}
-          </div>
-
-          <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
-              Источник файлов отчета:
-            </label>
-
-            {(candidates.length > 0 || loadingCandidates) && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
-                  <input
-                    type="radio"
-                    name="source_mode"
-                    checked={sourceMode === 'job_file'}
-                    onChange={() => setSourceMode('job_file')}
-                  />
-                  <span>Использовать файлы из задачи (исходные или после Play / перезапуска)</span>
-                </label>
-
-                {sourceMode === 'job_file' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginLeft: 24, padding: '12px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                    {loadingCandidates ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#64748b', padding: '12px 0' }}>
-                        <Loader2 size={16} className="spin" />
-                        <span>Поиск файлов задачи и экспертных перезапусков...</span>
-                      </div>
-                    ) : candidates.length === 0 ? (
-                      <div style={{ fontSize: 13, color: '#64748b' }}>Нет готовых файлов в задаче. Загрузите файл с компьютера.</div>
-                    ) : (
-                      <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <span style={{ fontSize: 12, color: '#64748b' }}>Выберите файлы для отправки клиенту:</span>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button
-                              type="button"
-                              className="ghost small-text"
-                              style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#0d9488' }}
-                              onClick={selectAllJobFiles}
-                            >
-                              Выбрать все
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost small-text"
-                              style={{ fontSize: 11, padding: '2px 6px', height: 'auto', color: '#64748b' }}
-                              onClick={unselectAllJobFiles}
-                            >
-                              Снять все
-                            </button>
-                          </div>
-                        </div>
-                        {candidates.map(cand => {
-                          const isChecked = selectedJobFileKinds.includes(cand.composite_id)
-                          return (
-                            <div
-                              key={cand.composite_id}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                gap: 10,
-                                padding: '8px 12px',
-                                border: `1px solid ${isChecked ? '#0d9488' : '#cbd5e1'}`,
-                                borderRadius: 6,
-                                background: isChecked ? '#f0fdfa' : '#fff',
-                                transition: 'all 0.15s ease',
-                              }}
-                            >
-                              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flex: 1, minWidth: 0 }}>
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => toggleJobFileKind(cand.composite_id)}
-                                />
-                                <FileText size={18} color={isChecked ? '#0d9488' : '#64748b'} style={{ flexShrink: 0 }} />
-                                <div style={{ fontSize: 13, minWidth: 0 }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                    <strong style={{ color: isChecked ? '#0f766e' : '#1e293b' }}>{cand.label}</strong>
-                                    {cand.is_admin_rerun && (
-                                      <span style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
-                                        👑 Доработка
-                                      </span>
-                                    )}
-                                    {cand.created_at && (
-                                      <span style={{ fontSize: 11, color: '#64748b' }}>
-                                        · {formatDate(cand.created_at)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>{cand.filename}</div>
-                                </div>
-                              </label>
-
-                              <button
-                                type="button"
-                                className="ghost small-text"
-                                style={{
-                                  flexShrink: 0,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  padding: '4px 10px',
-                                  fontSize: 12,
-                                  fontWeight: 600,
-                                  color: '#0d9488',
-                                  border: '1px solid #99f6e4',
-                                  background: '#fff',
-                                  borderRadius: 6,
-                                  cursor: 'pointer',
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  window.open(`/api/jobs/${cand.job_id}/download/${cand.kind}`, '_blank')
-                                }}
-                                title="Скачать и открыть файл для проверки"
-                              >
-                                <Download size={13} />
-                                <span>Открыть</span>
-                              </button>
-                            </div>
-                          )
-                        })}
-                      </>
-                    )}
-                  </div>
-                )}
+              <div style={{ color: '#64748b', fontSize: 11 }}>
+                Клиент: {job.client_name || 'Не указан'} {job.created_by_telegram_id ? `· TG ID: ${job.created_by_telegram_id}` : ''}
               </div>
-            )}
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
-                <input
-                  type="radio"
-                  name="source_mode"
-                  checked={sourceMode === 'upload'}
-                  onChange={() => setSourceMode('upload')}
-                />
-                <span>Загрузить отредактированные файлы с компьютера</span>
-              </label>
-
-              {sourceMode === 'upload' && (
-                <div style={{ marginLeft: 24, marginTop: 4 }}>
-                  <input
-                    type="file"
-                    multiple
-                    accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
-                    onChange={e => {
-                      if (e.target.files) {
-                        setFiles(Array.from(e.target.files))
-                      }
-                    }}
-                    style={{ fontSize: 13, width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
-                  />
-                  {files.length > 0 && (
-                    <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {files.map((f, i) => (
-                        <span key={i} style={{ fontSize: 12, background: '#f0fdfa', border: '1px solid #99f6e4', color: '#0f766e', padding: '2px 8px', borderRadius: 4 }}>
-                          📎 {f.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
-                    Можно выбрать несколько файлов (XLSX, DOCX, ZIP, PDF).
-                  </small>
+              {job.admin_supplement_name && (
+                <div style={{ marginTop: 4, fontSize: 11, color: '#0f766e', fontWeight: 600 }}>
+                  ✨ Текущий прикрепленный отчет: {job.admin_supplement_name}
                 </div>
               )}
             </div>
-          </div>
 
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>
-                Комментарий клиенту
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 6 }}>
+                Источник файлов отчета:
               </label>
-              <button
-                type="button"
-                className="ghost small-text"
-                style={{ fontSize: 11, padding: '2px 8px', height: 'auto', color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, cursor: 'pointer' }}
-                onClick={() => setComment(generateDefaultComment(job))}
-              >
-                Восстановить автотекст
-              </button>
+
+              {(candidates.length > 0 || loadingCandidates) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="source_mode"
+                      checked={sourceMode === 'job_file'}
+                      onChange={() => setSourceMode('job_file')}
+                    />
+                    <span>Использовать файлы из задачи (исходные или после Play / перезапуска)</span>
+                  </label>
+
+                  {sourceMode === 'job_file' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 20, padding: '8px 10px', background: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                      {loadingCandidates ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#64748b', padding: '8px 0' }}>
+                          <Loader2 size={14} className="spin" />
+                          <span>Поиск файлов задачи и экспертных перезапусков...</span>
+                        </div>
+                      ) : candidates.length === 0 ? (
+                        <div style={{ fontSize: 12, color: '#64748b' }}>Нет готовых файлов в задаче. Загрузите файл с компьютера.</div>
+                      ) : (
+                        <>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                            <span style={{ fontSize: 11, color: '#64748b' }}>Выберите файлы для отправки клиенту ({selectedJobFileKinds.length}/{candidates.length}):</span>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button
+                                type="button"
+                                className="ghost small-text"
+                                style={{ fontSize: 10.5, padding: '1px 6px', height: 'auto', color: '#0d9488' }}
+                                onClick={selectAllJobFiles}
+                              >
+                                Выбрать все
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost small-text"
+                                style={{ fontSize: 10.5, padding: '1px 6px', height: 'auto', color: '#64748b' }}
+                                onClick={unselectAllJobFiles}
+                              >
+                                Снять все
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="supplement-candidates-list">
+                            {candidates.map(cand => {
+                              const isChecked = selectedJobFileKinds.includes(cand.composite_id)
+                              return (
+                                <div
+                                  key={cand.composite_id}
+                                  className={`supplement-candidate-card ${isChecked ? 'is-checked' : ''}`}
+                                >
+                                  <label className="candidate-label">
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => toggleJobFileKind(cand.composite_id)}
+                                    />
+                                    <FileText size={15} color={isChecked ? '#0d9488' : '#64748b'} style={{ flexShrink: 0 }} />
+                                    <div className="candidate-details">
+                                      <div className="candidate-header-row">
+                                        <strong className="candidate-name">{cand.label}</strong>
+                                        {cand.is_admin_rerun && (
+                                          <span className="candidate-badge">
+                                            👑 Доработка
+                                          </span>
+                                        )}
+                                        {cand.created_at && (
+                                          <span className="candidate-time">
+                                            · {formatDate(cand.created_at)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="candidate-file-name" title={cand.filename}>{cand.filename}</div>
+                                    </div>
+                                  </label>
+
+                                  <button
+                                    type="button"
+                                    className="candidate-preview-btn"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      window.open(`/api/jobs/${cand.job_id}/download/${cand.kind}`, '_blank')
+                                    }}
+                                    title="Скачать и открыть файл для проверки"
+                                  >
+                                    <Download size={11} />
+                                    <span>Открыть</span>
+                                  </button>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="source_mode"
+                    checked={sourceMode === 'upload'}
+                    onChange={() => setSourceMode('upload')}
+                  />
+                  <span>Загрузить отредактированные файлы с компьютера</span>
+                </label>
+
+                {sourceMode === 'upload' && (
+                  <div style={{ marginLeft: 20, marginTop: 2 }}>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".xlsx,.xls,.docx,.doc,.pdf,.zip"
+                      onChange={e => {
+                        if (e.target.files) {
+                          setFiles(Array.from(e.target.files))
+                        }
+                      }}
+                      style={{ fontSize: 12, width: '100%', padding: '6px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}
+                    />
+                    {files.length > 0 && (
+                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {files.map((f, i) => (
+                          <span key={i} style={{ fontSize: 11, background: '#f0fdfa', border: '1px solid #99f6e4', color: '#0f766e', padding: '1px 6px', borderRadius: 4 }}>
+                            📎 {f.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <small style={{ display: 'block', color: '#64748b', marginTop: 2, fontSize: 10.5 }}>
+                      Можно выбрать несколько файлов (XLSX, DOCX, ZIP, PDF).
+                    </small>
+                  </div>
+                )}
+              </div>
             </div>
-            <textarea
-              rows={4}
-              value={comment}
-              onChange={e => setComment(e.target.value)}
-              placeholder="Укажите комментарий эксперта..."
-              style={{ width: '100%', padding: '10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
-            />
-            <small style={{ display: 'block', color: '#64748b', marginTop: 4, fontSize: 11 }}>
-              Этот комментарий будет отображаться в личном кабинете на карточке задачи и отправлен в сообщении Telegram.
-            </small>
+
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>
+                  Комментарий клиенту:
+                </label>
+                <button
+                  type="button"
+                  className="ghost small-text"
+                  style={{ fontSize: 10.5, padding: '1px 6px', height: 'auto', color: '#0d9488', border: '1px solid #99f6e4', background: '#f0fdfa', borderRadius: 4, cursor: 'pointer' }}
+                  onClick={() => setComment(generateDefaultComment(job))}
+                >
+                  Восстановить автотекст
+                </button>
+              </div>
+              <textarea
+                rows={3}
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                placeholder="Укажите комментарий эксперта..."
+                style={{ width: '100%', padding: '8px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, resize: 'vertical' }}
+              />
+              <small style={{ display: 'block', color: '#64748b', marginTop: 2, fontSize: 10.5 }}>
+                Комментарий отобразится в личном кабинете на карточке задачи и в Telegram-боте.
+              </small>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={notifyTelegram}
+                onChange={e => setNotifyTelegram(e.target.checked)}
+              />
+              <span>Отправить уведомление и файл в Telegram бот клиенту</span>
+            </label>
+
+            {error && (
+              <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
+                {error}
+              </div>
+            )}
           </div>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#334155', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={notifyTelegram}
-              onChange={e => setNotifyTelegram(e.target.checked)}
-            />
-            <span>Отправить уведомление и файл в Telegram бот клиенту</span>
-          </label>
-
-          {error && (
-            <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', padding: '8px 12px', borderRadius: 6, fontSize: 13 }}>
-              {error}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
-            <button type="button" className="ghost" onClick={onClose} disabled={loading}>
+          <div className="supplement-modal-footer">
+            <button type="button" className="ghost" onClick={onClose} disabled={loading} style={{ fontSize: 12, padding: '6px 14px' }}>
               Отмена
             </button>
-            <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488' }}>
-              {loading ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+            <button type="submit" className="primary" disabled={loading} style={{ background: '#0d9488', borderColor: '#0d9488', fontSize: 12, padding: '6px 16px' }}>
+              {loading ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
               <span>{loading ? 'Отправка...' : 'Отправить клиенту'}</span>
             </button>
           </div>
