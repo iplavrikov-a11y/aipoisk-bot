@@ -664,3 +664,107 @@ def read_json_file(path: str | Path, default):
     except Exception:
         return default
 
+
+def extract_smart_pdf_content(
+    pdf_bytes: bytes,
+    *,
+    max_pages_to_extract: int = 14,
+    max_chars: int = 60000,
+    table_tag_label: str = "ТАБЛИЦА ХАРАКТЕРИСТИК",
+) -> str:
+    """
+    Smart PDF extraction for technical catalogs, spec sheets, and equipment passports.
+    Instead of blindly reading only the first 10-15 pages and cutting off at 30k characters,
+    scores pages by table presence and technical specification keywords, prioritizing
+    pages with actual parameter tables and modifications across up to 80 pages.
+    """
+    if not pdf_bytes:
+        return ""
+    try:
+        import fitz
+    except ImportError:
+        return ""
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return ""
+
+    total_pages = len(doc)
+    if total_pages == 0:
+        doc.close()
+        return ""
+
+    TECH_KEYWORDS = (
+        "гост", "ту ", "сто ", "модификац", "характеристик", "параметр",
+        "таблиц", "габарит", "давлен", "диаметр", "масса", "напряжен",
+        "мощност", "чертеж", "артикул", "исполнен", "сери", "размер",
+        "номенклатур", "паспорт", "марк", "модел", "диапазон", "расход",
+    )
+
+    scan_limit = min(total_pages, 80)
+    page_scores: list[tuple[int, int, int]] = []
+
+    for pno in range(scan_limit):
+        try:
+            page = doc[pno]
+            score = 0
+            p_text = page.get_text("text").lower()
+            table_count = 0
+            try:
+                tables = page.find_tables()
+                if tables and tables.tables:
+                    table_count = len(tables.tables)
+                    score += 20 + min(table_count * 5, 25)
+            except Exception:
+                pass
+
+            kw_matches = sum(1 for kw in TECH_KEYWORDS if kw in p_text)
+            score += min(kw_matches * 2, 25)
+            if pno == 0:
+                score += 5
+            page_scores.append((score, pno, table_count))
+        except Exception:
+            continue
+
+    page_scores.sort(key=lambda x: x[0], reverse=True)
+    selected_pnos = {p[1] for p in page_scores[:max_pages_to_extract]}
+    if 0 not in selected_pnos and scan_limit > 0:
+        selected_pnos.add(0)
+
+    sorted_pnos = sorted(selected_pnos)
+    pages_text: list[str] = []
+    current_length = 0
+
+    for pno in sorted_pnos:
+        try:
+            page = doc[pno]
+            page_parts: list[str] = []
+            try:
+                tables = page.find_tables()
+                for t_idx, tab in enumerate(tables):
+                    tab_md = tab.to_markdown()
+                    if tab_md and tab.row_count >= 2:
+                        page_parts.append(
+                            f"\n[{table_tag_label} (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n"
+                        )
+            except Exception:
+                pass
+
+            raw_text = page.get_text("text").strip()
+            if raw_text:
+                page_parts.append(raw_text)
+
+            if page_parts:
+                block = f"--- [СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n" + "\n".join(page_parts)
+                pages_text.append(block)
+                current_length += len(block)
+                if current_length >= max_chars:
+                    break
+        except Exception:
+            continue
+
+    doc.close()
+    return "\n".join(pages_text)
+
+

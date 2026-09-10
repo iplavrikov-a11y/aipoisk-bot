@@ -3,6 +3,7 @@ Yandex Search API integration.
 Supports both v1 (legacy XML) and v2 (new async) APIs.
 """
 
+import os
 import asyncio
 import httpx
 from dataclasses import dataclass
@@ -134,12 +135,20 @@ class YandexSearchEngine:
             all_results: list[YandexSearchResult] = []
             seen_domains: set[str] = set()
 
+            groups_on_page = 70
+            try:
+                configured_gop = os.getenv("AIPOISK_YANDEX_GROUPS_ON_PAGE", "")
+                if configured_gop:
+                    groups_on_page = max(10, min(100, int(configured_gop)))
+            except Exception:
+                groups_on_page = 70
+
             for page in range(max_pages):
                 body = {
                     "query": {"searchType": "SEARCH_TYPE_RU", "queryText": search_query, "page": str(page)},
                     "folderId": self.folder_id,
                     "responseFormat": "FORMAT_XML",
-                    "groupSpec": {"groupsOnPage": min(70, max(25, max_results * 4)), "docsInGroup": 1},
+                    "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
                 }
 
                 response = await client.post(self.V2_API_URL, json=body, headers=headers)

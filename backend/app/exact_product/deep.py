@@ -1167,38 +1167,13 @@ async def fetch_web_or_pdf_document(
             if len(pdf_bytes) > 20 * 1024 * 1024:
                 pdf_bytes = pdf_bytes[: 20 * 1024 * 1024]
 
-            pdf_text = ""
-            try:
-                import fitz
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                pages_text = []
-                for pno, page in enumerate(doc):
-                    page_parts = []
-                    # 1. Извлечение структурированных таблиц характеристик
-                    try:
-                        tables = page.find_tables()
-                        for t_idx, tab in enumerate(tables):
-                            tab_md = tab.to_markdown()
-                            if tab_md and tab.row_count >= 2:
-                                page_parts.append(
-                                    f"\n[ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n"
-                                )
-                    except Exception as tab_err:
-                        logger.debug("fitz_find_tables_error", error=str(tab_err))
-
-                    # 2. Текст страницы
-                    p_text = page.get_text("text").strip()
-                    if p_text:
-                        page_parts.append(p_text)
-
-                    if page_parts:
-                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА {pno + 1}] ---\n" + "\n".join(page_parts))
-                    if len("\n".join(pages_text)) > 30000:
-                        break
-                doc.close()
-                pdf_text = "\n".join(pages_text)
-            except Exception as pdf_err:
-                logger.debug("pdf_extraction_error", url=url, error=str(pdf_err))
+            from ..document_parser import extract_smart_pdf_content
+            pdf_text = extract_smart_pdf_content(
+                pdf_bytes,
+                max_pages_to_extract=14,
+                max_chars=60000,
+                table_tag_label="ТАБЛИЦА ТЕХНИЧЕСКИХ ХАРАКТЕРИСТИК",
+            )
 
             if len(pdf_text.strip()) > 50:
                 doc_name = response.url.path.split("/")[-1] or "Паспорт изделия (PDF)"
@@ -1207,7 +1182,7 @@ async def fetch_web_or_pdf_document(
                     "domain": domain,
                     "type": "pdf",
                     "title": f"Паспорт / Техническая документация: {doc_name}",
-                    "text": pdf_text[:30000],
+                    "text": pdf_text[:60000],
                 }
 
         # HTML-страница

@@ -2562,7 +2562,7 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
             "none",
             "null",
         }
-        if not name or name.lower().strip() in GENERIC_UNDEFINED_NAMES:
+        if not name or name.lower().strip() in GENERIC_UNDEFINED_NAMES or _is_placeholder_profile_term(name):
             continue
         item_context = f"{name} {' '.join(str(value) for value in item.values())}"
         item_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(item.get("id") or f"item-{index}")).strip("-").lower() or f"item-{index}"
@@ -2598,6 +2598,40 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
     )
 
 
+_PLACEHOLDER_PROFILE_TERMS_EXACT = {
+    "товар", "товары", "оборудование", "материал", "материалы", "изделие", "изделия", "позиция", "позиции",
+    "по тз", "по спецификации", "согласно тз", "согласно спецификации", "по требованию тз",
+    "отечественный производитель", "отечественного производства", "отечественный", "импортный",
+    "российский производитель", "производитель рф", "завод", "производитель", "россия", "рф",
+    "паспорт завода", "по спецификации заказчика", "согласно техническому заданию",
+    "в соответствии с тз", "в соответствии с техническим заданием", "по согласованию с заказчиком",
+    "в открытой документации", "не указано", "не определен", "не найдено", "не определено",
+    "неизвестно", "unknown", "none", "null", "-", "—", "страна происхождения",
+    "страна происхождения россия", "страна происхождения рф", "аналог", "эквивалент",
+    "согласно документации", "по документации", "требования заказчика",
+}
+
+_PLACEHOLDER_PROFILE_SUBSTRINGS = (
+    "не указан", "не определен", "паспорт завода", "по спецификаци", "согласно тз",
+    "в соответствии с тз", "согласно техническ", "в открытой документаци",
+    "отечественн", "по согласованию с заказчик", "страна происхожден",
+    "по требовани", "согласно документаци",
+)
+
+
+def _is_placeholder_profile_term(val: str) -> bool:
+    if not val:
+        return True
+    low = val.strip().lower()
+    if len(low) < 2:
+        return True
+    if low in _PLACEHOLDER_PROFILE_TERMS_EXACT:
+        return True
+    if any(sub in low for sub in _PLACEHOLDER_PROFILE_SUBSTRINGS):
+        return True
+    return False
+
+
 def _clean_profile_terms(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         values = [value]
@@ -2608,7 +2642,11 @@ def _clean_profile_terms(value: object) -> tuple[str, ...]:
     result: list[str] = []
     for item in values:
         cleaned = re.sub(r"\s+", " ", item).strip(" .,:;")
-        if 2 <= len(cleaned) <= 160 and cleaned.lower() not in [existing.lower() for existing in result]:
+        if (
+            2 <= len(cleaned) <= 160
+            and not _is_placeholder_profile_term(cleaned)
+            and cleaned.lower() not in [existing.lower() for existing in result]
+        ):
             result.append(cleaned)
     return tuple(result)
 
@@ -3955,6 +3993,37 @@ def _yandex_credentials(settings: SystemSettings) -> tuple[str, str]:
     return folder_id, api_key
 
 
+_AGGREGATOR_ENTITY_STOPWORDS = {
+    "яндекс", "yandex", "авито", "avito", "пульс цен", "пульсцен", "pulscen",
+    "тиу", "tiu", "сатом", "satom", "озон", "ozon", "вайлдберриз", "wildberries",
+    "сбер", "сбермегамаркет", "маркет", "компания", "организация", "предприятие",
+    "интернет решения", "интернет-решения", "бизнес", "диджитал", "инновации",
+    "поставщик", "производитель", "клиент", "заказчик", "партнер", "каталог",
+    "справочник", "площадка", "торговый дом", "российская федерация", "россия",
+    "промышленность", "оборудование", "завод", "группа компаний",
+}
+
+_LEGAL_ENTITY_REGEX = re.compile(
+    r'\b(?:ООО|АО|ЗАО|ПАО|ПКФ|НПК|НПО|ТД|Завод)\s+[«"\'\“]([^»"\'\”]{3,60})[»"\'\”]',
+    re.IGNORECASE,
+)
+
+
+def extract_supplier_entities_from_aggregator_snippet(title: str, snippet: str) -> list[str]:
+    combined = f"{title} {snippet}"
+    found: list[str] = []
+    for m in _LEGAL_ENTITY_REGEX.finditer(combined):
+        full = m.group(0).strip()
+        inner = m.group(1).lower().strip()
+        if inner in _AGGREGATOR_ENTITY_STOPWORDS or len(inner) < 3:
+            continue
+        if any(stop in inner for stop in ("пульс цен", "авито", "satom", "pulscen", "yandex", "ozon", "wildberries")):
+            continue
+        if full not in found:
+            found.append(full)
+    return found
+
+
 async def _search_with_yandex(
     settings: SystemSettings,
     queries: list[str],
@@ -4009,6 +4078,12 @@ async def _search_with_yandex(
             raw_data = await _poll_yandex_operation(client, operation_id)
             return _parse_yandex_xml(raw_data, query=query) if raw_data else []
 
+    headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
+    candidates: list[Candidate] = []
+    seen = set(existing_domains or set())
+    mined_company_names: list[str] = []
+    seen_mined_entities: set[str] = set()
+
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         all_candidates: list[Candidate] = []
         seen_domains: set[str] = set()
@@ -4018,6 +4093,13 @@ async def _search_with_yandex(
                 break
             new_added = 0
             for c in page_candidates:
+                cand_domain = c.domain or base_domain(c.url)
+                if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                    for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
+                        ent_key = entity.lower().strip()
+                        if ent_key not in seen_mined_entities:
+                            seen_mined_entities.add(ent_key)
+                            mined_company_names.append(entity)
                 if c.domain not in seen_domains:
                     seen_domains.add(c.domain)
                     all_candidates.append(c)
@@ -4026,9 +4108,6 @@ async def _search_with_yandex(
                 break
         return all_candidates
 
-    headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
-    candidates: list[Candidate] = []
-    seen = set(existing_domains or set())
     chunk_size = 4
     async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
         for start in range(0, len(search_queries), chunk_size):
@@ -4050,6 +4129,31 @@ async def _search_with_yandex(
             await asyncio.gather(*tasks, return_exceptions=True)
             if len(candidates) >= max_results:
                 break
+
+        # Aggregator Snippet Mining: convert discarded aggregator results into real factory sites
+        if mined_company_names and len(candidates) < max_results:
+            for entity_name in mined_company_names[:2]:
+                if len(candidates) >= max_results:
+                    break
+                target_q = f'"{entity_name}" официальный сайт'
+                mined_page_candidates = await search_one_page(client, target_q, 0)
+                for mc in mined_page_candidates:
+                    m_dom = mc.domain or base_domain(mc.url)
+                    if not m_dom or m_dom in seen or is_blocked(m_dom) or m_dom in BLOCKED_DOMAINS or m_dom in EXTRA_AGGREGATOR_DOMAINS:
+                        continue
+                    seen.add(m_dom)
+                    candidates.append(
+                        Candidate(
+                            url=mc.url,
+                            domain=m_dom,
+                            title=mc.title,
+                            snippet=mc.snippet,
+                            source="yandex_aggregator_mined",
+                            query=target_q,
+                        )
+                    )
+                    break
+
     return candidates[:max_results], requests_count
 
 
@@ -4731,33 +4835,15 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> dict | None:
             pdf_bytes = response.content
             if len(pdf_bytes) > 20 * 1024 * 1024:
                 pdf_bytes = pdf_bytes[:20 * 1024 * 1024]
-            try:
-                import fitz
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                pages_text = []
-                for pno, page in enumerate(doc):
-                    page_parts = []
-                    try:
-                        tables = page.find_tables()
-                        for t_idx, tab in enumerate(tables):
-                            tab_md = tab.to_markdown()
-                            if tab_md and tab.row_count >= 2:
-                                page_parts.append(f"\n[ТАБЛИЦА НОМЕНКЛАТУРЫ (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n")
-                    except Exception:
-                        pass
-                    p_text = page.get_text("text").strip()
-                    if p_text:
-                        page_parts.append(p_text)
-                    if page_parts:
-                        pages_text.append(f"--- [СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n" + "\n".join(page_parts))
-                    if len("\n".join(pages_text)) > 30000:
-                        break
-                doc.close()
-                pdf_text = "\n".join(pages_text)
-                if len(pdf_text.strip()) > 50:
-                    return {"url": str(response.url), "html": "", "text": pdf_text[:80000]}
-            except Exception:
-                pass
+            from .document_parser import extract_smart_pdf_content
+            pdf_text = extract_smart_pdf_content(
+                pdf_bytes,
+                max_pages_to_extract=14,
+                max_chars=80000,
+                table_tag_label="ТАБЛИЦА НОМЕНКЛАТУРЫ",
+            )
+            if len(pdf_text.strip()) > 50:
+                return {"url": str(response.url), "html": "", "text": pdf_text[:80000]}
             return None
 
         if "text/html" not in ctype and "text/plain" not in ctype:
