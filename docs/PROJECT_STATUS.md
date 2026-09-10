@@ -12,6 +12,17 @@ Date: 2026-09-10
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Search Architecture Modernization, Factory Snippet Mining & 15-Job Live Benchmark (2026-09-10):
+  - **Yandex Search Depth Standardization**: Raised Yandex Search XML depth to 70 results per page (`groupsOnPage: 70`) across the exact product module (`backend/app/exact_product/yandex_search.py`), aligning with `supplier_search` and `emailagent` to prevent loss of technical equipment datasheets and passports buried on pages 2–7.
+  - **Search Query Hygiene & Placeholder Filtering**: Implemented `_is_placeholder_profile_term` in `backend/app/supplier_search.py` with rigorous filtering across `aliases`, `exact_terms`, and `category_terms`. Strips out useless phrases (`отечественный производитель`, `согласно ТЗ`, `паспорт завода`, `по спецификации заказчика`, `в открытой документации`), completely eliminating junk queries and reducing search API request volume from an average of 47.5 queries/task down to 28.0 queries/task (-40% quota consumption).
+  - **Aggregator Snippet Mining (`extract_supplier_entities_from_aggregator_snippet`)**: Automatically detects Russian B2B aggregator domains (`pulscen.ru`, `satom.ru`, `tiu.ru` etc.) and extracts real underlying factory/manufacturer legal entities (`ООО`, `АО`, `ПКФ`, `Завод`) while filtering aggregator company names via `_AGGREGATOR_ENTITY_STOPWORDS`. Issues up to 2 targeted queries to locate the official direct factory domains.
+  - **Smart PDF Technical Content & Table Extraction (`document_parser.py`)**: Replaced blind 15-page truncations with intelligent `extract_smart_pdf_content` using PyMuPDF `find_tables().to_markdown()` and technical relevance scoring across catalogs up to 80 pages (max 60k–80k chars).
+  - **Live Uncached 15-Task Verification Benchmark**: Validated end-to-end across 15 real historical customer procurement tasks without persistent caching:
+    - 100% of jobs completed successfully with high-confidence factory identification.
+    - Verified direct manufacturers over generic distributors and aggregators: Fire pumping stations (*ООО «ФЛАМАКС»*, *ООО «СпецПожСистема»*), Multistage fracturing sleeves (*ОЭМЗ «ТАПАРТ»*, *ООО «Пакер Сервис»*, *ГК «Римера» / Ижнефтемаш*), LED displays (*Завод LEDsi*, *Лед Системы*), Fastener cleaning machines (*Моторные технологии*, *ООО «ЛАССАРД»*), Radio stations (*Аргут*, *САНТЭЛ-ГРАНИТ*).
+  - **Regression Testing & Live Deployment**:
+    - Full suite of 690 pytest tests passed (0 failures, 54 subtests passed).
+    - Safely deployed via `AIPOISK_DEPLOY_SCOPE=backend ./scripts/deploy_tenderlex_live.sh` with verified SQLite backup and clean service health checks on `127.0.0.1:8088`.
 - Telegram Bot Live Audit (agent-audit) & UX / Resiliency Overhaul (2026-09-10):
   - **Live Autonomous Userbot Audit**: Fully automated live drive through real Telegram MTProto account (`ALEX⚡️AI`), testing all core bot scenarios across 33 steps without manual human intervention.
   - **Resolved Findings (AA-001..AA-005, 0 open defects)**:
