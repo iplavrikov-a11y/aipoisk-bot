@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-07
+Date: 2026-09-10
 
 ## Current Production State
 
@@ -12,6 +12,16 @@ Date: 2026-09-07
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Telegram Bot Live Audit (agent-audit) & UX / Resiliency Overhaul (2026-09-10):
+  - **Live Autonomous Userbot Audit**: Fully automated live drive through real Telegram MTProto account (`ALEX⚡️AI`), testing all core bot scenarios across 33 steps without manual human intervention.
+  - **Resolved Findings (AA-001..AA-005, 0 open defects)**:
+    - `AA-001 (S1)`: Persistent navigation buttons on fallback messages (`unknown_text`, `unsupported_message`) ensuring users are never left stranded; added text command aliases (`кабинет`, `создать`, `баланс`, `тарифы`, `задачи`, `помощь`, `контакты`).
+    - `AA-002 (S1)`: Relaxed strict length restrictions in `scenario:suppliers` and `scenario:exact_product`, allowing short product queries (e.g. `Кабель силовой ВВГнг(А)-LS 3х2.5`) to be immediately registered as valid specification batches (1/20).
+    - `AA-003 (S1)`: Enforced document extension whitelist (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) preventing execution of binaries/unsupported formats (`.exe`) with friendly advisory messages.
+    - `AA-004 (S2)`: Synchronized module catalog in create task menus and prompts to strictly include all 3 platform modules in correct order: 1. Поиск поставщиков, 2. Подбор товара и аналогов, 3. Анализ документации.
+    - `AA-005 (S2)`: Added contextual 19-digit EIS procurement notice validation and error guidance for invalid numbers/links.
+  - **Audit Artifacts**: Complete revision ledger (`docs/audits/ledger.md`), repeat audit report (`docs/audits/2026-09-10-2.md`), visual dashboard (`docs/audits/2026-09-10-visual.html`), architecture map (`docs/audits/map.md`), and raw transcript (`docs/audits/transcript-2026-09-10.jsonl`).
+  - **Verification**: 684 backend pytest tests passing, live deploy completed, production systemd service active.
 - Substantive Specification Validation & Empty/Placeholder Template Rejection (2026-09-07):
   - **Root Cause & Obninsk Case Analysis**:
     - Investigated issue where "Органайзеры - Обнинск" produced office stationery (`Attache Line 6 отделений`) instead of medical PPE dispensers from polycarbonate.
