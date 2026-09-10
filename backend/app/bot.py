@@ -199,6 +199,12 @@ BOT_CANCEL_NOTIFIED_JOBS: set[str] = set()
 TEXT_TZ_MIN_CHARS = 50
 TEXT_TZ_MIN_WORDS = 6
 TELEGRAM_CAPTION_LIMIT = 1024
+ALLOWED_DOCUMENT_EXTENSIONS = {
+    ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".rtf", ".odt",
+    ".zip", ".rar", ".7z",
+    ".txt", ".csv", ".tsv",
+    ".png", ".jpg", ".jpeg",
+}
 
 
 @router.error()
@@ -1943,6 +1949,7 @@ async def show_id(message: Message) -> None:
 @router.message(Command("status"))
 @router.message(Command("tasks"))
 @router.message(F.text == BUTTON_STATUS)
+@router.message(F.text.casefold().in_({"задачи", "история", "мои задачи"}))
 async def show_status(message: Message) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
     partial_confirmations: list[tuple[str, JobProgressSnapshot]] = []
@@ -2097,6 +2104,7 @@ async def supplier_single_button(message: Message) -> None:
 
 @router.message(Command("create"))
 @router.message(F.text == BUTTON_CREATE)
+@router.message(F.text.casefold().in_({"создать", "создать задачу", "поиск", "поставщики"}))
 async def create_button(message: Message) -> None:
     if await _reject_if_chat_processing(message):
         return
@@ -2105,6 +2113,7 @@ async def create_button(message: Message) -> None:
         "🚀 Создать задачу\n\n"
         "Выберите сценарий:\n"
         "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+        "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
         "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
         "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
         reply_markup=create_inline_keyboard(),
@@ -2122,6 +2131,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "🚀 Создать задачу\n\n"
             "Выберите сценарий:\n"
             "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+            "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
             reply_markup=create_inline_keyboard(),
@@ -2131,6 +2141,7 @@ async def open_create_menu_callback(callback: CallbackQuery) -> None:
             "🚀 Создать задачу\n\n"
             "Выберите сценарий:\n"
             "• 🔎 Поставщики по ТЗ — поиск производителей и дилеров по файлу или тексту\n"
+            "• 🎯 Подбор товара и аналогов — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты\n"
             "• 📄 Анализ закупки — аудит рисков 44/223-ФЗ по номеру или документам\n"
             "• 📄🔎 Анализ + поиск — совмещённый аудит документации и подбор поставщиков",
             reply_markup=create_inline_keyboard(),
@@ -2981,6 +2992,7 @@ def _output_caption(mode: str, output: Path) -> str:
 @router.message(Command("cabinet"))
 @router.message(Command("account"))
 @router.message(F.text == BUTTON_ACCESS)
+@router.message(F.text.casefold().in_({"кабинет", "мой кабинет", "баланс"}))
 async def access_button(message: Message) -> None:
     telegram_id, username, name = _telegram_user_fields(message)
     db = SessionLocal()
@@ -3134,6 +3146,7 @@ def _referral_text_and_keyboard(db: Session, client: Client | None, user) -> tup
 @router.message(Command("referral"))
 @router.message(Command("ref"))
 @router.message(Command("invite"))
+@router.message(F.text.casefold().in_({"пригласить", "рефералка", "бонус", "реферал"}))
 async def referral_button(message: Message) -> None:
     user = message.from_user
     telegram_id = str(user.id if user else "")
@@ -3172,6 +3185,7 @@ async def open_referral_callback(callback: CallbackQuery) -> None:
 
 @router.message(Command("tariffs"))
 @router.message(F.text == BUTTON_TARIFFS)
+@router.message(F.text.casefold().in_({"тарифы", "оплата", "цены", "купить"}))
 async def tariffs_button(message: Message) -> None:
     db = SessionLocal()
     try:
@@ -3203,6 +3217,7 @@ async def open_tariffs_callback(callback: CallbackQuery) -> None:
 
 @router.message(Command("contacts"))
 @router.message(F.text == BUTTON_CONTACTS)
+@router.message(F.text.casefold().in_({"контакты", "поддержка", "связь"}))
 async def contacts_button(message: Message) -> None:
     telegram_id = str(message.from_user.id if message.from_user else "")
     db = SessionLocal()
@@ -3238,6 +3253,7 @@ async def open_contacts_callback(callback: CallbackQuery) -> None:
 
 @router.message(Command("help"))
 @router.message(F.text == BUTTON_HELP)
+@router.message(F.text.casefold().in_({"помощь", "справка", "инструкция"}))
 async def help_button(message: Message) -> None:
     text = (
         "❓ Помощь: Справочник функций и алгоритм работы TenderLex\n\n"
@@ -3652,6 +3668,15 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
         settings = get_or_create_settings(db)
         max_mb = settings.max_upload_mb
         document = message.document
+        doc_filename = str(document.file_name or "").strip()
+        doc_ext = Path(doc_filename).suffix.lower()
+        if not doc_ext or doc_ext not in ALLOWED_DOCUMENT_EXTENSIONS:
+            await message.answer(
+                "⚠️ Формат файла не поддерживается.\n\n"
+                "Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), архивы (.zip, .rar, .7z) и текст (.txt).",
+                reply_markup=main_inline_keyboard(),
+            )
+            return
         if document.file_size and document.file_size > max_mb * 1024 * 1024:
             await message.answer(f"Файл слишком большой. Лимит: {max_mb} МБ.", reply_markup=main_menu())
             return
@@ -3707,16 +3732,32 @@ async def _handle_supplier_text_tz(message: Message) -> bool:
 
 async def _handle_supplier_text_tz_locked(message: Message) -> bool:
     scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
-    if scenario != SCENARIO_SUPPLIERS:
+    if scenario not in (SCENARIO_SUPPLIERS, SCENARIO_EXACT_PRODUCT):
         return False
     text = str(message.text or "").strip()
-    if not _looks_like_supplier_text_tz(text):
+    is_explicit_scenario = message.chat.id in PENDING_MODES
+    if not is_explicit_scenario and not _looks_like_supplier_text_tz(text):
+        return False
+    if len(text) < 3 or not any(c.isalpha() for c in text):
+        if is_explicit_scenario:
+            policy = _supplier_policy_for_chat(message.chat.id)
+            keyboard = (
+                exact_product_scenario_keyboard()
+                if scenario == SCENARIO_EXACT_PRODUCT
+                else supplier_policy_keyboard(selected_policy=policy)
+            )
+            await message.answer(
+                "⚠️ Слишком короткий текст.\n\n"
+                "Напишите наименование товара или характеристики (например: «Кабель силовой ВВГнг(А)-LS 3х2.5»).",
+                reply_markup=keyboard,
+            )
+            return True
         return False
     if message.chat.id in BATCH_RUNNING_CHATS:
         await message.answer(_batch_running_text(), reply_markup=processing_menu())
         return True
 
-    mode = MODE_SUPPLIER_SEARCH
+    mode = _scenario_job_mode(scenario)
     db = SessionLocal()
     try:
         telegram_id, username, name = _telegram_user_fields(message)
@@ -3767,12 +3808,30 @@ async def _handle_source_text(message: Message) -> bool:
     if await _reject_if_chat_processing(message):
         return True
     sources = source_payloads_from_text(str(message.text or ""))
+    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
     if not sources:
+        if message.chat.id in PENDING_MODES and scenario in (SCENARIO_REPORT, SCENARIO_ANALYSIS_AND_SUPPLIERS):
+            text_cleaned = str(message.text or "").strip()
+            if any(c.isdigit() for c in text_cleaned) or len(text_cleaned.split()) <= 4:
+                policy = _supplier_policy_for_chat(message.chat.id)
+                keyboard = (
+                    report_scenario_keyboard()
+                    if scenario == SCENARIO_REPORT
+                    else analysis_and_suppliers_keyboard(selected_policy=policy)
+                )
+                await message.answer(
+                    "⚠️ Не удалось распознать номер закупки или ссылку.\n\n"
+                    "• Номер извещения ЕИС состоит из 19 цифр (например: <code>0373200001424000123</code>)\n"
+                    "• Либо отправьте прямую ссылку на закупку (ЕИС, Сбер А, Росэлторг и др.)\n"
+                    "• Либо прикрепите файлы документации через скрепку 📎",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
         return False
 
-    scenario = PENDING_MODES.get(message.chat.id, SCENARIO_SUPPLIERS)
     if not _scenario_accepts_source_links(scenario):
-        await message.answer(_source_link_rejection_text(), reply_markup=main_menu())
+        await message.answer(_source_link_rejection_text(), reply_markup=main_inline_keyboard())
         return True
     mode = _job_mode_for_scenario(scenario)
     db = SessionLocal()
@@ -3946,7 +4005,7 @@ async def unknown_text(message: Message) -> None:
     await message.answer(
         "ℹ️ Выберите действие кнопкой ниже\n\n"
         "Для поставщиков отправьте ТЗ/ООЗ. Для анализа документации можно добавить номер извещения, файлы или ссылку на закупку.",
-        reply_markup=_menu_for_chat(message.chat.id),
+        reply_markup=main_inline_keyboard(),
     )
 
 
@@ -3955,7 +4014,7 @@ async def unsupported_message(message: Message) -> None:
     await message.answer(
         "⚠️ Этот тип сообщения не поддерживается.\n\n"
         "Отправьте документ, архив, текст ТЗ, номер извещения или ссылку на закупку.",
-        reply_markup=_menu_for_chat(message.chat.id),
+        reply_markup=main_inline_keyboard(),
     )
 
 
