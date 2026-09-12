@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Set paths
-sys.path.insert(0, '/root/projects/aipoisk-bot/backend')
+sys.path.insert(0, '/root/projects/tenderlex/backend')
 import dotenv
 dotenv.load_dotenv('/root/projects/emailagent/.env')
 sys.path.insert(0, '/root/projects/emailagent')
@@ -153,7 +153,7 @@ async def run_benchmark():
     print(f"Avg DNS Precheck speed (7 domains): TenderLex = {avg_tl_dns_time:.2f} ms | EmailAgent = {avg_ea_dns_time:.2f} ms")
     print(f"Avg MX Validation speed (3 emails): TenderLex = {avg_tl_mx_time:.2f} ms")
     
-    with open('/root/projects/aipoisk-bot/scripts/benchmark_comparison_results.json', 'w', encoding='utf-8') as f:
+    with open('/root/projects/tenderlex/scripts/benchmark_comparison_results.json', 'w', encoding='utf-8') as f:
         json.dump({
             "summary": {
                 "total_items": len(results),
@@ -167,7 +167,7 @@ async def run_benchmark():
             },
             "cases": results
         }, f, ensure_ascii=False, indent=2)
-    print("Benchmark data saved to /root/projects/aipoisk-bot/scripts/benchmark_comparison_results.json")
+    print("Benchmark data saved to /root/projects/tenderlex/scripts/benchmark_comparison_results.json")
 
 if __name__ == '__main__':
     asyncio.run(run_benchmark())

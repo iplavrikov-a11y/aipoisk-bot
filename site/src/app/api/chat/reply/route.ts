@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 
-const DATA_FILE = "/root/projects/aipoisk-bot/data/chat_sessions.json";
+const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
 const ADMIN_TOKEN = process.env.AIPOISK_ADMIN_TOKEN || "05503b2c669dce0bc6631e4a6ce9af074fb84d1b558dd88e6e66db0547ac294d";
 
 export async function POST(req: Request) {

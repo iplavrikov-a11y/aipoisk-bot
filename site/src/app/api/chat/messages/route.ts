@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 
-const DATA_FILE = "/root/projects/aipoisk-bot/data/chat_sessions.json";
+const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
 
 export async function GET(req: Request) {
   try {

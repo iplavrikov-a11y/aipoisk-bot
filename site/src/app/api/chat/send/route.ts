@@ -4,7 +4,7 @@ import path from "path";
 
 const BOT_TOKEN = process.env.AIPOISK_BOT_TOKEN || "8812193491:AAF-NXMKXB1bVyB9JX5RM_CEvohLq8NtENo";
 const OWNER_ID = process.env.AIPOISK_OWNER_TELEGRAM_ID || "320433711";
-const DATA_FILE = "/root/projects/aipoisk-bot/data/chat_sessions.json";
+const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
 
 function loadSessions(): Record<string, any> {
   try {

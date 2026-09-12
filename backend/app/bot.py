@@ -3865,7 +3865,7 @@ async def _handle_source_text(message: Message) -> bool:
 
 
 # --- SITE CHAT OPERATOR RELAY HANDLERS ---
-CHAT_SESSIONS_FILE = "/root/projects/aipoisk-bot/data/chat_sessions.json"
+CHAT_SESSIONS_FILE = "/root/projects/tenderlex/data/chat_sessions.json"
 OPERATOR_REPLY_SESSIONS: dict[int, str] = {}
 
 def _load_chat_sessions() -> dict:

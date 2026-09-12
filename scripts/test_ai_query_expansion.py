@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 # Add backend paths
-sys.path.insert(0, '/root/projects/aipoisk-bot/backend')
+sys.path.insert(0, '/root/projects/tenderlex/backend')
 
 from app.ai import call_llm
 from app.repository import get_or_create_settings
@@ -36,7 +36,7 @@ TEST_ITEMS = [
     {"id": 15, "title": "Трансформатор силовой трехфазный масляный ТМГ 1000 кВА", "raw": "трансформатор силовой трехфазный масляный ТМГ"}
 ]
 
-SQLITE_PATH = Path("/root/projects/aipoisk-bot/data/minprom_registry.sqlite")
+SQLITE_PATH = Path("/root/projects/tenderlex/data/minprom_registry.sqlite")
 
 def search_registry(term: str):
     words = [w for w in re.split(r'\W+', term) if len(w) >= 3]

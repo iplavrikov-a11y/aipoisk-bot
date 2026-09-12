@@ -8,7 +8,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 
 ## Production notes
 
-- Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands).
+- Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `aipoisk-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `aipoisk-bot.service`.
 - Durable queue worker: `aipoisk-worker.service`; current production

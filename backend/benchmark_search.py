@@ -8,7 +8,7 @@ import json
 import time
 from types import SimpleNamespace
 import sys
-sys.path.insert(0, '/root/projects/aipoisk-bot/backend')
+sys.path.insert(0, '/root/projects/tenderlex/backend')
 
 import app.supplier_search as supplier_search
 from app.supplier_search import (

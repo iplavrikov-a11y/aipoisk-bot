@@ -1,13 +1,13 @@
 import sys, os, sqlite3, json, asyncio, time
 
-sys.path.insert(0, '/root/projects/aipoisk-bot/backend')
+sys.path.insert(0, '/root/projects/tenderlex/backend')
 
 from app.db import SessionLocal
 from app.models import Job, SystemSettings
 from app.repository import get_or_create_settings
 from app.supplier_search import _expand_search_queries, discover_candidates, _search_with_yandex
 
-DB_PATH = '/root/projects/aipoisk-bot/data/aipoisk.db'
+DB_PATH = '/root/projects/tenderlex/data/aipoisk.db'
 PRICE_PER_REQ = 0.04
 
 async def run_benchmark():
@@ -44,7 +44,7 @@ async def run_benchmark():
     idx = 0
     for row in rows:
         j_id, mode, title, verified_count, orig_reqs, orig_cost, evidence_path = row
-        ev_path = f"/root/projects/aipoisk-bot/storage/jobs/{j_id}/output/evidence.json"
+        ev_path = f"/root/projects/tenderlex/storage/jobs/{j_id}/output/evidence.json"
 
         queries = []
         orig_domains = set()

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, "/root/projects/aipoisk-bot/backend")
+sys.path.insert(0, "/root/projects/tenderlex/backend")
 
 from app.db import SessionLocal
 from app.models import SystemSettings
@@ -221,7 +221,7 @@ async def run_benchmark():
     settings = db.query(SystemSettings).first() or SystemSettings()
     db.close()
 
-    results_dir = Path("/root/projects/aipoisk-bot/storage/benchmarks/benchmark_10_improved")
+    results_dir = Path("/root/projects/tenderlex/storage/benchmarks/benchmark_10_improved")
     results_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)

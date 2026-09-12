@@ -616,7 +616,7 @@ async def mcp_exact_product(
     # Save docx in public downloads storage
     docx_rel_url = None
     try:
-        storage_dir = Path(config.storage_dir or "/root/projects/aipoisk-bot/storage") / "mcp_reports"
+        storage_dir = Path(config.storage_dir or "/root/projects/tenderlex/storage") / "mcp_reports"
         storage_dir.mkdir(parents=True, exist_ok=True)
         doc_filename = f"exact_product_{secrets.token_hex(8)}.docx"
         doc_path = storage_dir / doc_filename
@@ -721,7 +721,7 @@ def mcp_download_report(filename: str):
     if not safe_name.endswith((".docx", ".xlsx", ".pdf", ".zip")):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file format")
 
-    storage_dir = Path(config.storage_dir or "/root/projects/aipoisk-bot/storage") / "mcp_reports"
+    storage_dir = Path(config.storage_dir or "/root/projects/tenderlex/storage") / "mcp_reports"
     file_path = (storage_dir / safe_name).resolve()
 
     if not str(file_path).startswith(str(storage_dir.resolve())) or not file_path.exists():

@@ -4,7 +4,7 @@ After=network.target aipoisk-api.service
 
 [Service]
 Type=simple
-WorkingDirectory=/root/projects/aipoisk-bot/site
+WorkingDirectory=/root/projects/tenderlex/site
 Environment=NODE_ENV=production
 Environment=PORT=3093
 Environment=HOSTNAME=127.0.0.1

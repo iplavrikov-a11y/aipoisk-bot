@@ -1,9 +1,10 @@
 # TenderLex: Project Status
 
-Date: 2026-09-10
+Date: 2026-09-12
 
 ## Current Production State
 
+- Project Root Directory: `/root/projects/tenderlex` (fully migrated from `aipoisk-bot`, legacy folder deleted).
 - Public URL: `https://tenderlex.ru`.
 - Admin URL used in earlier checks: `https://aipoisk.lexelence.ru`.
 - Backend service: `aipoisk-api.service`, FastAPI on `127.0.0.1:8088`.
@@ -12,6 +13,18 @@ Date: 2026-09-10
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Directory Migration to `/root/projects/tenderlex` & Comprehensive Client Journey Emulation (2026-09-12):
+  - **Full Directory Migration**: Permanently relocated repo to `/root/projects/tenderlex` and removed old `aipoisk-bot` paths across systemd services, Nginx configurations, Crontab schedules, and code references.
+  - **Comprehensive End-to-End Client Emulation**: Built and executed automated journey verification (`scripts/test_full_client_emulation.py`) across 26 distinct scenarios and button interactions:
+    - Bot greeting, branding, reply and inline keyboards (`/start`).
+    - Direct text aliases (`создать`, `кабинет`, `тарифы`, `помощь`, `контакты`).
+    - Navigation menu buttons (`📊 Кабинет`, `💳 Тарифы`, `❓ Помощь`, `📞 Контакты`, `⚖️ Документы`, `🕘 Задачи`).
+    - All 4 core task creation modules (`🔎 Поставщики по ТЗ`, `🎯 Подбор товара и аналогов`, `📄 Анализ закупки (44/223-ФЗ)`, `📄🔎 Анализ + поиск`).
+    - Minpromtorg registry policy switching (`Только реестр`, `Реестр в приоритете`, `Обычный поиск`).
+    - Security validation: immediate rejection of unsupported executable formats (`test.exe`) and acceptance of valid documents (`.docx`).
+    - Input formats: short goods query acceptance (AA-002), 19-digit EIS notice guidance (AA-005), and unknown text button preservation (AA-001).
+    - Database and API consistency: live verification of `SystemSettings`, client records, and web chat session routes.
+  - **Results**: 26/26 emulation tests passed, 690 pytest unit tests passed, all 5 systemd services active with zero errors.
 - Search Architecture Modernization, Factory Snippet Mining & 15-Job Live Benchmark (2026-09-10):
   - **Yandex Search Depth Standardization**: Raised Yandex Search XML depth to 70 results per page (`groupsOnPage: 70`) across the exact product module (`backend/app/exact_product/yandex_search.py`), aligning with `supplier_search` and `emailagent` to prevent loss of technical equipment datasheets and passports buried on pages 2–7.
   - **Search Query Hygiene & Placeholder Filtering**: Implemented `_is_placeholder_profile_term` in `backend/app/supplier_search.py` with rigorous filtering across `aliases`, `exact_terms`, and `category_terms`. Strips out useless phrases (`отечественный производитель`, `согласно ТЗ`, `паспорт завода`, `по спецификации заказчика`, `в открытой документации`), completely eliminating junk queries and reducing search API request volume from an average of 47.5 queries/task down to 28.0 queries/task (-40% quota consumption).

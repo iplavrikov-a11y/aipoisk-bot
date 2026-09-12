@@ -2,7 +2,7 @@ import sqlite3
 import json
 import os
 
-DB_PATH = '/root/projects/aipoisk-bot/data/aipoisk.db'
+DB_PATH = '/root/projects/tenderlex/data/aipoisk.db'
 PRICE_PER_REQ = 0.40
 
 def run_backfill():
@@ -29,7 +29,7 @@ def run_backfill():
         j_id, mode, title, status, evidence_path, result_path = job
         req_count = 0
 
-        ev_path = f"/root/projects/aipoisk-bot/storage/jobs/{j_id}/output/evidence.json"
+        ev_path = f"/root/projects/tenderlex/storage/jobs/{j_id}/output/evidence.json"
         if os.path.exists(ev_path):
             try:
                 with open(ev_path, 'r', encoding='utf-8') as f:

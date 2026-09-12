@@ -37,7 +37,7 @@
 
 ## Working Commands
 
-- Backend tests from repo root: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests -q`
+- Backend tests from repo root: `PYTHONPATH=/root/projects/tenderlex/backend pytest backend/tests -q`
 - Admin build: `cd frontend && npm run build`
 - Site dev: `cd site && npm run dev`
 - Site build: `cd site && npm run build`

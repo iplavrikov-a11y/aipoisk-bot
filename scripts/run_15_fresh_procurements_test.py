@@ -113,7 +113,7 @@ TEST_PROCUREMENTS = [
     }
 ]
 
-TL_SQLITE = Path("/root/projects/aipoisk-bot/data/minprom_registry.sqlite")
+TL_SQLITE = Path("/root/projects/tenderlex/data/minprom_registry.sqlite")
 EA_SQLITE = Path("/root/projects/emailagent/storage/minprom_registry/current.sqlite")
 
 def search_fts(db_path: Path, term: str):
@@ -196,7 +196,7 @@ print(f"TenderLex  : Всего найдено: {total_tl_count} записей,
 print(f"EmailAgent : Всего найдено: {total_ea_count} записей, Среднее время: {total_ea_ms/len(TEST_PROCUREMENTS):.2f} мс")
 print("="*95)
 
-out_file = Path("/root/projects/aipoisk-bot/scripts/test_15_fresh_results.json")
+out_file = Path("/root/projects/tenderlex/scripts/test_15_fresh_results.json")
 out_file.write_text(json.dumps({
     "summary": {
         "total_cases": len(TEST_PROCUREMENTS),
