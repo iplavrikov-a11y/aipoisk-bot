@@ -26,9 +26,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Подбор аналогов и эквивалентов по ТЗ — Реестр Минпромторга (ГИСП)",
+  title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ",
   description:
-    "ИИ-подбор товаров и взаимозаменяемых аналогов по техническому заданию (44-ФЗ, 223-ФЗ). Определение скрытого производителя, построчная сверка параметров по паспортам, выгрузка подробного отчета в Word (DOCX) без риска отклонения.",
+    "ИИ-подбор аналогов и эквивалентов по ТЗ за 2 мин. Сверка ГОСТ и Реестра Минпромторга (ГИСП), подробный отчет в Word. Проверьте 1 позицию бесплатно!",
   keywords: [
     "подбор аналогов по тз",
     "поиск товаров по тз",
@@ -46,9 +46,9 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: "/podbor-tovara-i-analogov-po-tz",
-    title: "Подбор аналогов и эквивалентов по ТЗ — Реестр Минпромторга | TenderLex",
+    title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ | TenderLex",
     description:
-      "ИИ-подбор товаров и взаимозаменяемых аналогов по ТЗ: выявление производителя, сверка параметров по паспортам и выгрузка отчета в Word (DOCX).",
+      "ИИ-подбор аналогов и эквивалентов по ТЗ за 2 мин: выявление модели-первоисточника, сверка параметров по паспортам и отчет в Word.",
     siteName: "TenderLex",
     images: [
       {
@@ -61,9 +61,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Подбор аналогов и эквивалентов по ТЗ | TenderLex",
+    title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ | TenderLex",
     description:
-      "ИИ-подбор товаров и отечественных аналогов по техническому заданию (44-ФЗ, 223-ФЗ).",
+      "ИИ-подбор товаров и отечественных аналогов по техническому заданию (44-ФЗ, 223-ФЗ). Сверка параметров и отчет в Word.",
     images: ["/tenderlex-product-preview.png"],
   },
 };
@@ -201,7 +201,7 @@ export default function PodborTovaraPage() {
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet"
+                href="/cabinet?scenario=exact_product"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Подобрать товар и аналоги</span>
@@ -215,6 +215,51 @@ export default function PodborTovaraPage() {
                 <FileText size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
               </a>
+            </div>
+
+            {/* Quick check interactive card */}
+            <div className="max-w-2xl mx-auto mt-4 p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-sm text-left">
+              <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Search size={14} className="text-teal-600" />
+                <span>Экспресс-подбор товара или аналога по марке:</span>
+              </div>
+              <form action="/cabinet" method="GET" className="flex flex-col sm:flex-row gap-2">
+                <input type="hidden" name="scenario" value="exact_product" />
+                <input
+                  type="text"
+                  name="text"
+                  placeholder="Например: Кран шаровый 11с67п или ВВГнг-LS 3х2.5..."
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                />
+                <button
+                  type="submit"
+                  className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm transition-all shadow-xs"
+                >
+                  <Sparkles size={15} />
+                  <span>Подобрать</span>
+                </button>
+              </form>
+              <div className="flex flex-wrap items-center gap-2 mt-3 text-xs text-slate-500">
+                <span className="text-slate-400">Примеры:</span>
+                <a
+                  href="/cabinet?scenario=exact_product&text=Кран шаровый 11с67п ДУ50 Ру16"
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-700 transition-colors"
+                >
+                  Кран 11с67п ДУ50
+                </a>
+                <a
+                  href="/cabinet?scenario=exact_product&text=Кабель ВВГнг-LS 3х2.5 ГОСТ"
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-700 transition-colors"
+                >
+                  ВВГнг-LS 3х2.5
+                </a>
+                <a
+                  href="/cabinet?scenario=exact_product&text=Насос К 80-50-200"
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 hover:text-teal-700 transition-colors"
+                >
+                  Насос К 80-50-200
+                </a>
+              </div>
             </div>
 
             {/* Conversion trust badges */}
@@ -375,7 +420,7 @@ export default function PodborTovaraPage() {
                   <span>Отчет выгружается в фирменном оформлении Word (DOCX).</span>
                 </span>
                 <a
-                  href="/cabinet"
+                  href="/cabinet?scenario=exact_product"
                   className="font-bold text-teal-700 hover:text-teal-800 flex items-center gap-1"
                 >
                   <span>Загрузить свое ТЗ на проверку</span>
@@ -402,7 +447,7 @@ export default function PodborTovaraPage() {
                 </p>
                 <div className="pt-4 flex flex-wrap gap-4">
                   <a
-                    href="/cabinet"
+                    href="/cabinet?scenario=exact_product"
                     className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-lg transition-all"
                   >
                     <span>Попробовать в веб-кабинете</span>
@@ -440,7 +485,7 @@ export default function PodborTovaraPage() {
                 <span className="text-xs font-bold text-slate-500 uppercase">Разовый подбор</span>
                 <div className="text-3xl font-black text-slate-900">99 ₽</div>
                 <p className="text-xs text-slate-600">1 подбор товара и аналогов по ТЗ</p>
-                <a href="/cabinet" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
+                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
                   Выбрать
                 </a>
               </div>
@@ -452,7 +497,7 @@ export default function PodborTovaraPage() {
                 <span className="text-xs font-bold text-teal-700 uppercase">Пакет 10</span>
                 <div className="text-3xl font-black text-slate-900">890 ₽</div>
                 <p className="text-xs text-slate-600">89 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet" className="block w-full py-2 bg-teal-600 text-white hover:bg-teal-700 rounded-xl text-xs font-bold transition-all">
+                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-teal-600 text-white hover:bg-teal-700 rounded-xl text-xs font-bold transition-all">
                   Выбрать
                 </a>
               </div>
@@ -461,7 +506,7 @@ export default function PodborTovaraPage() {
                 <span className="text-xs font-bold text-slate-500 uppercase">Пакет 25</span>
                 <div className="text-3xl font-black text-slate-900">1 990 ₽</div>
                 <p className="text-xs text-slate-600">79.6 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
+                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
                   Выбрать
                 </a>
               </div>
@@ -470,7 +515,7 @@ export default function PodborTovaraPage() {
                 <span className="text-xs font-bold text-slate-500 uppercase">Пакет 50</span>
                 <div className="text-3xl font-black text-slate-900">3 790 ₽</div>
                 <p className="text-xs text-slate-600">75.8 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
+                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
                   Выбрать
                 </a>
               </div>

@@ -13,9 +13,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков и заводов-производителей по ТЗ онлайн",
+  title: "Поиск поставщиков и заводов по ТЗ онлайн",
   description:
-    "Поиск поставщиков и производителей по ТЗ, ГОСТ и спецификациям онлайн. Готовый реестр прямых контактов отделов сбыта заводов с проверкой ИНН и запрос КП в 1 клик. Попробуйте бесплатно!",
+    "Поиск поставщиков и заводов по ТЗ и ГОСТ онлайн. Реестр прямых контактов отделов сбыта с проверкой ИНН и готовый запрос КП. Попробуйте бесплатно!",
   keywords: [
     "поиск поставщиков по ТЗ",
     "подбор поставщиков по спецификации",
@@ -113,7 +113,7 @@ export default function PoiskPostavshchikovPage() {
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet"
+                href="/cabinet?scenario=supplier_search"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Найти поставщиков бесплатно</span>

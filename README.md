@@ -13,6 +13,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `aipoisk-bot.service`.
 - Durable queue worker: `aipoisk-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Comprehensive SEO Optimization, High-CTR SERP Snippets & IndexNow Pipeline (2026-09-12):
+  - Solved zero CTR on Page 1 Google & Yandex search rankings (positions 4–8) by shortening titles to 53–56 chars with template compatibility and crafting concise 140–152 char descriptions with clear commercial triggers.
+  - Added interactive product quick-check form in `/podbor-tovara-i-analogov-po-tz` with popular equipment pills and automatic intent pre-filling in web cabinet (`?scenario=exact_product&text=...`).
+  - Embedded interactive `ProcurementCalculator` in `/analiz-rynka-44-fz` targeting high-intent Google striking-distance queries (*«калькулятор нмцк»*).
+  - Integrated dual submission to Yandex Webmaster recrawl queue and IndexNow Open API (Yandex, Bing, Seznam) in `backend/app/yandex_seo.py`.
+  - Updated LLM search indexes (`llms.txt` and `llms-full.txt`) with exact product & equivalents engine for ChatGPT, Perplexity, and Claude.
 - Security Hardening, Zero-Caching Compliance & Chat Reliability (2026-09-12):
   - Stripped hardcoded fallback secrets (DaData API key, Telegram bot tokens) from code and Next.js routes.
   - Whitelisted allowed upload extensions (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) in `/api/customer/tasks` to prevent binary/executable uploads.

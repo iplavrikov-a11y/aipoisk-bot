@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { TrendingUp, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
+import { TrendingUp, CheckCircle2, FileText, Send, Building2, Sparkles, Calculator } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
+import { ProcurementCalculator } from "@/components/procurement-calculator";
 import {
   buildBreadcrumbJsonLd,
   buildFaqJsonLd,
@@ -13,14 +14,17 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Анализ рынка 44-ФЗ — оценка конкуренции и цен поставщиков",
+  title: "Анализ рынка 44-ФЗ и расчет НМЦК онлайн",
   description:
-    "Исследование рыночной среды для госзакупок: проверка наличия производителей, уровня оптовых цен и возможностей закрытия контракта.",
+    "Анализ рынка по 44-ФЗ и расчет НМЦК методом сопоставимых цен онлайн. Поиск заводов, коммерческие предложения и калькулятор. Попробуйте бесплатно!",
   keywords: [
     "анализ рынка 44-ФЗ",
     "исследование рынка для закупки",
     "проверка цен поставщиков",
     "обоснование НМЦК",
+    "калькулятор нмцк 44 фз",
+    "калькулятор нмцк скачать бесплатно",
+    "расчет нмцк метод сопоставимых цен",
     "TenderLex",
   ],
   alternates: {
@@ -105,7 +109,7 @@ export default function AnalizRynkaPage() {
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet"
+                href="/cabinet?scenario=supplier_search"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Проанализировать рынок</span>
@@ -148,6 +152,24 @@ export default function AnalizRynkaPage() {
                 </p>
               </div>
             </div>
+          </div>
+        </section>
+
+        {/* CALCULATOR */}
+        <section className="py-16 sm:py-20 border-b border-slate-200 bg-white">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6">
+            <div className="text-center max-w-2xl mx-auto mb-10 space-y-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
+                Калькулятор экономии и НМЦК
+              </span>
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                Оценка снижения себестоимости и расчета НМЦК
+              </h2>
+              <p className="text-slate-600 text-sm">
+                Рассчитайте потенциал экономии бюджета и окупаемость поиска прямых производителей.
+              </p>
+            </div>
+            <ProcurementCalculator />
           </div>
         </section>
 

@@ -1049,6 +1049,14 @@ export function CabinetClient() {
   useEffect(() => {
     loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
+    const scenarioParam = params.get("scenario") || params.get("mode");
+    if (scenarioParam && (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "doc_analysis")) {
+      setScenario(scenarioParam as Scenario);
+    }
+    const textParam = params.get("text") || params.get("q");
+    if (textParam) {
+      setText(textParam.trim());
+    }
     const refParam = params.get("ref");
     if (refParam && typeof window !== "undefined") {
       localStorage.setItem("tenderlex_ref", refParam.trim());

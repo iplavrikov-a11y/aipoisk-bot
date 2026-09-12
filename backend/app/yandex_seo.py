@@ -181,11 +181,12 @@ def submit_sitemap_recrawl() -> dict:
     
     urls = [
         "https://tenderlex.ru",
+        "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
         "https://tenderlex.ru/poisk-postavshchikov-po-tz",
         "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
+        "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
         "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
         "https://tenderlex.ru/ocenka-riskov-zakupki",
-        "https://tenderlex.ru/login",
         "https://tenderlex.ru/privacy",
         "https://tenderlex.ru/terms"
     ]
@@ -212,6 +213,9 @@ def submit_sitemap_recrawl() -> dict:
                     results.append({"url": u, "status": f"HTTP_{resp.status}"})
         except Exception as e:
             results.append({"url": u, "status": "ERROR", "error": str(e)})
+
+    # Also submit to IndexNow API (Yandex, Bing, etc.)
+    indexnow_res = submit_indexnow(urls)
             
     return {
         "ok": True,
@@ -220,8 +224,39 @@ def submit_sitemap_recrawl() -> dict:
         "daily_quota": daily_quota,
         "quota_remainder": remainder,
         "details": results,
+        "indexnow": indexnow_res,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+def submit_indexnow(urls: list[str] | None = None) -> dict:
+    """Submit URLs to IndexNow open API (Yandex, Bing, Seznam, etc.)"""
+    if not urls:
+        urls = [
+            "https://tenderlex.ru/",
+            "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
+            "https://tenderlex.ru/poisk-postavshchikov-po-tz",
+            "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
+            "https://tenderlex.ru/reestr-minpromtorga-v-zakupkah",
+            "https://tenderlex.ru/poisk-proizvoditeley-po-tz",
+            "https://tenderlex.ru/ocenka-riskov-zakupki"
+        ]
+    payload = {
+        "host": "tenderlex.ru",
+        "key": "8fa93cd04f90454a82f7ff7d4434a4c6",
+        "keyLocation": "https://tenderlex.ru/8fa93cd04f90454a82f7ff7d4434a4c6.txt",
+        "urlList": urls
+    }
+    req = urllib.request.Request(
+        "https://api.indexnow.org/indexnow",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return {"ok": True, "status": resp.status, "submitted_count": len(urls)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def fetch_fresh_snapshot() -> dict:

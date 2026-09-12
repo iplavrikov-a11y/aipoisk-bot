@@ -13,9 +13,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Анализ закупочной документации: 44-ФЗ, 223-ФЗ и коммерческие торги",
+  title: "Анализ закупочной документации и рисков контракта",
   description:
-    "Автоматический экспресс-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах: выявление скрытых штрафов, сжатых сроков и ограничений.",
+    "ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин. Выявление скрытых штрафов, сжатых сроков и рисков. Проверьте бесплатно!",
   keywords: [
     "анализ закупочной документации",
     "проверка контракта 44-ФЗ 223-ФЗ",
@@ -96,7 +96,7 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
               <a
-                href="/cabinet"
+                href="/cabinet?scenario=doc_analysis"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md shadow-teal-600/20 transition-all hover:scale-[1.01]"
               >
                 <span>Проверить документацию</span>
