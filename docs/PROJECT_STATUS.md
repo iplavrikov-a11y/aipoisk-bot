@@ -13,6 +13,17 @@ Date: 2026-09-12
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
   `tenderlex-site.service` on `127.0.0.1:3093`.
+- Security Hardening, Zero-Caching Compliance, Form 2 Clean-up & Live Verification (2026-09-12):
+  - **Security & Secret Remediation**: Removed hardcoded DaData API key fallbacks and Telegram tokens from repository code and Next.js routes. Whitelisted permitted customer file upload extensions (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) in `/api/customer/tasks` and blocked all executable/script formats (`.exe`, `.sh`, `.bin`) with 400 Bad Request.
+  - **Strict Compliance with AGENTS.md (Zero-Caching Rule)**: Removed cross-task in-memory caching in `is_gisp_product_compatible_ai` (`minprom.py`) and `is_minor_or_service_item_ai` (`deep.py`), guaranteeing fresh real-time evaluation for all customer procurement tasks.
+  - **Form 2 Naming Clean-up**: Eliminated all `(Форма 2)` mentions from customer cabinet cards, badges, help modal, tariffs, and bot progress messages in favor of customer-facing wording (`Подбор аналогов`, `характеристики для заявки`). Removed dead `SCENARIO_THESES` code.
+  - **Site Support Chat Reliability**: Migrated `chat_sessions.json` operations to atomic file replacement (`tmp` + `renameSync`/`os.replace`) across Next.js API routes and Telegram bot handlers. Switched Telegram notifications from brittle Markdown to escaped HTML (`escapeHtml`), preventing 400 errors on special characters. Polling interval optimized to 25s when closed, 4s when active.
+  - **Path Consistency**: Corrected obsolete `/root/projects/aipoisk-bot/` script and logo references in `McpApiView.tsx` and `check_logo.py`.
+  - **Automated Verification & Live Deployment**:
+    - Added unit test `test_customer_upload_payload_allowed_and_forbidden_extensions`.
+    - Full backend pytest suite passing: 691 passed (0 failures).
+    - Site typecheck and build passing: 104/104 pages compiled.
+    - Live deployment executed via `./scripts/deploy_tenderlex_live.sh` with SQLite backup. All 4 services verified active (`aipoisk-api`, `aipoisk-worker`, `aipoisk-bot`, `tenderlex-site`).
 - Directory Migration to `/root/projects/tenderlex` & Comprehensive Client Journey Emulation (2026-09-12):
   - **Full Directory Migration**: Permanently relocated repo to `/root/projects/tenderlex` and removed old `aipoisk-bot` paths across systemd services, Nginx configurations, Crontab schedules, and code references.
   - **Comprehensive End-to-End Client Emulation**: Built and executed automated journey verification (`scripts/test_full_client_emulation.py`) across 26 distinct scenarios and button interactions:

@@ -13,6 +13,13 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `aipoisk-bot.service`.
 - Durable queue worker: `aipoisk-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Security Hardening, Zero-Caching Compliance & Chat Reliability (2026-09-12):
+  - Stripped hardcoded fallback secrets (DaData API key, Telegram bot tokens) from code and Next.js routes.
+  - Whitelisted allowed upload extensions (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) in `/api/customer/tasks` to prevent binary/executable uploads.
+  - Enforced zero-caching rule in exact product AI evaluation routines (`minprom.py`, `deep.py`) ensuring 100% fresh market checks.
+  - Purged internal `(Форма 2)` references from client cabinet, tariff cards, and bot messages in favor of customer-facing copy (`Подбор аналогов`).
+  - Implemented atomic file writes and HTML escaping in on-site support chat (`chat_sessions.json`), eliminating Telegram 400 Bad Request errors.
+  - 691 pytest tests passing, live deploy verified across API (8088), Site (3093), worker and bot.
 - Telegram Bot Live Audit & Userbot Validation (2026-09-10): Comprehensive end-to-end automated audit via Telegram MTProto userbot (`agent-audit`), resolving edge cases across navigation (keyboard preservation on fallback messages, text aliases `кабинет`, `создать`, `баланс` etc.), short product query acceptance in specification mode, document extension whitelist (`.docx`, `.pdf`, `.xlsx`, archives), module ordering, and 19-digit procurement notice formatting guidance. 0 open defects, full revision ledger and reports in `docs/audits/`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
