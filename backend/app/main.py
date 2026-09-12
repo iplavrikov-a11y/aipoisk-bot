@@ -3775,18 +3775,33 @@ async def create_customer_job_api(
     return {"batch": False, "count": 1, "job": customer_job_to_dict(job)}
 
 
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".rtf", ".odt",
+    ".zip", ".rar", ".7z",
+    ".txt", ".csv", ".tsv",
+    ".png", ".jpg", ".jpeg",
+}
+
+
 async def _customer_upload_payload(files: list[UploadFile], settings: SystemSettings) -> list[tuple[str, bytes]]:
     if len(files) > int(settings.max_files_per_batch or 20):
         raise HTTPException(status_code=400, detail="Слишком много файлов в одной задаче.")
     payload: list[tuple[str, bytes]] = []
     max_bytes = int(settings.max_upload_mb or 50) * 1024 * 1024
     for file in files:
+        filename = str(file.filename or "").strip()
+        ext = Path(filename).suffix.lower()
+        if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый формат файла: {filename or 'файл'}. Поддерживаются документы (.docx, .doc, .pdf, .xlsx, .xls, .rtf, .odt), архивы (.zip, .rar, .7z) и текст (.txt).",
+            )
         content = await file.read()
         if len(content) > max_bytes:
-            raise HTTPException(status_code=413, detail=f"{file.filename or 'Файл'} слишком большой.")
+            raise HTTPException(status_code=413, detail=f"{filename or 'Файл'} слишком большой.")
         if not content:
             continue
-        payload.append((file.filename or "upload", content))
+        payload.append((filename or "upload", content))
     return payload
 
 

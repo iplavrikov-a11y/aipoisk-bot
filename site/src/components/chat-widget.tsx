@@ -108,6 +108,7 @@ export function ChatWidget() {
   useEffect(() => {
     if (!sessionId) return;
 
+    const pollInterval = isOpen ? 4000 : 25000;
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/chat/messages?sessionId=${sessionId}`);
@@ -140,7 +141,7 @@ export function ChatWidget() {
       } catch (e) {
         // Silent poll error
       }
-    }, 4000);
+    }, pollInterval);
 
     return () => clearInterval(interval);
   }, [sessionId, isOpen]);

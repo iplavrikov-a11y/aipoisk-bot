@@ -12,11 +12,7 @@ _DADATA_API_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById
 
 
 def _get_dadata_api_key() -> str:
-    return (
-        os.getenv("DADATA_API_KEY", "").strip()
-        or os.getenv("DADATA_TOKEN", "").strip()
-        or "ccd87470786a4729699c7e1078ef6b79967496dc"
-    )
+    return os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
 
 
 async def enrich_company_by_inn(inn: str, *, api_key: str | None = None) -> dict[str, Any]:

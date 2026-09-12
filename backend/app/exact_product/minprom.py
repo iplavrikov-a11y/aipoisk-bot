@@ -129,12 +129,7 @@ async def is_gisp_product_compatible_ai(
     if not gisp_product or not name_in_tz:
         return False
 
-    cache_key = f"{gisp_product.strip().lower()}|{name_in_tz.strip().lower()}|{brand.strip().lower()}|{model.strip().lower()}"
-    if cache_key in _GISP_COMPAT_CACHE:
-        return _GISP_COMPAT_CACHE[cache_key]
-
     if not _is_gisp_product_compatible(gisp_product, name_in_tz, brand, model):
-        _GISP_COMPAT_CACHE[cache_key] = False
         return False
 
     if not getattr(settings, "has_active_ai_provider", False):
@@ -163,15 +158,11 @@ async def is_gisp_product_compatible_ai(
         )
         parsed = parse_json_dict(raw)
         if isinstance(parsed, dict) and "compatible" in parsed:
-            compat = bool(parsed["compatible"])
-            _GISP_COMPAT_CACHE[cache_key] = compat
-            return compat
+            return bool(parsed["compatible"])
     except Exception as exc:
         logger.debug("is_gisp_product_compatible_ai_failed: %s", exc)
 
-    compat = _is_gisp_product_compatible(gisp_product, name_in_tz, brand, model)
-    _GISP_COMPAT_CACHE[cache_key] = compat
-    return compat
+    return _is_gisp_product_compatible(gisp_product, name_in_tz, brand, model)
 
 
 def _extract_conclusion_info(evidence: str) -> tuple[str, str]:

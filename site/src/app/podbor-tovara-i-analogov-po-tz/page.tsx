@@ -335,7 +335,7 @@ export default function PodborTovaraPage() {
                   <thead>
                     <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold">
                       <th className="p-4 w-[28%]">Требуемый параметр (ТЗ)</th>
-                      <th className="p-4 w-[24%]">Фактический показатель (Форма 2)</th>
+                      <th className="p-4 w-[24%]">Фактический показатель товара</th>
                       <th className="p-4 w-[16%]">Статус</th>
                       <th className="p-4 w-[32%]">Отечественный аналог (Минпромторг)</th>
                     </tr>

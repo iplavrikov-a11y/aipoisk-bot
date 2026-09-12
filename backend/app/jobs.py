@@ -42,7 +42,6 @@ from .models import parse_json_dict
 from .exact_product import (
     analyze_exact_product,
     write_exact_product_docx,
-    write_exact_product_xlsx,
     ExactProductReport,
 )
 from .procurement_report import generate_procurement_report
@@ -1471,7 +1470,7 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         )
     )
     _check_cancelled(job.id)
-    _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (Форма 2 и аналоги)")
+    _set_job(db, job, progress=85, message="Формирую официальный отчёт в формате Word (характеристики и аналоги)")
     extracted_subj = (
         report.procurement_title
         or (report.positions[0].name_in_tz if report.positions else "")

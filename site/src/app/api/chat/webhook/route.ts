@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 
-const BOT_TOKEN = process.env.AIPOISK_BOT_TOKEN || "8812193491:AAF-NXMKXB1bVyB9JX5RM_CEvohLq8NtENo";
+const BOT_TOKEN = process.env.AIPOISK_BOT_TOKEN || "";
 const DATA_FILE = "/root/projects/tenderlex/data/chat_sessions.json";
 
 const BOT_MAIN_KEYBOARD = {
@@ -30,7 +30,9 @@ function saveSessions(data: Record<string, any>) {
   try {
     const dir = path.dirname(DATA_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
+    const tmpFile = `${DATA_FILE}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");
+    fs.renameSync(tmpFile, DATA_FILE);
   } catch (err) {
     console.error("Error saving sessions:", err);
   }

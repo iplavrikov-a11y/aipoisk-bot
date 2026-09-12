@@ -44,6 +44,8 @@ from app.main import (
     download_customer_job_file_api,
     download_customer_quote_request_docx_api,
     customer_billing_transactions_api,
+    _customer_upload_payload,
+    ALLOWED_UPLOAD_EXTENSIONS,
 )
 from app.main import complete_web_password_reset, customer_password_reset_request_api
 from app.models import BillingTransaction, Client, ClientTariffOverride, Job, JobFile, LegalAcceptance, SupplierResult, SystemSettings, TariffPackage, WebEmailVerificationToken, WebPasswordResetRequest, WebRegistrationAttempt, WebUser, now_utc
@@ -1860,6 +1862,30 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("перчаток", charge_item["title"])
         finally:
             db.close()
+
+    async def test_customer_upload_payload_allowed_and_forbidden_extensions(self) -> None:
+        settings = SystemSettings(max_files_per_batch=20, max_upload_mb=50)
+
+        # Valid files
+        valid_files = [
+            UploadFile(filename="spec.docx", file=BytesIO(b"word data")),
+            UploadFile(filename="table.XLSX", file=BytesIO(b"excel data")),
+            UploadFile(filename="doc.pdf", file=BytesIO(b"pdf data")),
+            UploadFile(filename="archive.zip", file=BytesIO(b"zip data")),
+            UploadFile(filename="notes.txt", file=BytesIO(b"text data")),
+        ]
+        payload = await _customer_upload_payload(valid_files, settings)
+        self.assertEqual(len(payload), 5)
+        self.assertEqual(payload[0][0], "spec.docx")
+        self.assertEqual(payload[0][1], b"word data")
+
+        # Forbidden extensions
+        for bad_name in ["malware.exe", "script.sh", "payload.bin", "shell.php", "noextension"]:
+            bad_file = [UploadFile(filename=bad_name, file=BytesIO(b"dangerous"))]
+            with self.assertRaises(HTTPException) as ctx:
+                await _customer_upload_payload(bad_file, settings)
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("Неподдерживаемый формат", ctx.exception.detail)
 
 
 if __name__ == "__main__":

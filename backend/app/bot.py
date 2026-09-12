@@ -2976,7 +2976,7 @@ def _output_caption_for_item(mode: str, kind: str, output: Path, job: Job | None
 def _output_caption(mode: str, output: Path) -> str:
     suffix = output.suffix.lower()
     if mode == MODE_EXACT_PRODUCT:
-        return "Отчёт о подборе товара, Форма 2 и аналоги во вложении."
+        return "Отчёт о подборе товара и аналоги во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".docx":
         return "Анализ документации во вложении."
     if mode == MODE_ANALYSIS_AND_SUPPLIERS and suffix == ".xlsx":
@@ -3885,8 +3885,10 @@ def _save_chat_sessions(data: dict) -> None:
         d = os.path.dirname(CHAT_SESSIONS_FILE)
         if not os.path.exists(d):
             os.makedirs(d, exist_ok=True)
-        with open(CHAT_SESSIONS_FILE, "w", encoding="utf-8") as f:
+        tmp_path = f"{CHAT_SESSIONS_FILE}.tmp.{os.getpid()}_{int(time.time() * 1000)}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, CHAT_SESSIONS_FILE)
     except Exception as e:
         logger.error(f"Error saving chat sessions: {e}")
 
@@ -3898,8 +3900,8 @@ async def handle_site_chat_reply_btn(callback: CallbackQuery) -> None:
     OPERATOR_REPLY_SESSIONS[callback.message.chat.id] = session_id
     await callback.answer("Режим ответа активирован")
     await callback.message.answer(
-        f"✍️ *Введите ответ для клиента* `{session_id}` *(просто отправьте текст ниже):*",
-        parse_mode="Markdown",
+        f"✍️ <b>Введите ответ для клиента</b> <code>{html_escape(session_id)}</code> <b>(просто отправьте текст ниже):</b>",
+        parse_mode="HTML",
         reply_markup=ForceReply(input_field_placeholder=f"Ответ для {session_id}..."),
     )
 
@@ -3930,8 +3932,8 @@ async def handle_site_chat_close_btn(callback: CallbackQuery) -> None:
     except Exception:
         pass
     await callback.message.answer(
-        f"🔒 *Диалог по сессии* `{session_id}` *закрыт.*",
-        parse_mode="Markdown",
+        f"🔒 <b>Диалог по сессии</b> <code>{html_escape(session_id)}</code> <b>закрыт.</b>",
+        parse_mode="HTML",
         reply_markup=main_inline_keyboard(),
     )
 
@@ -3984,8 +3986,8 @@ async def _handle_operator_chat_message(message: Message) -> bool:
         _save_chat_sessions(sessions)
         OPERATOR_REPLY_SESSIONS.pop(chat_id, None)
         await message.answer(
-            f"✅ *Ответ успешно доставлен клиенту на сайт!*\n\n💬 *Текст:* {text}",
-            parse_mode="Markdown",
+            f"✅ <b>Ответ успешно доставлен клиенту на сайт!</b>\n\n💬 <b>Текст:</b> {html_escape(text)}",
+            parse_mode="HTML",
             reply_markup=main_menu(),
         )
         return True

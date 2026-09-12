@@ -276,7 +276,7 @@ export function McpApiView({ clients }: { clients: Client[] }) {
       mcpServers: {
         tenderlex: {
           command: 'python3',
-          args: ['/root/projects/aipoisk-bot/scripts/tenderlex_mcp.py'],
+          args: ['/root/projects/tenderlex/scripts/tenderlex_mcp.py'],
           env: {
             TENDERLEX_API_KEY: effectiveMasterToken,
             TENDERLEX_API_URL: 'https://tenderlex.ru',
@@ -293,7 +293,7 @@ export function McpApiView({ clients }: { clients: Client[] }) {
       mcpServers: {
         tenderlex: {
           command: 'python3',
-          args: ['/root/projects/aipoisk-bot/scripts/tenderlex_mcp.py'],
+          args: ['/root/projects/tenderlex/scripts/tenderlex_mcp.py'],
           env: {
             TENDERLEX_API_KEY: effectiveMasterToken,
             TENDERLEX_API_URL: 'https://tenderlex.ru',

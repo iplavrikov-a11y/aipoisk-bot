@@ -989,12 +989,8 @@ async def is_minor_or_service_item_ai(name: str, context: str = "") -> bool:
     if not name or len(name.strip()) < 2:
         return True
 
-    clean_key = name.strip().lower()
-    if clean_key in _ITEM_IMPORTANCE_CACHE:
-        return _ITEM_IMPORTANCE_CACHE[clean_key]
-
     prompt = f"""Ты — ведущий эксперт по государственным закупкам (44-ФЗ/223-ФЗ) и товарной номенклатуре.
-Определи, требуется ли для следующей позиции спецификации профессиональный подбор точной промышленной марки/модели и завода-изготовителя для заявки (Форма 2), либо это мелкий стандартный расходник, дешевый крепеж, сопутствующая мелочь или сервисная услуга:
+Определи, требуется ли для следующей позиции спецификации профессиональный подбор точной промышленной марки/модели и завода-изготовителя для заявки, либо это мелкий стандартный расходник, дешевый крепеж, сопутствующая мелочь или сервисная услуга:
 
 Позиция: "{name}"
 {f'Контекст закупки: {context[:300]}' if context else ''}
@@ -1017,9 +1013,7 @@ async def is_minor_or_service_item_ai(name: str, context: str = "") -> bool:
         )
         parsed = _parse_json_safely(raw)
         if isinstance(parsed, dict) and "is_minor_or_service" in parsed:
-            res = bool(parsed["is_minor_or_service"])
-            _ITEM_IMPORTANCE_CACHE[clean_key] = res
-            return res
+            return bool(parsed["is_minor_or_service"])
     except Exception as exc:
         logger.debug("is_minor_or_service_item_ai_failed", error=str(exc))
 
@@ -1027,11 +1021,8 @@ async def is_minor_or_service_item_ai(name: str, context: str = "") -> bool:
 
 
 def is_service_or_fastener(name: str) -> bool:
-    """Синхронная обертка для обратной совместимости с проверкой кэша ИИ."""
-    if not name:
-        return False
-    clean_key = name.strip().lower()
-    return _ITEM_IMPORTANCE_CACHE.get(clean_key, False)
+    """Синхронная обертка для обратной совместимости."""
+    return False
 
 
 def extract_standards_from_text(text: str) -> List[str]:
