@@ -8,7 +8,9 @@
     "build": "next build && npm run standalone:assets",
     "standalone:assets": "mkdir -p .next/standalone/.next && cp -R .next/static .next/standalone/.next/static && if [ -d public ]; then cp -R public .next/standalone/public; fi",
     "start": "node .next/standalone/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seo:report": "python3 ../scripts/yandex_analytics.py",
+    "seo:recrawl": "python3 ../scripts/yandex_analytics.py --recrawl"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

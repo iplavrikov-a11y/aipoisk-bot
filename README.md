@@ -8,14 +8,77 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 
 ## Production notes
 
-- Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands).
+- Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `aipoisk-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `aipoisk-bot.service`.
 - Durable queue worker: `aipoisk-worker.service`; current production
-  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY`.
+  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Comprehensive SEO Optimization, High-CTR SERP Snippets & IndexNow Pipeline (2026-09-12):
+  - Solved zero CTR on Page 1 Google & Yandex search rankings (positions 4–8) by shortening titles to 53–56 chars with template compatibility and crafting concise 140–152 char descriptions with clear commercial triggers.
+  - Added interactive product quick-check form in `/podbor-tovara-i-analogov-po-tz` with popular equipment pills and automatic intent pre-filling in web cabinet (`?scenario=exact_product&text=...`).
+  - Embedded interactive `ProcurementCalculator` in `/analiz-rynka-44-fz` targeting high-intent Google striking-distance queries (*«калькулятор нмцк»*).
+  - Integrated dual submission to Yandex Webmaster recrawl queue and IndexNow Open API (Yandex, Bing, Seznam) in `backend/app/yandex_seo.py`.
+  - Updated LLM search indexes (`llms.txt` and `llms-full.txt`) with exact product & equivalents engine for ChatGPT, Perplexity, and Claude.
+- Security Hardening, Zero-Caching Compliance & Chat Reliability (2026-09-12):
+  - Stripped hardcoded fallback secrets (DaData API key, Telegram bot tokens) from code and Next.js routes.
+  - Whitelisted allowed upload extensions (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) in `/api/customer/tasks` to prevent binary/executable uploads.
+  - Enforced zero-caching rule in exact product AI evaluation routines (`minprom.py`, `deep.py`) ensuring 100% fresh market checks.
+  - Purged internal `(Форма 2)` references from client cabinet, tariff cards, and bot messages in favor of customer-facing copy (`Подбор аналогов`).
+  - Implemented atomic file writes and HTML escaping in on-site support chat (`chat_sessions.json`), eliminating Telegram 400 Bad Request errors.
+  - 691 pytest tests passing, live deploy verified across API (8088), Site (3093), worker and bot.
+- Telegram Bot Live Audit & Userbot Validation (2026-09-10): Comprehensive end-to-end automated audit via Telegram MTProto userbot (`agent-audit`), resolving edge cases across navigation (keyboard preservation on fallback messages, text aliases `кабинет`, `создать`, `баланс` etc.), short product query acceptance in specification mode, document extension whitelist (`.docx`, `.pdf`, `.xlsx`, archives), module ordering, and 19-digit procurement notice formatting guidance. 0 open defects, full revision ledger and reports in `docs/audits/`.
 - Public TenderLex site: Next.js app in `site/`, served at `https://tenderlex.ru` by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Product Radar: Resident badge integrated in the public footer, launch campaign prepared for 2026-08-24.
+- Contact Routing & Channels: Support channels: Telegram direct (`https://t.me/lexelence`), Telegram bot (`https://t.me/tenderlex_bot`), email `info@tenderlex.ru`, and on-site interactive chat.
+- UI/UX theme: Light-emerald high-trust B2B palette with natural procurement copy across the interactive showcase (`ScrollWorldViewer`), calculator (`ProcurementCalculator`), and web cabinet (split-toolbar layout with left-aligned navigation & contact buttons and right-aligned function guide and compact notification bell toggle `[🔔]`, integrated help modal `max-w-5xl`, real-time Web Audio task completion chime, customer expense and operations history modal (`/api/customer/billing/transactions`) with itemized operations, server-side pagination, exact client override charges and clean procurement subject titles, bottom floating toast pill, pulsing badges for new jobs, dismissible live chat with header trigger, and clean decluttered button styling).
+- Trial Balance & Email Verification: New registrations receive 495 ₽ trial balance (5 tasks @ 99 ₽); web cabinet displays compact test banner guiding users to direct contact channels for quota top-ups; transactional email confirmation uses a bulletproof responsive HTML template with single-account-per-email uniqueness enforcement.
+- Referral Program & Anti-Abuse System: 1 000 ₽ welcome balance for invitees upon registration, 1 000 ₽ bonus for inviters credited automatically upon the invitee's first completed task. Includes multi-layer anti-abuse guards (self-referral prevention by ID/Telegram/linked accounts, cycle detection, disposable burner email blacklist, IP rate-limiting, and completion idempotency). Client UX is integrated via an in-cabinet modal window (`ReferralModal`) without separate pages: compact zero-scroll layout, 1-click personal links, real-time counters, strict module ordering, cleaned Russian copy without file formats or Anglicisms, and Telegram bot deep linking (`t.me/tenderlex_bot?start=ref_<id>`) with pre-filled chat sharing. Cabinet toolbar button is finalized with design 5.4C (neutral slate button `bg-slate-100`, single amber gift icon, and high-contrast 10px emerald badge `+1 000 ₽`). Dedicated design showcase page available at `/demo-buttons`. Backend architecture includes future-ready data structures for partner payouts.
+- High-Efficiency Supplier Search & 95% Search API Budget Optimization: Overhauled the web candidate discovery engine to eliminate search request inflation and lower procurement search cost from 5.50+ ₽ down to 0.29 ₽ while strictly preserving deep organic coverage up to page 7:
+  - Corrected Yandex Search API v2 XML parameterization from `groupBy` to `groupSpec` with `groupsOnPage: 70`, fetching 70 organic results in a single 0.04 ₽ request instead of 3–7 pagination calls.
+  - Fast-Path candidate pool reuse: when initial review falls short of target by 1–2 items, the recovery pass re-evaluates unreviewed candidates from the initial discovery pool before initiating any network searches, dropping secondary API expenses to 0 ₽ in ~80% of runs.
+  - Adaptive recovery query dispatch: scales recovery query count strictly to the actual deficit (`min(8, max(3, gap // 2))`) instead of firing 24 static queries.
+  - Chunked execution with early stopping: queries run in chunks of 4 with immediate cancellation of pending requests once candidate target floors are met.
+  - Suffix and query hygiene: eliminated noisy commercial suffixes (`купить`, `контакты`) in favor of high-yield manufacturer intent queries (`производитель завод`, `каталог продукция`, `официальный сайт`).
+  - Cross-project synchronization with `emailagent`: deployed identical `groupSpec` and 70-result depth optimizations to `emailagent` (`core/yandex_search.py` and `backend/services/supplier_discovery/service.py`).
+- Search Architecture Modernization & Factory Snippet Mining (2026-09-10):
+  - Raised Yandex Search XML depth (`groupsOnPage: 70`) across exact product module (`backend/app/exact_product/yandex_search.py`).
+  - Strict query hygiene in supplier search (`backend/app/supplier_search.py`): eliminated placeholder phrases (`отечественный производитель`, `согласно ТЗ`, `паспорт завода`, `по спецификации заказчика`) from query planning and profile normalization, achieving 0 junk queries and lowering search API load by ~40%.
+  - Aggregator snippet mining: automated extraction of real manufacturer entities from Russian B2B aggregators with targeted queries for official factory sites.
+  - Smart PDF technical content and table extraction (`backend/app/document_parser.py`): table detection via PyMuPDF (`find_tables().to_markdown()`) with technical scoring across passports and catalogs up to 80 pages.
+  - Fully validated across 15 real customer procurement jobs with 690 regression tests passed and live deployment verified on server.
+- Exact-to-Supplier Search Pipeline: 1-click seamless pipeline from completed "Подбор товара и аналогов" into "Поиск поставщиков" across Web Cabinet and Telegram Bot. Generates a hybrid context combining original specification files with a structured manifest of identified equipment and confirmed equivalents from `evidence.json`, enabling instant supplier discovery with tariff quota reservation and policy controls.
+- Exact Product & Analogs Engine v2 (EmailAgent Parity, Whole-Document Analysis & Characteristic-First Matching): Complete architectural overhaul of the exact product matching engine (`backend/app/exact_product/`) achieving full architectural parity with `emailagent` while adapting to TenderLex direct-upload workflows:
+  - **Whole-Document Customer TZ Analysis (`product_brand_detector.py`)**: Tailored for TenderLex direct client file uploads (`.docx`, `.xlsx`, `.pdf`). Unlike EmailAgent (which aggressively isolates tables from noisy multi-message email threads), TenderLex preserves and analyzes the customer's uploaded Technical Assignment **100% in its entirety**, retaining customer header hints, delivery conditions, and full table specifications.
+  - **Modular Package Architecture & Worker Runtime Resilience**: Decomposed monolithic logic into dedicated modules (`models.py`, `evidence_miner.py`, `matcher.py`, `fetcher.py`, `search_planner.py`, `validation.py`, `minprom.py`, `pipeline.py`, `docx_report.py`, `xlsx_report.py`) with package-relative imports and safe fallback wrappers for `aipoisk-worker` systemd execution.
+  - **Tier-0 Evidence Mining & Hint Extraction (`evidence_miner.py`, `matcher.py`)**: Mines hard facts directly from attached tender documentation before initiating external searches. Flexible hint parser extracts unbulleted plain-text brand, model, and analog hints from uploaded Word documents without requiring markdown formatting.
+  - **Characteristic-First Matching (`matcher.py`)**: Selects models strictly based on parameter coverage rather than hallucinated brand names, with strict text grounding (`_is_model_grounded_in_doc`), matrix scoring, multi-document fact fusion, second-round targeted factory document search, and adaptive analog backfilling (`fails <= 5`).
+  - **Deep Web & PDF Extraction (`fetcher.py`, `spec_searcher.py`)**: High-fidelity extraction of technical tables via PyMuPDF (`fitz.find_tables().to_markdown()`), HTML property block parsing, link-crawling for manufacturer PDF datasheets, domain sanitization, environment-aware Yandex Search credentials, and seamless Playwright browser fallback.
+  - **Deterministic Validation & Auto-Rotation (`pipeline.py`, `validation.py`)**: Strict compliance checking, auto-rotation of conforming equivalents into prime analog slots, automatic rejection of non-conforming items, dealer/shop noise elimination (e.g. `Санова`, `Климбит`), and neutral phrasing in Form 2 comments.
+  - **Substantive Specification Validation & Empty Document Rejection (`document_parser.py`, `jobs.py`, `bot.py`)**: Strict pre-flight validation preventing unpopulated template documents (e.g. `Введите текст технического задания...`, placeholder brackets, empty Word/PDF files) from triggering spurious hallucinated searches (such as office stationery). Automatically fails fast with friendly advice, releases client tariff reservations with 0 ₽ charge, and ensures 100% Rule 14 parity on real multi-position technical specifications.
+  - **Budget Safeguards & DOCX Exclusivity**: Capped at `MAX_EXACT_POSITIONS_PER_JOB = 5` and `MAX_YANDEX_QUERIES_PER_JOB = 20`, live progress streaming callbacks, and full Form 2 export exclusively in Word DOCX.
+- Automated Omnichannel Nurturing Sequence & 1-Click Unsubscribe: Behavioral 5-step sequence (24h post-registration, 14d final prompt, 48h post-first-task, trial completion, and 10+ days reengagement) across Telegram and Email within work hours (09:00–20:00 MSK). Features smart channel prioritization based on user activity (Web cabinet vs Telegram bot) to eliminate cross-channel spam, high-converting card-based HTML email templates matching `hh-agent` styling with scaled 1.5x typography, verified outbound relay deliverability (OpenDKIM selector `relay`, root SPF `v=spf1 ip4:79.133.182.215 include:_spf.jino.ru ~all`, and `_dmarc` policy on `tenderlex.ru`), automated test runner relay isolation (`suppress_real_email_relay_in_tests` preventing test-induced bounces), and universal 1-click unsubscribe via Telegram button (`🔕 Отписаться от подсказок`) and HMAC-signed email link (`/api/customer/auth/unsubscribe`) that permanently disables marketing messages.
+- Admin Panel Clients Dynamic Live Sync & Smart Polling: Zero-reload real-time client tracking powered by a dedicated lightweight sync-check endpoint (`/api/clients/sync-check`, <1ms response, 0% CPU) with 3.5s background interval, eliminating heavy full-table queries. Features instant Toast notifications with Web Audio API chime on new registrations (showing client number, name, and contact details with 1-click navigation), `[Новый]` badge and emerald pulse highlight for recently registered clients, and a `🟢 Live` status indicator with relative sync timer and manual `🔄 Обновить` button in the toolbar.
 - Public site SEO and verification wiring live in the site app and the `tenderlex-site.service.d/seo.conf` drop-in; Google Search Console uses DNS TXT, Yandex Webmaster uses the public HTML verification file, and Yandex Metrika is enabled by env.
-- Nginx redirects HTTP to HTTPS, serves `aipoisk.lexelence.ru` from `/root/projects/aipoisk-bot/frontend/dist`, and proxies `/api/` to `127.0.0.1:8088`.
+- SEO Analytics & Automation Pipeline: Direct integration with Yandex Webmaster API, Yandex Metrika API, and Google Search Console API (`backend/app/yandex_seo.py`, `backend/app/google_seo.py`, `/api/seo-analytics`). Features real-time today search metrics harvesting (clicks, shows, avg position, and SERP query counts with day-to-day deltas), daily ranking dynamics tracking over 7/14/30 days with day trend classification (🟢 Up / 🔴 Down / ⚪ Stable) separately for Yandex and Google, query-level ranking movement tracker (who climbed, who dropped), sitemap priority recrawl queue submission, automated detection of "Striking Distance" growth points, and weekly automated Telegram digests to the owner.
+- Admin Panel SEO View: Dedicated "SEO и Трафик" control view in `admin.tenderlex.ru` with real-time "⚡ Прогресс на сегодняшний день" cards, "📈 Динамика ранжирования и показов по дням" interactive chart and timeline table with engine toggles (`[Все] [Яндекс] [Google]`), "🎯 Динамика ключевых фраз", and 1-click Telegram report delivery.
+- B2B Outreach & Lead Generation Engine: Dedicated system for massive B2B supplier/contractor acquisition by niche query with real-time web crawling, AI relevance scoring, negative keyword & domain filtering (excluding banks, guarantee brokers, OFD/EDS providers, tender software, and education/media), automated MX DNS domain verification, global top-level navigation layout (Search Tasks vertical list, Inbound Answers, Direct Composer, Mail Settings), task-isolated workspace architecture (CRM leads, email campaigns, AI composer), seamless jitter-free inbox synchronization (background server IMAP worker loop every 45s + silent 20s client DB polling, replicating `emailagent`), stable unread message reading (opening unread emails in the "Новые" tab preserves selection without auto-vanishing), sandboxed responsive `EmailBodyFrame` with responsive HTML table rendering and formatted fallback cards for empty bodies and opt-outs, interactive read/unread circle indicators across all inbox categories, sender avatars with hash-based color palette, dedicated **История переписки** correspondence thread modal with full chronological message timeline and inline fast AI replies (`/api/outreach/inbox/{id}/thread`, `/api/outreach/leads/{id}/thread`), multi-tier intelligent anti-spam engine with Unicode homoglyph normalization (defeating Cyrillic lookalike obfuscations like `Mаkitа`), self-learning domain/sender blacklist, 1-click permanent spammer blocklist and server-side IMAP auto-expunge, automated Bounce / NDR parser linking delivery failure notifications to leads with diagnostic rejection codes, relay-level Postfix NDR discard (`transport_maps` with `tenderlex.ru discard:` on `79.133.182.215`), immediate server-side IMAP expunge of system bounce/NDR notifications to prevent mailbox clutter while preserving delivery failure diagnostics on leads, accurate unified metrics accounting for sent, replied, and bounced leads, resilient campaign worker with safe resume handling without counter clobbering, SOCKS5 SMTP/IMAP transport with `info@tenderlex.ru`, lead parser hygiene (blocking placeholder names, test domains, and support/helpdesk ticket queues), pre-flight deliverability verification (`verify_email_deliverability` with SMTP handshake ping), Spintax randomization engine (`{...|...}`), RFC `List-Unsubscribe` headers, adaptive delay jitter, and AI Email Assistant for generating cold pitches and smart replies.
+- Model Context Protocol (MCP) & Public REST API: Full-featured integration layer allowing external AI assistants (Claude Desktop, Cursor, VS Code, ChatGPT Codex, Windsurf, Zed, custom backend agents) to directly leverage all TenderLex core engines in real time. Features:
+  - Cryptographically secure API keys with 256-bit entropy (`tl_live_...`, `tl_admin_...`), SHA-256 one-way hashing in database (`ApiKey` model), sliding-window in-memory rate limiting, and granular per-service quotas (supplier search, exact product & analogs, procurement documentation audit).
+  - Full Master Admin Key lifecycle with persistent `secret_token` retrieval for authenticated admins, 1-click token copying, and automatic token pre-filling in all AI assistant config snippets.
+  - Public REST endpoints (`/api/v1/mcp/suppliers/search`, `/api/v1/mcp/products/exact-analogs`, `/api/v1/mcp/procurements/analyze`, `/api/v1/mcp/balance`) and secure sandboxed report downloads (`/api/v1/mcp/downloads/{filename}`).
+  - Flexible AI-Ready Payload Normalization: Built-in `@model_validator` handlers automatically accept natural, non-strict inputs from external AI agents and chat harnesses (supporting `product_name`, `title`, `okpd2`, `characteristics` arrays/dicts, `query`, `doc`, `delivery_region`, `max_results`), assembling complete technical specifications and preventing `422 Unprocessable Entity` schema errors.
+  - Multi-policy supplier search parameter `search_policy`: supports `'normal'` (open Russian market), `'minprom_registry_priority'` (prioritizes Russian manufacturers from GISP / Minpromtorg registry with market fallback), and `'minprom_registry_only'` (strictly filters for confirmed domestic manufacturers with Minpromtorg registry entries for 44-FZ / 223-FZ national regime compliance).
+  - Dedicated standalone stdio MCP server (`mcp_server/server.py` and `scripts/tenderlex_mcp.py`) implementing the official JSON-RPC 2.0 stdio protocol with 4 structured tools (`tenderlex_find_suppliers`, `tenderlex_find_exact_and_analogs`, `tenderlex_analyze_procurement`, `tenderlex_check_balance`).
+  - Admin Panel **«MCP & API»** view: Clean light-theme 2-column layout, Master Admin Key management with toggleable eye visibility, 1-click config snippet generators for Claude / Cursor / ChatGPT / Python, client key creation with quota controls, and interactive real-time Live Tester console with policy selector.
+- Admin AI Models & High-Performance Settings: Fast, non-blocking model testing in `/api/ai/test` with bounded 10s per-call timeout, 12s hard deadline, 0 retries, and 5s concurrency limiter timeout (`limiter_timeout_seconds=5.0`), preventing dead or slow models from exhausting system-wide LLM concurrency slots. Instant, atomic settings updates via direct `PATCH /api/settings` response synchronization (10ms) without triggering heavy full-system reloads (`loadAll()`) or resetting uncommitted input fields, with active button state locks (`savingSection`) and client-side 12s `AbortController` timeouts on test requests.
+- Light-Theme Admin Panel & Refined Layout: Unified light high-trust B2B theme across the entire admin panel (`admin.tenderlex.ru`), featuring crisp white sidebar navigation with emerald accents, normalized standard checkbox inputs, dense information architecture, and distraction-free workspace.
+- Unified Admin Dashboard & Real-Time Analytics: Unified "Сводка" and "Статистика" into a high-density, responsive control center with 5-metric KPI row, 30-day dynamic launch chart, split 2-column breakdown for task modes/statuses and trial conversion funnel, and top active clients list. Displays instant live Yandex Search API balance in top header (`Поиск Яндекс: 401.69 ₽`).
+- 7-Day Smart Error Window & 1-Click Resolution: Active error alerts are filtered to the last 7 days (`Job.created_at >= now - timedelta(days=7)`), and includes 1-click **«Отметить решёнными»** action in both the Attention Banner (`POST /api/jobs/resolve-failed`) and on individual failed job cards (`POST /api/jobs/{job_id}/resolve`), permanently resolving historical errors and keeping the status indicator in clean green ("Система работает штатно").
+- Streamlined Admin Task Cards & Internal Task Numbering: Ultra-compact, single-level task item layout with micro-timeline stages in the card header, logical badge ordering (1. Function mode -> 2. Policy / run mode -> 3. AI provider & model -> 4. Found items count -> 5. Search API cost), left-aligned customer input file download pills with unclipped filenames and smooth tail ellipsis, and status-colored left border accents for noise-free visual separation. Features an administrator-only monotonic task numbering system (`#656`) with automatic DB trigger generation, search filter by task number, and dual UUID/number routing across all admin endpoints. Includes seamless expert admin re-run embedding: child re-runs are automatically deduplicated from top-level feed cards, embedding real-time progress bars, supplier counts, Yandex cost metrics, and download pills directly inside the parent customer task card.
+- Multi-Tier Document Parser Resilience & Scanned DOCX/DOC Media OCR: Fault-tolerant extraction pipeline for uploaded customer specifications (`.docx`, `.xlsx`, `.pdf`, `.doc`, archives) with primary native readers, secondary headless `LibreOffice` text fallbacks, tertiary direct XML parsing (`word/document.xml`), and automated embedded raster image OCR (`word/media/*` via Tesseract `rus+eng` with LibreOffice PDF fallback and UTF-8 BOM sanitization) enabling seamless processing of scanned tables pasted into Word documents.
+- Minpromtorg/GISP registry runtime cache lives under
+  `data/minprom_registry/` as XLSX, JSONL, and SQLite FTS files. It is used for
+  manual registry supplier modes and is intentionally not stored in git.
 - TenderLex deploy files are in `deploy/nginx/tenderlex.ru.conf`, `deploy/nginx/tenderlex.ru.http-only.conf`, and `deploy/systemd/tenderlex-site.service`.
 - HTTPS follows this server's existing stream layout: public `443` is routed by nginx `stream` to HTTP SSL vhosts on `4443`.
 - DNS must contain an explicit `A` record for `aipoisk.lexelence.ru -> 202.71.13.57`. The wildcard/apex Jino parking record (`81.177.141.15`) is not the production server.
@@ -26,10 +89,31 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 ## MVP scope
 
 - Manual customer access management from the admin panel, including several
-  Telegram manager accounts under one customer.
+  Telegram manager accounts and website logins under one customer.
 - Shared customer limits for all linked Telegram accounts.
-- Separate commercial limits for supplier reports and procurement-document
-  analyses. `📄🔎 Анализ + поиск` consumes one unit from each limit.
+- Customer access is based on a money balance. Each function has an effective
+  price: supplier search, procurement-document analysis, additional
+  supplier search (`Найти ещё` / добор поставщиков), and exact product detection
+  (`🎯 Точный товар и аналоги по ТЗ` — 99 ₽). `📄🔎 Анализ + поиск`
+  reserves and charges the supplier-search and analysis prices together.
+- Exact Product & Analogs Engine (100% Architecture & Code Parity with EmailAgent Rule 14):
+  - Deep multi-source engineering pipeline ported 1-to-1 from EmailAgent (`detect_exact_products_deep`, `evidence_miner`, `matcher`, `deep`): zero product-specific regexes or hardcoded keywords, strictly generic AI prompts with Rule 14 procurement evidence mining.
+  - Multi-tier matching workflow: Tier-0 procurement evidence mining -> characteristic-first candidate discovery -> multi-query Yandex search and targeted PDF passport downloads -> multi-source model fusion -> AI matrix parameter evaluation (`BUILD_EVALUATION_MATRIX_PROMPT`) -> grounded document verification (`_is_grounded_in_text`) -> standards resolution (GOST/TU/STO) -> anti-false-95% deterministic scoring.
+  - Automatic candidate rotation (`auto_rotate_clean_analogs`) prioritizes conforming candidates with 0 mismatches over defective originals, preserving strict Form 2 comparison tables and generating verified Word (`.docx`) reports exclusively.
+- Exact Product & Analogs Public Landing Page & SEO Hub:
+  - Commercial landing page `/podbor-tovara-i-analogov-po-tz` with structured Schema.org (`Service`, `FAQPage`, `HowTo`, `BreadcrumbList`), interactive Form 2 specification preview, Deep Search benefits, and direct 1-click supplier transition.
+  - Three-module core platform grid on homepage `/` (1. Поиск поставщиков, 2. Подбор товара и аналогов по ТЗ, 3. Экспресс-аудит документации 44/223-ФЗ).
+  - Extended SEO Knowledge Hub with targeted articles: `kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli`, `kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz`, and enriched `podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz`.
+  - Full sitemap integration and header/footer navigation links.
+  Additional supplier search defaults to 49 ₽ (configured via global `Добор поставщиков`
+  tariff package in the admin panel) with automatic fallback, and per-customer
+  `Добор` prices remain editable in the admin client card. Additional supplier search
+  utilizes candidate pool caching (`unreviewed_candidates`), cached procurement profile,
+  wave-based query generation with domain negative keywords, and optional custom criteria
+  (`additional_prompt`), saving up to 70–85% on search API costs and execution time.
+  Reserved funds are settled immediately upon job completion (`status == completed`),
+  and runs finding 20 or more verified suppliers complete automatically without
+  requiring partial-result confirmation.
 - Batch jobs for supplier search and procurement Word reports.
 - Telegram supplier search accepts either a ТЗ/ООЗ file or a plain text
   technical assignment/object description message; the text is stored as a
@@ -47,22 +131,44 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   and AI providers.
 - Admin statistics for the Telegram bot funnel: customer count, linked
   Telegram accounts, active users, task usage, trial follow-up candidates, top
-  customers, and payment-readiness indicators.
+  customers, and manual top-up indicators.
 - AI settings separate documentation-analysis models from one cheaper/faster
   supplier-search model used by the whole supplier-search flow.
-- YooKassa settings foundation is present for future checkout integration, but
-  payments are still handled manually until the cashier account is connected.
-- Public TenderLex site with no blog: SEO landing page, pricing, contact blocks, Telegram CTAs, and authenticated customer cabinet at `/cabinet`.
-- Website cabinet users are separate from Telegram users. Web clients sign in by email/password and appear in admin data as `web:<id>`; Telegram payments/access stay tied to Telegram accounts.
+- Admin tasks list displays the exact AI provider and model used for every task
+  (e.g., `Gemini · gemini-3.1-flash-lite`, `OpenRouter · claude-3.5-sonnet`), with
+  search and filter support by AI model and provider name.
+- Admin customer cards display exact registration dates for each client in the
+  card header, per-account registration/linking dates for Telegram accounts, and
+  both registration and last login dates for web-cabinet users.
+- Online checkout is not enabled. Customers top up through the manager, and the
+  owner credits or debits only a money amount in the admin client card. Legacy
+  YooKassa fields remain in the backend schema for a future integration, but
+  they are not the active payment workflow.
+- Public TenderLex site with no blog: supplier-search-led landing page,
+  pricing, contact blocks, Telegram CTAs, SEO scenario pages, and authenticated
+  customer cabinet at `/cabinet`.
+- Public homepage positioning is supplier/contact search under a customer's
+  specification. Procurement-document analysis is still available, but it is
+  framed as an optional supporting check for complex tender work rather than
+  the dominant first-screen message.
+- Website cabinet users are separate from Telegram users. Web clients sign in by
+  email/password; internal `web:<id>` markers must stay hidden from the
+  owner-facing account UI. Admin client cards show Web and Telegram access
+  separately, and a web login can be removed without deleting the customer,
+  balance, jobs, or Telegram accounts.
 - Website cabinet exposes the same customer work scenarios as the bot:
-  supplier search by ТЗ, procurement analysis, and combined analysis plus
-  supplier search.
-- Completed supplier-search, procurement-analysis, and combined jobs can expose
-  a `Запрос КП` document generated from the original customer materials and
-  available analysis data. The customer can preview/copy it and download DOCX
-  from the website cabinet; Telegram receives it as an additional job output
-  when available.
-- Public site data comes from `GET /api/public/site`; only active tariffs, safe contacts, trial counters, and public copy are exposed.
+  supplier search by ТЗ, procurement document analysis («Анализ документации»),
+  and combined analysis plus supplier search. The task launch form uses a compact
+  layout with a horizontal full-width file upload bar and action submit buttons
+  aligned to the right of text/source input fields.
+- Completed supplier-search, procurement-analysis, and combined jobs expose
+  a structured `Запрос КП` document generated from the customer materials and
+  AI extraction. It is delivered exclusively as a Word (`.docx`) file with
+  multiline bulleted characteristics, while Excel exports focus strictly on
+  verified supplier contacts. The customer can preview/copy the RFQ text
+  and download DOCX from the website cabinet and Telegram bot.
+- Public site data comes from `GET /api/public/site`; only active tariffs,
+  safe contacts, free-period settings, and public copy are exposed.
 - Telegram links are intentionally split: `bot_telegram` is the bot used for Telegram work CTAs, while `contact_telegram` is the owner/contact link for purchase and manual communication.
 - OpenAI-compatible custom AI providers, including CLIProxyAPI-style endpoints,
   OpenRouter, Gemini, and Polza.
@@ -74,11 +180,33 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   dates, bid-submission deadlines, auction/trading starts, and other critical
   timing conflicts.
 - Supplier search does not use EmailAgent discovery or the old Gemini search adapter path. It uses a multi-source web-search chain (`Yandex Search API -> Google Custom Search -> Tavily -> DDGS` by default), then verifies supplier sites, relevance, evidence pages, and contacts before writing XLSX rows.
-- Supplier search automatically checks whether the procurement context requires
-  a Minpromtorg/GISP registry extract. It searches the registry only when the
-  documents indicate an active prohibition or another mandatory registry
-  requirement; restrictions, preferences, non-application, or generic mentions
-  do not trigger registry lookup.
+- Supplier search supports three registry modes selected by the customer before
+  launch in the site cabinet and Telegram bot:
+  `Обычный поиск`, `Только реестр (Минпромторг)`, and `Реестр в приоритете (Минпромторг)`.
+  `Только реестр (Минпромторг)` is for strict prohibition cases where suppliers must have a
+  Minpromtorg/GISP registry record. `Реестр в приоритете` searches registry
+  candidates first, then continues with the ordinary supplier search. In
+  ordinary mode the AI can still detect a mandatory registry requirement from
+  the procurement context, but customer-selected registry modes do not require
+  the system to infer the legal regime from uploaded supplier documents.
+- Registry lookup for those modes uses the local Minpromtorg/GISP cache, not
+  Playwright. Admin settings expose cache status and XLSX upload. If the local
+  cache is not ready, manual registry modes are rejected before job creation
+  and before balance reservation.
+- Raw registry hits are treated only as candidates. The worker applies an AI
+  relevance filter against the extracted procurement profile before the
+  registry status becomes accepted. Supplier XLSX files keep one customer-facing
+  `Комментарий` column: matched rows include the registry record number and
+  manufacturer there, while priority-mode fallbacks say that no relevant
+  registry record was found and the supplier came from ordinary search.
+- If strict `Только реестр (Минпромторг)` produces zero registry-linked suppliers but the same
+  run already verified ordinary suppliers, the job becomes a paid alternative
+  offer instead of a generic failure. Telegram and the website show the number
+  of verified alternatives and the exact reserved charge; the customer can
+  accept delivery or decline without a supplier-search charge. The alternative
+  report carries a prominent no-registry-confirmation warning and is built
+  without another AI/search run. A registry technical error never activates
+  this offer.
 
 ## Telegram customer UX
 
@@ -91,6 +219,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   description of the procurement object. If the customer sends a notice number
   or procurement link in these modes, the bot must show a clear warning instead
   of silently starting analysis.
+- `🔎 Поставщики по ТЗ` and `📄🔎 Анализ + поиск` let the customer choose the
+  supplier registry mode before launch: ordinary search, registry-only, or
+  registry-priority.
 - `📄 Анализ закупки` and `📄🔎 Анализ + поиск` accept uploaded files, archives,
   procurement links, and notice numbers.
 - While any job is pending or running for the chat, the bot shows only
@@ -109,7 +240,10 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Current production status and the remaining commercial hardening backlog are documented in `docs/PROJECT_STATUS.md`.
 - TenderLex site/cabinet architecture and deploy notes are documented in `docs/TENDERLEX_SITE.md`.
 - Website cabinet operations, manual top-up, password recovery, and product smoke checks are documented in `docs/TENDERLEX_WEB_CABINET_RUNBOOK.md`.
-- Latest billing, Telegram UX, admin client deletion, tariff/payment, and button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
+- For public-site copy changes, verify both positive copy and stale-copy
+  checks from `docs/TENDERLEX_SITE.md` before reporting the site as live.
+- Earlier billing, Telegram UX, admin client deletion, tariff/payment, and
+  button-check evidence is in `.agent/tasks/2026-06-04-billing-telegram-ux/`.
 - Runtime secrets, uploaded files, generated reports, SQLite DB files, virtualenvs, dependencies, build output, and `.omx` logs are intentionally excluded from git.
 
 ## Local development

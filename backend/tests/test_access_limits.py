@@ -7,10 +7,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
 
 import app.db as app_db
-from app.billing import KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH, OP_GRANT
+from app.billing import KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH, OP_GRANT, client_uses_trial_access
 from app.db import Base
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
-from app.models import BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings
+from app.models import BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, TariffPackage
 from app.repository import (
     client_access_error,
     ensure_pending_client_telegram_account,
@@ -176,6 +176,10 @@ class AccessLimitTests(unittest.TestCase):
                     trial_file_limit=5,
                 )
             )
+            db.add_all([
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Базовый поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Базовый анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
             db.commit()
 
             client, account_error = get_or_create_trial_client_by_telegram_id(
@@ -189,8 +193,108 @@ class AccessLimitTests(unittest.TestCase):
             self.assertTrue(client.is_trial)
             self.assertEqual(client.monthly_supplier_search_limit, 2)
             self.assertEqual(client.monthly_procurement_report_limit, 1)
+            self.assertEqual(client.money_balance_kopeks, 22_000)
+            self.assertTrue(client_uses_trial_access(db, client))
+            self.assertEqual(
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == client.id)
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .filter(BillingTransaction.created_by == "system")
+                .count(),
+                2,
+            )
             self.assertEqual(len(client.telegram_accounts), 1)
             self.assertEqual(client.telegram_accounts[0].telegram_id, "555")
+        finally:
+            db.close()
+
+    def test_existing_unused_trial_client_receives_missing_money_grants(self) -> None:
+        db = self.Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    trial_enabled=True,
+                    trial_supplier_search_limit=1,
+                    trial_procurement_report_limit=1,
+                    trial_file_limit=5,
+                )
+            )
+            db.add_all([
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Базовый поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Базовый анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            client = Client(
+                id="client-1",
+                telegram_id="555",
+                name="Existing trial",
+                is_trial=True,
+                monthly_supplier_search_limit=1,
+                monthly_procurement_report_limit=1,
+                money_balance_kopeks=0,
+            )
+            db.add(client)
+            db.add(ClientTelegramAccount(client_id="client-1", telegram_id="555", username="buyer", name="Buyer One"))
+            db.commit()
+
+            resolved, account_error = get_or_create_trial_client_by_telegram_id(db, "555", username="buyer", name="Buyer One")
+
+            self.assertEqual(account_error, "")
+            self.assertEqual(resolved.id, "client-1")
+            self.assertEqual(resolved.money_balance_kopeks, 16_000)
+            self.assertEqual(
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == "client-1")
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .filter(BillingTransaction.created_by == "system")
+                .count(),
+                2,
+            )
+        finally:
+            db.close()
+
+    def test_existing_used_trial_client_does_not_receive_backfill_grants(self) -> None:
+        db = self.Session()
+        try:
+            db.add(
+                SystemSettings(
+                    id=1,
+                    trial_enabled=True,
+                    trial_supplier_search_limit=1,
+                    trial_procurement_report_limit=1,
+                    trial_file_limit=5,
+                )
+            )
+            db.add_all([
+                TariffPackage(kind=KIND_SUPPLIER_SEARCH, name="Базовый поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind=KIND_PROCUREMENT_REPORT, name="Базовый анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            client = Client(
+                id="client-1",
+                telegram_id="555",
+                name="Existing trial",
+                is_trial=True,
+                monthly_supplier_search_limit=1,
+                monthly_procurement_report_limit=1,
+                money_balance_kopeks=0,
+            )
+            db.add(client)
+            db.add(ClientTelegramAccount(client_id="client-1", telegram_id="555", username="buyer", name="Buyer One"))
+            db.add(Job(client_id="client-1", mode=MODE_SUPPLIER_SEARCH, status="completed"))
+            db.commit()
+
+            resolved, account_error = get_or_create_trial_client_by_telegram_id(db, "555", username="buyer", name="Buyer One")
+
+            self.assertEqual(account_error, "")
+            self.assertEqual(resolved.id, "client-1")
+            self.assertEqual(resolved.money_balance_kopeks, 0)
+            self.assertEqual(
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.client_id == "client-1")
+                .filter(BillingTransaction.operation == OP_GRANT)
+                .count(),
+                0,
+            )
         finally:
             db.close()
 
@@ -266,7 +370,7 @@ class AccessLimitTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_trial_rejects_combined_and_mass_supplier_modes(self) -> None:
+    def test_trial_allows_combined_but_rejects_mass_supplier_mode(self) -> None:
         db = self.Session()
         try:
             client = Client(
@@ -284,7 +388,7 @@ class AccessLimitTests(unittest.TestCase):
             mass_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=2)
             single_error = client_access_error(db, client, MODE_SUPPLIER_SEARCH, supplier_search_count=1)
 
-            self.assertIn("Анализ + поставщики", combined_error)
+            self.assertEqual(combined_error, "")
             self.assertIn("массовая обработка", mass_error)
             self.assertEqual(single_error, "")
         finally:

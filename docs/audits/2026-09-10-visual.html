@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TenderLex Telegram Bot — повторная ревизия 2026-09-10</title>
+<style>
+  :root{--paper:#F3F5F7;--card:#FFFFFF;--ink:#1E2430;--ink2:#4B5563;--ink3:#7B8794;--rule:#D9DEE5;
+    --accent:#1F6FB2;--accent-soft:#E3EEF8;--ok:#2F7A4A;--ok-soft:#E2F1E6;--warn:#A9690A;--warn-soft:#FBF0D9;
+    --crit:#B3261E;--crit-soft:#F9E1DF;--mute:#6B7280;--mute-soft:#E5E7EB}
+  @media (prefers-color-scheme: dark){:root{--paper:#151A21;--card:#1D2430;--ink:#E8ECF1;
+    --ink2:#B7C0CC;--ink3:#8A95A3;--rule:#2E3743;--accent:#7FB3E6;--accent-soft:#1E3247;--ok:#7CC791;--ok-soft:#1C3324;
+    --warn:#E0B25A;--warn-soft:#3A2E13;--crit:#F08B84;--crit-soft:#3F1F1D;--mute:#9CA3AF;--mute-soft:#2B3340}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  main{max-width:840px;margin:0 auto;padding:24px 16px 60px}
+  h1{font-size:26px;line-height:1.2;margin:0 0 6px}
+  h2{font-size:19px;margin:32px 0 12px}
+  .lede{color:var(--ink2);margin:0 0 18px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:18px 20px;margin:12px 0}
+  .verdict{border-left:6px solid var(--ok)}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  .tile{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:12px 14px}
+  .tile .n{font-size:26px;font-weight:700;line-height:1.1}
+  .tile .l{font-size:12px;color:var(--ink3);margin-top:4px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+  .s1{background:var(--crit-soft);color:var(--crit)}.s2{background:var(--warn-soft);color:var(--warn)}.good{background:var(--ok-soft);color:var(--ok)}
+  .finding{margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--rule)}
+  .finding:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+  .finding h3{margin:0 0 6px;font-size:16px}
+  .finding dl{display:grid;grid-template-columns:110px 1fr;gap:4px 10px;margin:0;font-size:14px}
+  .finding dt{color:var(--ink3);font-size:13px}.finding dd{margin:0}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule)}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink3)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+  .dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.crit{background:var(--crit)}
+  ul{padding-left:20px}li{margin:4px 0}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<main>
+  <h1>TenderLex Bot: выдержка повторной ревизии</h1>
+  <p class="lede">10 сентября 2026 · Ревизия №2 (повторная) · Глубина: Live Drive (Telegram MTProto Userbot) + Код + 684 теста pytest</p>
+
+  <section class="card verdict">
+    <h2 style="margin-top:0;font-size:18px;color:var(--ok)">Вердикт: ЗЕЛЁНЫЙ — Готов к использованию</h2>
+    <p>Все 5 выявленных замечаний (AA-001..AA-005) полностью устранены, развернуты в боевом сервисе <code>aipoisk-bot.service</code> и подтверждены повторным живым прогоном в Telegram без участия человека. Бот надежен, защищен от мусорных файлов, поддерживает текстовые алиасы и обеспечивает непрерывную навигацию.</p>
+  </section>
+
+  <h2>Итоги аудита</h2>
+  <div class="tiles">
+    <div class="tile"><div class="n">8</div><div class="l">Сценариев ядра</div></div>
+    <div class="tile"><div class="n">33</div><div class="l">Шага прогона вживую</div></div>
+    <div class="tile"><div class="n" style="color:var(--ok)">0</div><div class="l">Открытых дефектов</div></div>
+    <div class="tile"><div class="n" style="color:var(--ok)">5</div><div class="l">Закрытых находок</div></div>
+    <div class="tile"><div class="n" style="color:var(--ok)">684</div><div class="l">Тестов пройдено</div></div>
+  </div>
+
+  <h2>Закрытые находки (Дельта ревизии)</h2>
+  <div class="card">
+    <div class="finding">
+      <h3><span class="tag good">ЗАКРЫТО</span> AA-001. Кнопки навигации при неизвестном вводе и алиасы</h3>
+      <dl>
+        <dt>Было</dt><dd>Удаление клавиатуры при неизвестном сообщении, тупик интерфейса.</dd>
+        <dt>Стало</dt><dd>Всегда отправляется <code>main_inline_keyboard</code>; добавлены алиасы («кабинет», «создать», «баланс» и др.).</dd>
+        <dt>Проверка</dt><dd>Шаги 25, 26 транскрипта: сообщение 335533 (кабинет открыт), 335535 (кнопки на месте).</dd>
+      </dl>
+    </div>
+    <div class="finding">
+      <h3><span class="tag good">ЗАКРЫТО</span> AA-002. Прием кратких товарных позиций в ТЗ</h3>
+      <dl>
+        <dt>Было</dt><dd>Ложный отказ «слишком короткий текст» на запросы вроде «Кабель силовой...».</dd>
+        <dt>Стало</dt><dd>Товарный запрос корректно регистрируется как ТЗ (1/20) с кнопкой запуска.</dd>
+        <dt>Проверка</dt><dd>Шаг 28 транскрипта: сообщение 335537 («ТЗ добавлено», кнопка запуска поиска).</dd>
+      </dl>
+    </div>
+    <div class="finding">
+      <h3><span class="tag good">ЗАКРЫТО</span> AA-003. Белый список расширений файлов</h3>
+      <dl>
+        <dt>Было</dt><dd>Исполняемый файл <code>test.exe</code> принимался в обработку ТЗ.</dd>
+        <dt>Стало</dt><dd>Строгая проверка формата; отказ с понятным перечнем разрешенных типов (.pdf, .docx, .xlsx, архивы).</dd>
+        <dt>Проверка</dt><dd>Шаг 30 транскрипта: сообщение 335539 (корректный отказ без добавления в очередь).</dd>
+      </dl>
+    </div>
+    <div class="finding">
+      <h3><span class="tag good">ЗАКРЫТО</span> AA-004. Модуль «Подбор товара и аналогов» в описании меню</h3>
+      <dl>
+        <dt>Было</dt><dd>В пояснении «Создать задачу» модуль 2 был случайно опущен.</dd>
+        <dt>Стало</dt><dd>Все 3 модуля платформы строго по регламенту включены в меню.</dd>
+        <dt>Проверка</dt><dd>Шаги 24, 33 транскрипта: сообщения 335531, 335541.</dd>
+      </dl>
+    </div>
+    <div class="finding">
+      <h3><span class="tag good">ЗАКРЫТО</span> AA-005. Контекстная подсказка номера закупки ЕИС</h3>
+      <dl>
+        <dt>Было</dt><dd>При невалидном номере происходил сброс контекста без объяснения.</dd>
+        <dt>Стало</dt><dd>Четкая подсказка о 19-значном формате извещения ЕИС, ссылках и файлах.</dd>
+        <dt>Проверка</dt><dd>Шаг 32 транскрипта: сообщение 335541.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>Сценарии ядра: статус проверки</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>Сценарий</th><th>Статус</th><th>Оценка</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>S01. Старт, онбординг, структура меню</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S02. Поиск поставщиков (файл и текст)</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S03. Подбор товара и аналогов (DOCX-only)</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S04. Анализ закупки (ЕИС / файлы / ссылки)</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S05. Совмещенный аудит (анализ + поиск)</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S06. Валидация файлов и защита от сбоев</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S07. Буфер материалов (пакетная загрузка / сброс)</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+        <tr><td>S08. Кабинет, баланс, тарифы, рефералы, справка</td><td><span class="dot ok"></span> Пройдено</td><td>5 / 5</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="lede" style="margin-top:24px">Полный отчет: <a href="2026-09-10-2.md">2026-09-10-2.md</a> · Журнал: <a href="ledger.md">ledger.md</a> · Транскрипт: <a href="transcript-2026-09-10.jsonl">transcript-2026-09-10.jsonl</a></p>
+</main>
+</body>
+</html>

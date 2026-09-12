@@ -1,85 +1,66 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
   title: "Политика конфиденциальности",
-  description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
-  alternates: {
-    canonical: "/privacy",
-  },
-  openGraph: {
-    type: "website",
-    url: "/privacy",
-    title: "Политика конфиденциальности | TenderLex",
-    description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
-    siteName: "TenderLex",
-    images: ["/tenderlex-product-preview.png"],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Политика конфиденциальности | TenderLex",
-    description: "Как TenderLex обрабатывает данные пользователей сайта и личного кабинета.",
-    images: ["/tenderlex-product-preview.png"],
-  },
+  description: "Политика обработки и защиты персональных данных пользователей сервиса TenderLex в соответствии с Федеральным законом № 152-ФЗ.",
+  alternates: { canonical: "/privacy" },
 };
 
 export default function PrivacyPage() {
   return (
-    <main className="legal-shell">
-      <article className="legal-document">
-        <a className="legal-back" href="/">TenderLex</a>
-        <h1>Политика конфиденциальности</h1>
-        <p className="legal-date">Редакция от 7 июня 2026 года</p>
+    <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+      <SiteHeader />
 
-        <section>
-          <h2>1. Что обрабатывается</h2>
-          <p>
-            TenderLex обрабатывает данные, которые пользователь передает при работе с сайтом и личным кабинетом:
-            email, имя, загруженные документы, текстовые описания задач, ссылки или номера закупок, историю запусков
-            и результаты обработки.
+      <section className="py-16 sm:py-24 border-b border-slate-200">
+        <div className="container max-w-4xl mx-auto px-4 sm:px-6">
+          <Link href="/legal" className="text-teal-700 font-bold text-xs uppercase tracking-wider hover:underline inline-block mb-4">
+            ← Правовая информация
+          </Link>
+          <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight mb-2">
+            Политика конфиденциальности
+          </h1>
+          <p className="text-slate-500 text-sm mb-12">
+            Редакция от 17 июля 2026 года • Регламент обработки данных 152-ФЗ
           </p>
-        </section>
 
-        <section>
-          <h2>2. Для чего это нужно</h2>
-          <p>
-            Данные используются для регистрации и входа в кабинет, запуска анализа закупок, поиска поставщиков,
-            подготовки результатов, учета доступных запусков, поддержки пользователей и защиты сервиса от злоупотреблений.
-          </p>
-        </section>
+          <div className="space-y-8 text-sm text-slate-700 leading-relaxed">
+            <section className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-4 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">1. Назначение и правовые основания</h2>
+              <p>
+                Настоящая Политика определяет порядок сбора, обработки и защиты персональных данных пользователей сервиса
+                TenderLex, расположенного на сайте tenderlex.ru и в Telegram-боте @tenderlex_bot, в соответствии с
+                Федеральным законом № 152-ФЗ «О персональных данных».
+              </p>
+              <p>
+                Оператор персональных данных: сервис TenderLex (tenderlex.ru).
+              </p>
+            </section>
 
-        <section>
-          <h2>3. Документы и результаты</h2>
-          <p>
-            Загруженные материалы используются только для выполнения выбранной задачи. Результаты доступны пользователю
-            в личном кабинете и могут храниться ограниченное время для повторного скачивания и поддержки.
-          </p>
-        </section>
+            <section className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-4 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">2. Состав обрабатываемых данных</h2>
+              <p>
+                Оператор может обрабатывать следующие данные: номер телефона, адрес электронной почты, идентификатор
+                пользователя в Telegram, наименование организации/ИП, реквизиты, технические метаданные и файлы,
+                загружаемые для анализа в рамках оказания услуг.
+              </p>
+            </section>
 
-        <section>
-          <h2>4. Передача третьим лицам</h2>
-          <p>
-            Для выполнения анализа и поиска TenderLex может использовать внешние технические сервисы обработки данных.
-            Данные не продаются и не передаются третьим лицам для самостоятельной рекламы.
-          </p>
-        </section>
+            <section className="p-8 rounded-3xl bg-white border-2 border-slate-200 space-y-4 shadow-2xs">
+              <h2 className="text-xl font-black text-slate-900">3. Цели обработки и безопасность</h2>
+              <p>
+                Данные обрабатываются исключительно в целях предоставления доступа к функционалу платформы, исполнения
+                договора оферты, связи с пользователем, выставления бухгалтерских документов и технической поддержки.
+                Хранение данных осуществляется на серверах, физически размещенных на территории Российской Федерации.
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
 
-        <section>
-          <h2>5. Защита доступа</h2>
-          <p>
-            Доступ к личному кабинету выполняется по email и паролю. Пользователь отвечает за сохранность пароля и должен
-            сообщить в поддержку, если доступ мог попасть к третьим лицам.
-          </p>
-        </section>
-
-        <section>
-          <h2>6. Контакты</h2>
-          <p>
-            По вопросам обработки данных и доступа к кабинету можно написать на{" "}
-            <a href="mailto:snab@dealpartner.ru">snab@dealpartner.ru</a> или через{" "}
-            <a href="https://t.me/lexelence" target="_blank" rel="noreferrer">Telegram</a>.
-          </p>
-        </section>
-      </article>
+      <SiteFooter />
     </main>
   );
 }

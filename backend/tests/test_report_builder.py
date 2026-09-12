@@ -12,6 +12,7 @@ from app.quote_request import build_quote_request_markdown
 from app.report_builder import (
     PROCUREMENT_REPORT_DISCLAIMER,
     QUOTE_REQUEST_INTRO,
+    REGISTRY_FALLBACK_REPORT_DISCLAIMER,
     write_procurement_docx,
     write_quote_request_docx,
     write_supplier_xlsx,
@@ -33,8 +34,30 @@ class ReportBuilderTests(unittest.TestCase):
             doc = Document(path)
             text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
 
-        self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
-        self.assertIn("Критичные юридические, финансовые и технические условия", text)
+            self.assertIn(PROCUREMENT_REPORT_DISCLAIMER, text)
+            self.assertIn("Критичные юридические, финансовые и технические условия", text)
+
+    def test_procurement_docx_heading_and_body_font_sizes(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "analysis.docx"
+            write_procurement_docx(
+                path,
+                "#### Общая информация\n- Заказчик: Тестовый заказчик\n- ИНН: 7701234567",
+                title="Анализ документации",
+            )
+
+            doc = Document(path)
+            heading_p = [p for p in doc.paragraphs if p.text == "Общая информация"][0]
+            body_p = [p for p in doc.paragraphs if "Тестовый заказчик" in p.text][0]
+
+            heading_size = heading_p.runs[0].font.size.pt
+            body_size = body_p.runs[0].font.size.pt
+
+            self.assertEqual(heading_size, 11.0)
+            self.assertEqual(body_size, 9.5)
+            self.assertGreater(heading_size, body_size)
 
     def test_procurement_docx_removes_okpd_and_formats_tz_columns(self) -> None:
         from docx import Document
@@ -154,16 +177,21 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            ws = wb.active
+            ws = wb["Поставщики"]
             sheet_title = ws.title
             report_title = ws["A1"].value
-            headers = [cell.value for cell in ws[3]]
-            values = [cell.value for cell in ws[4]]
-            site_hyperlink = ws["B4"].hyperlink.target if ws["B4"].hyperlink else ""
+            headers = [cell.value for cell in ws[5]]
+            values = [cell.value for cell in ws[6]]
+            site_hyperlink = ws["B6"].hyperlink.target if ws["B6"].hyperlink else ""
+            self.assertEqual(wb.sheetnames, ["Поставщики"])
+            self.assertNotIn("Запрос КП", wb.sheetnames)
+            self.assertIsNone(ws.freeze_panes)
+            self.assertFalse(ws.auto_filter.ref)
             wb.close()
 
         self.assertEqual(sheet_title, "Поставщики")
-        self.assertEqual(report_title, "Отчёт по ТЗ: Сварочный полуавтомат")
+        self.assertIn("TenderLex", report_title)
+        self.assertIn("Сварочный полуавтомат", report_title)
         self.assertEqual(
             headers,
             [
@@ -172,8 +200,10 @@ class ReportBuilderTests(unittest.TestCase):
                 "Телефоны",
                 "Email",
                 "Комментарий",
+                "Реестр Минпромторга",
             ],
         )
+        self.assertNotIn("Соответствие", headers)
         self.assertNotIn("Search Query", headers)
         self.assertNotIn("Evidence snippet", headers)
         self.assertNotIn("AI уверенность", headers)
@@ -183,6 +213,32 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertIn("+7 999 111 22 33", values)
         self.assertIn("sales@supplier.ru", values)
         self.assertEqual(site_hyperlink, "https://supplier.ru")
+
+    def test_supplier_xlsx_keeps_font_children_in_schema_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [{"company_name": "Поставщик", "product_fit": "exact"}],
+                title="ТЗ",
+                target=1,
+            )
+            with zipfile.ZipFile(path) as archive:
+                styles = ET.fromstring(archive.read("xl/styles.xml"))
+
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        order = (
+            "b", "i", "strike", "outline", "shadow", "condense", "extend", "sz", "u",
+            "vertAlign", "color", "name", "charset", "family", "scheme",
+        )
+        positions = {name: index for index, name in enumerate(order)}
+        for font in styles.findall(f".//{{{namespace}}}fonts/{{{namespace}}}font"):
+            child_positions = [
+                positions[child.tag.rsplit("}", 1)[-1]]
+                for child in font
+                if child.tag.rsplit("}", 1)[-1] in positions
+            ]
+            self.assertEqual(child_positions, sorted(child_positions))
 
     def test_supplier_xlsx_marks_non_exact_matches_as_confirmation_needed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,12 +260,12 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            ws = wb.active
-            comment = ws["E4"].value
+            ws = wb["Поставщики"]
+            comment = ws["E6"].value
             wb.close()
 
-        self.assertIn("Профильный поставщик.", comment)
-        self.assertIn("Уточните", comment)
+        self.assertIn("Профиль компании подходит.", comment)
+        self.assertIn("Наличие товара уточнить", comment)
         self.assertNotIn("полностью соответствует", comment.lower())
 
     def test_supplier_xlsx_uses_short_exact_comment(self) -> None:
@@ -234,13 +290,169 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            ws = wb.active
-            comment = ws["E4"].value
+            ws = wb["Поставщики"]
+            comment = ws["E6"].value
             wb.close()
 
-        self.assertIn("Точный товар:", comment)
-        self.assertIn("Контакты найдены на сайте", comment)
+        self.assertIn("Точное соответствие:", comment)
         self.assertLessEqual(len(comment), 260)
+
+    def test_supplier_xlsx_does_not_expose_minprom_notes_in_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "category",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "comments": (
+                            "Нужно запросить подтверждение реестровой записи Минпромторга. "
+                            "Поставщик релевантен по промышленной категории."
+                        ),
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb["Поставщики"]
+            comment = ws["E6"].value
+            wb.close()
+
+        self.assertIn("Категория совпадает", comment)
+        self.assertNotRegex(comment, r"(?i)минпромторг|гисп|реестров")
+
+    def test_supplier_xlsx_adds_registry_fallback_note_for_priority_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Поставщик",
+                        "product_fit": "exact",
+                        "product": "Компаратор видеоспектральный Regula 4308",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "supplier_search_policy": "minprom_registry_priority",
+                        "supplier_search_origin": "ordinary_fallback",
+                        "minprom_registry_required": True,
+                        "minprom_registry_status": "empty",
+                        "minprom_registry_match": {"matched": False},
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb["Поставщики"]
+            comment = ws["E6"].value
+            wb.close()
+
+        self.assertIn("Точное соответствие", comment)
+        self.assertIn("Реестр: релевантная запись не найдена", comment)
+        self.assertIn("обычным поиском", comment)
+
+    def test_supplier_xlsx_marks_strict_registry_fallback_at_document_and_row_level(self) -> None:
+        for registry_status in ("empty", "ok"):
+            with self.subTest(registry_status=registry_status), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "suppliers-without-registry-confirmation.xlsx"
+                write_supplier_xlsx(
+                    path,
+                    [
+                        {
+                            "company_name": "Поставщик",
+                            "product_fit": "exact",
+                            "product": "Волоконный усилитель",
+                            "phone": "+7 999 111 22 33",
+                            "email": "sales@supplier.ru",
+                            "site": "https://supplier.ru",
+                            "supplier_search_policy": "minprom_registry_only",
+                            "supplier_search_origin": "ordinary_fallback",
+                            "minprom_registry_required": True,
+                            "minprom_registry_status": registry_status,
+                            "minprom_registry_match": {"matched": False},
+                        }
+                    ],
+                    title="ТЗ",
+                    target=1,
+                )
+
+                wb = load_workbook(path)
+                ws = wb["Поставщики"]
+                document_warning = ws["A3"].value
+                row_comment = ws["E6"].value
+                warning_fill = ws["A3"].fill.fgColor.rgb
+                wb.close()
+
+            self.assertIn(REGISTRY_FALLBACK_REPORT_DISCLAIMER, document_warning)
+            self.assertIn("не подтверждено", document_warning)
+            self.assertNotIn("запись подтверждена", document_warning.lower())
+            self.assertIn("Точное соответствие", row_comment)
+            self.assertIn("Реестр:", row_comment)
+            self.assertNotIn("запись подтверждена", row_comment.lower())
+            if registry_status == "empty":
+                self.assertIn("релевантная запись не найдена", row_comment)
+            else:
+                self.assertIn("соответствие поставщика конкретной записи не подтверждено", row_comment)
+            self.assertEqual(warning_fill, "00FEF3C7")
+
+    def test_supplier_xlsx_adds_registry_number_in_single_comment_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [
+                    {
+                        "company_name": "Завод",
+                        "product_fit": "exact",
+                        "product": "Насос центробежный",
+                        "phone": "+7 999 111 22 33",
+                        "email": "sales@supplier.ru",
+                        "site": "https://supplier.ru",
+                        "supplier_search_policy": "minprom_registry_only",
+                        "supplier_search_origin": "minprom_registry",
+                        "minprom_registry_required": True,
+                        "minprom_registry_status": "ok",
+                        "minprom_registry_match": {
+                            "matched": True,
+                            "registry_number": "РПП-123",
+                            "manufacturer": 'АО "Завод"',
+                        },
+                    }
+                ],
+                title="ТЗ",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            ws = wb["Поставщики"]
+            headers = [cell.value for cell in ws[5]]
+            comment = ws["E6"].value
+            registry_cell = ws["F6"].value
+            wb.close()
+
+        self.assertEqual(
+            headers,
+            [
+                "Компания",
+                "Сайт",
+                "Телефоны",
+                "Email",
+                "Комментарий",
+                "Реестр Минпромторга",
+            ],
+        )
+        self.assertNotIn("Реестр ГИСП Минпромторга", comment)
+        self.assertEqual(comment, "Точное соответствие: Насос центробежный.")
+        self.assertIn("РПП-123", registry_cell)
 
     def test_supplier_xlsx_hides_internal_target_when_overfilled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,11 +475,13 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            ws = wb.active
-            summary = ws["A2"].value
+            ws = wb["Поставщики"]
+            summary = ws["A3"].value
             wb.close()
 
-        self.assertIn("Найдено и проверено: 4", summary)
+        self.assertIn("Проверены сайты и контакты. Кандидатов: 4", summary)
+        self.assertIn("точным техническим совпадением: 0", summary)
+        self.assertIn("категорийных кандидатов: 4", summary)
         self.assertNotIn("Минимум по настройкам", summary)
         self.assertNotIn("4/2", summary)
 
@@ -291,14 +505,74 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            ws = wb.active
-            summary = ws["A2"].value
+            ws = wb["Поставщики"]
+            summary = ws["A3"].value
             wb.close()
 
-        self.assertIn("Найдено и проверено: 1", summary)
+        self.assertIn("Проверены сайты и контакты. Кандидатов: 1", summary)
+        self.assertIn("точным техническим совпадением: 0", summary)
+        self.assertIn("категорийных кандидатов: 1", summary)
         self.assertNotIn("1/15", summary)
         self.assertNotIn("миним", summary.lower())
+
+    def test_quote_request_rejects_contract_metadata_tables(self) -> None:
+        # Recreates the Screenshot 3 bug: contract table with sections (Заказчик, Сроки, Место)
+        source = """### Техническое задание
+| № п/п | Наименование | Содержание требований |
+|---|---|---|
+| 1 | Общие сведения | Информация о закупке |
+| 2 | Заказчик | ГКУ РТ |
+| 3 | Сведения месте проведения работ | г. Казань |
+| 4 | Сроки оказания услуг | до 31.12.2026 |
+| 5 | Цель выполнения | Обеспечение деятельности |
+
+Предмет закупки: Мобильный склад контейнерного типа
+"""
+        markdown = build_quote_request_markdown(source, subject="Мобильный склад контейнерного типа")
+        self.assertIn("Мобильный склад контейнерного типа", markdown)
+        self.assertNotIn("Заказчик", markdown)
+        self.assertNotIn("Сведения месте", markdown)
+        self.assertNotIn("Сроки оказания", markdown)
+        self.assertNotIn("Цель выполнения", markdown)
+
+    def test_quote_request_formats_characteristics_as_clean_bullet_lines(self) -> None:
+        # Recreates the Screenshot 1 scenario: semicolon-separated characteristics
+        source = """### Товары и требования
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Гидравлическая аэродромная установка | Тип масел: HYJET IV-A; Длина шлангов: 12 м; Система питания: <= 7 бар; Давление: <= 207 бар | шт | 2 |
+"""
+        markdown = build_quote_request_markdown(source, subject="Гидравлическая аэродромная установка")
+        self.assertIn("• Тип масел: HYJET IV-A<br>• Длина шлангов: 12 м<br>• Система питания: <= 7 бар<br>• Давление: <= 207 бар", markdown)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quote.docx"
+            write_quote_request_docx(path, markdown, title="Запрос КП")
+            from docx import Document
+            doc = Document(path)
+            # Table cells should contain line breaks for bullet items
+            cell_text = doc.tables[0].rows[1].cells[2].text
+            self.assertIn("• Тип масел: HYJET IV-A", cell_text)
+            self.assertIn("• Длина шлангов: 12 м", cell_text)
+            self.assertIn("\n", cell_text)
+
+    def test_supplier_xlsx_has_single_suppliers_sheet_without_quote_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                path,
+                [{"company_name": "ООО СкладСтрой", "product_fit": "exact"}],
+                title="Мобильный склад",
+                subject="Мобильный склад контейнерного типа",
+                target=1,
+            )
+
+            wb = load_workbook(path)
+            self.assertEqual(wb.sheetnames, ["Поставщики"])
+            self.assertNotIn("Запрос КП", wb.sheetnames)
+            wb.close()
 
 
 if __name__ == "__main__":
     unittest.main()
+
