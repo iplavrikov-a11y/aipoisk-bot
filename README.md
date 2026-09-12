@@ -19,6 +19,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   - Embedded interactive `ProcurementCalculator` in `/analiz-rynka-44-fz` targeting high-intent Google striking-distance queries (*«калькулятор нмцк»*).
   - Integrated dual submission to Yandex Webmaster recrawl queue and IndexNow Open API (Yandex, Bing, Seznam) in `backend/app/yandex_seo.py`.
   - Updated LLM search indexes (`llms.txt` and `llms-full.txt`) with exact product & equivalents engine for ChatGPT, Perplexity, and Claude.
+- Weekly Recurring SEO Audit & Self-Reflection Protocol (2026-09-12):
+  - Established formal recurring audit protocol documented in `docs/WEEKLY_SEO_AUDIT_PROTOCOL.md` and historical tracking ledger in `docs/SEO_AUDIT_LEDGER.md`.
+  - 2-Phase operational model: Phase 1 provides zero-mutation diagnostic report with 5-expert panel scoring (baseline 8.6/10) and week-over-week deltas against historical metrics; Phase 2 autonomously implements, tests, deploys live, and pings IndexNow/Webmaster upon confirmation.
 - Security Hardening, Zero-Caching Compliance & Chat Reliability (2026-09-12):
   - Stripped hardcoded fallback secrets (DaData API key, Telegram bot tokens) from code and Next.js routes.
   - Whitelisted allowed upload extensions (`.docx`, `.doc`, `.pdf`, `.xlsx`, `.xls`, `.rtf`, `.odt`, `.zip`, `.rar`, `.7z`, `.txt`) in `/api/customer/tasks` to prevent binary/executable uploads.
