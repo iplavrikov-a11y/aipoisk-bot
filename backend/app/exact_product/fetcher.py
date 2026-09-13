@@ -84,7 +84,7 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
     # 1. Быстрый легковесный обход через curl_cffi (Chrome TLS fingerprint)
     if CurlCffiAsyncSession is not None:
         try:
-            async with CurlCffiAsyncSession(impersonate="chrome124", timeout=4.5) as session:
+            async with CurlCffiAsyncSession(impersonate="chrome124", timeout=7.0) as session:
                 resp = await session.get(url)
                 if resp.status_code == 200 and resp.text:
                     body_text = ""
@@ -112,7 +112,7 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
 
     try:
         from ..procurement_sources import fetch_source_page_with_browser
-        browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=4.0)
+        browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=5.0)
         if browser_page and browser_page.get("text"):
             text = str(browser_page["text"]).strip()
             if len(text) > 50:
@@ -141,7 +141,7 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
                     locale="ru-RU",
                 )
                 page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=4500)
+                await page.goto(url, wait_until="domcontentloaded", timeout=7000)
                 await page.wait_for_timeout(300)
                 content = await page.content()
                 title = await page.title()
@@ -191,7 +191,7 @@ def extract_pdf_links_from_html(html_text: str, base_url: str = "") -> list[str]
 async def fetch_web_or_pdf_document(
     client: httpx.AsyncClient,
     url: str,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 9.0,
 ) -> Optional[Dict[str, Any]]:
     """
     Скачивает веб-страницу или PDF-паспорт изделия.
@@ -355,7 +355,8 @@ async def fetch_batch_web_documents(
     sem = asyncio.Semaphore(max_concurrency)
     results: List[Dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+    client_timeout = httpx.Timeout(connect=3.5, read=10.0, write=5.0, pool=3.5)
+    async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=True) as client:
         fetch_fn = _get_fetch_web_or_pdf_document()
 
         async def _fetch_one(target_url: str):
@@ -364,9 +365,9 @@ async def fetch_batch_web_documents(
 
         tasks = [_fetch_one(u) for u in target_urls]
         try:
-            fetched = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15.0)
+            fetched = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=20.0)
         except asyncio.TimeoutError:
-            logger.warning("batch_fetch_timeout_reached", timeout=15.0, count=len(tasks))
+            logger.warning("batch_fetch_timeout_reached", timeout=20.0, count=len(tasks))
             fetched = []
 
         found_pdf_links: list[str] = []
@@ -387,11 +388,11 @@ async def fetch_batch_web_documents(
             needed = max_docs - len(results)
             pdf_tasks = [_fetch_one(pu) for pu in found_pdf_links[:needed]]
             try:
-                pdf_res = await asyncio.wait_for(asyncio.gather(*pdf_tasks, return_exceptions=True), timeout=8.0)
+                pdf_res = await asyncio.wait_for(asyncio.gather(*pdf_tasks, return_exceptions=True), timeout=10.0)
                 for pr in pdf_res:
                     if isinstance(pr, dict) and pr.get("text"):
                         results.append(pr)
             except asyncio.TimeoutError:
-                logger.warning("batch_fetch_pdf_timeout_reached", timeout=8.0)
+                logger.warning("batch_fetch_pdf_timeout_reached", timeout=10.0)
 
     return results[:max_docs]
