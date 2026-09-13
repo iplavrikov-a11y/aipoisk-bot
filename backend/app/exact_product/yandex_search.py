@@ -5,6 +5,7 @@ Supports both v1 (legacy XML) and v2 (new async) APIs.
 
 import os
 import asyncio
+import random
 import httpx
 from dataclasses import dataclass
 from typing import Optional
@@ -15,7 +16,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# Excluded domains (marketplaces)
+# Excluded domains (marketplaces and irrelevant component pinout catalogs)
 EXCLUDED_DOMAINS = [
     "ozon.ru",
     "wildberries.ru",
@@ -28,6 +29,11 @@ EXCLUDED_DOMAINS = [
     "google.com",
     "wikipedia.org",
     "youtube.com",
+    "alldatasheet.com",
+    "radioradar.net",
+    "chipfind.ru",
+    "e-find.ru",
+    "datasheet4u.com",
     "vk.com",
     "ok.ru",
     "dzen.ru",
@@ -184,17 +190,33 @@ class YandexSearchEngine:
     async def _wait_for_v2_operation(
         self, operation_id: str, headers: dict
     ) -> list[YandexSearchResult]:
-        """Wait for v2 async operation."""
+        """Wait for v2 async operation with rate-limit protection and exponential backoff."""
         client = await self._get_client()
 
-        poll_delays = [0.3, 0.5, 0.8, 1.2, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
-        for attempt in range(30):
-            await asyncio.sleep(poll_delays[attempt])
+        # Start at 0.7s to avoid burning rate limits on operations that take ~1-2s anyway
+        poll_delays = [0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.5]
+        consecutive_429 = 0
+        for attempt in range(len(poll_delays)):
+            delay = poll_delays[attempt] + random.uniform(0.1, 0.35)
+            await asyncio.sleep(delay)
 
             try:
                 response = await client.get(
                     f"{self.V2_OPERATION_URL}/{operation_id}", headers=headers
                 )
+                if response.status_code == 429:
+                    consecutive_429 += 1
+                    backoff = min(6.0, 1.2 * (1.8 ** consecutive_429) + random.uniform(0.2, 0.6))
+                    logger.warning(
+                        "yandex_v2_rate_limited",
+                        operation_id=operation_id,
+                        attempt=attempt,
+                        backoff=round(backoff, 2),
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+                consecutive_429 = 0
                 if response.status_code != 200:
                     continue
 

@@ -1949,10 +1949,11 @@ async def resolve_clarify_parameters(
 
             targeted_query = " ".join(query_parts).strip()
             sub_queries = [targeted_query]
+            item_anchor = f'"{clean_name[:35]}" ' if clean_name else ""
             if has_real_brand and has_real_model:
-                sub_queries.append(f"{brand} {model} паспорт инструкция PDF")
+                sub_queries.append(f'{item_anchor}"{brand}" "{model}" паспорт инструкция PDF')
             elif clean_name:
-                sub_queries.append(f"{clean_name} паспорт PDF")
+                sub_queries.append(f'{item_anchor}паспорт PDF')
 
             # Выполняем добор документов по составным запросам
             new_urls = []

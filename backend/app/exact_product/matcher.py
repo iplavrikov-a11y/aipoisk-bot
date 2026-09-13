@@ -2490,17 +2490,19 @@ def _second_round_queries(
     has_fails = bool(rows and any(r.get("verdict") == "fail" for r in rows))
 
     queries = []
+    clean_item = (item or "").strip()
+    item_anchor = f'"{clean_item[:35]}" ' if clean_item else ""
     if brand and model and not has_fails:
-        queries.append(f'"{brand}" "{model}" паспорт инструкция PDF')
-        queries.append(f'{item} "{model}" характеристики')
-        queries.append(f'"{brand}" "{model}" руководство характеристики')
-        queries.append(f'"{brand}" "{model}" техническое описание')
+        queries.append(f'{item_anchor}"{brand}" "{model}" паспорт инструкция PDF')
+        queries.append(f'{item_anchor}"{model}" характеристики')
+        queries.append(f'{item_anchor}"{brand}" "{model}" руководство характеристики')
+        queries.append(f'{item_anchor}"{brand}" "{model}" техническое описание')
     elif model and not has_fails:
-        queries.append(f'{item} "{model}" паспорт PDF')
-        queries.append(f'{item} "{model}" характеристики')
+        queries.append(f'{item_anchor}"{model}" паспорт PDF')
+        queries.append(f'{item_anchor}"{model}" характеристики')
     elif brand and not has_fails:
-        queries.append(f'"{brand}" {item} паспорт PDF')
-        queries.append(f'"{brand}" {item} каталог характеристики')
+        queries.append(f'{item_anchor}"{brand}" паспорт PDF')
+        queries.append(f'{item_anchor}"{brand}" каталог характеристики')
     else:
         queries.append(f"{item} характеристики паспорт")
         queries.append(f"{item} паспорт PDF")

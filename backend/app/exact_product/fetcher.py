@@ -61,6 +61,11 @@ EXCLUDED_DOMAINS = [
     "megamarket.ru",
     "tiu.ru",
     "pulscen.ru",
+    "alldatasheet.com",
+    "radioradar.net",
+    "chipfind.ru",
+    "e-find.ru",
+    "datasheet4u.com",
 ]
 
 
@@ -356,7 +361,7 @@ async def fetch_batch_web_documents(
     results: List[Dict[str, Any]] = []
 
     client_timeout = httpx.Timeout(connect=3.5, read=10.0, write=5.0, pool=3.5)
-    async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=True, verify=False) as client:
         fetch_fn = _get_fetch_web_or_pdf_document()
 
         async def _fetch_one(target_url: str):
