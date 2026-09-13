@@ -12,6 +12,11 @@ Date: 2026-09-12
 - Durable job worker: `aipoisk-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by
+- Adaptive Structured Timeouts & Factory Catalog Preservation (2026-09-13):
+  - **Decoupled TCP/TLS Connect & Read Timeouts (`fetcher.py`)**: Split `httpx.Timeout(connect=3.5, read=10.0, write=5.0, pool=3.5)` in `fetch_batch_web_documents`. Dead hosts, dropped packets, and blocked ports fail fast in 3.5s (preventing async queue stalls), while slow regional factory servers and legacy CMSs (Bitrix/Joomla) get up to 10.0s to stream catalog HTML and technical datasheets without being dropped.
+  - **Increased Document Fetching Budgets**: Raised single document timeout (`fetch_web_or_pdf_document`) from 5.0s to 9.0s. Increased batch gathering timeout from 15.0s to 20.0s (PDF pass to 10.0s).
+  - **Fallback Engine Resilience**: Raised `curl_cffi` Chrome TLS impersonation timeout to 7.0s and Playwright Chromium `goto` timeout to 7000ms.
+  - **Verification & Deployment**: Full backend test suite passing (691 passed, 54 subtests passed). Admin frontend and Next.js site compiled. Deployed live via `./scripts/deploy_tenderlex_live.sh`; all 5 production services active.
 - Exact Product Engine Upgrade, Rule 14 Verification & Minpromtorg Parity (2026-09-13):
   - **Multi-Tiered Web Document Fetcher (`fetcher.py`)**: Integrated high-speed HTTP fetching with Chrome TLS fingerprint impersonation (`curl_cffi`) and `trafilatura` before heavy Playwright Chromium fallback, reducing page load latency 3-5x and minimizing RAM consumption during vendor catalog parsing.
   - **National Regime Legal Triggers (`matcher.py`)**: Fixed legal detection logic to recognize raw procurement text directly (PP RF 616, 878, 617, 1875, GISP registry recordings, national regime triggers) rather than relying exclusively on internal report template headers. Tested and confirmed 100% (10/10) recognition accuracy.
