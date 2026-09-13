@@ -79,11 +79,12 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
     """
     Fallback-загрузчик через curl_cffi (TLS impersonation) и Playwright Chromium для обхода защит
     (KillBot, Cloudflare, DDoS-Guard) и рендеринга SPA/динамических таблиц характеристик.
+    Имеет жесткие таймауты (Karpathy guidelines: budget timeout <= 7s суммарно на ссылку).
     """
     # 1. Быстрый легковесный обход через curl_cffi (Chrome TLS fingerprint)
     if CurlCffiAsyncSession is not None:
         try:
-            async with CurlCffiAsyncSession(impersonate="chrome124", timeout=10.0) as session:
+            async with CurlCffiAsyncSession(impersonate="chrome124", timeout=4.5) as session:
                 resp = await session.get(url)
                 if resp.status_code == 200 and resp.text:
                     body_text = ""
@@ -111,7 +112,7 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
 
     try:
         from ..procurement_sources import fetch_source_page_with_browser
-        browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=18.0)
+        browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=4.0)
         if browser_page and browser_page.get("text"):
             text = str(browser_page["text"]).strip()
             if len(text) > 50:
@@ -134,16 +135,18 @@ async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[s
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                locale="ru-RU",
-            )
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(1500)
-            content = await page.content()
-            title = await page.title()
-            await browser.close()
+            try:
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    locale="ru-RU",
+                )
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=4500)
+                await page.wait_for_timeout(300)
+                content = await page.content()
+                title = await page.title()
+            finally:
+                await browser.close()
 
             if content:
                 soup = BeautifulSoup(content, "html.parser")
@@ -188,7 +191,7 @@ def extract_pdf_links_from_html(html_text: str, base_url: str = "") -> list[str]
 async def fetch_web_or_pdf_document(
     client: httpx.AsyncClient,
     url: str,
-    timeout_seconds: float = 12.0,
+    timeout_seconds: float = 5.0,
 ) -> Optional[Dict[str, Any]]:
     """
     Скачивает веб-страницу или PDF-паспорт изделия.
@@ -352,7 +355,7 @@ async def fetch_batch_web_documents(
     sem = asyncio.Semaphore(max_concurrency)
     results: List[Dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=14.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
         fetch_fn = _get_fetch_web_or_pdf_document()
 
         async def _fetch_one(target_url: str):
@@ -360,7 +363,11 @@ async def fetch_batch_web_documents(
                 return await fetch_fn(client, target_url)
 
         tasks = [_fetch_one(u) for u in target_urls]
-        fetched = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            fetched = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning("batch_fetch_timeout_reached", timeout=15.0, count=len(tasks))
+            fetched = []
 
         found_pdf_links: list[str] = []
         seen_urls = set(target_urls)
@@ -379,9 +386,12 @@ async def fetch_batch_web_documents(
         if found_pdf_links and len(results) < max_docs:
             needed = max_docs - len(results)
             pdf_tasks = [_fetch_one(pu) for pu in found_pdf_links[:needed]]
-            pdf_res = await asyncio.gather(*pdf_tasks, return_exceptions=True)
-            for pr in pdf_res:
-                if isinstance(pr, dict) and pr.get("text"):
-                    results.append(pr)
+            try:
+                pdf_res = await asyncio.wait_for(asyncio.gather(*pdf_tasks, return_exceptions=True), timeout=8.0)
+                for pr in pdf_res:
+                    if isinstance(pr, dict) and pr.get("text"):
+                        results.append(pr)
+            except asyncio.TimeoutError:
+                logger.warning("batch_fetch_pdf_timeout_reached", timeout=8.0)
 
     return results[:max_docs]
