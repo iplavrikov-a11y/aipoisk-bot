@@ -64,11 +64,51 @@ EXCLUDED_DOMAINS = [
 ]
 
 
+try:
+    from curl_cffi.requests import AsyncSession as CurlCffiAsyncSession
+except Exception:
+    CurlCffiAsyncSession = None
+
+try:
+    import trafilatura
+except Exception:
+    trafilatura = None
+
+
 async def _fetch_with_browser_fallback(url: str, domain: str) -> Optional[Dict[str, Any]]:
     """
-    Fallback-загрузчик через Playwright Chromium для обхода защит (KillBot, Cloudflare, DDoS-Guard)
-    и рендеринга SPA/динамических таблиц характеристик.
+    Fallback-загрузчик через curl_cffi (TLS impersonation) и Playwright Chromium для обхода защит
+    (KillBot, Cloudflare, DDoS-Guard) и рендеринга SPA/динамических таблиц характеристик.
     """
+    # 1. Быстрый легковесный обход через curl_cffi (Chrome TLS fingerprint)
+    if CurlCffiAsyncSession is not None:
+        try:
+            async with CurlCffiAsyncSession(impersonate="chrome124", timeout=10.0) as session:
+                resp = await session.get(url)
+                if resp.status_code == 200 and resp.text:
+                    body_text = ""
+                    if trafilatura is not None:
+                        try:
+                            body_text = trafilatura.extract(resp.text) or ""
+                        except Exception:
+                            body_text = ""
+                    if not body_text:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
+                            tag.decompose()
+                        body_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()
+                    if len(body_text) > 50:
+                        return {
+                            "url": url,
+                            "domain": domain,
+                            "type": "html_curl_cffi",
+                            "title": f"Официальный каталог / Спецификация ({domain})",
+                            "text": body_text[:25000],
+                            "pdf_links": extract_pdf_links_from_html(resp.text, url),
+                        }
+        except Exception as c_exc:
+            logger.debug("curl_cffi_fallback_failed for %s: %s", url, c_exc)
+
     try:
         from ..procurement_sources import fetch_source_page_with_browser
         browser_page = await asyncio.wait_for(fetch_source_page_with_browser(url), timeout=18.0)
