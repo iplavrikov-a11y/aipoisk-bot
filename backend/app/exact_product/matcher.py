@@ -936,9 +936,14 @@ def build_characteristic_queries(
     clean_mod = _clean_str(model_hint)
 
     if clean_b and clean_mod:
-        targeted_queries.append(f"{clean_b} {clean_mod} характеристики паспорт")
-        targeted_queries.append(f"{clean_b} {clean_mod} паспорт PDF")
-        targeted_queries.append(f"{clean_b} {clean_mod}")
+        if clean_item:
+            targeted_queries.append(f'"{clean_item[:35]}" "{clean_b}" {clean_mod} характеристики паспорт')
+            targeted_queries.append(f'"{clean_item[:35]}" "{clean_b}" {clean_mod} паспорт PDF')
+            targeted_queries.append(f'"{clean_item[:35]}" "{clean_b}" {clean_mod}')
+        else:
+            targeted_queries.append(f"{clean_b} {clean_mod} характеристики паспорт")
+            targeted_queries.append(f"{clean_b} {clean_mod} паспорт PDF")
+            targeted_queries.append(f"{clean_b} {clean_mod}")
     elif clean_b:
         targeted_queries.append(f"{clean_b} {clean_item} характеристики паспорт")
         targeted_queries.append(f"{clean_b} {clean_item} паспорт PDF")
@@ -951,7 +956,10 @@ def build_characteristic_queries(
     if clean_mfr and clean_mfr.lower() != clean_b.lower():
         first_mfr_word = clean_mfr.split()[0] if len(clean_mfr.split()) <= 2 else " ".join(clean_mfr.split()[:2])
         if clean_mod:
-            targeted_queries.append(f"{first_mfr_word} {clean_mod} каталог")
+            if clean_item:
+                targeted_queries.append(f'"{clean_item[:35]}" {first_mfr_word} {clean_mod} каталог')
+            else:
+                targeted_queries.append(f"{first_mfr_word} {clean_mod} каталог")
         else:
             targeted_queries.append(f"{first_mfr_word} {clean_item} каталог")
 
@@ -1538,8 +1546,9 @@ async def expand_candidate_sources_ai(
     if len(existing_domains) >= max_sources:
         return candidate
 
-    q_specs = f"{brand} {model} характеристики"
-    q_passport = f"{brand} {model} паспорт PDF"
+    item_anchor = f'"{pos_name[:35].strip()}" ' if pos_name else ""
+    q_specs = f"{item_anchor}{brand} {model} характеристики"
+    q_passport = f"{item_anchor}{brand} {model} паспорт PDF"
 
     raw_results = []
     for q in (q_specs, q_passport):
