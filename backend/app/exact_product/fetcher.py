@@ -367,7 +367,7 @@ async def fetch_batch_web_documents(
         try:
             fetched = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=20.0)
         except asyncio.TimeoutError:
-            logger.warning("batch_fetch_timeout_reached", timeout=20.0, count=len(tasks))
+            logger.warning("batch_fetch_timeout_reached timeout=%.1f count=%d", 20.0, len(tasks))
             fetched = []
 
         found_pdf_links: list[str] = []
@@ -393,6 +393,6 @@ async def fetch_batch_web_documents(
                     if isinstance(pr, dict) and pr.get("text"):
                         results.append(pr)
             except asyncio.TimeoutError:
-                logger.warning("batch_fetch_pdf_timeout_reached", timeout=10.0)
+                logger.warning("batch_fetch_pdf_timeout_reached timeout=%.1f", 10.0)
 
     return results[:max_docs]
