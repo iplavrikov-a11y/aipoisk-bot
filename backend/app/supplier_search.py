@@ -4812,6 +4812,8 @@ async def collect_pages(url: str) -> list[dict]:
                         break
     if pages and _pages_have_contact(pages):
         return pages
+    if _is_non_html_url(url):
+        return pages
     browser_page = await fetch_page_with_browser(url)
     if browser_page:
         for index, page in enumerate(pages):
@@ -4899,6 +4901,23 @@ def html_text_to_page(html_text: str, url: str) -> dict | None:
     return {"url": str(url), "html": html_text, "text": clean_extracted[:80000]}
 
 
+_NON_HTML_EXTENSIONS = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
+    ".mp4", ".avi", ".mov", ".mp3",
+)
+
+
+def _is_non_html_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(str(url))
+        path_lower = parsed.path.lower()
+        return path_lower.endswith(_NON_HTML_EXTENSIONS)
+    except Exception:
+        return False
+
+
 def _browser_log_url(url: str) -> str:
     try:
         parsed = urlsplit(str(url))
@@ -4922,16 +4941,37 @@ def _browser_log_error(exc: BaseException) -> str:
 
 async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
     """Fetch a page using the current supplier-search browser pool."""
+    if _is_non_html_url(url):
+        return None
+    html_text = ""
+    final_url = url
     try:
         async with _browser_pool_session():
             browser_pool = _get_browser_pool()
             async with browser_pool:
                 browser = await browser_pool.get_browser()
-                page = await browser.new_page(user_agent="TenderLex supplier verifier")
+                page = await browser.new_page(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    locale="ru-RU",
+                    ignore_https_errors=True,
+                )
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=18000)
-                    html_text = await page.content()
-                    final_url = page.url
+                    goto_ok = False
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=7000)
+                        goto_ok = True
+                    except Exception:
+                        pass
+                    if goto_ok:
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=1500)
+                        except Exception:
+                            pass
+                    try:
+                        html_text = await page.content()
+                        final_url = page.url
+                    except Exception:
+                        html_text = ""
                 finally:
                     await page.close()
     except Exception as exc:
@@ -4943,6 +4983,8 @@ async def fetch_page_with_browser(url: str, *, source: str = "") -> dict | None:
             _browser_log_error(exc),
         )
         return None
+    if not html_text or len(html_text.strip()) < 50:
+        return None
     return html_text_to_page(html_text[:300000], final_url)
 
 
@@ -4952,7 +4994,7 @@ class _BrowserPool:
     def __init__(self) -> None:
         self._playwright = None
         self._browser = None
-        self._semaphore = asyncio.Semaphore(3)  # Max 3 concurrent browser tabs
+        self._semaphore = asyncio.Semaphore(5)  # Max 5 concurrent browser tabs
         self._lock = asyncio.Lock()
 
     async def get_browser(self):
