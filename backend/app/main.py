@@ -2807,10 +2807,14 @@ async def upload_admin_supplement(
 
 def read_job_evidence_payload(job: Job, *, storage_root: Path | None = None) -> dict:
     evidence_path = str(getattr(job, "evidence_path", "") or "")
-    if not evidence_path:
-        raise HTTPException(status_code=404, detail="Evidence not found")
     root = (storage_root or config.storage_path).resolve()
-    path = Path(evidence_path).resolve()
+    path = Path(evidence_path).resolve() if evidence_path else None
+    if not path or not path.exists():
+        candidate = (job_dir(job.id) / "output" / "evidence.json").resolve()
+        if candidate.exists():
+            path = candidate
+    if not path:
+        raise HTTPException(status_code=404, detail="Evidence not found")
     try:
         path.relative_to(root)
     except ValueError as exc:
@@ -4535,6 +4539,10 @@ def human_job_title(job: Job | object) -> str:
 
 def _customer_job_subject_from_evidence(job: Job | object) -> str:
     evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
+    if not evidence_path.exists() and hasattr(job, "id") and job.id:
+        fallback = job_dir(str(job.id)) / "output" / "evidence.json"
+        if fallback.exists():
+            evidence_path = fallback
     payload: dict = {}
     if evidence_path.exists():
         try:

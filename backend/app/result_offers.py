@@ -469,7 +469,12 @@ def _activate_manifest(job: Job, name: str) -> None:
         files = manifest.get("files") if isinstance(manifest.get("files"), list) else []
         result_path = str(files[0].get("path") or "").strip() if files and isinstance(files[0], dict) else ""
     if not result_path or not Path(result_path).exists():
-        raise ResultOfferConflict("Файл результата не сформирован.")
+        from app.jobs import job_dir
+        candidate = job_dir(job.id) / "output" / Path(result_path).name
+        if candidate.exists():
+            result_path = str(candidate)
+        else:
+            raise ResultOfferConflict("Файл результата не сформирован.")
     job.active_output_manifest = name
     job.active_output_manifest_version = int(job.active_output_manifest_version or 0) + 1
     job.active_entitlements_json = json.dumps(
@@ -532,7 +537,12 @@ def _read_evidence(job: Job, _evidence: dict | None = None) -> dict:
         return _evidence
     path = Path(str(job.evidence_path or ""))
     if not path.exists():
-        return {}
+        from app.jobs import job_dir
+        candidate = job_dir(job.id) / "output" / "evidence.json"
+        if candidate.exists():
+            path = candidate
+        else:
+            return {}
     try:
         return parse_json_dict(path.read_text(encoding="utf-8"))
     except Exception:

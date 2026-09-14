@@ -1,17 +1,22 @@
 # TenderLex: Project Status
 
-Date: 2026-09-12
+Date: 2026-09-14
 
 ## Current Production State
 
-- Project Root Directory: `/root/projects/tenderlex` (fully migrated from `aipoisk-bot`, legacy folder deleted).
+- Project Root Directory: `/root/projects/tenderlex` (with persistent backward-compatibility symlink `/root/projects/aipoisk-bot -> /root/projects/tenderlex`).
 - Public URL: `https://tenderlex.ru`.
 - Admin URL used in earlier checks: `https://aipoisk.lexelence.ru`.
 - Backend service: `aipoisk-api.service`, FastAPI on `127.0.0.1:8088`.
 - Telegram worker: `aipoisk-bot.service`.
 - Durable job worker: `aipoisk-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
-- Public TenderLex site: Next.js landing page and web cabinet served by
+- Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Legacy Storage Path Migration & Client Excel Download Remediation (2026-09-14):
+  - **Incident & Root Cause**: Client reported inability to download Excel tables with suppliers in customer cabinet and Telegram bot (returning HTTP 404 "Файл результата не найден"). Root cause was traced to the directory relocation from `aipoisk-bot` to `tenderlex` on 2026-09-12. While systemd, nginx, and code were updated, the SQLite database retained 445 jobs, 480 evidence records, and 551 stored files with absolute `/root/projects/aipoisk-bot/` paths, and 437 `evidence.json` files on disk retained old paths. The removal of the `/root/projects/aipoisk-bot` directory caused `Path.exists()` checks to fail and download endpoints to return 404.
+  - **Symlink & Safe Database Migration**: Created persistent `/root/projects/aipoisk-bot -> /root/projects/tenderlex` symlink. Executed safe online database backup (`aipoisk.db.backup-before-path-migration-20260914.db`) and migrated all records across `jobs.result_path` (445 rows), `jobs.evidence_path` (480 rows), `jobs.admin_supplement_path` (1 row), `job_files.stored_path` (551 rows), and `job_sources.context_path` (11 rows). Updated all 437 `evidence.json` files on disk.
+  - **Defense-in-Depth Code Hardening**: Enhanced `package_job_outputs`, `_output_file_items_from_evidence`, `_validated_output_items` in `jobs.py`, `read_job_evidence_payload` and `_customer_job_subject_from_evidence` in `main.py`, and `_read_evidence` and `_activate_manifest` in `result_offers.py`. Added automatic fallback resolution to `job_dir(job.id) / "output"` for any missing or relocated file paths.
+  - **Verification**: Verified live downloads via curl on port 8088 and `https://tenderlex.ru`, verified customer cabinet serialization, and created automated regression test suite `backend/tests/test_legacy_path_resilience.py`. All tests passing.
 - Adaptive Structured Timeouts & Factory Catalog Preservation (2026-09-13):
   - **Decoupled TCP/TLS Connect & Read Timeouts (`fetcher.py`)**: Split `httpx.Timeout(connect=3.5, read=10.0, write=5.0, pool=3.5)` in `fetch_batch_web_documents`. Dead hosts, dropped packets, and blocked ports fail fast in 3.5s (preventing async queue stalls), while slow regional factory servers and legacy CMSs (Bitrix/Joomla) get up to 10.0s to stream catalog HTML and technical datasheets without being dropped.
   - **Increased Document Fetching Budgets**: Raised single document timeout (`fetch_web_or_pdf_document`) from 5.0s to 9.0s. Increased batch gathering timeout from 15.0s to 20.0s (PDF pass to 10.0s).

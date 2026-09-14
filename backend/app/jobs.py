@@ -1757,6 +1757,9 @@ def package_job_outputs(job: Job) -> Path | None:
         result_path = Path(job.result_path)
         if result_path.exists():
             return result_path
+        candidate = job_dir(job.id) / "output" / result_path.name
+        if candidate.exists():
+            return candidate
     return None
 
 
@@ -1785,7 +1788,11 @@ def _output_file_items_from_evidence(job: Job, _evidence: dict | None = None) ->
     else:
         evidence_path = Path(str(getattr(job, "evidence_path", "") or ""))
         if not evidence_path.exists():
-            return []
+            fallback = job_dir(job.id) / "output" / "evidence.json"
+            if fallback.exists():
+                evidence_path = fallback
+            else:
+                return []
         try:
             payload = parse_json_dict(evidence_path.read_text(encoding="utf-8"))
         except Exception:
@@ -1802,11 +1809,20 @@ def _validated_output_items(job: Job, files: list[dict]) -> list[dict]:
     for item in files:
         if not isinstance(item, dict):
             continue
-        path = Path(str(item.get("path") or "")).resolve()
+        raw_path = str(item.get("path") or "")
+        path = Path(raw_path).resolve()
         try:
             path.relative_to(out_dir)
         except ValueError:
-            continue
+            candidate = (out_dir / Path(raw_path).name).resolve()
+            try:
+                candidate.relative_to(out_dir)
+                if candidate.exists():
+                    path = candidate
+                else:
+                    continue
+            except ValueError:
+                continue
         if path.exists():
             kind = str(item.get("kind") or "").strip() or path.stem
             label = str(item.get("label") or "").strip() or {
@@ -1822,7 +1838,15 @@ def _validated_output_items(job: Job, files: list[dict]) -> list[dict]:
                 try:
                     resolved_content_path.relative_to(out_dir)
                 except ValueError:
-                    content_allowed = False
+                    cand_content = (out_dir / Path(content_path).name).resolve()
+                    try:
+                        cand_content.relative_to(out_dir)
+                        if cand_content.exists():
+                            resolved_content_path = cand_content
+                        else:
+                            content_allowed = False
+                    except ValueError:
+                        content_allowed = False
                 if content_allowed and resolved_content_path.exists():
                     result["content_path"] = str(resolved_content_path)
             items.append(result)
