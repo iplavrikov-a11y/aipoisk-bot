@@ -12,11 +12,26 @@ Date: 2026-09-14
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
-- Legacy Storage Path Migration & Client Excel Download Remediation (2026-09-14):
-  - **Incident & Root Cause**: Client reported inability to download Excel tables with suppliers in customer cabinet and Telegram bot (returning HTTP 404 "Файл результата не найден"). Root cause was traced to the directory relocation from `aipoisk-bot` to `tenderlex` on 2026-09-12. While systemd, nginx, and code were updated, the SQLite database retained 445 jobs, 480 evidence records, and 551 stored files with absolute `/root/projects/aipoisk-bot/` paths, and 437 `evidence.json` files on disk retained old paths. The removal of the `/root/projects/aipoisk-bot` directory caused `Path.exists()` checks to fail and download endpoints to return 404.
-  - **Symlink & Safe Database Migration**: Created persistent `/root/projects/aipoisk-bot -> /root/projects/tenderlex` symlink. Executed safe online database backup (`aipoisk.db.backup-before-path-migration-20260914.db`) and migrated all records across `jobs.result_path` (445 rows), `jobs.evidence_path` (480 rows), `jobs.admin_supplement_path` (1 row), `job_files.stored_path` (551 rows), and `job_sources.context_path` (11 rows). Updated all 437 `evidence.json` files on disk.
-  - **Defense-in-Depth Code Hardening**: Enhanced `package_job_outputs`, `_output_file_items_from_evidence`, `_validated_output_items` in `jobs.py`, `read_job_evidence_payload` and `_customer_job_subject_from_evidence` in `main.py`, and `_read_evidence` and `_activate_manifest` in `result_offers.py`. Added automatic fallback resolution to `job_dir(job.id) / "output"` for any missing or relocated file paths.
-  - **Verification**: Verified live downloads via curl on port 8088 and `https://tenderlex.ru`, verified customer cabinet serialization, and created automated regression test suite `backend/tests/test_legacy_path_resilience.py`. All tests passing.
+- Supplier Search Acceleration & Headless Browser Optimization (2026-09-14):
+  - **Issue Diagnosed**: Searches on complex/niche procurement specifications (e.g. tasks #709 and #710) were taking ~40 minutes. Investigation via systematic debugging revealed:
+    1. Browser page verification in `fetch_page_with_browser` used `wait_until="networkidle", timeout=18000`. On modern Russian commercial sites with live chats and metrics, `networkidle` rarely triggered, forcing full 18-second timeouts per candidate.
+    2. Missing `ignore_https_errors=True` caused navigation crashes on Russian industrial sites with domestic/self-signed SSL certificates (`ERR_CERT_AUTHORITY_INVALID`, `ERR_CERT_COMMON_NAME_INVALID`).
+    3. Direct `.pdf`, `.doc`, `.docx`, etc. URLs from search engines triggered Chromium download dialogues (`Error: Page.goto: Download is starting`), hanging browser worker slots.
+    4. Concurrency semaphore was constrained to 3 tabs per job across the worker.
+  - **Remediation (`backend/app/supplier_search.py`)**:
+    1. Switched page loading to `wait_until="domcontentloaded", timeout=7000` with a graceful 1.5s `networkidle` settle, reducing per-page load latency from 18s to 1.5–2.5s (6–8x speedup).
+    2. Added `ignore_https_errors=True` in Playwright context, eliminating SSL authority aborts on state and manufacturer portals.
+    3. Added `_is_non_html_url` filtering to bypass Playwright for non-HTML/binary documents (`.pdf`, `.docx`, etc.), eliminating download abort stalls.
+    4. Increased browser pool concurrency semaphore from 3 to 5 tabs per job.
+  - **Production Verification**:
+    - Backend test suite: 693 passed, 54 subtests passed (1m 09s).
+    - Executed live deploy via `./scripts/deploy_tenderlex_live.sh`.
+    - Live verification on task #712 (identical specification to #710): execution time dropped from **40m 04s down to 14m 23s** (nearly 3x faster), producing 74 confirmed suppliers and generating the Excel report with zero worker errors.
+- Complete Elimination of Legacy Paths & Symlinks (2026-09-14):
+  - **Symlink Deletion**: Completely removed the `/root/projects/aipoisk-bot` directory and symlink (`test ! -e /root/projects/aipoisk-bot` confirmed). No symlinks or redirection crutches remain.
+  - **Database Sanitization**: Full table scan across `data/aipoisk.db` confirmed **0 matches** for `aipoisk-bot`. Cleaned lingering error strings in `job_files`.
+  - **Systemd Migration**: Disabled and masked legacy `aipoisk-*` units. Activated native `tenderlex-api.service`, `tenderlex-worker.service`, `tenderlex-bot.service`, and `tenderlex-site.service` under `procurement-tenderlex.slice`.
+  - **Certbot & Configs**: Updated renewal configs in `/etc/letsencrypt/renewal/` to `/root/projects/tenderlex/frontend/dist`. All live API and web cabinet downloads verified returning HTTP 200 directly from `/root/projects/tenderlex/storage/...`.
 - Adaptive Structured Timeouts & Factory Catalog Preservation (2026-09-13):
   - **Decoupled TCP/TLS Connect & Read Timeouts (`fetcher.py`)**: Split `httpx.Timeout(connect=3.5, read=10.0, write=5.0, pool=3.5)` in `fetch_batch_web_documents`. Dead hosts, dropped packets, and blocked ports fail fast in 3.5s (preventing async queue stalls), while slow regional factory servers and legacy CMSs (Bitrix/Joomla) get up to 10.0s to stream catalog HTML and technical datasheets without being dropped.
   - **Increased Document Fetching Budgets**: Raised single document timeout (`fetch_web_or_pdf_document`) from 5.0s to 9.0s. Increased batch gathering timeout from 15.0s to 20.0s (PDF pass to 10.0s).

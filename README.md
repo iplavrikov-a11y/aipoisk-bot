@@ -13,6 +13,16 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Supplier Search Acceleration & Headless Browser Optimization (2026-09-14):
+  - Accelerated supplier search candidate verification from 18s per site down to 1.5–2.5s (nearly 3x overall task speedup, verified live on task #712 dropping duration from 40m 04s to 14m 23s).
+  - Switched page loading from `networkidle` to `domcontentloaded` (timeout=7000) with 1.5s soft network idle settle.
+  - Enabled `ignore_https_errors=True` in Playwright context to support Russian industrial and state sites with domestic/self-signed certificates.
+  - Added non-HTML extension filtering (`.pdf`, `.docx`, etc.) to prevent Playwright download dialogue stalls.
+  - Expanded browser concurrency semaphore to 5 tabs per job.
+- Complete Elimination of Legacy Paths & Symlinks (2026-09-14):
+  - Permanently removed legacy symlink `/root/projects/aipoisk-bot`.
+  - Sanitized database paths with 0 matches for old directory across all SQLite tables.
+  - Migrated systemd services to native `tenderlex-*` units (`tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`).
 - Comprehensive SEO Optimization, High-CTR SERP Snippets & IndexNow Pipeline (2026-09-12):
   - Solved zero CTR on Page 1 Google & Yandex search rankings (positions 4–8) by shortening titles to 53–56 chars with template compatibility and crafting concise 140–152 char descriptions with clear commercial triggers.
   - Added interactive product quick-check form in `/podbor-tovara-i-analogov-po-tz` with popular equipment pills and automatic intent pre-filling in web cabinet (`?scenario=exact_product&text=...`).
