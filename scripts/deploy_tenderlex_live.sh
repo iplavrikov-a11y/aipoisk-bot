@@ -56,7 +56,7 @@ if not Path(status["index_path"]).is_file() or not Path(status["sqlite_path"]).i
     raise SystemExit("Minprom registry cache paths are unavailable")
 PY
 
-  worker_pid="$(systemctl show aipoisk-worker.service --property=MainPID --value)"
+  worker_pid="$(systemctl show tenderlex-worker.service --property=MainPID --value)"
   [[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] || {
     log "worker process is unavailable for Minprom registry verification" >&2
     return 1
@@ -148,9 +148,9 @@ on_exit() {
     log "restoring TenderLex services after deploy interruption"
     systemctl start \
       tender-source-service.service \
-      aipoisk-api.service \
-      aipoisk-worker.service \
-      aipoisk-bot.service \
+      tenderlex-api.service \
+      tenderlex-worker.service \
+      tenderlex-bot.service \
       tenderlex-site.service
   fi
   exit "$exit_code"
@@ -343,17 +343,17 @@ else
 
   log "stopping job services before updating the shared browser runtime"
   systemctl stop \
-    aipoisk-api.service \
-    aipoisk-worker.service \
-    aipoisk-bot.service
+    tenderlex-api.service \
+    tenderlex-worker.service \
+    tenderlex-bot.service
 
   log "ensuring compatible Playwright headless Chromium"
   "$BACKEND_DIR/.venv/bin/python" -m playwright install --only-shell chromium
 
   systemctl start \
-    aipoisk-api.service \
-    aipoisk-worker.service \
-    aipoisk-bot.service
+    tenderlex-api.service \
+    tenderlex-worker.service \
+    tenderlex-bot.service
   release_job_restart_gate COMMIT
   if [[ "$deploy_scope" == "full" ]]; then
     promote_site_release
@@ -365,9 +365,9 @@ log "checking service state"
 systemctl is-active --quiet tenderlex-site.service
 if [[ "$deploy_scope" != "site" ]]; then
   systemctl is-active --quiet tender-source-service.service
-  systemctl is-active --quiet aipoisk-api.service
-  systemctl is-active --quiet aipoisk-worker.service
-  systemctl is-active --quiet aipoisk-bot.service
+  systemctl is-active --quiet tenderlex-api.service
+  systemctl is-active --quiet tenderlex-worker.service
+  systemctl is-active --quiet tenderlex-bot.service
 
   log "checking shared Minprom registry cache in API and worker runtimes"
   verify_minprom_registry_runtime
@@ -400,9 +400,9 @@ if [[ "$deploy_scope" == "site" ]]; then
 else
   services=(
     tender-source-service.service
-    aipoisk-api.service
-    aipoisk-worker.service
-    aipoisk-bot.service
+    tenderlex-api.service
+    tenderlex-worker.service
+    tenderlex-bot.service
     tenderlex-site.service
   )
 fi

@@ -164,7 +164,7 @@ If the backend is unavailable, the page renders a safe fallback using current pu
 - Site typecheck: `cd site && npm run typecheck`
 - Site production build: `cd site && npm run build`
 - Admin production build, when public settings UI changes: `cd frontend && npm run build`
-- Targeted backend tests for the public/customer API contract: `PYTHONPATH=/root/projects/aipoisk-bot/backend pytest backend/tests/test_customer_api.py backend/tests/test_api_guards.py backend/tests/test_access_limits.py -q`
+- Targeted backend tests for the public/customer API contract: `PYTHONPATH=/root/projects/tenderlex/backend pytest backend/tests/test_customer_api.py backend/tests/test_api_guards.py backend/tests/test_access_limits.py -q`
 - Production smoke: `curl -fsS http://127.0.0.1:8088/api/public/site | jq '{bot, contacts, trial}'`
 - Production positive copy check: `curl -fsS https://tenderlex.ru/ | rg 'Попробовать на сайте|Попробовать в Telegram|Поиск поставщиков под вашу спецификацию|Список компаний для запроса цены'`
 - Production stale-copy check: `curl -fsS https://tenderlex.ru/ | rg 'сотовый поликарбонат|XLSX|DOCX|Поставщики по техническому заданию|запрос КП|запрос коммерческого предложения'` should return no matches on the homepage.
@@ -194,7 +194,7 @@ Production assumptions:
 - The live site service can be updated with `systemctl restart tenderlex-site.service` after site-only SEO/content changes; backend and bot services do not need a restart for those changes.
 - Use `scripts/deploy_tenderlex_live.sh` for ordinary live deploys. It skips
   API/worker/bot restarts when active jobs are present, because worker and bot
-  units are tied to the API unit with `PartOf=aipoisk-api.service`.
+  units are tied to the API unit with `PartOf=tenderlex-api.service`.
 
 Manual server activation, after build:
 
@@ -215,12 +215,12 @@ systemctl reload nginx
 Routine redeploy after code changes:
 
 ```bash
-cd /root/projects/aipoisk-bot/site
+cd /root/projects/tenderlex/site
 npm run build
 systemctl restart tenderlex-site.service
 systemctl is-active tenderlex-site.service
 ```
 
-Restart `aipoisk-api.service` too when `GET /api/public/site`, customer cabinet
+Restart `tenderlex-api.service` too when `GET /api/public/site`, customer cabinet
 API, authentication, settings schema, or contact/tariff public payload code
 changes.

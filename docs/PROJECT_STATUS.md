@@ -4,12 +4,12 @@ Date: 2026-09-14
 
 ## Current Production State
 
-- Project Root Directory: `/root/projects/tenderlex` (with persistent backward-compatibility symlink `/root/projects/aipoisk-bot -> /root/projects/tenderlex`).
+- Project Root Directory: `/root/projects/tenderlex` (legacy directory and symlink `aipoisk-bot` completely removed).
 - Public URL: `https://tenderlex.ru`.
-- Admin URL used in earlier checks: `https://aipoisk.lexelence.ru`.
-- Backend service: `aipoisk-api.service`, FastAPI on `127.0.0.1:8088`.
-- Telegram worker: `aipoisk-bot.service`.
-- Durable job worker: `aipoisk-worker.service`.
+- Admin URL: `https://admin.tenderlex.ru`.
+- Backend service: `tenderlex-api.service`, FastAPI on `127.0.0.1:8088`.
+- Telegram worker: `tenderlex-bot.service`.
+- Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
 - Legacy Storage Path Migration & Client Excel Download Remediation (2026-09-14):

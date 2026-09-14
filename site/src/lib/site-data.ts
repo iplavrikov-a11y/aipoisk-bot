@@ -263,7 +263,11 @@ const fallbackData: PublicSitePayload = {
 };
 
 function apiBaseUrl() {
-  return (process.env.AIPOISK_SITE_API_BASE_URL || "http://127.0.0.1:8088").replace(/\/+$/, "");
+  return (
+    process.env.TENDERLEX_SITE_API_BASE_URL ||
+    process.env.AIPOISK_SITE_API_BASE_URL ||
+    "http://127.0.0.1:8088"
+  ).replace(/\/+$/, "");
 }
 
 export async function getSiteData(): Promise<PublicSitePayload> {

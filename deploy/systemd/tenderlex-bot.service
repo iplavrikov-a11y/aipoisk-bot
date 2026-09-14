@@ -1,8 +1,8 @@
 [Unit]
 Description=TenderLex Telegram Bot
-After=network.target aipoisk-api.service
+After=network.target tenderlex-api.service
 Wants=network-online.target
-PartOf=aipoisk-api.service
+PartOf=tenderlex-api.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
@@ -19,7 +19,7 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=aipoisk-bot
+SyslogIdentifier=tenderlex-bot
 MemoryHigh=512M
 MemoryMax=768M
 CPUQuota=100%

@@ -1,10 +1,10 @@
 [Unit]
 Description=TenderLex Durable Job Worker
-After=network.target aipoisk-api.service
+After=network.target tenderlex-api.service
 Wants=network-online.target
-PartOf=aipoisk-api.service
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# PartOf=tenderlex-api.service (disabled: cascade restarts cause start-limit-hit)
+StartLimitIntervalSec=300
+StartLimitBurst=15
 
 [Service]
 Type=simple
@@ -19,7 +19,7 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=aipoisk-worker
+SyslogIdentifier=tenderlex-worker
 MemoryHigh=3072M
 MemoryMax=4096M
 CPUQuota=400%

@@ -9,9 +9,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 ## Production notes
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
-- Backend: `aipoisk-api.service` on `127.0.0.1:8088`.
-- Telegram polling worker: `aipoisk-bot.service`.
-- Durable queue worker: `aipoisk-worker.service`; current production
+- Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Telegram polling worker: `tenderlex-bot.service`.
+- Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
 - Comprehensive SEO Optimization, High-CTR SERP Snippets & IndexNow Pipeline (2026-09-12):
   - Solved zero CTR on Page 1 Google & Yandex search rankings (positions 4–8) by shortening titles to 53–56 chars with template compatibility and crafting concise 140–152 char descriptions with clear commercial triggers.
@@ -294,7 +294,7 @@ cd backend
 AIPOISK_WORKER_CONCURRENCY=1 python -m app.worker
 ```
 
-Production bot code changes require restarting only `aipoisk-bot.service`;
+Production bot code changes require restarting only `tenderlex-bot.service`;
 the durable queue worker and FastAPI backend do not need a restart for
 Telegram routing-only changes.
 If `scripts/deploy_tenderlex_live.sh` skips API/worker/bot restarts because
@@ -302,7 +302,7 @@ active jobs exist, wait for active pending/running jobs to finish and rerun the
 deploy before reporting Telegram bot behavior as live.
 
 Queue worker code or `AIPOISK_WORKER_CONCURRENCY` changes require restarting
-only `aipoisk-worker.service`.
+only `tenderlex-worker.service`.
 
 The admin panel runs with:
 

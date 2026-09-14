@@ -61,7 +61,7 @@ BENCHMARK_ITEMS = [
 async def run_benchmark():
     print("=" * 80)
     print("STARTING 30-PROCUREMENT REAL-WORLD SEARCH ENGINE BENCHMARK")
-    print("Comparing: TenderLex (aipoisk-bot) vs EmailAgent (emailagent)")
+    print("Comparing: TenderLex vs EmailAgent (emailagent)")
     print("=" * 80)
     
     results = []

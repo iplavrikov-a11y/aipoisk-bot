@@ -205,9 +205,9 @@ Safety behavior:
 
 - before service restarts, the script checks SQLite for `pending` jobs and fresh
   `running` jobs;
-- if active jobs exist, the script skips `aipoisk-api.service`,
-  `aipoisk-worker.service`, and `aipoisk-bot.service` restarts because worker and
-  bot are `PartOf=aipoisk-api.service`;
+- if active jobs exist, the script skips `tenderlex-api.service`,
+  `tenderlex-worker.service`, and `tenderlex-bot.service` restarts because worker and
+  bot are `PartOf=tenderlex-api.service`;
 - `tenderlex-site.service` can still restart during active backend jobs;
 - use `AIPOISK_FORCE_JOB_SERVICE_RESTART=1` only when deliberately interrupting
   active jobs.
