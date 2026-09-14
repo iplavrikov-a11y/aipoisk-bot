@@ -1,0 +1,342 @@
+[
+  {
+    "id": 1,
+    "industry": "Лабораторная мебель",
+    "query": "Шкаф вытяжной химический лабораторный",
+    "status": "PASS",
+    "found_count": 18,
+    "plants_count": 9,
+    "has_contacts": 18,
+    "reg_matches": 0,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 154.5,
+    "sample_suppliers": [
+      {
+        "name": "ООО «Медсервис Калуга»",
+        "site": "http://www.kalugamed.ru/catalog/mebel/SHkaf_laboratornyy_vytyazhnoy_SHLMV_L_03_KalugaMed/",
+        "phone": "+7 (910) 915-17-77",
+        "email": "medservis2002@yandex.ru"
+      },
+      {
+        "name": "Диаэм",
+        "site": "https://www.dia-m.ru/catalog/lab/shkafy-vytyazhnye-new/",
+        "phone": "+7 (495) 745-05-08",
+        "email": ""
+      },
+      {
+        "name": "ООО «Политэн» (ПолитэнЛАБ)",
+        "site": "https://politenlab.ru/mebel/shkafyi-vyityazhnyie/",
+        "phone": "+7 (913) 810-40-08",
+        "email": "mebel@politenlab.ru"
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "industry": "Светотехника",
+    "query": "Светильники светодиодные уличные консольные ДКУ IP66",
+    "status": "PASS",
+    "found_count": 35,
+    "plants_count": 6,
+    "has_contacts": 33,
+    "reg_matches": 24,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 131.9,
+    "sample_suppliers": [
+      {
+        "name": "ООО ТД \"МЕГАПРОМ\"",
+        "site": "https://tdmegaprom.ru/ulichnyj-svetilnik-svetodiodnyj-trassa-3.html",
+        "phone": "+7 (495) 783-82-18",
+        "email": "info@tdmegaprom.ru"
+      },
+      {
+        "name": "ООО «АЛБ»",
+        "site": "https://www.ros-electric.ru/upload/medialibrary/713/mwe5e4aagq5n5rdusd8hy65gr2h7tjpz.pdf",
+        "phone": "+7 (499) 500-97-05",
+        "email": ""
+      },
+      {
+        "name": "Техсветпром",
+        "site": "https://tehsvetprom.ru/shop/ulica-jkh/konsol/konsolnyj-led-svetilnik-ip67-tsp-dku0311-80-proton-80vt/",
+        "phone": "+7 (351) 214-30-02",
+        "email": "op@tehsvetprom.ru"
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "industry": "Кабельная продукция",
+    "query": "Кабель силовой ВВГнг(А)-FRLS 3х2.5 ГОСТ 31996-2012",
+    "status": "PASS",
+    "found_count": 31,
+    "plants_count": 2,
+    "has_contacts": 30,
+    "reg_matches": 22,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 156.4,
+    "sample_suppliers": [
+      {
+        "name": "ООО ТК Конкорд",
+        "site": "https://kabelmoskva.ru/kabel-s/gruppa-vvg/vvgng-frls",
+        "phone": "+7 (495) 005-21-76",
+        "email": "zakaz@kabelmoskva.ru"
+      },
+      {
+        "name": "ООО \"СПК\"",
+        "site": "https://spk-electric.ru/info/brands/tsvetlit/",
+        "phone": "+7 (495) 120-14-38",
+        "email": "info@spk-electric.ru"
+      },
+      {
+        "name": "ИП Дергачев Кирилл Константинович (DC-Electro)",
+        "site": "https://dc-electro.ru/catalog/products/kabel-vvgng-a-frls-1kh95-mk-b-1kv-m-em-kabel/",
+        "phone": "+7 (812) 929-00-31",
+        "email": "zakaz@dc-electro.ru"
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "industry": "Полимерные трубы",
+    "query": "Трубы напорные из полиэтилена ПЭ 100 для водоснабжения",
+    "status": "PASS",
+    "found_count": 18,
+    "plants_count": 14,
+    "has_contacts": 18,
+    "reg_matches": 0,
+    "yandex_reqs": 4,
+    "yandex_cost_rub": 0.16,
+    "recovery_rounds": 0,
+    "elapsed_sec": 77.6,
+    "sample_suppliers": [
+      {
+        "name": "ГСФ",
+        "site": "https://xn--c1a2aj.com/",
+        "phone": "+7 (495) 227-56-77",
+        "email": ""
+      },
+      {
+        "name": "РуссПласт",
+        "site": "https://russplast.ru/truba-pnd-pitevaya-napornaya",
+        "phone": "+7 (351) 214-27-37",
+        "email": "russplast74@mail.ru"
+      },
+      {
+        "name": "ООО «Синтез Пайп»",
+        "site": "https://vladimir.sintezpipe.ru/produkciya/polietilenovyie-trubyi/trubyi-pnd-dlya-vodosnabzheniya",
+        "phone": "+7 (800) 500-88-74",
+        "email": "info@sintezpipe.ru"
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "industry": "Запорная арматура",
+    "query": "Клапаны запорные фланцевые стальные 15с65нж Ду50 Ру16",
+    "status": "PASS",
+    "found_count": 20,
+    "plants_count": 11,
+    "has_contacts": 19,
+    "reg_matches": 6,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 163.8,
+    "sample_suppliers": [
+      {
+        "name": "ООО НПП «Нефтехимавтоматика»",
+        "site": "https://www.nhavtomatika.com/",
+        "phone": "+7 (495) 255-18-55",
+        "email": "zakaz@npp-nha.ru"
+      },
+      {
+        "name": "АО \"САЗ\"",
+        "site": "https://www.emk.ru/projects/proizvodstvo/saratovskiy-armaturnyy-zavod/",
+        "phone": "+7 (495) 955-78-86",
+        "email": "EMK@EMK.RU"
+      },
+      {
+        "name": "ООО \"ВАРК\"",
+        "site": "https://site.birweb.1prime.ru/company-brief/6146485",
+        "phone": "",
+        "email": ""
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "industry": "Трансформаторы",
+    "query": "Трансформаторы силовые масляные герметичные ТМГ 1000/10/0.4",
+    "status": "PASS",
+    "found_count": 18,
+    "plants_count": 15,
+    "has_contacts": 18,
+    "reg_matches": 2,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 87.0,
+    "sample_suppliers": [
+      {
+        "name": "ООО \"ПРОИЗВОДСТВЕННОЕ ОБЪЕДИНЕНИЕ \"СТЭЛЗ\"",
+        "site": "https://zavod-96.ru/catalog/silovye-masljanye-transformatory-tmg/",
+        "phone": "+7 (100) 382-30-00",
+        "email": ""
+      },
+      {
+        "name": "ООО «Электротехнический Завод «ЗВЕЗДА»",
+        "site": "https://zvz.su/",
+        "phone": "+7 (916) 708-61-58",
+        "email": "info@zvz.su"
+      },
+      {
+        "name": "ООО «Пензаэнергосервис» (Пензенский завод силовых трансформаторов)",
+        "site": "https://transformator-58.ru/",
+        "phone": "+7 (927) 362-02-56",
+        "email": "495881-prof@mail.ru"
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "industry": "Медоборудование",
+    "query": "Кровати медицинские функциональные трехсекционные с электроприводом",
+    "status": "PASS",
+    "found_count": 15,
+    "plants_count": 1,
+    "has_contacts": 14,
+    "reg_matches": 10,
+    "yandex_reqs": 4,
+    "yandex_cost_rub": 0.16,
+    "recovery_rounds": 0,
+    "elapsed_sec": 186.3,
+    "sample_suppliers": [
+      {
+        "name": "Med-ob",
+        "site": "https://med-ob.ru/krovati-dlja-invalidov-1/s-electroprivodom/met-revel-new",
+        "phone": "+7 (800) 551-25-16",
+        "email": ""
+      },
+      {
+        "name": "СТАВРОВСКИЙ ЗАВОД МЕДИЦИНСКОГО ОБОРУДОВАНИЯ (СТАВРОМЕД)",
+        "site": "https://catalog.expocentr.ru/catalog.php?wyst_id=205&info_id=0&stand_id=94898",
+        "phone": "",
+        "email": "sales@stavromed.ru"
+      },
+      {
+        "name": "Орто-Медикл",
+        "site": "https://orto-medikl.ru/6031_MET%20EMET/",
+        "phone": "+7 (800) 200-11-58",
+        "email": "info@orto-medikl.ru"
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "industry": "Фасовочное оборудование",
+    "query": "Автоматическая машина для фасовки сыпучих продуктов",
+    "status": "PASS",
+    "found_count": 20,
+    "plants_count": 16,
+    "has_contacts": 20,
+    "reg_matches": 0,
+    "yandex_reqs": 4,
+    "yandex_cost_rub": 0.16,
+    "recovery_rounds": 0,
+    "elapsed_sec": 73.4,
+    "sample_suppliers": [
+      {
+        "name": "СИГНАЛ-ПАК",
+        "site": "https://www.signal-pack.com/product/",
+        "phone": "+7 (343) 304-60-40",
+        "email": "post@signal-pack.com"
+      },
+      {
+        "name": "Элемаш",
+        "site": "https://elemash-m.ru/production",
+        "phone": "+7 (926) 045-55-47",
+        "email": "elemash-com@yandex.ru"
+      },
+      {
+        "name": "Wuxi Lima Chemical Machinery Co. Ltd.",
+        "site": "https://autopacking-ru.com/",
+        "phone": "",
+        "email": "wuxilima@outlook.com"
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "industry": "Спецодежда / СИЗ",
+    "query": "Костюмы мужские для защиты от общих производственных загрязнений",
+    "status": "PASS",
+    "found_count": 26,
+    "plants_count": 10,
+    "has_contacts": 16,
+    "reg_matches": 17,
+    "yandex_reqs": 8,
+    "yandex_cost_rub": 0.32,
+    "recovery_rounds": 0,
+    "elapsed_sec": 144.5,
+    "sample_suppliers": [
+      {
+        "name": "ООО \"СТЕЛ\"",
+        "site": "https://stel-spb.ru/",
+        "phone": "+7 (812) 600-25-15",
+        "email": "info@stel-spb.ru"
+      },
+      {
+        "name": "Сириус МСК",
+        "site": "https://sirius-msk.ru/specodezhdaoptom",
+        "phone": "+7 (495) 260-05-01",
+        "email": "opt@sirius-msk.ru"
+      },
+      {
+        "name": "ГК Бисер",
+        "site": "https://biser-pro.ru/catalog/muzhskaya-specodezhda/",
+        "phone": "+7 (930) 330-55-00",
+        "email": "magazin@biser-pro.ru"
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "industry": "Промышленные АКБ",
+    "query": "Аккумуляторная батарея стационарная свинцово-кислотная с жидким электролитом",
+    "status": "PASS",
+    "found_count": 16,
+    "plants_count": 5,
+    "has_contacts": 16,
+    "reg_matches": 5,
+    "yandex_reqs": 12,
+    "yandex_cost_rub": 0.48,
+    "recovery_rounds": 2,
+    "elapsed_sec": 139.5,
+    "sample_suppliers": [
+      {
+        "name": "АО «Тюменский аккумуляторный завод»",
+        "site": "https://tyumen-battery.ru/catalog/promyshlennye-akb/statsionarnye-akb-serii-opzs/",
+        "phone": "+7 (345) 234-28-10",
+        "email": "battery@tyumen-battery.ru"
+      },
+      {
+        "name": "АТИЗ СПС",
+        "site": "https://atizsps.ru/catalog/elteza/prochie-ustroystva/akkumulyatory/akkumulyator-svintsovo-kislotnyy-2-opzs-100-s-elektrolitom/",
+        "phone": "+7 (499) 130-44-48",
+        "email": "sales@atizsps.ru"
+      },
+      {
+        "name": "Fiamm Energy (fiamm-rus.ru)",
+        "site": "https://fiamm-rus.ru/catalog/akkumulyatory-fiamm-s-zhidkim-elektrolitom/",
+        "phone": "+7 (965) 514-21-09",
+        "email": "info@fiamm-rus.ru"
+      }
+    ]
+  }
+]
