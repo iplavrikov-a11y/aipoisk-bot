@@ -56,6 +56,7 @@ export function SiteFooter() {
             <li><Link href="/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617" className="hover:text-teal-700 transition-colors font-medium">Постановления № 616 и 617</Link></li>
             <li><Link href="/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku" className="hover:text-teal-700 transition-colors font-medium">Как составить Запрос КП</Link></li>
             <li><Link href="/baza-znaniy/proverka-dilerskih-sertifikatov-b2b" className="hover:text-teal-700 transition-colors font-medium">Проверка дилерских сертификатов</Link></li>
+            <li><Link href="/baza-znaniy/sekrety-snizheniya-sebestoimosti-zakupok-dlya-predpriyatiya" className="hover:text-teal-700 transition-colors font-medium">Снижение себестоимости закупок</Link></li>
           </ul>
         </div>
 
@@ -70,6 +71,57 @@ export function SiteFooter() {
             <li><Link href="/personal-data" className="hover:text-teal-700 transition-colors font-medium">Согласие на обработку 152-ФЗ</Link></li>
             <li><Link href="/legal" className="hover:text-teal-700 transition-colors font-medium">Правовая информация и контакты</Link></li>
           </ul>
+        </div>
+      </div>
+
+      {/* SEO Regional & Industry cross-linking */}
+      <div className="border-t border-slate-100 bg-slate-50/50 py-8 px-4 sm:px-6">
+        <div className="container max-w-6xl mx-auto space-y-6 text-[11px] leading-relaxed">
+          <div>
+            <div className="flex items-center gap-2 mb-2.5">
+              <strong className="text-slate-800 font-semibold text-xs">Поставки по отраслям:</strong>
+              <Link href="/otrasli" className="text-teal-700 hover:text-teal-800 font-semibold hover:underline">
+                Все отрасли →
+              </Link>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-slate-600">
+              <Link href="/otrasli/metalloprokat" className="hover:text-teal-700 transition-colors">Металлопрокат</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/otrasli/stroitelnye-materialy" className="hover:text-teal-700 transition-colors">Строительные материалы</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/otrasli/truboprovodnaya-armatura" className="hover:text-teal-700 transition-colors">Трубопроводная арматура</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/otrasli/kabel-i-provod" className="hover:text-teal-700 transition-colors">Кабель и провод</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/otrasli/siz-i-specodezhda" className="hover:text-teal-700 transition-colors">СИЗ и спецодежда</Link>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2 mb-2.5">
+              <strong className="text-slate-800 font-semibold text-xs">Поиск поставщиков по регионам:</strong>
+              <Link href="/regiony" className="text-teal-700 hover:text-teal-800 font-semibold hover:underline">
+                Все регионы →
+              </Link>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-slate-600">
+              <Link href="/regiony/moskva" className="hover:text-teal-700 transition-colors">Москва и МО</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/sankt-peterburg" className="hover:text-teal-700 transition-colors">Санкт-Петербург</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/kazan" className="hover:text-teal-700 transition-colors">Казань и Татарстан</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/ekaterinburg" className="hover:text-teal-700 transition-colors">Екатеринбург</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/krasnodar" className="hover:text-teal-700 transition-colors">Краснодар и Юг</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/novosibirsk" className="hover:text-teal-700 transition-colors">Новосибирск</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/nizhny-novgorod" className="hover:text-teal-700 transition-colors">Нижний Новгород</Link>
+              <span className="text-slate-300">•</span>
+              <Link href="/regiony/samara" className="hover:text-teal-700 transition-colors">Самара и Поволжье</Link>
+            </div>
+          </div>
         </div>
       </div>
 
