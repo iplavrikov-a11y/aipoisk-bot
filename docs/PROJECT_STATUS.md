@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-14
+Date: 2026-09-16
 
 ## Current Production State
 
@@ -12,6 +12,10 @@ Date: 2026-09-14
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Google Search Console Indexing Optimization & Sitewide Cross-Linking (2026-09-16):
+  - **Diagnostics & Status**: Analyzed GSC notification and live indexing state (81 pages indexed, 11 non-indexed: 8 queued in "Discovered – currently not indexed", 1 in "Crawled – currently not indexed", 2 in "Page with redirect"). Verified live HTTP 200 responses across all 8 queued pages (`/about`, `/legal`, `/otrasli/metalloprokat`, `/otrasli/stroitelnye-materialy`, `/regiony/moskva`, `/regiony/kazan`, `/regiony/krasnodar`, and the procurement cost reduction article).
+  - **Internal Link Graph Enhancement (`site-footer.tsx`)**: Diagnosed that regional and industry landing pages lacked sitewide internal PageRank pass-through. Added structured cross-linking blocks in the global footer covering all industries (`/otrasli/*`) and regions (`/regiony/*`), plus direct link to `/baza-znaniy/sekrety-snizheniya-sebestoimosti-zakupok-dlya-predpriyatiya`.
+  - **Verification & Deployment**: Executed typecheck, full Next.js production build (104 routes), and deployed live via `AIPOISK_DEPLOY_SCOPE=site ./scripts/deploy_tenderlex_live.sh`. Verified live footer HTML serving on `https://tenderlex.ru`.
 - Supplier Search Acceleration & Headless Browser Optimization (2026-09-14):
   - **Issue Diagnosed**: Searches on complex/niche procurement specifications (e.g. tasks #709 and #710) were taking ~40 minutes. Investigation via systematic debugging revealed:
     1. Browser page verification in `fetch_page_with_browser` used `wait_until="networkidle", timeout=18000`. On modern Russian commercial sites with live chats and metrics, `networkidle` rarely triggered, forcing full 18-second timeouts per candidate.
