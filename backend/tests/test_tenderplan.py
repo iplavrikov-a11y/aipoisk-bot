@@ -531,6 +531,10 @@ class TenderplanPureFunctionTests(unittest.TestCase):
             def __init__(self, payload=None, content: bytes = b""):
                 self._payload = payload
                 self.content = content
+                self.status_code = 200
+                self.headers = {}
+                self.status_code = 200
+                self.headers = {}
 
             def raise_for_status(self):
                 return None
@@ -570,18 +574,86 @@ class TenderplanPureFunctionTests(unittest.TestCase):
         self.assertIn("Предупреждения источника документации", result.context)
         self.assertEqual(result.warnings, ["Не скачано файлов: 1"])
 
-    def test_fetch_source_falls_back_to_local_client_when_shared_service_fails(self) -> None:
-        fallback = TenderplanFetchResult(ok=True, status="ok", notice_number="32616063169", context="local")
+    def test_fetch_source_retries_busy_shared_service_without_direct_fallback(self) -> None:
+        class FakeResponse:
+            def __init__(self, status_code, payload=None, headers=None):
+                self.status_code = status_code
+                self._payload = payload
+                self.headers = headers or {}
 
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise RuntimeError(f"HTTP {self.status_code}")
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def post(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse(503, headers={"Retry-After": "0"})
+                return FakeResponse(
+                    200,
+                    payload={
+                        "success": True,
+                        "status": "ok",
+                        "notice_number": "32616063169",
+                        "context": "shared",
+                        "files": [],
+                        "download_errors": [],
+                    },
+                )
+
+        fake_client = FakeClient()
+        with (
+            patch.object(tenderplan_module.config, "tender_source_service_url", "http://127.0.0.1:8096"),
+            patch.object(tenderplan_module.config, "tenderplan_api_token", "direct-token"),
+            patch("app.tenderplan.httpx.Client", return_value=fake_client),
+            patch("app.tenderplan.time.sleep") as sleep,
+            patch.object(TenderplanClient, "fetch_procurement") as direct_fetch,
+        ):
+            result = fetch_tenderplan_source_sync("32616063169")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.context, "shared")
+        self.assertEqual(fake_client.calls, 2)
+        sleep.assert_called_once_with(0.0)
+        direct_fetch.assert_not_called()
+
+    def test_fetch_source_does_not_fall_back_when_shared_service_fails(self) -> None:
         with (
             patch.object(tenderplan_module.config, "tender_source_service_url", "http://127.0.0.1:8096"),
             patch.object(tenderplan_module.config, "tenderplan_api_token", "token"),
             patch("app.tenderplan.fetch_tender_source_service_sync", return_value=TenderplanFetchResult(ok=False, status="service_failed", error="down")),
-            patch.object(TenderplanClient, "fetch_procurement", return_value=fallback) as local_fetch,
+            patch.object(TenderplanClient, "fetch_procurement") as local_fetch,
         ):
             result = fetch_tenderplan_source_sync("32616063169")
 
-        self.assertEqual(result.context, "local")
+        self.assertEqual(result.status, "service_failed")
+        self.assertEqual(result.error, "down")
+        local_fetch.assert_not_called()
+
+    def test_fetch_source_uses_direct_client_only_when_shared_service_is_not_configured(self) -> None:
+        direct = TenderplanFetchResult(ok=True, status="ok", notice_number="32616063169", context="direct")
+
+        with (
+            patch.object(tenderplan_module.config, "tender_source_service_url", ""),
+            patch.object(tenderplan_module.config, "tenderplan_api_token", "token"),
+            patch.object(TenderplanClient, "fetch_procurement", return_value=direct) as local_fetch,
+        ):
+            result = fetch_tenderplan_source_sync("32616063169")
+
+        self.assertEqual(result.context, "direct")
         local_fetch.assert_called_once_with("32616063169")
 
 

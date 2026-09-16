@@ -23,6 +23,7 @@ from app.procurement_sources import (
     extract_notice_numbers,
     extract_source_urls,
     fetch_source_context_sync,
+    normalize_source_url,
     official_notice_number_from_url,
     official_followup_urls_from_pages,
     source_label,
@@ -32,6 +33,19 @@ from app.tenderplan import TenderplanDownloadedFile, TenderplanFetchResult
 
 
 class ProcurementSourceTests(unittest.TestCase):
+    def test_internal_and_credentialed_source_urls_are_rejected(self) -> None:
+        blocked = [
+            "http://127.0.0.1:3093/private",
+            "http://[::1]/private",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.2/internal",
+            "http://user:password@example.com/private",
+            "https://example.com:8443/private",
+        ]
+
+        self.assertTrue(all(normalize_source_url(url) == "" for url in blocked))
+        self.assertEqual(extract_source_urls(" ".join(blocked)), [])
+
     def test_init_db_creates_job_sources_table(self) -> None:
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         original_engine = app_db.engine
@@ -265,6 +279,34 @@ class ProcurementSourceTests(unittest.TestCase):
             db.close()
 
         self.assertEqual(sources, [])
+
+    def test_create_job_keeps_same_named_files_as_distinct_inputs(self) -> None:
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        original_job_dir = jobs.job_dir
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                jobs.job_dir = lambda job_id: Path(tmp) / "jobs" / job_id
+                job = create_job(
+                    db,
+                    client_id=None,
+                    mode="procurement_report",
+                    title="duplicates",
+                    target_suppliers=3,
+                    files=[("ТЗ.txt", b"first"), ("ТЗ.txt", b"second")],
+                    sources=[],
+                )
+                stored = db.query(jobs.JobFile).filter(jobs.JobFile.job_id == job.id).order_by(jobs.JobFile.id).all()
+                paths = [Path(item.stored_path) for item in stored]
+                contents = {path.read_bytes() for path in paths}
+        finally:
+            jobs.job_dir = original_job_dir
+            db.close()
+
+        self.assertEqual(len({path.name.casefold() for path in paths}), 2)
+        self.assertEqual(contents, {b"first", b"second"})
 
 
 if __name__ == "__main__":

@@ -121,18 +121,10 @@ class TenderplanError(RuntimeError):
 def fetch_tenderplan_source_sync(notice_number: str) -> TenderplanFetchResult:
     service_result = fetch_tender_source_service_sync(notice_number)
     if service_result is not None:
-        if service_result.ok or service_result.status in {"invalid_number", "not_found"}:
-            return service_result
+        return service_result
 
     token = str(config.tenderplan_api_token or "").strip()
     if not token:
-        if service_result is not None:
-            return TenderplanFetchResult(
-                ok=False,
-                status=service_result.status or "failed",
-                notice_number=notice_number,
-                error=f"{service_result.error}; резервный локальный источник закупок не настроен".strip("; "),
-            )
         return TenderplanFetchResult(
             ok=False,
             status="not_configured",
@@ -157,7 +149,20 @@ def fetch_tender_source_service_sync(notice_number: str) -> TenderplanFetchResul
         timeout = 60.0
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            response = client.post(f"{base_url}/v1/procurements/{notice_number}/bundle", params={"download": "true"})
+            for attempt in range(3):
+                response = client.post(
+                    f"{base_url}/v1/procurements/{notice_number}/bundle",
+                    params={"download": "true"},
+                )
+                if response.status_code == 503 and attempt < 2:
+                    headers = getattr(response, "headers", {}) or {}
+                    try:
+                        retry_after = float(headers.get("Retry-After", 1))
+                    except (TypeError, ValueError):
+                        retry_after = 1.0
+                    time.sleep(max(0.0, min(5.0, retry_after)))
+                    continue
+                break
             response.raise_for_status()
             payload = response.json()
             files, file_errors = load_tender_source_service_files(client, base_url, payload.get("files") or [])
