@@ -3,6 +3,7 @@ import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { FileText, ShieldCheck, UserCheck } from "lucide-react";
+import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Правовая информация и контакты",
@@ -11,9 +12,19 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
+  const breadcrumbSchema = buildBreadcrumbJsonLd([
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Правовая информация", item: "https://tenderlex.ru/legal" },
+  ]);
+
   return (
-    <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
-      <SiteHeader />
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+      />
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+        <SiteHeader />
 
       <section className="py-16 sm:py-24 border-b border-slate-200">
         <div className="container max-w-4xl mx-auto px-4 sm:px-6">
@@ -116,5 +127,6 @@ export default function LegalPage() {
 
       <SiteFooter />
     </main>
+    </>
   );
 }

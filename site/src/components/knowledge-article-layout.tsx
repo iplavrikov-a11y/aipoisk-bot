@@ -361,6 +361,40 @@ export function KnowledgeArticleLayout({
                   </div>
                 </div>
 
+                {/* RELATED ARTICLES INLINE BLOCK FOR CRAWLERS & READERS */}
+                {relatedArticles && relatedArticles.length > 0 && (
+                  <div className="my-8 p-6 rounded-2xl bg-[#f6f8f7] border border-[#d8e3e1] space-y-4">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-[#075b63] flex items-center gap-2">
+                      <Bookmark size={14} className="text-[#075b63]" />
+                      Рекомендуемые материалы по теме статьи
+                    </h4>
+                    <div className="grid sm:grid-cols-3 gap-3">
+                      {relatedArticles.map((ra, idx) => (
+                        <Link
+                          key={idx}
+                          href={`/baza-znaniy/${ra.slug}`}
+                          className="p-3.5 rounded-xl bg-white hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#075b63] transition-all group flex flex-col justify-between shadow-2xs"
+                        >
+                          <div>
+                            <span className="text-[10px] font-bold text-[#075b63] uppercase block mb-1">
+                              {ra.tag}
+                            </span>
+                            <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors line-clamp-2 block mb-1 leading-snug">
+                              {ra.title}
+                            </strong>
+                            <p className="text-[11px] text-[#697a77] line-clamp-2 leading-tight">
+                              {ra.description}
+                            </p>
+                          </div>
+                          <span className="text-[10px] font-bold text-[#075b63] mt-2 block">
+                            Читать подробнее →
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* ARTICLE IN-TEXT CTA (LIGHT EMERALD) */}
                 <div className="my-10 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#e5f4f3] via-[#edf7df]/60 to-[#eef3f2] border-2 border-[#b8c8c5] text-[#172120] shadow-md space-y-5">
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border border-[#b8c8c5] text-[#075b63] text-xs font-black uppercase tracking-wider shadow-2xs">

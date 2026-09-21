@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-16
+Date: 2026-09-21
 
 ## Current Production State
 
@@ -12,6 +12,13 @@ Date: 2026-09-16
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- SEO Optimization, BreadcrumbList Schema & Live SERP Preview (2026-09-21):
+  - **Metrics Audit**: Yandex indexed pages increased to 50 (0 exclusions), Google Search Console impressions reached 201 (+31.4% growth) and recorded the first organic click. Yandex Metrika goal reaches increased to 11 with conversion rate leaping to 14.29% (vs 8.05% on Sep 12).
+  - **Schema.org BreadcrumbList**: Added structured JSON-LD BreadcrumbList schemas to `/legal`, `/privacy`, `/terms`, and `/personal-data` to eliminate crawl queue bottlenecks.
+  - **Inline Knowledge Base Cross-Linking**: Added rich inline related article recommendations inside `knowledge-article-layout.tsx` before the in-text CTA, passing internal PageRank sitewide.
+  - **Procurement Calculator CRO**: Enhanced CTA on `/analiz-rynka-44-fz` to directly guide users into the web cabinet with scenario pre-fill and link to the NMCK methodology article.
+  - **Admin Live SERP Preview (`frontend/src/App.tsx`)**: Embedded interactive SERP preview tool for Yandex and Google with character length gauges and CTR checklist.
+  - **Deployment & IndexNow**: 693 backend tests verified, Vite frontend built, Next.js site built (104 static routes), live service deployment confirmed via `./scripts/deploy_tenderlex_live.sh`, and updated URLs submitted to IndexNow (HTTP 200).
 - Google Search Console Indexing Optimization & Sitewide Cross-Linking (2026-09-16):
   - **Diagnostics & Status**: Analyzed GSC notification and live indexing state (81 pages indexed, 11 non-indexed: 8 queued in "Discovered – currently not indexed", 1 in "Crawled – currently not indexed", 2 in "Page with redirect"). Verified live HTTP 200 responses across all 8 queued pages (`/about`, `/legal`, `/otrasli/metalloprokat`, `/otrasli/stroitelnye-materialy`, `/regiony/moskva`, `/regiony/kazan`, `/regiony/krasnodar`, and the procurement cost reduction article).
   - **Internal Link Graph Enhancement (`site-footer.tsx`)**: Diagnosed that regional and industry landing pages lacked sitewide internal PageRank pass-through. Added structured cross-linking blocks in the global footer covering all industries (`/otrasli/*`) and regions (`/regiony/*`), plus direct link to `/baza-znaniy/sekrety-snizheniya-sebestoimosti-zakupok-dlya-predpriyatiya`.

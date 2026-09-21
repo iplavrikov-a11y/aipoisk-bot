@@ -3607,7 +3607,252 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           })}
         </div>
       </div>
+
+      <SerpPreviewTool />
     </section>
+  )
+}
+
+function SerpPreviewTool() {
+  const PRESETS = [
+    {
+      name: 'Главная страница',
+      url: 'https://tenderlex.ru',
+      path: 'tenderlex.ru',
+      title: 'TenderLex — поиск поставщиков и анализ любых закупок',
+      desc: 'ИИ-поиск поставщиков по ТЗ, подбор аналогов и аудит рисков контрактов 44-ФЗ, 223-ФЗ за 2 мин. Прямые контакты заводов. Попробуйте бесплатно!',
+    },
+    {
+      name: 'Поиск поставщиков',
+      url: 'https://tenderlex.ru/poisk-postavshchikov-po-tz',
+      path: 'tenderlex.ru › poisk-postavshchikov-po-tz',
+      title: 'Поиск поставщиков по ТЗ — до 10 фабрик РФ | TenderLex',
+      desc: 'ИИ-поиск производителей и дилеров по спецификациям за 2 мин. Выгрузка прямых контактов отделов сбыта. Отчет в Word и Excel. 1 проверка бесплатно!',
+    },
+    {
+      name: 'Подбор товара и аналогов',
+      url: 'https://tenderlex.ru/podbor-tovara-i-analogov-po-tz',
+      path: 'tenderlex.ru › podbor-tovara-i-analogov-po-tz',
+      title: 'Подбор аналогов по ТЗ: эквиваленты по ГОСТ | TenderLex',
+      desc: 'ИИ-подбор эквивалентов и аналогов продукции под ТЗ и ПП 719 за 2 мин. Проверка по ГОСТ и ГИСП. Полный отчет в Word (.docx). 1 проверка бесплатно!',
+    },
+    {
+      name: 'Анализ документации',
+      url: 'https://tenderlex.ru/analiz-zakupochnoi-dokumentacii',
+      path: 'tenderlex.ru › analiz-zakupochnoi-dokumentacii',
+      title: 'Анализ закупочной документации и рисков контракта',
+      desc: 'ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин. Выявление скрытых штрафов, сжатых сроков и рисков. Проверьте бесплатно!',
+    },
+    {
+      name: 'Анализ рынка 44-ФЗ (НМЦК)',
+      url: 'https://tenderlex.ru/analiz-rynka-44-fz',
+      path: 'tenderlex.ru › analiz-rynka-44-fz',
+      title: 'Анализ рынка 44-ФЗ и расчет НМЦК онлайн',
+      desc: 'Анализ рынка по 44-ФЗ и расчет НМЦК методом сопоставимых цен онлайн. Поиск заводов, коммерческие предложения и калькулятор. Попробуйте бесплатно!',
+    },
+  ]
+
+  const [engine, setEngine] = useState<'yandex' | 'google'>('yandex')
+  const [selectedPreset, setSelectedPreset] = useState(0)
+  const [customTitle, setCustomTitle] = useState(PRESETS[0].title)
+  const [customDesc, setCustomDesc] = useState(PRESETS[0].desc)
+  const [customPath, setCustomPath] = useState(PRESETS[0].path)
+
+  function applyPreset(idx: number) {
+    setSelectedPreset(idx)
+    setCustomTitle(PRESETS[idx].title)
+    setCustomDesc(PRESETS[idx].desc)
+    setCustomPath(PRESETS[idx].path)
+  }
+
+  const titleLen = customTitle.length
+  const descLen = customDesc.length
+  const titleStatus = titleLen >= 40 && titleLen <= 60 ? 'good' : titleLen > 60 ? 'warn' : 'short'
+  const descStatus = descLen >= 120 && descLen <= 160 ? 'good' : descLen > 160 ? 'warn' : 'short'
+
+  return (
+    <div className="form-panel full-width-panel" style={{ marginTop: 24, borderTop: '3px solid #2563eb' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+        <div>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 18, color: '#1e293b' }}>
+            <Sparkles size={18} style={{ color: '#2563eb' }} />
+            Интерактивный предпросмотр сниппета в поисковой выдаче (Live SERP Preview)
+          </h2>
+          <p className="field-help" style={{ margin: '4px 0 0 0' }}>
+            Проверяйте отображение Title и Description для мобильной и десктопной выдачи Яндекса и Google перед обновлением сайта.
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            type="button"
+            className={engine === 'yandex' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setEngine('yandex')}
+            style={{ borderRadius: 20, padding: '4px 14px', background: engine === 'yandex' ? '#ea580c' : undefined, borderColor: engine === 'yandex' ? '#ea580c' : undefined, color: engine === 'yandex' ? '#fff' : undefined }}
+          >
+            🔴 Яндекс Сниппет
+          </button>
+          <button
+            type="button"
+            className={engine === 'google' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setEngine('google')}
+            style={{ borderRadius: 20, padding: '4px 14px', background: engine === 'google' ? '#2563eb' : undefined, borderColor: engine === 'google' ? '#2563eb' : undefined, color: engine === 'google' ? '#fff' : undefined }}
+          >
+            🔵 Google Сниппет
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Пресеты страниц:</span>
+        {PRESETS.map((p, idx) => (
+          <button
+            key={idx}
+            type="button"
+            className={selectedPreset === idx ? 'primary small-text' : 'ghost small-text'}
+            onClick={() => applyPreset(idx)}
+            style={{ borderRadius: 16, fontSize: 12, padding: '3px 10px' }}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Title страницы:</label>
+              <span style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: 12,
+                background: titleStatus === 'good' ? '#dcfce7' : titleStatus === 'warn' ? '#fee2e2' : '#fef3c7',
+                color: titleStatus === 'good' ? '#166534' : titleStatus === 'warn' ? '#991b1b' : '#92400e',
+              }}>
+                {titleLen} / 60 симв. {titleStatus === 'good' ? '✓ Оптимально' : titleStatus === 'warn' ? '⚠️ Обрежется в SERP' : 'Короткий'}
+              </span>
+            </div>
+            <input
+              type="text"
+              value={customTitle}
+              onChange={(e) => setCustomTitle(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid #cbd5e1' }}
+            />
+          </div>
+
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Description (Сниппет):</label>
+              <span style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: 12,
+                background: descStatus === 'good' ? '#dcfce7' : descStatus === 'warn' ? '#fee2e2' : '#fef3c7',
+                color: descStatus === 'good' ? '#166534' : descStatus === 'warn' ? '#991b1b' : '#92400e',
+              }}>
+                {descLen} / 160 симв. {descStatus === 'good' ? '✓ Оптимально' : descStatus === 'warn' ? '⚠️ Обрежется в SERP' : 'Короткий'}
+              </span>
+            </div>
+            <textarea
+              rows={3}
+              value={customDesc}
+              onChange={(e) => setCustomDesc(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid #cbd5e1', resize: 'vertical' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#334155', display: 'block', marginBottom: 4 }}>
+              Хлебные крошки / URL пути:
+            </label>
+            <input
+              type="text"
+              value={customPath}
+              onChange={(e) => setCustomPath(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', fontSize: 12, borderRadius: 8, border: '1px solid #cbd5e1', color: '#64748b' }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 6 }}>
+            {engine === 'yandex' ? 'Как выглядит в результатах Яндекса:' : 'Как выглядит в результатах Google:'}
+          </span>
+
+          {engine === 'yandex' ? (
+            <div style={{
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 12,
+              padding: '16px 18px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+              fontFamily: 'Arial, sans-serif',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ width: 16, height: 16, borderRadius: '50%', background: '#075b63', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 900 }}>T</span>
+                <span style={{ fontSize: 13, color: '#242424', fontWeight: 600 }}>TenderLex</span>
+                <span style={{ fontSize: 12, color: '#00701a' }}>{customPath}</span>
+              </div>
+
+              <div style={{ fontSize: 18, fontWeight: 400, color: '#1a0dab', lineHeight: 1.3, marginBottom: 6, cursor: 'pointer' }}>
+                {customTitle || 'Заголовок страницы'}
+              </div>
+
+              <div style={{ fontSize: 13, color: '#333333', lineHeight: 1.45 }}>
+                {customDesc || 'Описание сниппета страницы отображается здесь.'}
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e2e8f0', fontSize: 12, color: '#00701a' }}>
+                <span style={{ cursor: 'pointer' }}>Подбор аналогов</span>
+                <span style={{ cursor: 'pointer' }}>Поиск заводов</span>
+                <span style={{ cursor: 'pointer' }}>Анализ ТЗ</span>
+                <span style={{ cursor: 'pointer' }}>Кабинет</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 12,
+              padding: '16px 18px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+              fontFamily: 'Arial, sans-serif',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #e2e8f0' }}>
+                  <span style={{ color: '#075b63', fontWeight: 900, fontSize: 12 }}>T</span>
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, color: '#202124', fontWeight: 500, lineHeight: 1.2 }}>TenderLex</div>
+                  <div style={{ fontSize: 12, color: '#4d5156', lineHeight: 1.2 }}>https://tenderlex.ru › {customPath.replace('tenderlex.ru › ', '')}</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 20, color: '#1a0dab', lineHeight: 1.3, marginBottom: 4, cursor: 'pointer' }}>
+                {customTitle || 'Заголовок страницы'}
+              </div>
+
+              <div style={{ fontSize: 14, color: '#4d5156', lineHeight: 1.5 }}>
+                {customDesc || 'Описание сниппета страницы отображается здесь.'}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}>
+            <span style={{ fontWeight: 700, color: '#0f172a', display: 'block', marginBottom: 4 }}>Чеклист максимального CTR:</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, color: '#475569' }}>
+              <span>{titleStatus === 'good' ? '✅' : '⚠️'} Длина Title ({titleLen}/60)</span>
+              <span>{descStatus === 'good' ? '✅' : '⚠️'} Длина Description ({descLen}/160)</span>
+              <span>{customDesc.includes('бесплатно') ? '✅' : '💡'} Триггер «бесплатно»</span>
+              <span>{customTitle.includes('TenderLex') ? '✅' : '💡'} Бренд «TenderLex»</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 

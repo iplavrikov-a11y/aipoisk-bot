@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
+import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Публичная оферта",
@@ -10,8 +11,19 @@ export const metadata: Metadata = {
 };
 
 export default function TermsPage() {
+  const breadcrumbSchema = buildBreadcrumbJsonLd([
+    { name: "Главная", item: "https://tenderlex.ru" },
+    { name: "Правовая информация", item: "https://tenderlex.ru/legal" },
+    { name: "Публичная оферта", item: "https://tenderlex.ru/terms" },
+  ]);
+
   return (
-    <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+      />
+      <main className="bg-slate-50/60 text-slate-900 min-h-screen font-sans">
       <SiteHeader />
 
       <section className="py-16 sm:py-24 border-b border-slate-200">
@@ -83,5 +95,6 @@ export default function TermsPage() {
 
       <SiteFooter />
     </main>
+    </>
   );
 }

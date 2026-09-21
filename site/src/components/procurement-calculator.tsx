@@ -158,12 +158,23 @@ export function ProcurementCalculator() {
             </div>
           </div>
 
-          <a
-            href="/cabinet"
-            className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
-          >
-            <span>Попробовать бесплатно</span>
-          </a>
+          <div className="space-y-2">
+            <a
+              href="/cabinet?scenario=analytics&tab=quick_request"
+              className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
+            >
+              <span>Рассчитать закупку в кабинете (1 проверка бесплатно)</span>
+            </a>
+            <div className="flex items-center justify-between text-[11px] text-slate-500 px-1 pt-1">
+              <span>✓ Без установки программ</span>
+              <a
+                href="/baza-znaniy/analiz-rynka-metod-sopostavimyh-cen-44-fz"
+                className="text-teal-700 hover:underline font-semibold"
+              >
+                Методика расчета НМЦК по 44-ФЗ →
+              </a>
+            </div>
+          </div>
         </div>
       </div>
     </div>
