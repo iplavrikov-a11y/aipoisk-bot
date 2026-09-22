@@ -2374,7 +2374,22 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   const [querySearch, setQuerySearch] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [searchEngine, setSearchEngine] = useState<'all' | 'yandex' | 'google'>('all')
+  const [moduleFilter, setModuleFilter] = useState<'all' | 'suppliers' | 'analog' | 'analysis'>('all')
   const [trendDays, setTrendDays] = useState<7 | 14 | 30>(14)
+
+  function classifyQuery(text: string): 'suppliers' | 'analog' | 'analysis' | 'other' {
+    const t = (text || '').toLowerCase()
+    if (t.includes('постав') || t.includes('производ') || t.includes('кп') || t.includes('коммерческ') || t.includes('запрос') || t.includes('счет') || t.includes('завод') || t.includes('фабрик') || t.includes('дилер') || t.includes('сбыт')) {
+      return 'suppliers'
+    }
+    if (t.includes('аналог') || t.includes('товар') || t.includes('эквивалент') || t.includes('гисп') || t.includes('образец') || t.includes('номенклатур') || t.includes('оборудован')) {
+      return 'analog'
+    }
+    if (t.includes('анализ') || t.includes('риск') || t.includes('документ') || t.includes('нмцк') || t.includes('44') || t.includes('223') || t.includes('актирован') || t.includes('контракт') || t.includes('тендер') || t.includes('закуп') || t.includes('вариаци') || t.includes('гаранти') || t.includes('реестр')) {
+      return 'analysis'
+    }
+    return 'other'
+  }
 
   async function handleSendDigest() {
     setSendingDigest(true)
@@ -2461,11 +2476,15 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   const yandexGrowthPoints = (webmaster.growth_points || []).map(g => ({ ...g, engine: 'yandex' as const }))
   const googleGrowthPoints = (google?.growth_points || []).map(g => ({ ...g, engine: 'google' as const }))
   
-  const displayGrowthPoints = searchEngine === 'yandex'
+  const allGrowthPoints = searchEngine === 'yandex'
     ? yandexGrowthPoints
     : searchEngine === 'google'
     ? googleGrowthPoints
     : [...yandexGrowthPoints, ...googleGrowthPoints]
+
+  const displayGrowthPoints = moduleFilter === 'all'
+    ? allGrowthPoints
+    : allGrowthPoints.filter(g => classifyQuery(g.text) === moduleFilter)
 
   const goals = metrika.goals || []
   const yandexQueries = webmaster.top_queries || []
@@ -2575,9 +2594,17 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
       }))
     : combinedQueries
 
+  const supplierCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'suppliers').length
+  const analogCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'analog').length
+  const analysisCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'analysis').length
+
+  const moduleFilteredQueries = moduleFilter === 'all'
+    ? rawQueriesToFilter
+    : rawQueriesToFilter.filter(q => classifyQuery(q.text) === moduleFilter)
+
   const filteredQueries = querySearch.trim()
-    ? rawQueriesToFilter.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
-    : rawQueriesToFilter
+    ? moduleFilteredQueries.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
+    : moduleFilteredQueries
 
   const recs = data.recommendations || []
 
@@ -2705,6 +2732,47 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </div>
         <small style={{ color: 'var(--muted)' }}>
           {searchEngine === 'all' ? 'Объединенный анализ видимости' : searchEngine === 'yandex' ? 'Поисковые данные Яндекса' : 'Поисковые данные Google'}
+        </small>
+      </div>
+
+      {/* 2.2b PLATFORM MODULES SEGMENTATION BAR */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 14px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Модуль платформы:</span>
+          <button
+            className={moduleFilter === 'all' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setModuleFilter('all')}
+            style={{ borderRadius: 20, padding: '4px 12px' }}
+          >
+            📦 Все 3 модуля ({rawQueriesToFilter.length})
+          </button>
+          <button
+            className={moduleFilter === 'suppliers' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setModuleFilter('suppliers')}
+            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'suppliers' ? '#0f766e' : undefined, borderColor: moduleFilter === 'suppliers' ? '#0f766e' : undefined, color: moduleFilter === 'suppliers' ? '#fff' : '#0f766e' }}
+            title="Основная функция: поиск прямых заводов, контакты отделов сбыта и запрос КП"
+          >
+            🏭 1. Поиск поставщиков ({supplierCount})
+          </button>
+          <button
+            className={moduleFilter === 'analog' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setModuleFilter('analog')}
+            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'analog' ? '#b45309' : undefined, borderColor: moduleFilter === 'analog' ? '#b45309' : undefined, color: moduleFilter === 'analog' ? '#fff' : '#b45309' }}
+            title="Вторая функция: сопоставление характеристик ТЗ, ГОСТ/ТУ/ГИСП и отчет в Word"
+          >
+            🔍 2. Подбор аналогов ({analogCount})
+          </button>
+          <button
+            className={moduleFilter === 'analysis' ? 'primary small-text' : 'secondary small-text'}
+            onClick={() => setModuleFilter('analysis')}
+            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'analysis' ? '#1d4ed8' : undefined, borderColor: moduleFilter === 'analysis' ? '#1d4ed8' : undefined, color: moduleFilter === 'analysis' ? '#fff' : '#1d4ed8' }}
+            title="Третья функция: аудит документации, выявление скрытых рисков 44/223-ФЗ и расчет НМЦК"
+          >
+            📋 3. Анализ документации ({analysisCount})
+          </button>
+        </div>
+        <small style={{ color: 'var(--muted)' }}>
+          {moduleFilter === 'all' ? 'Показаны все поисковые фразы' : moduleFilter === 'suppliers' ? 'Фокус: поиск поставщиков и счетов' : moduleFilter === 'analog' ? 'Фокус: подбор эквивалентов по ТЗ' : 'Фокус: аудит рисков 44-ФЗ и расчет НМЦК'}
         </small>
       </div>
 
@@ -3172,6 +3240,21 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong>
                           {isHighPriority && <span className="wordstat-badge-top">🔥 Приоритет №1</span>}
+                          {classifyQuery(g.text) === 'suppliers' && (
+                            <span className="pill tg" style={{ fontSize: 10, padding: '1px 6px', background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0' }}>
+                              🏭 Поставщики
+                            </span>
+                          )}
+                          {classifyQuery(g.text) === 'analog' && (
+                            <span className="pill balance" style={{ fontSize: 10, padding: '1px 6px', background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
+                              🔍 Аналоги
+                            </span>
+                          )}
+                          {classifyQuery(g.text) === 'analysis' && (
+                            <span className="pill web" style={{ fontSize: 10, padding: '1px 6px', background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
+                              📋 Анализ
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td>
@@ -3284,6 +3367,21 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{q.text}</span>
+                          {classifyQuery(q.text) === 'suppliers' && (
+                            <span className="pill tg" style={{ fontSize: 10, padding: '1px 6px', background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0' }}>
+                              🏭 Поставщики
+                            </span>
+                          )}
+                          {classifyQuery(q.text) === 'analog' && (
+                            <span className="pill balance" style={{ fontSize: 10, padding: '1px 6px', background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
+                              🔍 Аналоги
+                            </span>
+                          )}
+                          {classifyQuery(q.text) === 'analysis' && (
+                            <span className="pill web" style={{ fontSize: 10, padding: '1px 6px', background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
+                              📋 Анализ
+                            </span>
+                          )}
                           {searchEngine === 'all' && (
                             <div style={{ display: 'flex', gap: 4 }}>
                               {(q as any).in_yandex && <span style={{ fontSize: 10, color: '#ea580c', fontWeight: 'bold' }}>Яндекс</span>}
