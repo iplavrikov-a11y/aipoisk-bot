@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-21
+Date: 2026-09-22
 
 ## Current Production State
 
@@ -12,6 +12,12 @@ Date: 2026-09-21
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- SEO Commercial Intent Separation, OpenGraph Metadata & Admin 3-Module Segmentation (2026-09-22):
+  - **Intent Harmonization**: Addressed ranking asymmetry where Yandex indexed the secondary module ("Подбор аналогов по ТЗ") at position 5.2 (69 shows), overshadowing the platform's primary function ("Поиск поставщиков по ТЗ"). Cleaned `/poisk-postavshchikov-po-tz` FAQs and headings of analog terminology, refocusing completely on direct factory discovery, sales department contacts, INN verification, and request-for-quotation (RFQ/invoice) workflows.
+  - **OpenGraph & Twitter Cards**: Added full OpenGraph (`og:title`, `og:description`, `og:image`, `og:type`) and Twitter card metadata (`summary_large_image`) to `/poisk-postavshchikov-po-tz`, `/poisk-postavshchikov-dlya-tendera`, and `/analiz-zakupochnoi-dokumentacii`.
+  - **Admin Dashboard 3-Module Filtering (`frontend/src/App.tsx`)**: Introduced a 4-state module segmentation filter (`Все 3 модуля`, `🏭 1. Поиск поставщиков`, `🔍 2. Подбор аналогов`, `📋 3. Анализ документации`) with color-coded badges in both "Точки быстрого роста" and "Все поисковые фразы" tables, providing clear visibility per feature.
+  - **IndexNow Dual Push**: Submitted 5 updated canonical URLs to IndexNow open API; verified HTTP 200 OK acceptance.
+  - **Verification & Live Deploy**: 693 backend tests passing, frontend built, Next.js site built (104 SSG routes), live deployment completed via `./scripts/deploy_tenderlex_live.sh`.
 - SEO Optimization, BreadcrumbList Schema & Live SERP Preview (2026-09-21):
   - **Metrics Audit**: Yandex indexed pages increased to 50 (0 exclusions), Google Search Console impressions reached 201 (+31.4% growth) and recorded the first organic click. Yandex Metrika goal reaches increased to 11 with conversion rate leaping to 14.29% (vs 8.05% on Sep 12).
   - **Schema.org BreadcrumbList**: Added structured JSON-LD BreadcrumbList schemas to `/legal`, `/privacy`, `/terms`, and `/personal-data` to eliminate crawl queue bottlenecks.
