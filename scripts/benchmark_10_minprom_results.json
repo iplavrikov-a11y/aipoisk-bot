@@ -1,0 +1,542 @@
+[
+  {
+    "id": 1,
+    "industry": "Лабораторная мебель",
+    "query": "Шкаф вытяжной химический (кислотостойкий) и лабораторная мебель",
+    "policy": "minprom_registry_only",
+    "status": "PASS",
+    "found_count": 8,
+    "registry_count": 8,
+    "plants_count": 3,
+    "has_contacts_count": 8,
+    "elapsed_sec": 174.8,
+    "top_suppliers": [
+      {
+        "name": "ООО «ЭГИДА»",
+        "site": "https://egida-lab.ru/",
+        "phone": "+7 (347) 216-16-67",
+        "email": "ooo_egida_lab@mail.ru",
+        "registry_number": "10177216",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «СпецБалтМебель»",
+        "site": "https://simple-pro.com/catalog/vytyazhnye_shkafy/shkaf_vytyazhnoy_khimicheskiy/",
+        "phone": "+7 (812) 448-13-97",
+        "email": "info@simple-pro.com",
+        "registry_number": "10466687",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО АГ \"Аналитэксперт\"",
+        "site": "https://analytexpert.ru/catalog/labmebel/shkafy-vytyazhnye/3736/",
+        "phone": "+7 (495) 481-66-86",
+        "email": "info@analytexpert.ru",
+        "registry_number": "10492513",
+        "fit": "exact"
+      },
+      {
+        "name": "ДВ-Эксперт",
+        "site": "https://dv-expert.org/laboratornoe-oborudovanie/vytyazhnye-shkafy-i-kolpaki/laminarnye-sistemy/shkaf-himicheskii-vytyazhnoi-shv-laminar-s-1-6-all-himik",
+        "phone": "+7 (343) 226-04-95",
+        "email": "",
+        "registry_number": "10492513",
+        "fit": "exact"
+      },
+      {
+        "name": "Desta-Lab",
+        "site": "https://www.desta-lab.ru/product/50903/",
+        "phone": "+7 (800) 551-50-10",
+        "email": "",
+        "registry_number": "10492513",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "industry": "Светотехника",
+    "query": "Светильники светодиодные уличные консольные ДКУ IP66",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 36,
+    "registry_count": 25,
+    "plants_count": 11,
+    "has_contacts_count": 31,
+    "elapsed_sec": 287.5,
+    "top_suppliers": [
+      {
+        "name": "ООО ТД \"МЕГАПРОМ\"",
+        "site": "https://tdmegaprom.ru/ulichnyj-svetilnik-svetodiodnyj-trassa-3.html",
+        "phone": "+7 (495) 783-82-18",
+        "email": "info@tdmegaprom.ru",
+        "registry_number": "10535523",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «ПРОТОН»",
+        "site": "https://zao-proton.ru/",
+        "phone": "+7 (980) 750-27-27",
+        "email": "info@zao-proton.ru",
+        "registry_number": "10535523",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО «БЛАГОВЕЩЕНСКИЙ СВЕТОТЕХНИЧЕСКИЙ ЗАВОД»",
+        "site": "https://bstz.ru/",
+        "phone": "+7 (917) 784-96-40",
+        "email": "info@bstz.ru",
+        "registry_number": "10512880",
+        "fit": "analog"
+      },
+      {
+        "name": "ЭлектроОМ",
+        "site": "https://om-ek.ru/ALB",
+        "phone": "+7 (343) 288-79-59",
+        "email": "",
+        "registry_number": "10121673",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО \"ФАЛДИ\"",
+        "site": "https://www.openweb.ru/9710021403-ooo-faldi",
+        "phone": "",
+        "email": "openweb@openweb.ru",
+        "registry_number": "10586684",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "industry": "Кабельная продукция",
+    "query": "Кабель силовой ВВГнг(А)-FRLS 3х2.5 ГОСТ 31996-2012",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 47,
+    "registry_count": 37,
+    "plants_count": 13,
+    "has_contacts_count": 45,
+    "elapsed_sec": 328.9,
+    "top_suppliers": [
+      {
+        "name": "ГК «Кабель»",
+        "site": "https://g-kabel.ru/catalog/kabeli/kabeli-vvg/kabeli-vvg-em-kabel/kabeli-vvgng-a-frls-em-kabel/",
+        "phone": "+7 (495) 125-07-00",
+        "email": "zakaz@g-kabel.ru",
+        "registry_number": "10780069",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «ЭМ-КАБЕЛЬ»",
+        "site": "https://opticenergo.ru/struktura-gruppy-kompanij/promyshlennye-predpriyatiya/em-kabel.html",
+        "phone": "",
+        "email": "sp@emcable.ru",
+        "registry_number": "10780069",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «ЭМ-КАБЕЛЬ» (в составе ГК Реноме)",
+        "site": "https://megacable.ru/about/cable-factories/ooo-em-kabel/",
+        "phone": "+7 (800) 333-72-79",
+        "email": "zakaz@megacable.ru",
+        "registry_number": "10780069",
+        "fit": "exact"
+      },
+      {
+        "name": "АО \"Марпосадкабель\"",
+        "site": "https://mpkabel.ru/",
+        "phone": "+7 (800) 555-21-24",
+        "email": "sales@mpkabel.ru",
+        "registry_number": "10779813",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО «СНАБЭКСПОРТ» (ГК «РузКабель»)",
+        "site": "https://ruzkabel.ru/em-kabel/",
+        "phone": "+7 (495) 246-50-50",
+        "email": "info@ruzkabel.ru",
+        "registry_number": "10780069",
+        "fit": "analog"
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "industry": "Полимерные трубы",
+    "query": "Трубы напорные из полиэтилена ПЭ 100 ГОСТ 18599-2001 для питьевого водоснабжения",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 46,
+    "registry_count": 39,
+    "plants_count": 14,
+    "has_contacts_count": 43,
+    "elapsed_sec": 312.2,
+    "top_suppliers": [
+      {
+        "name": "ООО \"ИКАПЛАСТ\"",
+        "site": "https://icaplast.ru/",
+        "phone": "+7 (495) 221-87-38",
+        "email": "icaplast@icaplast.ru",
+        "registry_number": "10465351",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «ИММИД»",
+        "site": "https://immid.ru/",
+        "phone": "+7 (002) 105-68-38",
+        "email": "",
+        "registry_number": "10794682",
+        "fit": "exact"
+      },
+      {
+        "name": "Группа ПОЛИПЛАСТИК",
+        "site": "https://www.polyplastic.ru/",
+        "phone": "+7 (495) 745-68-57",
+        "email": "",
+        "registry_number": "10802270",
+        "fit": "exact"
+      },
+      {
+        "name": "НПО ТЕХНОПОЛИМЕР-М",
+        "site": "https://polimer-russia.ru/",
+        "phone": "+7 (903) 254-03-70",
+        "email": "polimer-russia@mail.ru",
+        "registry_number": "10795542",
+        "fit": "exact"
+      },
+      {
+        "name": "АО «Орелсибгазаппарат»",
+        "site": "https://osga.ru/",
+        "phone": "+7 (486) 272-40-24",
+        "email": "osga057@yandex.ru",
+        "registry_number": "10619388",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "industry": "КИПиА / Датчики",
+    "query": "Датчики давления микропроцессорные Метран 150 с токовым выходом 4-20 мА",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 22,
+    "registry_count": 12,
+    "plants_count": 9,
+    "has_contacts_count": 21,
+    "elapsed_sec": 205.1,
+    "top_suppliers": [
+      {
+        "name": "Гигатерм",
+        "site": "https://gigaterm.ru/company/partnery/zao_midaus/",
+        "phone": "+7 (343) 288-56-55",
+        "email": "gt@gigaterm.ru",
+        "registry_number": "10289080",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО «МИДАУС»",
+        "site": "https://midaus-ul.ru/",
+        "phone": "+7 (004) 487-20-03",
+        "email": "ala@midaus-ul.ru",
+        "registry_number": "10289080",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО \"Научно-производственное объединение \"АГАТ\"",
+        "site": "https://agat-npo.ru/pressure",
+        "phone": "+7 (812) 409-98-76",
+        "email": "sales@agat-npo.ru",
+        "registry_number": "10811202",
+        "fit": "analog"
+      },
+      {
+        "name": "АО \"ПРЕДПРИЯТИЕ В-1336\"",
+        "site": "https://v-1336.ru/",
+        "phone": "+7 (342) 258-11-36",
+        "email": "info@v-1336.ru",
+        "registry_number": "10698994",
+        "fit": "exact"
+      },
+      {
+        "name": "АО \"ЭМИС\"",
+        "site": "https://emis-kip.ru/",
+        "phone": "+7 (351) 729-99-12",
+        "email": "sales@emis-kip.ru",
+        "registry_number": "10713164",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "industry": "Запорная арматура",
+    "query": "Клапаны запорные фланцевые стальные 15с65нж Ду50 Ру16",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 20,
+    "registry_count": 5,
+    "plants_count": 11,
+    "has_contacts_count": 20,
+    "elapsed_sec": 178.1,
+    "top_suppliers": [
+      {
+        "name": "Пермский трубопроводный завод (ПТЗ)",
+        "site": "https://www.ptza.ru/",
+        "phone": "+7 (342) 270-07-34",
+        "email": "sales@ptza.ru",
+        "registry_number": "10698937",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО НПП «Нефтехимавтоматика»",
+        "site": "https://www.nhavtomatika.com/",
+        "phone": "+7 (495) 255-18-55",
+        "email": "zakaz@npp-nha.ru",
+        "registry_number": "10518392",
+        "fit": "analog"
+      },
+      {
+        "name": "АО \"САЗ\"",
+        "site": "https://www.emk.ru/projects/proizvodstvo/saratovskiy-armaturnyy-zavod/",
+        "phone": "+7 (495) 955-78-86",
+        "email": "EMK@EMK.RU",
+        "registry_number": "10533728",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО \"ВАРК\"",
+        "site": "https://vark.ru/about",
+        "phone": "",
+        "email": "AbdullinAK@vark.ru",
+        "registry_number": "10811565",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО \"АРМА-ПРОМ\"",
+        "site": "https://globas.credinform.ru/search/company-card/ooo-arma-prom-3128039487-6736760027924662af01763299013bd1",
+        "phone": "+7 (495) 640-41-16",
+        "email": "office@credinform.ru",
+        "registry_number": "10232731",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "industry": "Энергетика / Трансформаторы",
+    "query": "Трансформаторы силовые масляные герметичные ТМГ 1000/10/0.4",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 14,
+    "registry_count": 2,
+    "plants_count": 11,
+    "has_contacts_count": 14,
+    "elapsed_sec": 130.6,
+    "top_suppliers": [
+      {
+        "name": "ООО Стройкомплекс",
+        "site": "https://sk-metz.ru/catalog/tmg",
+        "phone": "+7 (499) 289-89-84",
+        "email": "",
+        "registry_number": "10514105",
+        "fit": "exact"
+      },
+      {
+        "name": "ОАО \"АЛТТРАНС\"",
+        "site": "https://alttrans.ru/contacts/",
+        "phone": "+7 (347) 272-90-71",
+        "email": "608609@bk.ru",
+        "registry_number": "10293202",
+        "fit": "exact"
+      },
+      {
+        "name": "Группа СВЭЛ",
+        "site": "https://svel.ru/",
+        "phone": "+7 (343) 253-50-22",
+        "email": "oil-immersed@svel.ru",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО «Энертэкс»",
+        "site": "https://www.enertex.ru/",
+        "phone": "+7 (495) 544-29-92",
+        "email": "info@enertex.ru",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "НПО ЭнергоКомплект",
+        "site": "https://npoenergokom.ru/transformator/tmg/",
+        "phone": "+7 (835) 237-91-22",
+        "email": "energokom21@mail.ru",
+        "registry_number": "",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "industry": "Медоборудование",
+    "query": "Кровати медицинские функциональные трехсекционные с электроприводом",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 17,
+    "registry_count": 7,
+    "plants_count": 9,
+    "has_contacts_count": 17,
+    "elapsed_sec": 111.3,
+    "top_suppliers": [
+      {
+        "name": "АО \"ДЗМО\"",
+        "site": "https://www.dzmo.ru/",
+        "phone": "+7 (831) 774-80-30",
+        "email": "welcome@dzmo.ru",
+        "registry_number": "10216033",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО МЕТ",
+        "site": "https://www.met.ru/beds_funcional/",
+        "phone": "+7 (495) 150-27-26",
+        "email": "met@met.ru",
+        "registry_number": "10806773",
+        "fit": "exact"
+      },
+      {
+        "name": "ООО НПЦ МЕДИЦИНСКОЙ ТЕХНИКИ АРМЕД",
+        "site": "https://www.armed.ru/category/krovati-medicinskie-funkcionalnye-elektricheskie/",
+        "phone": "+7 (495) 636-28-25",
+        "email": "sales@armed.ru",
+        "registry_number": "10484698",
+        "fit": "analog"
+      },
+      {
+        "name": "А-Я Здоров!",
+        "site": "https://a-yazdorov.ru/catalog/meditsinskaya_mebel/krovati_meditsinskie/krovati_meditsinskie_met/",
+        "phone": "+7 (343) 227-88-00",
+        "email": "zakaz@a-yazdorov.ru",
+        "registry_number": "10806773",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО «Ставровский завод медицинского оборудования»",
+        "site": "https://stavromed.ru/legal-entities/",
+        "phone": "+7 (492) 425-24-04",
+        "email": "elena-6903@mail.ru",
+        "registry_number": "10625749",
+        "fit": "analog"
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "industry": "Фасовочное оборудование",
+    "query": "Автоматическая машина для фасовки и упаковки сыпучих продуктов",
+    "policy": "normal",
+    "status": "PASS",
+    "found_count": 19,
+    "registry_count": 0,
+    "plants_count": 15,
+    "has_contacts_count": 19,
+    "elapsed_sec": 90.7,
+    "top_suppliers": [
+      {
+        "name": "ТАУРАС-ФЕНИКС",
+        "site": "https://taurasfenix.com/oborudovanie/",
+        "phone": "",
+        "email": "info@taurasfenix.com",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "Zhengzhou Vtops Machinery Co., Ltd.",
+        "site": "https://www.vtops.com/ru/",
+        "phone": "",
+        "email": "sales@vtops.com",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "Boevan",
+        "site": "https://www.boevan.com/ru/",
+        "phone": "",
+        "email": "info@boevan.cn",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "Интеграл Плюс",
+        "site": "https://xn--80aaf5abwe5a.xn--p1ai/",
+        "phone": "+7 (800) 500-67-63",
+        "email": "market@integralplus.ru",
+        "registry_number": "",
+        "fit": "exact"
+      },
+      {
+        "name": "ТехПромПак",
+        "site": "https://tehprompak.ru/",
+        "phone": "+7 (495) 661-86-17",
+        "email": "info@tehprompak.ru",
+        "registry_number": "",
+        "fit": "exact"
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "industry": "Спецодежда / СИЗ",
+    "query": "Костюмы мужские для защиты от общих производственных загрязнений и механических воздействий ГОСТ 12.4.280-2014",
+    "policy": "minprom_registry_priority",
+    "status": "PASS",
+    "found_count": 109,
+    "registry_count": 99,
+    "plants_count": 15,
+    "has_contacts_count": 82,
+    "elapsed_sec": 822.3,
+    "top_suppliers": [
+      {
+        "name": "AG Technologies (ООО «АГ ТЕХНОЛОДЖИЗ»)",
+        "site": "https://ag-technologies.ru/",
+        "phone": "+7 (495) 363-81-29",
+        "email": "order@ag-technologies.ru",
+        "registry_number": "10645010",
+        "fit": "exact"
+      },
+      {
+        "name": "Комбинат рабочей одежды",
+        "site": "https://kro-ufa.ru/configurator/model-10",
+        "phone": "",
+        "email": "info@kro-ufa.ru",
+        "registry_number": "10785592",
+        "fit": "exact"
+      },
+      {
+        "name": "Сириус МСК",
+        "site": "https://sirius-msk.ru/specodezhdaoptom",
+        "phone": "+7 (495) 260-05-01",
+        "email": "opt@sirius-msk.ru",
+        "registry_number": "10153195",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО ПО «Ивспецпошив»",
+        "site": "https://ivspecposhiv.ru/",
+        "phone": "+7 (493) 223-88-49",
+        "email": "ivspecposhiv@mail.ru",
+        "registry_number": "10153195",
+        "fit": "analog"
+      },
+      {
+        "name": "ООО «Безопасные Технологии и Разработки» (ООО «БТР»)",
+        "site": "https://btrtm.ru/",
+        "phone": "+7 (495) 665-75-75",
+        "email": "echebykin@vostok.ru",
+        "registry_number": "10153195",
+        "fit": "analog"
+      }
+    ]
+  }
+]

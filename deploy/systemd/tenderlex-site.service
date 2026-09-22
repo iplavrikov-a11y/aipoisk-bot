@@ -1,13 +1,15 @@
 [Unit]
 Description=TenderLex public Next.js site
-After=network.target aipoisk-api.service
+After=network.target tenderlex-api.service
 
 [Service]
 Type=simple
-WorkingDirectory=/root/projects/aipoisk-bot/site
+WorkingDirectory=/root/projects/tenderlex/site
 Environment=NODE_ENV=production
+Environment=NODE_OPTIONS="--max-old-space-size=384"
 Environment=PORT=3093
 Environment=HOSTNAME=127.0.0.1
+Environment=TENDERLEX_SITE_API_BASE_URL=http://127.0.0.1:8088
 Environment=AIPOISK_SITE_API_BASE_URL=http://127.0.0.1:8088
 Environment=NEXT_PUBLIC_SITE_URL=https://tenderlex.ru
 Environment=TENDERLEX_GOOGLE_SITE_VERIFICATION=SQ1BHThiHjN4LaqsyR6McEc7DI90g2jBhtDmNw_zwfY

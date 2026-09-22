@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.main import supplier_to_dict
+from app.models import Job, Client, ClientTelegramAccount, WebUser, SystemSettings
+from app.main import supplier_to_dict, job_to_dict, client_to_dict, telegram_account_to_dict, web_user_to_admin_dict
 
 
 class ApiSerializationTests(unittest.TestCase):
@@ -52,6 +54,56 @@ class ApiSerializationTests(unittest.TestCase):
         self.assertEqual(data["contact_evidence_snippet"], "sales@example.ru")
         self.assertEqual(data["ai_rank_confidence"], 87)
         self.assertEqual(data["ai_rank_reason"], "официальный сайт")
+
+    def test_job_to_dict_includes_ai_provider_and_model(self) -> None:
+        job = Job(
+            id="job-ai-test",
+            mode="supplier_search",
+            title="Поиск поставщиков",
+            ai_provider="openrouter",
+            ai_model="anthropic/claude-3.5-sonnet",
+        )
+        data = job_to_dict(job)
+        self.assertEqual(data["ai_provider"], "openrouter")
+        self.assertEqual(data["ai_provider_name"], "OpenRouter")
+        self.assertEqual(data["ai_model"], "anthropic/claude-3.5-sonnet")
+        self.assertEqual(data["ai_label"], "OpenRouter · anthropic/claude-3.5-sonnet")
+
+    def test_client_and_account_serialization_includes_created_at(self) -> None:
+        created = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
+        client = Client(
+            id="client-test-1",
+            name="Тестовый клиент",
+            created_at=created,
+        )
+        account = ClientTelegramAccount(
+            id="tg-acc-1",
+            client_id="client-test-1",
+            telegram_id="123456",
+            username="testmanager",
+            name="Менеджер",
+            created_at=created,
+        )
+        web_user = WebUser(
+            id="web-u-1",
+            client_id="client-test-1",
+            email="manager@client.ru",
+            created_at=created,
+            last_login_at=created,
+        )
+        c_dict = client_to_dict(client)
+        self.assertIn("created_at", c_dict)
+        self.assertEqual(c_dict["created_at"], created.isoformat())
+
+        acc_dict = telegram_account_to_dict(account)
+        self.assertIn("created_at", acc_dict)
+        self.assertEqual(acc_dict["created_at"], created.isoformat())
+
+        web_dict = web_user_to_admin_dict(web_user)
+        self.assertIn("created_at", web_dict)
+        self.assertIn("last_login_at", web_dict)
+        self.assertEqual(web_dict["created_at"], created.isoformat())
+        self.assertEqual(web_dict["last_login_at"], created.isoformat())
 
 
 if __name__ == "__main__":

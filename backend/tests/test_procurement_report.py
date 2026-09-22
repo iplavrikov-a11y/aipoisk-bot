@@ -7,6 +7,7 @@ import app.procurement_report as procurement_report
 from app.procurement_report import (
     DEFAULT_REPORT_SYSTEM_PROMPT,
     DEFAULT_VERIFICATION_PROMPT,
+    PROCUREMENT_LEGAL_BASELINE,
     ProcurementReportAIRequiredError,
     clean_markdown_report,
     extract_official_card_facts,
@@ -77,15 +78,25 @@ class ProcurementReportPromptTests(unittest.TestCase):
     def test_national_regime_prompt_requires_direct_registry_answer(self) -> None:
         for phrase in (
             "Требуются ли выписки из реестра Минпромторга: **Да/Нет/Не указано**",
-            "при `ПРЕИМУЩЕСТВЕ` выписки НЕ ТРЕБУЮТСЯ",
-            "при `ОГРАНИЧЕНИИ` выписки НЕ ТРЕБУЮТСЯ",
-            "при действующем `ЗАПРЕТЕ` выписки ТРЕБУЮТСЯ",
+            "Не выводи `Да` или `Нет`",
+            "прямом требовании выписки",
             "ЗАПРЕЩЕНО писать \"если применимо\"",
             "сумма оплаты не увеличивается",
             "уменьшить цену договора/оплату на сумму НДС",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, DEFAULT_REPORT_SYSTEM_PROMPT + DEFAULT_VERIFICATION_PROMPT)
+
+    def test_legal_baseline_is_dated_and_handles_vat_transition(self) -> None:
+        for phrase in (
+            "срез на 12.07.2026",
+            "№ 425-ФЗ",
+            "с 20% на 22% с 01.01.2026",
+            "Указание 20% в документации само по себе не является ошибкой",
+            "Постановление Правительства РФ от 23.12.2024 № 1875",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, PROCUREMENT_LEGAL_BASELINE)
 
 
 class ProcurementReportGuardrailTests(unittest.TestCase):
@@ -135,11 +146,11 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
         result = normalize_national_regime_conditions(report, source_text)
 
         self.assertIn("Нацрежим: **Установлено преимущество в отношении товаров российского происхождения.**", result)
-        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Нет**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Не указано**", result)
         self.assertNotIn("если применимо", result)
         self.assertNotIn("Требуется подтверждение страны происхождения", result)
 
-    def test_normalizes_restriction_registry_answer_to_no(self) -> None:
+    def test_normalizes_restriction_registry_answer_to_not_specified_without_direct_requirement(self) -> None:
         report = """#### Условия закупки
 - Нацрежим: **Есть (ПП РФ № 1875). Запрет действует.**
 - Требуются ли выписки из реестра Минпромторга: **Да**
@@ -151,11 +162,11 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
         result = normalize_national_regime_conditions(report, source_text)
 
         self.assertIn("Нацрежим: **Действует ограничение закупок товаров.**", result)
-        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Нет**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Не указано**", result)
         self.assertNotIn("Запрет действует", result)
         self.assertNotIn("Требуются ли выписки из реестра Минпромторга: **Да**", result)
 
-    def test_normalizes_prohibition_registry_answer_to_yes(self) -> None:
+    def test_normalizes_prohibition_registry_answer_to_not_specified_without_direct_requirement(self) -> None:
         report = """#### Условия закупки
 - Нацрежим: Не указано
 - Требуются ли выписки из реестра Минпромторга: **Нет**
@@ -171,7 +182,36 @@ class ProcurementReportGuardrailTests(unittest.TestCase):
         result = normalize_national_regime_conditions(report, source_text)
 
         self.assertIn("Нацрежим: **Действует запрет закупок товаров.**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Не указано**", result)
+
+    def test_normalizes_registry_answer_to_yes_when_document_explicitly_requires_it(self) -> None:
+        report = """#### Условия закупки
+- Нацрежим: Не указано
+- Требуются ли выписки из реестра Минпромторга: **Не указано**
+"""
+        source_text = """Применение национального режима по ст. 14 Закона № 44-ФЗ
+Запрет закупок товаров, происходящих из иностранных государств
+Для подтверждения страны происхождения участник обязан предоставить номер реестровой записи Минпромторга.
+"""
+
+        result = normalize_national_regime_conditions(report, source_text)
+
+        self.assertIn("Нацрежим: **Действует запрет закупок товаров.**", result)
         self.assertIn("Требуются ли выписки из реестра Минпромторга: **Да**", result)
+
+    def test_normalizes_registry_answer_to_no_when_document_explicitly_excludes_it(self) -> None:
+        report = """#### Условия закупки
+- Нацрежим: Не указано
+- Требуются ли выписки из реестра Минпромторга: **Да**
+"""
+        source_text = """На основании ПП РФ № 1875 установлено преимущество в отношении товаров российского происхождения.
+Выписка из реестра Минпромторга для участия не требуется.
+"""
+
+        result = normalize_national_regime_conditions(report, source_text)
+
+        self.assertIn("Нацрежим: **Установлено преимущество в отношении товаров российского происхождения.**", result)
+        self.assertIn("Требуются ли выписки из реестра Минпромторга: **Нет**", result)
 
     def test_normalizes_vat_usn_bad_increase_wording(self) -> None:
         report = """#### Финансы и НДС
@@ -270,6 +310,52 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
 
         with self.assertRaisesRegex(ProcurementReportAIRequiredError, "AI provider is required"):
             await generate_procurement_report(settings, "Текст закупки")
+
+    async def test_report_generation_appends_legal_baseline_to_custom_prompts(self) -> None:
+        original_call_llm = procurement_report.call_llm
+        original_get_model_selection = procurement_report.get_model_selection
+        prompts: dict[str, str] = {}
+
+        async def fake_call_llm(*_args, **kwargs) -> str:
+            routing_key = str(kwargs.get("routing_key") or "")
+            prompts[routing_key] = str(kwargs.get("system_prompt") or "")
+            if kwargs.get("json_mode"):
+                return '{"ok": true, "issues": [], "corrected_report": ""}'
+            return """#### Общая информация
+- Заказчик: Не найдено
+
+#### Условия закупки
+- Нацрежим: Не указано
+
+### Товары и требования (Техническое задание)
+| № | Наименование | Характеристики | Ед.изм. | Кол-во |
+|---|---|---|---|---|
+| 1 | Товар | По ТЗ | шт | 1 |
+"""
+
+        procurement_report.call_llm = fake_call_llm
+        procurement_report.get_model_selection = lambda *_args, **_kwargs: SimpleNamespace(
+            provider_name="TestAI",
+            model="model",
+        )
+        try:
+            settings = SimpleNamespace(
+                has_active_ai_provider=True,
+                prompt_settings_json='{"procurement_report_system_prompt": "CUSTOM_REPORT_RULE"}',
+                report_settings_json='{"verify_report": true, "verification_prompt": "CUSTOM_VERIFY_RULE"}',
+            )
+
+            await generate_procurement_report(settings, "Текст закупки")
+        finally:
+            procurement_report.call_llm = original_call_llm
+            procurement_report.get_model_selection = original_get_model_selection
+
+        self.assertIn("CUSTOM_REPORT_RULE", prompts["procurement_document_analysis"])
+        self.assertIn("CUSTOM_VERIFY_RULE", prompts["procurement_report_verification"])
+        for prompt in prompts.values():
+            self.assertIn("№ 425-ФЗ", prompt)
+            self.assertIn("22%", prompt)
+            self.assertIn("Указание 20% в документации само по себе не является ошибкой", prompt)
 
     async def test_report_generation_fails_when_ai_verification_rejects_without_correction(self) -> None:
         original_call_llm = procurement_report.call_llm
