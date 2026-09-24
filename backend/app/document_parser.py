@@ -111,7 +111,12 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                 text = ""
 
             cleaned = _clean_text(text)
-            if len(cleaned) < 80:
+            has_empty_table_marker = bool(re.search(r"===\s*TABLE[^\n]*\s*$", cleaned)) or (
+                "\n=== TABLE" in cleaned and not any("|" in line for line in cleaned.splitlines())
+            )
+            needs_fallback = len(cleaned) < 80 or has_empty_table_marker
+
+            if needs_fallback:
                 fallback_lo = _extract_via_libreoffice(
                     file_path,
                     ".txt",
@@ -122,12 +127,22 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                     cleaned = _clean_text(text)
                     status = "docx_libreoffice_ok"
 
-            if len(cleaned) < 80:
+            if len(cleaned) < 80 or has_empty_table_marker:
                 fallback_xml = _extract_docx_xml(file_path)
                 if len(_clean_text(fallback_xml)) > len(cleaned):
                     text = fallback_xml
                     cleaned = _clean_text(text)
                     status = "docx_xml_ok"
+
+            if not needs_fallback and len(cleaned) < 5000:
+                try:
+                    fallback_xml = _extract_docx_xml(file_path)
+                    if len(_clean_text(fallback_xml)) > len(cleaned) * 1.4 and len(_clean_text(fallback_xml)) - len(cleaned) > 200:
+                        text = fallback_xml
+                        cleaned = _clean_text(text)
+                        status = "docx_xml_ok"
+                except Exception:
+                    pass
 
             if len(cleaned) < 80 and options.get("ocr_enabled"):
                 docx_ocr_images = int(options.get("docx_ocr_images") or 20)
@@ -228,21 +243,84 @@ def _extract_html(path: Path) -> str:
     return html.unescape(soup.get_text("\n", strip=True))
 
 
+def _extract_table_rows(table) -> list[str]:
+    rows_text: list[str] = []
+    for row in table.rows:
+        seen_tc = set()
+        cells: list[str] = []
+        nested_tables: list = []
+        for cell in row.cells:
+            tc_elem = getattr(cell, "_tc", None)
+            if tc_elem in seen_tc:
+                continue
+            if tc_elem is not None:
+                seen_tc.add(tc_elem)
+            cell_txt = " ".join(cell.text.split())
+            cells.append(cell_txt)
+            if getattr(cell, "tables", None):
+                nested_tables.extend(cell.tables)
+        while cells and not cells[-1]:
+            cells.pop()
+        if any(cells):
+            rows_text.append(" | ".join(cells))
+        for nt in nested_tables:
+            sub_rows = _extract_table_rows(nt)
+            if sub_rows:
+                rows_text.append("\n=== TABLE ===")
+                rows_text.extend(sub_rows)
+    return rows_text
+
+
 def _extract_docx(path: Path) -> str:
     from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     doc = Document(str(path))
     blocks: list[str] = []
+
+    # Document-order traversal via body elements
+    try:
+        body = getattr(doc.element, "body", None)
+        if body is not None:
+            tbl_counter = [0]
+
+            def _traverse_container(container) -> None:
+                for child in container:
+                    tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if tag == "p":
+                        text = Paragraph(child, doc).text.strip()
+                        if text:
+                            blocks.append(text)
+                    elif tag == "tbl":
+                        tbl_counter[0] += 1
+                        t = Table(child, doc)
+                        t_rows = _extract_table_rows(t)
+                        if t_rows:
+                            blocks.append(f"\n=== TABLE {tbl_counter[0]} ===")
+                            blocks.extend(t_rows)
+                    elif tag == "sdt":
+                        sdt_content = child.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sdtContent")
+                        if sdt_content is not None:
+                            _traverse_container(sdt_content)
+
+            _traverse_container(body)
+            if blocks:
+                return "\n".join(blocks)
+    except Exception:
+        pass
+
+    # Fallback to separate paragraphs and tables traversal
+    blocks.clear()
     for paragraph in doc.paragraphs:
         text = paragraph.text.strip()
         if text:
             blocks.append(text)
     for table_index, table in enumerate(doc.tables, start=1):
-        blocks.append(f"\n=== TABLE {table_index} ===")
-        for row in table.rows:
-            cells = [" ".join(cell.text.split()) for cell in row.cells]
-            if any(cells):
-                blocks.append(" | ".join(cells))
+        t_rows = _extract_table_rows(table)
+        if t_rows:
+            blocks.append(f"\n=== TABLE {table_index} ===")
+            blocks.extend(t_rows)
     return "\n".join(blocks)
 
 
@@ -259,26 +337,52 @@ def _extract_docx_xml(path: Path) -> str:
         if not body:
             return ""
         blocks: list[str] = []
-        for child in body.children:
-            name = getattr(child, "name", "")
-            if not name:
-                continue
-            if name.endswith("p"):
-                text = "".join(t.get_text() for t in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
-                if text.strip():
-                    blocks.append(text.strip())
-            elif name.endswith("tbl"):
-                rows = []
-                for tr in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("tr"), recursive=False):
-                    cells = []
-                    for tc in tr.find_all(lambda tag: tag and tag.name and tag.name.endswith("tc"), recursive=False):
-                        cell_text = " ".join("".join(t.get_text() for t in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("t"))).split())
-                        cells.append(cell_text)
-                    if any(cells):
-                        rows.append(" | ".join(cells))
-                if rows:
-                    blocks.append("\n=== TABLE ===")
-                    blocks.extend(rows)
+
+        def _parse_xml_table(tbl_node) -> list[str]:
+            table_rows: list[str] = []
+            for tr in tbl_node.find_all(lambda tag: tag and tag.name and tag.name.endswith("tr"), recursive=False):
+                cells = []
+                nested_tables = []
+                for tc in tr.find_all(lambda tag: tag and tag.name and tag.name.endswith("tc"), recursive=False):
+                    for sub_tbl in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("tbl"), recursive=False):
+                        nested_tables.append(sub_tbl)
+                    cell_text_parts = []
+                    for p in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("p"), recursive=False):
+                        pt = "".join(t.get_text() for t in p.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
+                        if pt.strip():
+                            cell_text_parts.append(pt.strip())
+                    cells.append(" ".join(" ".join(cell_text_parts).split()))
+                while cells and not cells[-1]:
+                    cells.pop()
+                if any(cells):
+                    table_rows.append(" | ".join(cells))
+                for sub_tbl in nested_tables:
+                    sub_rows = _parse_xml_table(sub_tbl)
+                    if sub_rows:
+                        table_rows.append("\n=== TABLE ===")
+                        table_rows.extend(sub_rows)
+            return table_rows
+
+        def _traverse_xml_container(container) -> None:
+            for child in container.children:
+                name = getattr(child, "name", "")
+                if not name:
+                    continue
+                if name.endswith("p"):
+                    text = "".join(t.get_text() for t in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
+                    if text.strip():
+                        blocks.append(text.strip())
+                elif name.endswith("tbl"):
+                    t_rows = _parse_xml_table(child)
+                    if t_rows:
+                        blocks.append("\n=== TABLE ===")
+                        blocks.extend(t_rows)
+                elif name.endswith("sdt"):
+                    sdt_content = child.find(lambda tag: tag and tag.name and tag.name.endswith("sdtContent"))
+                    if sdt_content:
+                        _traverse_xml_container(sdt_content)
+
+        _traverse_xml_container(body)
         return "\n".join(blocks)
     except Exception:
         return ""

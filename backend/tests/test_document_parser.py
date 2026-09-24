@@ -137,7 +137,60 @@ class DocumentParserTests(unittest.TestCase):
         self.assertEqual(status, "doc_ocr_ok")
         self.assertIn("Технические условия ГОСТ 12345", text)
 
+    def test_docx_with_nested_tables_extracts_all_nested_content(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_file = Path(tmp) / "nested.docx"
+            doc = Document()
+            doc.add_paragraph("Техническое задание на поставку")
+            outer_table = doc.add_table(rows=1, cols=1)
+            outer_cell = outer_table.cell(0, 0)
+            nested_table = outer_cell.add_table(rows=2, cols=2)
+            nested_table.cell(0, 0).text = "Прибор"
+            nested_table.cell(0, 1).text = "Количество"
+            nested_table.cell(1, 0).text = "Гауссметр цифровой"
+            nested_table.cell(1, 1).text = "2 шт"
+            doc.save(str(doc_file))
+
+            text, status = document_parser.extract_text(doc_file)
+            self.assertEqual(status, "ok")
+            self.assertIn("Гауссметр цифровой", text)
+            self.assertIn("2 шт", text)
+
+    def test_docx_with_empty_table_marker_triggers_fallback(self) -> None:
+        with (
+            patch.object(document_parser, "_extract_docx", return_value="Описание объекта закупки\n=== TABLE 1 ==="),
+            patch.object(document_parser, "_extract_via_libreoffice", return_value="Описание объекта закупки\nПолная спецификация: Тесламетр 1 шт") as libreoffice,
+        ):
+            text, status = document_parser.extract_text(Path("empty_table.docx"))
+
+        self.assertEqual(status, "docx_libreoffice_ok")
+        self.assertIn("Тесламетр", text)
+        libreoffice.assert_called_once()
+
+    def test_docx_xml_extracts_nested_table_rows(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_file = Path(tmp) / "nested_xml.docx"
+            doc = Document()
+            doc.add_paragraph("Вводный текст")
+            outer_table = doc.add_table(rows=1, cols=1)
+            outer_cell = outer_table.cell(0, 0)
+            nested_table = outer_cell.add_table(rows=2, cols=2)
+            nested_table.cell(0, 0).text = "Оборудование"
+            nested_table.cell(0, 1).text = "Параметр"
+            nested_table.cell(1, 0).text = "Анализатор спектра"
+            nested_table.cell(1, 1).text = "6.5 ГГц"
+            doc.save(str(doc_file))
+
+            xml_text = document_parser._extract_docx_xml(doc_file)
+            self.assertIn("Анализатор спектра", xml_text)
+            self.assertIn("6.5 ГГц", xml_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
