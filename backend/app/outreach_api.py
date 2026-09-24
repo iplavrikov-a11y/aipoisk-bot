@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import uuid
@@ -1115,15 +1116,25 @@ def list_inbox_messages(
     task_ids = [l.task_id for l in leads_map.values() if l.task_id]
     tasks_map = {t.id: t.name for t in db.query(OutreachSearchTask).filter(OutreachSearchTask.id.in_(task_ids)).all()} if task_ids else {}
 
+    settings = _get_or_create_outreach_settings(db)
+    spam_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+    stopped_senders = {
+        (r.get("value") or "").strip().lower()
+        for r in spam_rules
+        if r.get("type") == "sender"
+    }
+
     items = []
     for m in messages:
         d = m.to_dict()
-        if m.lead_id and m.lead_id in leads_map:
-            lead = leads_map[m.lead_id]
+        sender_clean = (m.sender_email or "").strip().lower()
+        lead = leads_map.get(m.lead_id) if (m.lead_id and m.lead_id in leads_map) else None
+        if lead:
             d["lead_company"] = lead.company_name
             d["lead_email"] = lead.email
             d["lead_phone"] = lead.phone
             d["lead_notes"] = lead.notes
+            d["lead_status"] = lead.status
             d["task_id"] = lead.task_id
             d["task_name"] = tasks_map.get(lead.task_id, "")
         else:
@@ -1131,8 +1142,11 @@ def list_inbox_messages(
             d["lead_email"] = ""
             d["lead_phone"] = ""
             d["lead_notes"] = ""
+            d["lead_status"] = ""
             d["task_id"] = ""
             d["task_name"] = ""
+        is_unsub = (sender_clean in stopped_senders) or (lead and lead.status == "unsubscribed")
+        d["is_unsubscribed"] = bool(is_unsub)
         items.append(d)
 
     return {"items": items, "total": total_count, "counts": counts}
@@ -1404,6 +1418,87 @@ def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[s
         "blocked_rules": added_rules,
         "deleted_count": deleted_count,
         "rules": spam_rules,
+    }
+
+
+@router.post("/inbox/{message_id}/unsubscribe-sender")
+def unsubscribe_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Instantly unsubscribes the sender of this message from all outreach campaigns, marks matching leads as unsubscribed, and adds to permanent stop-list."""
+    msg = db.query(OutreachIncomingEmail).filter(OutreachIncomingEmail.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+
+    sender_email = (msg.sender_email or "").strip().lower()
+    if not sender_email or "@" not in sender_email:
+        raise HTTPException(status_code=400, detail="У письма отсутствует корректный адрес отправителя")
+
+    settings = _get_or_create_outreach_settings(db)
+    spam_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+
+    rule_added = False
+    if not any(r.get("type") == "sender" and (r.get("value") or "").strip().lower() == sender_email for r in spam_rules):
+        spam_rules.append({"type": "sender", "value": sender_email})
+        settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+        rule_added = True
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    note_line = f"Отписан из рассылки через входящие ({now_str})"
+
+    leads = db.query(OutreachLead).filter(func.lower(OutreachLead.email) == sender_email).all()
+    updated_count = 0
+    for lead in leads:
+        lead.status = "unsubscribed"
+        lead.mx_valid = False
+        lead.notes = f"{lead.notes}\n{note_line}".strip() if lead.notes else note_line
+        updated_count += 1
+
+    if msg.lead_id and not any(l.id == msg.lead_id for l in leads):
+        l = db.query(OutreachLead).filter(OutreachLead.id == msg.lead_id).first()
+        if l:
+            l.status = "unsubscribed"
+            l.mx_valid = False
+            l.notes = f"{l.notes}\n{note_line}".strip() if l.notes else note_line
+            updated_count += 1
+
+    db.commit()
+
+    return {
+        "ok": True,
+        "email": sender_email,
+        "leads_updated": updated_count,
+        "rule_added": rule_added,
+        "message": f"Адрес {sender_email} успешно исключён из рассылки и добавлен в стоп-лист",
+    }
+
+
+@router.post("/leads/{lead_id}/unsubscribe")
+def unsubscribe_lead(lead_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Manually marks a lead as unsubscribed and adds its email to the permanent stop-list."""
+    lead = db.query(OutreachLead).filter(OutreachLead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Лид не найден")
+
+    email = (lead.email or "").strip().lower()
+    settings = _get_or_create_outreach_settings(db)
+    spam_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+    rule_added = False
+    if email and "@" in email:
+        if not any(r.get("type") == "sender" and (r.get("value") or "").strip().lower() == email for r in spam_rules):
+            spam_rules.append({"type": "sender", "value": email})
+            settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
+            rule_added = True
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    lead.status = "unsubscribed"
+    lead.mx_valid = False
+    lead.notes = f"{lead.notes}\nОтписан вручную ({now_str})".strip() if lead.notes else f"Отписан вручную ({now_str})"
+    db.commit()
+
+    return {
+        "ok": True,
+        "email": email,
+        "rule_added": rule_added,
+        "message": f"Контакт {email} успешно отписан и добавлен в стоп-лист",
     }
 
 

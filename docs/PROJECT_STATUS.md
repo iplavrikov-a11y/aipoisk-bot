@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-22
+Date: 2026-09-24
 
 ## Current Production State
 
@@ -12,6 +12,12 @@ Date: 2026-09-22
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Instant Email Unsubscribe & Permanent Stop-List Integration in Outreach Inbox (2026-09-24):
+  - **1-Click Instant Unsubscribe Button**: Added dedicated `Удалить из рассылки` action button in `frontend/src/OutreachView.tsx` within the incoming email message viewer alongside `[Прочитано]`, `[История]`, and `[В спам]`. Features visual feedback, confirmation dialog to prevent accidental triggers, and transitions to an emerald `[✓ Отписан]` badge once active.
+  - **Unsubscribe Badges**: Added visual indicators `🔕 Отписан из рассылки` in both the message detail header and the inbox message list items.
+  - **Backend API (`/api/outreach/inbox/{message_id}/unsubscribe-sender` & `/api/outreach/leads/{lead_id}/unsubscribe`)**: Automatically marks all matching `OutreachLead` records as `status="unsubscribed"` and `mx_valid=False` with timestamped notes, and adds the sender email to `OutreachSettings.spam_rules_json` (`type="sender"`).
+  - **Campaign & Search Shielding**: Updated campaign worker in `backend/app/outreach_mail.py` to strictly exclude `unsubscribed` leads and check stop-list spam rules before each email dispatch. Updated `backend/app/outreach_search.py` to preload stop-list emails and domains into deduplication sets (`existing_emails`, `seen_domains`), preventing search crawls from ever re-adding opted-out addresses.
+  - **Verification & Live Deploy**: Added backend unit test `test_unsubscribe_inbox_sender_and_stoplist` in `backend/tests/test_outreach.py` (30/30 outreach tests passed, 694 full backend test suite passed). Frontend built and deployed live via `./scripts/deploy_tenderlex_live.sh`.
 - SEO Commercial Intent Separation, OpenGraph Metadata & Admin 3-Module Segmentation (2026-09-22):
   - **Intent Harmonization**: Addressed ranking asymmetry where Yandex indexed the secondary module ("Подбор аналогов по ТЗ") at position 5.2 (69 shows), overshadowing the platform's primary function ("Поиск поставщиков по ТЗ"). Cleaned `/poisk-postavshchikov-po-tz` FAQs and headings of analog terminology, refocusing completely on direct factory discovery, sales department contacts, INN verification, and request-for-quotation (RFQ/invoice) workflows.
   - **OpenGraph & Twitter Cards**: Added full OpenGraph (`og:title`, `og:description`, `og:image`, `og:type`) and Twitter card metadata (`summary_large_image`) to `/poisk-postavshchikov-po-tz`, `/poisk-postavshchikov-dlya-tendera`, and `/analiz-zakupochnoi-dokumentacii`.

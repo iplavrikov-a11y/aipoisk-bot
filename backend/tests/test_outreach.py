@@ -898,6 +898,75 @@ def test_bounce_and_mailer_daemon_handling():
         db.close()
 
 
+def test_unsubscribe_inbox_sender_and_stoplist():
+    import json
+    from app.db import SessionLocal
+    from app.outreach_models import OutreachIncomingEmail, OutreachLead, OutreachSettings
+    from app.outreach_api import unsubscribe_inbox_sender, list_inbox_messages
+
+    db = SessionLocal()
+    try:
+        test_email = "optout-supplier-test@example.com"
+        # 1. Create lead
+        lead = OutreachLead(
+            email=test_email,
+            company_name="ООО Тест Поставщик",
+            status="sent",
+            mx_valid=True,
+        )
+        db.add(lead)
+        db.commit()
+
+        # 2. Create incoming email
+        msg = OutreachIncomingEmail(
+            message_id="test-optout-msg-123",
+            sender_email=test_email,
+            sender_name="Тест Поставщик",
+            subject="Отпишите нас от рассылки",
+            body_text="Прошу больше не присылать ваши предложения",
+            category="reply",
+            lead_id=lead.id,
+        )
+        db.add(msg)
+        db.commit()
+
+        # 3. Call unsubscribe_inbox_sender
+        res = unsubscribe_inbox_sender(message_id=msg.id, db=db)
+        assert res["ok"] is True
+        assert res["email"] == test_email
+        assert res["leads_updated"] >= 1
+        assert res["rule_added"] is True
+
+        # 4. Verify lead is unsubscribed
+        db.refresh(lead)
+        assert lead.status == "unsubscribed"
+        assert lead.mx_valid is False
+        assert "Отписан" in (lead.notes or "")
+
+        # 5. Verify settings have the email in spam_rules
+        settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first()
+        rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
+        assert any(r.get("type") == "sender" and r.get("value") == test_email for r in rules)
+
+        # 6. Verify list_inbox_messages returns is_unsubscribed=True and lead_status="unsubscribed"
+        inbox_data = list_inbox_messages(category="all", db=db)
+        matching = [item for item in inbox_data["items"] if item["id"] == msg.id]
+        assert len(matching) == 1
+        assert matching[0]["is_unsubscribed"] is True
+        assert matching[0]["lead_status"] == "unsubscribed"
+
+        # Cleanup
+        db.delete(msg)
+        db.delete(lead)
+        # remove test rule from settings
+        clean_rules = [r for r in rules if r.get("value") != test_email]
+        settings.spam_rules_json = json.dumps(clean_rules, ensure_ascii=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+
 
 
 

@@ -1056,6 +1056,21 @@ async def run_outreach_search_task(
                         if d_web:
                             seen_domains.add(d_web)
 
+                from .outreach_models import OutreachSettings
+                settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first()
+                if settings and settings.spam_rules_json:
+                    try:
+                        rules = json.loads(settings.spam_rules_json)
+                        for r in rules:
+                            if r.get("type") == "sender" and r.get("value"):
+                                existing_emails.add(r["value"].strip().lower())
+                            elif r.get("type") == "domain" and r.get("value"):
+                                d_val = base_domain(r["value"].strip().lower())
+                                if d_val:
+                                    seen_domains.add(d_val)
+                    except Exception:
+                        pass
+
             collected_count = initial_collected
             scanned_so_far = initial_scanned
             max_passes = 6

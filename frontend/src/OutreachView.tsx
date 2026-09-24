@@ -62,6 +62,7 @@ import {
   LayoutTemplate,
   Phone,
   Check,
+  UserX,
 } from 'lucide-react'
 import EmailBodyFrame from './EmailBodyFrame'
 
@@ -170,6 +171,8 @@ interface IncomingMessage {
   is_read: boolean
   replied_at: string | null
   lead_id?: string | null
+  is_unsubscribed?: boolean
+  lead_status?: string
 }
 
 interface TaskStats {
@@ -625,6 +628,7 @@ export function OutreachView() {
   const [selectedMsg, setSelectedMsg] = useState<IncomingMessage | null>(null)
   const [replyText, setReplyText] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
+  const [unsubscribingId, setUnsubscribingId] = useState<string | null>(null)
   const [aiReplyGenerating, setAiReplyGenerating] = useState(false)
   const lastAutoSyncTimeRef = useRef<number>(0)
   const inboxFilterRef = useRef(inboxFilter)
@@ -1855,6 +1859,41 @@ export function OutreachView() {
       }
     } catch (e: any) {
       showError(e.message)
+    }
+  }
+
+  // Instantly unsubscribe email from all outreach campaigns & add to stop-list
+  const handleUnsubscribeSender = async (msg: IncomingMessage) => {
+    const sender = (msg.sender_email || '').trim()
+    if (!sender) {
+      showError('У письма отсутствует email отправителя')
+      return
+    }
+    if (!confirm(`Исключить адрес «${sender}» из всех рассылок TenderLex, отписать лиды и внести в постоянный стоп-лист?`)) {
+      return
+    }
+    setUnsubscribingId(msg.id)
+    try {
+      const res = await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/unsubscribe-sender`, { method: 'POST' })
+      showSuccess(res.message || `Адрес ${sender} исключён из рассылки`)
+      setSelectedMsg((prev) =>
+        prev && prev.id === msg.id ? { ...prev, is_unsubscribed: true, lead_status: 'unsubscribed' } : prev
+      )
+      setInboxMessages((prev) =>
+        prev.map((m) =>
+          (m.sender_email || '').toLowerCase() === sender.toLowerCase()
+            ? { ...m, is_unsubscribed: true, lead_status: 'unsubscribed' }
+            : m
+        )
+      )
+      fetchSettings()
+      if (selectedTask) {
+        fetchTaskStats(selectedTask.id)
+      }
+    } catch (e: any) {
+      showError(e.message || 'Ошибка при исключении из рассылки')
+    } finally {
+      setUnsubscribingId(null)
     }
   }
 
@@ -4389,6 +4428,11 @@ export function OutreachView() {
                             📁 {msg.task_name}
                           </span>
                         )}
+                        {(msg.is_unsubscribed || msg.lead_status === 'unsubscribed') && (
+                          <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', padding: '1px 5px', borderRadius: 4, fontSize: 9.5, fontWeight: 600 }}>
+                            🔕 Отписан
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -4446,6 +4490,17 @@ export function OutreachView() {
                       {selectedMsg.is_spam && (
                         <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fca5a5', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
                           🚫 Спам
+                        </span>
+                      )}
+                      {Boolean(
+                        selectedMsg.is_unsubscribed ||
+                        selectedMsg.lead_status === 'unsubscribed' ||
+                        settings?.spam_rules?.some(
+                          (r: any) => r.type === 'sender' && (r.value || '').trim().toLowerCase() === (selectedMsg.sender_email || '').trim().toLowerCase()
+                        )
+                      ) && (
+                        <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                          🔕 Отписан из рассылки
                         </span>
                       )}
                     </div>
@@ -4528,6 +4583,54 @@ export function OutreachView() {
                       <ShieldAlert size={13} />
                       <span>{selectedMsg.is_spam ? 'Не спам' : 'В спам'}</span>
                     </button>
+
+                    {Boolean(
+                      selectedMsg.is_unsubscribed ||
+                      selectedMsg.lead_status === 'unsubscribed' ||
+                      settings?.spam_rules?.some(
+                        (r: any) => r.type === 'sender' && (r.value || '').trim().toLowerCase() === (selectedMsg.sender_email || '').trim().toLowerCase()
+                      )
+                    ) ? (
+                      <span
+                        className="outreach-btn outreach-btn-ghost"
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          color: '#059669',
+                          fontWeight: 600,
+                          background: '#ecfdf5',
+                          borderColor: '#a7f3d0',
+                          cursor: 'default',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                        title="Адрес уже отписан и находится в постоянном стоп-листе рассылки"
+                      >
+                        <Check size={13} style={{ color: '#059669' }} />
+                        <span>Отписан</span>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleUnsubscribeSender(selectedMsg)}
+                        disabled={unsubscribingId === selectedMsg.id}
+                        className="outreach-btn outreach-btn-ghost"
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          color: '#d97706',
+                          fontWeight: 600,
+                          background: '#fffbeb',
+                          borderColor: '#fde68a',
+                          opacity: unsubscribingId === selectedMsg.id ? 0.6 : 1,
+                        }}
+                        title="Моментально исключить адрес из всех рассылок TenderLex и внести в стоп-лист"
+                      >
+                        <UserX size={13} style={{ color: '#d97706' }} />
+                        <span>{unsubscribingId === selectedMsg.id ? 'Отписка...' : 'Удалить из рассылки'}</span>
+                      </button>
+                    )}
 
                     <button
                       type="button"

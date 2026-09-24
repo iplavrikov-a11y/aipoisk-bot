@@ -347,10 +347,10 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
         delay_seconds = max(1.0, float(campaign.delay_seconds or settings.delay_seconds or 2.0))
         aud_type = getattr(campaign, "audience_type", "new") or "new"
 
-        # Eligible leads (strictly exclude bounced/invalid leads)
+        # Eligible leads (strictly exclude bounced/invalid/unsubscribed leads)
         q = db.query(OutreachLead).filter(
             OutreachLead.mx_valid == True,
-            OutreachLead.status.notin_(["bounced", "invalid", "irrelevant"]),
+            OutreachLead.status.notin_(["bounced", "invalid", "irrelevant", "unsubscribed"]),
         )
 
         if getattr(campaign, "selected_lead_ids", None):
@@ -415,6 +415,19 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             if not c or c.status in ["paused", "stopped"]:
                 return
             current_settings = db.query(OutreachSettings).filter(OutreachSettings.id == 1).first() or OutreachSettings(id=1)
+            db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
+            if not db_lead or db_lead.status in ["bounced", "invalid", "irrelevant", "unsubscribed"] or not db_lead.mx_valid:
+                logger.info(f"Skipping lead {lead_item.get('email')}: status={getattr(db_lead, 'status', 'missing')}")
+                continue
+
+            spam_rules = json.loads(current_settings.spam_rules_json) if current_settings.spam_rules_json else []
+            lead_em = (lead_item.get("email") or "").strip().lower()
+            lead_dom = lead_em.split("@")[-1] if "@" in lead_em else ""
+            if any((r.get("type") == "sender" and (r.get("value") or "").strip().lower() == lead_em) or
+                   (r.get("type") == "domain" and (r.get("value") or "").strip().lower() == lead_dom)
+                   for r in spam_rules):
+                logger.info(f"Skipping lead {lead_em}: blocked by stop-list spam rules")
+                continue
 
         # Pre-flight verify deliverability
         is_deliverable, deliverable_reason = await verify_email_deliverability(lead_item["email"])
