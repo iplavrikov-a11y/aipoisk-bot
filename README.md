@@ -13,6 +13,11 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- DOCX Parser Nested Tables & EIS Form 2 Specification Support (2026-09-24):
+  - Solved specification loss in official EIS DOCX files where product parameters and technical requirements are placed in nested tables within container cells (`Table 0 -> Cell (0, 0) -> Nested Table 0`).
+  - Added recursive nested table extraction, body-level document-order traversal (`<w:p>`, `<w:tbl>`, `<w:sdt>`), and merged cell deduplication in `backend/app/document_parser.py`.
+  - Added empty table marker detection to trigger LibreOffice and enhanced recursive XML fallbacks when table rows are unpopulated.
+  - Verified on live customer procurement #719, recovering all 87 specification rows (text increased from 1,060 to 6,609 chars) and matching targeted measuring complex, high-speed camera, and spectrum analyzer suppliers.
 - Supplier Search Acceleration & Headless Browser Optimization (2026-09-14):
   - Accelerated supplier search candidate verification from 18s per site down to 1.5–2.5s (nearly 3x overall task speedup, verified live on task #712 dropping duration from 40m 04s to 14m 23s).
   - Switched page loading from `networkidle` to `domcontentloaded` (timeout=7000) with 1.5s soft network idle settle.

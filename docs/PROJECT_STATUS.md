@@ -12,6 +12,20 @@ Date: 2026-09-24
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- DOCX Parser Nested Tables & EIS Form 2 Specification Support (2026-09-24):
+  - **Issue Diagnosed (Task #719)**: In procurement task #719, customer uploaded an official 44-FZ procurement specification (`3. Описание объекта закупки _3.docx`), containing an 87-row specification for a measuring complex (digital gaussmeter/teslameter with Hall sensor, high-speed camera >= 3600 fps, RTSA spectrum analyzer up to 6.5 GHz). The system extracted only 1060 characters of introductory preamble and 0 items from the table, naming the task "Оборудование (уточнить по TABLE 1)" and matching irrelevant suppliers (snow brushes, combine harvesters, food machinery, wood mulchers).
+  - **Root Cause**: `backend/app/document_parser.py`: `_extract_docx()` iterated top-level `doc.tables` and read `cell.text`. In `python-docx`, `cell.text` does not traverse nested tables (`cell.tables`). In EIS-generated DOCX files, specifications are frequently placed inside nested tables within a container table (`Table 0 -> Cell (0, 0) -> Nested Table 0`). Furthermore, the fallback trigger was strictly `len(cleaned) < 80`, which was bypassed because the preamble had 1060 characters.
+  - **Remediation (`backend/app/document_parser.py`)**:
+    1. Implemented recursive nested table extraction (`_extract_table_rows` visiting `cell.tables` to arbitrary depth).
+    2. Switched to document-order traversal via `doc.element.body` supporting `<w:p>`, `<w:tbl>`, and `<w:sdt>` (Content Controls / Form Fields).
+    3. Implemented merged cell deduplication (`gridSpan` / `_tc`) to prevent repetitive empty columns.
+    4. Enhanced direct XML extractor (`_extract_docx_xml`) with recursive table parsing, preventing table rows from being compressed into a single giant cell.
+    5. Enhanced fallback triggers: in addition to `< 80` chars, triggers on empty table markers (`=== TABLE 1 ===` without row contents) and upgrades to XML extraction if XML yields substantially more structured text.
+  - **Verification & Deployment**:
+    - Real customer file extraction increased from 1,060 to 6,609 characters, recovering all 87 rows of specifications.
+    - End-to-end pipeline confirmed accurate extraction of all 3 equipment categories and generation of 24 targeted search queries.
+    - Unit tests: 14/14 passed in `backend/tests/test_document_parser.py`, 709 passed across full backend test suite.
+    - Deployed live via `./scripts/deploy_tenderlex_live.sh` (API & site verified HTTP 200).
 - Instant Email Unsubscribe & Permanent Stop-List Integration in Outreach Inbox (2026-09-24):
   - **1-Click Instant Unsubscribe Button**: Added dedicated `Удалить из рассылки` action button in `frontend/src/OutreachView.tsx` within the incoming email message viewer alongside `[Прочитано]`, `[История]`, and `[В спам]`. Features visual feedback, confirmation dialog to prevent accidental triggers, and transitions to an emerald `[✓ Отписан]` badge once active.
   - **Unsubscribe Badges**: Added visual indicators `🔕 Отписан из рассылки` in both the message detail header and the inbox message list items.
