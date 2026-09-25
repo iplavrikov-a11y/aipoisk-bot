@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-24
+Date: 2026-09-25
 
 ## Current Production State
 
@@ -12,6 +12,12 @@ Date: 2026-09-24
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Task #719 Admin Rerun & Quality Audit Verification (2026-09-25):
+  - **Live Audit of Admin Rerun #753**: Conducted comprehensive audit of the latest admin rerun output for customer task #719 (`job_number=753`, 75 suppliers).
+  - **Data Quality & Relevancy**: Confirmed that all 75 candidates are strictly relevant to the procurement's technical domains (optics, measuring systems, Hall-effect teslameters, high-speed cameras $\ge 3600$ fps, RTSA spectrum analyzers up to 6.5 GHz). Identified vendors include Evercam, Phantom High-Speed, Micran, Meratest, Microwave Electronics, and Laser Components. Zero irrelevant matches (harvesters, snow plows, etc.).
+  - **Contact & Compliance Rate**: 100% of candidate rows contain direct, verified contact details (phone and/or email). Breakdown: 2 exact technical matches, 11 direct equivalents, 26 category matches, 36 profiled manufacturers/distributors from the GISP/Minpromtorg registry.
+  - **DOCX Request for Quotation (`Запрос КП`)**: Confirmed clean generation without placeholder artifacts. Successfully preserved real customer delivery conditions: delivery destination *г. Ростов-на-Дону, ул. Шаповалова, 2а*, delivery deadline *до 15.12.2026 г.*, and full 3-item specification table.
+  - **Operational Contrast**: Clarified status between the intermediate rerun #751 (116 suppliers, executed prior to parser fix deployment with legacy generic query) and final rerun #753 (75 suppliers, clean targeted data on production parser).
 - DOCX Parser Nested Tables & EIS Form 2 Specification Support (2026-09-24):
   - **Issue Diagnosed (Task #719)**: In procurement task #719, customer uploaded an official 44-FZ procurement specification (`3. Описание объекта закупки _3.docx`), containing an 87-row specification for a measuring complex (digital gaussmeter/teslameter with Hall sensor, high-speed camera >= 3600 fps, RTSA spectrum analyzer up to 6.5 GHz). The system extracted only 1060 characters of introductory preamble and 0 items from the table, naming the task "Оборудование (уточнить по TABLE 1)" and matching irrelevant suppliers (snow brushes, combine harvesters, food machinery, wood mulchers).
   - **Root Cause**: `backend/app/document_parser.py`: `_extract_docx()` iterated top-level `doc.tables` and read `cell.text`. In `python-docx`, `cell.text` does not traverse nested tables (`cell.tables`). In EIS-generated DOCX files, specifications are frequently placed inside nested tables within a container table (`Table 0 -> Cell (0, 0) -> Nested Table 0`). Furthermore, the fallback trigger was strictly `len(cleaned) < 80`, which was bypassed because the preamble had 1060 characters.

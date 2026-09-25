@@ -18,6 +18,7 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
   - Added recursive nested table extraction, body-level document-order traversal (`<w:p>`, `<w:tbl>`, `<w:sdt>`), and merged cell deduplication in `backend/app/document_parser.py`.
   - Added empty table marker detection to trigger LibreOffice and enhanced recursive XML fallbacks when table rows are unpopulated.
   - Verified on live customer procurement #719, recovering all 87 specification rows (text increased from 1,060 to 6,609 chars) and matching targeted measuring complex, high-speed camera, and spectrum analyzer suppliers.
+  - End-to-end quality audit of live admin rerun #753 (75 suppliers) verified 100% targeted manufacturer/distributor matches (Evercam, Micran, Phantom, Meratest) with complete direct contacts and clean DOCX RFQ delivery terms.
 - Supplier Search Acceleration & Headless Browser Optimization (2026-09-14):
   - Accelerated supplier search candidate verification from 18s per site down to 1.5–2.5s (nearly 3x overall task speedup, verified live on task #712 dropping duration from 40m 04s to 14m 23s).
   - Switched page loading from `networkidle` to `domcontentloaded` (timeout=7000) with 1.5s soft network idle settle.
