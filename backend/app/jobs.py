@@ -989,6 +989,9 @@ def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
     item = _short_label(subject)
     if not item:
         return
+    item = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", item, flags=re.IGNORECASE).strip()
+    if not item:
+        return
     if job.mode == MODE_PROCUREMENT_REPORT:
         job.title = f"Анализ закупки: {item}"
     elif job.mode == MODE_ANALYSIS_AND_SUPPLIERS:
@@ -1495,8 +1498,10 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
         or "Спецификация ТЗ"
     )
     clean_subj = _clean_label(extracted_subj)
+    clean_subj = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", clean_subj, flags=re.IGNORECASE).strip()
     if not clean_subj or clean_subj.lower() in {"подбор товара и аналогов", "подбор товаров", "точный товар и аналоги"}:
         clean_subj = _source_title(job) or "Спецификация ТЗ"
+        clean_subj = re.sub(r"^(?:Подбор товаров|Подбор товара|Анализ закупки|Анализ документации|ТЗ)\s*:\s*", "", clean_subj, flags=re.IGNORECASE).strip()
     subject = clean_subj
 
     out_dir = job_dir(job.id) / "output"
