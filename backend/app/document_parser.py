@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".json", ".yaml", ".yml", ".ini", ".log"}
@@ -699,12 +702,123 @@ def _extract_external_archive(path: Path, destination: Path, max_files: int) -> 
     return files[: max_files or len(files)]
 
 
+
+async def organize_procurement_documents_ai(
+    items: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], str]:
+    """
+    Семантическая классификация и приоритизация комплекта документов закупки (Правило 14).
+    Анализирует смысл и роль каждого файла через ИИ без жестких шаблонов слов и регулярных выражений.
+
+    Расставляет документы в порядке важности для анализа и подбора товаров:
+    1. technical_spec (ТЗ, описание объекта закупки, спецификации, Форма 2) — всегда первыми.
+    2. procurement_notice (извещение, общие параметры процедуры) — вторыми.
+    3. pricing_nmck (обоснование цены, сметы, КП) — третьими.
+    4. contract_draft (проект договора/контракта, юридические статьи) — в конец.
+    5. instructions_and_other (инструкции, регламенты) — в конец.
+
+    Возвращает:
+      (reordered_items, detected_procurement_subject)
+    """
+    if len(items) <= 1:
+        return items, ""
+
+    docs_info = []
+    for idx, (fname, text) in enumerate(items):
+        t_clean = str(text or "").strip()
+        sample = t_clean[:1200].replace("\n", " ")
+        docs_info.append({
+            "index": idx,
+            "filename": fname,
+            "length_chars": len(t_clean),
+            "sample": sample[:1000],
+        })
+
+    prompt = f"""Ты — ведущий эксперт по государственным закупкам (44-ФЗ / 223-ФЗ).
+Пользователь прикрепил комплект документов к закупке.
+Выполни семантическую классификацию каждого документа (Правило 14: семантический анализ смысла документов без жестких шаблонов слов и регулярных выражений) и определи их приоритет для анализа объекта закупки и подбора товаров.
+
+Документы комплекта:
+{json.dumps(docs_info, ensure_ascii=False, indent=2)}
+
+КАТЕГОРИИ:
+- "technical_spec" (приоритет 1): Описание объекта закупки, ТЗ, спецификация товаров, таблица характеристик, Форма 2, дефектная ведомость. Это ГЛАВНЫЙ документ для подбора товаров и параметров.
+- "procurement_notice" (приоритет 2): Извещение, карточка закупки, общие сведения о процедуре, сроки, заказчик.
+- "pricing_nmck" (приоритет 3): Обоснование НМЦК, сметный расчет, коммерческие предложения.
+- "contract_draft" (приоритет 4): Проект контракта / договора, общие юридические условия, порядок оплаты, штрафы, форс-мажор.
+- "instructions_and_other" (приоритет 5): Инструкции по заполнению заявок, регламенты, выписки.
+
+Ответь СТРОГО в формате JSON:
+{{
+  "procurement_subject": "Краткое точное наименование объекта закупки (например: 'Поставка матрасов')",
+  "documents": [
+    {{
+      "index": 0,
+      "category": "technical_spec" | "procurement_notice" | "pricing_nmck" | "contract_draft" | "instructions_and_other",
+      "priority": 1,
+      "reasoning": "краткое пояснение роли документа"
+    }}
+  ]
+}}"""
+
+    try:
+        from .exact_product.llm_bridge import call_llm
+        raw = await call_llm(
+            prompt=prompt,
+            system_prompt="Ты эксперт по госзакупкам. Анализируй семантическую роль каждого документа в закупке. Отвечай только валидным JSON.",
+            json_mode=True,
+            model_tier="light",
+            routing_key="procurement_brand_detection",
+        )
+        data = json.loads(raw)
+        doc_priorities = {}
+        for d in data.get("documents", []):
+            idx = d.get("index")
+            prio = d.get("priority", 5)
+            if idx is not None and 0 <= idx < len(items):
+                doc_priorities[idx] = prio
+
+        sorted_indices = sorted(range(len(items)), key=lambda i: doc_priorities.get(i, 5))
+        reordered = [items[i] for i in sorted_indices]
+        subject = str(data.get("procurement_subject") or "").strip()
+        return reordered, subject
+    except Exception as exc:
+        logger.debug("organize_procurement_documents_ai_failed: %s", exc)
+        return items, ""
+
+
+def organize_procurement_documents(
+    items: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], str]:
+    """Синхронный запуск семантической классификации документов (Правило 14)."""
+    if len(items) <= 1:
+        return items, ""
+    try:
+        import asyncio
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, organize_procurement_documents_ai(items)).result(timeout=25)
+        else:
+            return asyncio.run(organize_procurement_documents_ai(items))
+    except Exception as exc:
+        logger.debug("organize_procurement_documents_sync_failed: %s", exc)
+        return items, ""
+
+
 def combined_document_context(items: list[tuple[str, str]]) -> str:
     parts = []
     for filename, text in items:
         if text.strip():
             parts.append(f"\n\n=== FILE: {filename} ===\n{text[:500000]}")
     return "\n".join(parts).strip()
+
 
 
 PLACEHOLDER_TZ_PATTERNS = (

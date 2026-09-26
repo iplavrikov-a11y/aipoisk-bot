@@ -707,6 +707,15 @@ def _process_job_sync(job_id: str) -> None:
             parsed.append((file.original_filename, text))
         db.commit()
 
+        # Семантическая классификация и приоритизация документов комплекта (Правило 14)
+        detected_subject = ""
+        if len(parsed) > 1:
+            _set_job(db, job, status="running", progress=16, message="Семантическая классификация документов (ИИ)")
+            parsed, detected_subject = document_parser.organize_procurement_documents(parsed)
+            if detected_subject:
+                _update_customer_job_title_from_ai(job, detected_subject)
+                db.commit()
+
         file_context = document_parser.combined_document_context(parsed)
         context = "\n\n".join([*source_blocks, file_context]).strip()
         is_substantive, validation_err = document_parser.is_substantive_tz_text(context)
@@ -988,6 +997,13 @@ def _set_customer_job_title_from_subject(job: Job, subject: str) -> None:
         job.title = f"ТЗ: {item}"
     elif job.mode == MODE_EXACT_PRODUCT:
         job.title = f"Подбор товаров: {item}"
+
+
+def _update_customer_job_title_from_ai(job: Job, subject: str) -> None:
+    if not subject:
+        return
+    _set_customer_job_title_from_subject(job, subject)
+
 
 
 def _result_stem(job: Job, subject: str) -> str:

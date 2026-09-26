@@ -601,7 +601,7 @@ async def parse_tz_structure(
     spec_clean = extract_clean_spec_text(spec_text) or spec_text
     try:
         raw = await call_llm(
-            prompt=TZ_STRUCTURE_PROMPT.format(spec=str(spec_clean)[:16000]),
+            prompt=TZ_STRUCTURE_PROMPT.format(spec=str(spec_clean)[:120000]),
             system_prompt=(
                 "Ты — аккуратный аналитик технических заданий. Твоя задача — ТОЛЬКО переписать характеристики из табличной части ТЗ. "
                 "Строго запрещено угадывать товар или марку по характеристикам. "
@@ -723,7 +723,7 @@ async def extract_tz_requirements(spec_text: str) -> List[Dict[str, str]]:
     # 2. Прямой LLM-вызов
     try:
         raw = await call_llm(
-            prompt=_TZ_REQUIREMENTS_LLM_PROMPT.format(spec=str(spec_text or "")[:12000]),
+            prompt=_TZ_REQUIREMENTS_LLM_PROMPT.format(spec=str(spec_text or "")[:100000]),
             system_prompt="Ты извлекаешь требования ТЗ дословно, без выдумывания. Отвечай только валидным JSON-списком.",
             json_mode=True,
             model_tier="light",
@@ -862,7 +862,7 @@ async def build_characteristic_queries_ai(
         t = str(r.get("tz_requirement") or "").strip()
         if p or t:
             specs_lines.append(f"- {p}: {t}")
-    specs_text = "\n".join(specs_lines)[:12000]
+    specs_text = "\n".join(specs_lines)[:60000]
 
     analogs_str = ""
     if analogs_hints:
@@ -1321,7 +1321,7 @@ async def enrich_matrix_with_ai(
                 item_name=item_name or "Товар",
                 brand=brand or "Производитель",
                 model=model or "",
-                specs_table=specs_table[:6000],
+                specs_table=specs_table[:30000],
             ),
             system_prompt=(
                 "Ты — объективный инженер-эксперт по закупкам. "
@@ -1453,7 +1453,7 @@ async def enrich_candidate_multi_source_consensus_ai(
                 brand=brand or "Производитель",
                 model=model or "",
                 sources_block=sources_block[:14000],
-                specs_table=specs_table[:6000],
+                specs_table=specs_table[:30000],
             ),
             system_prompt=(
                 "Ты — объективный эксперт по сопоставлению характеристик промышленного оборудования. "

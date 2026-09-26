@@ -97,13 +97,10 @@ EVIDENCE_MINER_PROMPT = """Ты — ведущий эксперт по госу�
 """
 
 
-def extract_high_signal_evidence_text(full_text: str, max_chars: int = 40000) -> str:
+def extract_high_signal_evidence_text(full_text: str, max_chars: int = 75000) -> str:
     """
-    Выделяет из общего текста документов закупки наиболее релевантные разделы:
-    - Разрешения Минпромторга
-    - Обоснование НМЦК и коммерческие предложения
-    - Спецификацию и ТУ
-    - Разъяснения заказчика
+    Выделяет из общего текста документов закупки наиболее релевантные разделы (Правило 14).
+    Сохраняет семантический порядок документов комплекта, где ТЗ и спецификации уже расставлены первыми.
     """
     if not full_text:
         return ""
@@ -113,49 +110,14 @@ def extract_high_signal_evidence_text(full_text: str, max_chars: int = 40000) ->
 
     # Ищем разделы по файловым маркерам и заголовкам
     file_chunks = re.split(r"(?=(?:=== FILE: |### Файл: ))", full_text)
-    high_priority_chunks: List[str] = []
-    normal_chunks: List[str] = []
-
-    priority_keywords = (
-        "разрешен", "минпромторг", "нмцк", "обоснован", "коммерческ", "предложен",
-        "прайс", "спецификац", "описани", "заявк", "паспорт", "сертификат"
-    )
-
-    def chunk_score(chunk: str) -> int:
-        c_low = chunk[:300].lower()
-        score = 0
-        if "разрешен" in c_low and "минпромторг" in c_low:
-            score += 100
-        elif "разрешен" in c_low:
-            score += 80
-        elif "нмцк" in c_low or "обоснован" in c_low:
-            score += 60
-        elif "коммерческ" in c_low or "предложен" in c_low:
-            score += 50
-        elif "спецификац" in c_low or "описани" in c_low:
-            score += 40
-        if "=== file:" in c_low or "### файл:" in c_low:
-            score += 15
-        return score
+    assembled: List[str] = []
+    curr_len = 0
 
     for chunk in file_chunks:
         chunk_clean = chunk.strip()
         if not chunk_clean:
             continue
-        chunk_lower = chunk_clean[:500].lower()
-        if any(kw in chunk_lower for kw in priority_keywords):
-            high_priority_chunks.append(chunk_clean)
-        else:
-            normal_chunks.append(chunk_clean)
-
-    high_priority_chunks.sort(key=chunk_score, reverse=True)
-
-    assembled: List[str] = []
-    curr_len = 0
-
-    # Сначала собираем высокоприоритетные разделы (Разрешения, НМЦК, Спецификации)
-    for c in high_priority_chunks:
-        c_sub = c[:15000]
+        c_sub = chunk_clean[:35000]
         if curr_len + len(c_sub) > max_chars:
             remaining = max_chars - curr_len
             if remaining > 1000:
@@ -163,18 +125,6 @@ def extract_high_signal_evidence_text(full_text: str, max_chars: int = 40000) ->
             break
         assembled.append(c_sub)
         curr_len += len(c_sub)
-
-    # Если осталось место — добираем обычные разделы
-    if curr_len < max_chars:
-        for c in normal_chunks:
-            c_sub = c[:5000]
-            if curr_len + len(c_sub) > max_chars:
-                remaining = max_chars - curr_len
-                if remaining > 500:
-                    assembled.append(c_sub[:remaining])
-                break
-            assembled.append(c_sub)
-            curr_len += len(c_sub)
 
     result = "\n\n".join(assembled).strip()
     return result if len(result) > 100 else full_text[:max_chars].strip()

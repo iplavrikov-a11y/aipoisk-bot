@@ -1506,7 +1506,7 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
 }}
 
 ТЗ:
-{context[:16000]}"""
+{context[:120000]}"""
     last_error: Exception | None = None
     for attempt in range(3):
         try:

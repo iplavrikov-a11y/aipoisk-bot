@@ -189,8 +189,38 @@ class DocumentParserTests(unittest.TestCase):
             self.assertIn("Анализатор спектра", xml_text)
             self.assertIn("6.5 ГГц", xml_text)
 
+    def test_organize_procurement_documents_single_file(self) -> None:
+        items = [("file1.docx", "Некоторый текст ТЗ")]
+        reordered, subject = document_parser.organize_procurement_documents(items)
+        self.assertEqual(reordered, items)
+        self.assertEqual(subject, "")
+
+    def test_organize_procurement_documents_ai_ordering(self) -> None:
+        import json
+        from unittest.mock import patch, AsyncMock
+        items = [
+            ("Проект_ГК.docx", "Проект государственного контракта на поставку оборудования..."),
+            ("ТЗ_Спецификация.docx", "Техническое задание на поставку матрасов..."),
+            ("НМЦК.xlsx", "Расчет начальной максимальной цены..."),
+        ]
+        mock_resp = json.dumps({
+            "procurement_subject": "Поставка матрасов",
+            "documents": [
+                {"index": 0, "category": "contract_draft", "priority": 4},
+                {"index": 1, "category": "technical_spec", "priority": 1},
+                {"index": 2, "category": "pricing_nmck", "priority": 3},
+            ]
+        })
+        with patch("app.exact_product.llm_bridge.call_llm", new=AsyncMock(return_value=mock_resp)):
+            reordered, subject = document_parser.organize_procurement_documents(items)
+            self.assertEqual(subject, "Поставка матрасов")
+            self.assertEqual(reordered[0][0], "ТЗ_Спецификация.docx")
+            self.assertEqual(reordered[1][0], "НМЦК.xlsx")
+            self.assertEqual(reordered[2][0], "Проект_ГК.docx")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
