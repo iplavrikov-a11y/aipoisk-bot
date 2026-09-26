@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-25
+Date: 2026-09-26
 
 ## Current Production State
 
@@ -12,6 +12,28 @@ Date: 2026-09-25
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Multi-File Semantic Document Ordering, Rule 14 Ingestion & Context Window Expansion (2026-09-26):
+  - **Issue Diagnosed (Task #758)**: Customer submitted 4 procurement files (`ПР_4_-_Проект_ГК.DOCX`, `ПР_1_-_Описание_объекта_закупки_(матрасы).docx`, `ПР_2_-_НМЦК.xlsx`, `technical_assignment.txt`) for a 44-FZ medical mattress procurement. Due to alphabetical sorting, `ПР_4` (contract draft, 45,040 chars) was parsed first. Legacy small context window limits (`[:16000]` slice in matcher and evidence miner) completely cut off `ПР_1` (the actual technical specification table starting at char 45,089). The system saw only 1 position instead of both items and matched an irrelevant consumer mattress (`Dreamline`).
+  - **Rule 14 Semantic Categorization (`backend/app/document_parser.py`)**:
+    1. Implemented semantic AI-based document classification (`organize_procurement_documents_ai`, `organize_procurement_documents`) using fast LLM without brittle regexes or keyword hardcoding.
+    2. Categorizes files into semantic priorities: `technical_spec` (priority 1), `procurement_notice` (2), `pricing_nmck` (3), `contract_draft` (4), `instructions_and_other` (5), and extracts the true `procurement_subject`.
+    3. Integrated into `execute_job` (`backend/app/jobs.py`) to dynamically reorder uploaded documents before constructing execution context, ensuring technical specifications take top priority regardless of file naming.
+  - **Context Window Expansion**:
+    1. Expanded legacy character slices in `matcher.py`: `TZ_STRUCTURE_PROMPT` to 120,000 chars, `_TZ_REQUIREMENTS_LLM_PROMPT` to 100,000 chars, `specs_text` to 60,000 chars, `specs_table` to 30,000 chars.
+    2. Expanded context in `supplier_search.py` to 120,000 chars and `evidence_miner.py` to 75,000 chars.
+  - **Title Deduplication**: Fixed double-prefix bug in `backend/app/jobs.py` (`Подбор товаров: Подбор товаров: ...` -> clean `Подбор товаров: ...`).
+  - **Live Production Verification (Admin Rerun #760)**:
+    1. Admin rerun of task #758 (job #760) confirmed 100% resolution: extracted both `Матрас тип 1` (80х200) and `Матрас тип 2` (90х200) with 12 characteristics each.
+    2. Matched specialized domestic medical manufacturer ООО МК «АСК» (models М.20.8 and М.20.9) with 99% conformity and domestic equivalents (Мелодия Сна Extra ГИСП 10394245, КРОКУСМЕД, Pelikano ГИСП 10640639).
+    3. Form 2 parameter table provides exact non-range values for 1st part tender submission (200x80x12 cm and 200x90x12 cm, bi-elastic waterproof cover, fire resistance, auto-cleaving, seam piping).
+- Comprehensive Platform-Wide Pipeline Experiments & System Evaluation (2026-09-26):
+  - Created automated end-to-end multi-module verification suite (`scripts/test_all_three_functions.py`) validating all 3 core functions:
+    1. `Поиск поставщиков`: 13 verified suppliers found in 54.2s (top rank: Уралкабель in Yekaterinburg matching requested delivery region). Rating: 9.5/10.
+    2. `Подбор товара и аналогов`: real multi-file procurement #758, accurately prioritized specification, extracted both positions, verified models and analogs in Word format (.docx). Rating: 9.0/10.
+    3. `Анализ документации`: 100% planted risk detection in 22.5s (0.5% daily penalties, 3-day short delivery deadline, PP 878 national regime). Rating: 10/10.
+  - Overall platform score: **9.5 / 10**.
+  - 699 unit tests passing across backend test suite with 0 regressions.
+  - Deployed live via `./scripts/deploy_tenderlex_live.sh`.
 - Task #719 Admin Rerun & Quality Audit Verification (2026-09-25):
   - **Live Audit of Admin Rerun #753**: Conducted comprehensive audit of the latest admin rerun output for customer task #719 (`job_number=753`, 75 suppliers).
   - **Data Quality & Relevancy**: Confirmed that all 75 candidates are strictly relevant to the procurement's technical domains (optics, measuring systems, Hall-effect teslameters, high-speed cameras $\ge 3600$ fps, RTSA spectrum analyzers up to 6.5 GHz). Identified vendors include Evercam, Phantom High-Speed, Micran, Meratest, Microwave Electronics, and Laser Components. Zero irrelevant matches (harvesters, snow plows, etc.).

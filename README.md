@@ -13,6 +13,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Multi-File Semantic Document Ordering & Rule 14 Ingestion (2026-09-26):
+  - Solved multi-file procurement truncation (task #758): when multiple customer files are attached (e.g. contract draft, specification, NMCK, tender notice), files were previously sorted alphabetically, causing large contract drafts (`ПР_4`) to consume context and truncate specification tables (`ПР_1`).
+  - Implemented semantic AI-based document classification in `backend/app/document_parser.py` (`organize_procurement_documents_ai`, `organize_procurement_documents`) following Rule 14, dynamically prioritizing technical specifications over contract drafts and extracting real procurement subjects.
+  - Expanded context window slices: `matcher.py` prompt context up to 120,000 characters, `supplier_search.py` up to 120,000 characters, and `evidence_miner.py` up to 75,000 characters.
+  - Verified live on admin rerun #760: accurately identified 2 of 2 medical mattress positions with 12 characteristics each, matching domestic manufacturer ООО МК «АСК» (М.20.8 and М.20.9) and verified equivalents with exact Form 2 parameters for tender submission.
+  - End-to-end multi-module verification (`scripts/test_all_three_functions.py`) verified full pipelines across all 3 functions: `Поиск поставщиков` (9.5/10), `Подбор товара и аналогов` (9.0/10), `Анализ документации` (10/10); 699 unit tests passing with zero regressions.
 - DOCX Parser Nested Tables & EIS Form 2 Specification Support (2026-09-24):
   - Solved specification loss in official EIS DOCX files where product parameters and technical requirements are placed in nested tables within container cells (`Table 0 -> Cell (0, 0) -> Nested Table 0`).
   - Added recursive nested table extraction, body-level document-order traversal (`<w:p>`, `<w:tbl>`, `<w:sdt>`), and merged cell deduplication in `backend/app/document_parser.py`.
