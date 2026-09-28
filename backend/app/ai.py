@@ -676,7 +676,7 @@ async def _post_llm_request(
                     await _sleep_before_retry(_retry_delay(attempt), deadline_monotonic)
                     continue
                 raise last_error
-            return str(choices[0].get("message", {}).get("content") or "")
+            return clean_surrogates(str(choices[0].get("message", {}).get("content") or ""))
     raise last_error or LLMError("LLM request failed")
 
 

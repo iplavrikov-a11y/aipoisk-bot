@@ -12,6 +12,11 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from docx.shared import Inches, Pt, RGBColor
 
+from app.document_parser import clean_xml_compatible
+from app.report_builder import _patch_docx_and_openpyxl_xml_safety
+
+_patch_docx_and_openpyxl_xml_safety()
+
 if TYPE_CHECKING:
     from .models import ExactProductReport
 
@@ -84,7 +89,9 @@ def _set_table_header_repeat(table) -> None:
 
 def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", underline=True):
     """Adds an interactive OpenXML hyperlink into a Word paragraph."""
-    if not url or not str(url).strip():
+    text = clean_xml_compatible(text)
+    clean_url = clean_xml_compatible(url).strip()
+    if not clean_url:
         return paragraph.add_run(text)
     try:
         from docx.opc.constants import RELATIONSHIP_TYPE
@@ -92,7 +99,7 @@ def _add_docx_hyperlink(paragraph, url: str, text: str, color_hex="0284C7", unde
         from docx.oxml.ns import qn
 
         part = paragraph.part
-        r_id = part.relate_to(str(url).strip(), RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+        r_id = part.relate_to(clean_url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
         hyperlink = OxmlElement("w:hyperlink")
         hyperlink.set(qn("r:id"), r_id)
 
@@ -126,6 +133,7 @@ def write_exact_product_docx(
     Generates official Word DOCX report with positions overview, Form 2 parameters,
     domestic analogs comparison table, and verified datasheets/sources registry.
     """
+    title = clean_xml_compatible(title)
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -13,6 +13,61 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .document_parser import clean_surrogates, clean_xml_compatible
+
+
+def _patch_docx_and_openpyxl_xml_safety() -> None:
+    """
+    Defensive global guard: patches docx and openpyxl internals so that invalid
+    XML 1.0 characters (control codes 0x00-0x08, 0x0b-0x0c, 0x0e-0x1f, surrogates)
+    are automatically sanitized instead of throwing fatal exceptions.
+    """
+    try:
+        from docx.oxml.text.run import _RunContentAppender
+        if getattr(_RunContentAppender, "_orig_tenderlex_append", None) is None:
+            _RunContentAppender._orig_tenderlex_append = _RunContentAppender.append_to_run_from_text
+
+            @classmethod
+            def _safe_append_to_run(cls, r, text):
+                clean_text = clean_xml_compatible(text)
+                return cls._orig_tenderlex_append(r, clean_text)
+
+            _RunContentAppender.append_to_run_from_text = _safe_append_to_run
+    except Exception:
+        pass
+
+    try:
+        from openpyxl.cell.cell import Cell, ILLEGAL_CHARACTERS_RE
+        if getattr(Cell, "_orig_tenderlex_check_string", None) is None:
+            Cell._orig_tenderlex_check_string = Cell.check_string
+
+            def _safe_check_string(self, value):
+                if value is not None and isinstance(value, str):
+                    value = clean_xml_compatible(value)
+                    value = ILLEGAL_CHARACTERS_RE.sub("", value)
+                return self._orig_tenderlex_check_string(value)
+
+            Cell.check_string = _safe_check_string
+    except Exception:
+        pass
+
+    try:
+        from docx.opc.part import Part
+        if getattr(Part, "_orig_tenderlex_relate_to", None) is None:
+            Part._orig_tenderlex_relate_to = Part.relate_to
+
+            def _safe_relate_to(self, target, reltype, is_external=False):
+                if isinstance(target, str):
+                    target = clean_xml_compatible(target)
+                return self._orig_tenderlex_relate_to(target, reltype, is_external=is_external)
+
+            Part.relate_to = _safe_relate_to
+    except Exception:
+        pass
+
+
+_patch_docx_and_openpyxl_xml_safety()
+
 
 SUPPLIER_HEADERS = [
     "Компания",
@@ -237,23 +292,23 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     ws.views.sheetView[0].showGridLines = True
 
     # 1. Шапка документа
-    brand_title = f"TenderLex | {_supplier_report_heading(title, subject)}"
+    brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
     ws.append([brand_title])
     _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="047857"), align=Alignment(vertical="center"))
     ws.row_dimensions[1].height = 28
 
     # 2. Подзаголовок (ТЗ + Режим)
     policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
-    item_title = _clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация"
-    ws.append([f"Предмет закупки / ТЗ: {item_title} | {policy_label}"])
+    item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
+    ws.append([clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")])
     _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="064E3B"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
     # 3. Сводка / KPI (без лишней плашки "как работать")
-    summary = _supplier_count_summary(rows, target)
+    summary = clean_xml_compatible(_supplier_count_summary(rows, target))
     is_fallback = _is_registry_fallback_report(rows)
     if is_fallback:
-        summary = f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}"
+        summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
     ws.append([summary])
     summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
     summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "064E3B")
@@ -288,13 +343,14 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         is_even = (row_idx % 2 == 0)
         base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
         
-        company = str(row.get("company_name") or "").strip()
+        company = clean_xml_compatible(str(row.get("company_name") or "").strip())
         reg_text, reg_font, reg_fill = _registry_badge(row)
-        site_raw = str(row.get("site") or "").strip()
-        site_display = unquote(site_raw) if site_raw else ""
-        phone = str(row.get("phone") or "").strip()
-        email = str(row.get("email") or "").strip()
-        comment = _client_supplier_comment(row)
+        reg_text = clean_xml_compatible(reg_text)
+        site_raw = clean_xml_compatible(str(row.get("site") or "").strip())
+        site_display = clean_xml_compatible(unquote(site_raw) if site_raw else "")
+        phone = clean_xml_compatible(str(row.get("phone") or "").strip())
+        email = clean_xml_compatible(str(row.get("email") or "").strip())
+        comment = clean_xml_compatible(_client_supplier_comment(row))
 
         ws.append([company, site_display, phone, email, comment, reg_text])
 
@@ -461,7 +517,8 @@ def _supplier_policy_label(policy: str) -> str:
 
 
 def _clean_comment_text(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip(" .,:;")
+    cleaned = clean_xml_compatible(value)
+    return re.sub(r"\s+", " ", cleaned).strip(" .,:;")
 
 
 def _short_product_or_comment(product: str, comment: str) -> str:
@@ -567,6 +624,10 @@ def _write_markdown_docx(
     dark_emerald = RGBColor(6, 78, 59)        # #064E3B
     teal_emerald = RGBColor(15, 118, 110)     # #0F766E
     text_dark = RGBColor(15, 23, 42)
+
+    title = clean_xml_compatible(title)
+    intro = clean_xml_compatible(intro)
+    markdown = clean_xml_compatible(markdown)
 
     # Top brand header
     h_top = doc.add_paragraph()
@@ -797,6 +858,7 @@ def _add_markdown_runs(
     font_size=None,
     font_color=None,
 ) -> None:
+    text = clean_xml_compatible(text)
     parts = re.split(r"(\*\*[^*]+\*\*)", str(text or ""))
     for part in parts:
         if not part:
@@ -841,7 +903,9 @@ def _remove_okpd_codes(text: str) -> str:
 def write_evidence(path: str | Path, payload: dict) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    raw = json.dumps(payload, ensure_ascii=False, indent=2)
+    cleaned = clean_surrogates(raw)
+    out.write_text(cleaned, encoding="utf-8")
     return out
 
 

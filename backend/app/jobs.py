@@ -192,7 +192,7 @@ def create_job(
         stored_path = actual_dir / "input" / candidate
         stored_path.parent.mkdir(parents=True, exist_ok=True)
         stored_path.write_bytes(content)
-        db.add(JobFile(job_id=job.id, original_filename=filename, stored_path=str(stored_path)))
+        db.add(JobFile(job_id=job.id, original_filename=document_parser.clean_surrogates(filename), stored_path=str(stored_path)))
     for source in normalized_sources:
         db.add(
             JobSource(
@@ -625,9 +625,9 @@ def _set_job(db: Session, job: Job, *, status: str | None = None, progress: int 
     if progress is not None:
         job.progress = max(0, min(100, progress))
     if message is not None:
-        job.message = message
+        job.message = document_parser.clean_surrogates(str(message))
     if error is not None:
-        job.error = error
+        job.error = document_parser.clean_surrogates(str(error))
     job.updated_at = now_utc()
     db.commit()
     try:
@@ -816,10 +816,10 @@ def _job_files_evidence(job: Job) -> list[dict]:
     for file in files:
         result.append(
             {
-                "filename": getattr(file, "original_filename", ""),
+                "filename": document_parser.clean_surrogates(getattr(file, "original_filename", "")),
                 "parse_status": getattr(file, "parse_status", ""),
                 "extracted_chars": getattr(file, "extracted_chars", 0),
-                "error": getattr(file, "error", ""),
+                "error": document_parser.clean_surrogates(getattr(file, "error", "")),
             }
         )
     return result
@@ -884,7 +884,7 @@ def _store_tenderplan_downloaded_files(db: Session, job: Job, files: list[Tender
         existing_names.add(stored_name)
         stored_path = input_dir / stored_name
         stored_path.write_bytes(downloaded.content)
-        db.add(JobFile(job_id=job.id, original_filename=downloaded.filename, stored_path=str(stored_path)))
+        db.add(JobFile(job_id=job.id, original_filename=document_parser.clean_surrogates(downloaded.filename), stored_path=str(stored_path)))
     job.file_count = int(job.file_count or 0) + len(files)
 
 

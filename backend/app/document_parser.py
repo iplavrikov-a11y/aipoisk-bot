@@ -59,6 +59,24 @@ def clean_surrogates(text: str) -> str:
     return text
 
 
+XML_ILLEGAL_CHARACTERS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
+)
+
+
+def clean_xml_compatible(value: object) -> str:
+    """
+    Sanitize text to guarantee valid XML 1.0 content (required by docx and openpyxl).
+    Converts formfeed/vertical tabs to whitespace/newlines, strips null bytes, surrogates,
+    and control characters that break docx and openpyxl serialization.
+    """
+    if value is None:
+        return ""
+    text = clean_surrogates(str(value))
+    text = text.replace("\x0c", "\n").replace("\x0b", "\n")
+    return XML_ILLEGAL_CHARACTERS_RE.sub("", text)
+
+
 def fix_archive_filename(filename: str) -> str:
     """
     Restore legible filename from archives: cleans surrogates, and fixes
@@ -85,7 +103,7 @@ def fix_archive_filename(filename: str) -> str:
 
 
 def _clean_text(value: str) -> str:
-    cleaned = clean_surrogates(str(value or ""))
+    cleaned = clean_xml_compatible(str(value or ""))
     return cleaned.replace("\ufeff", "").replace("\u200b", "").strip()
 
 
@@ -885,8 +903,10 @@ def organize_procurement_documents(
 def combined_document_context(items: list[tuple[str, str]]) -> str:
     parts = []
     for filename, text in items:
-        if text.strip():
-            parts.append(f"\n\n=== FILE: {filename} ===\n{text[:500000]}")
+        clean_body = clean_xml_compatible(text).strip()
+        if clean_body:
+            clean_name = clean_xml_compatible(filename).strip() or "document"
+            parts.append(f"\n\n=== FILE: {clean_name} ===\n{clean_body[:500000]}")
     return "\n".join(parts).strip()
 
 
