@@ -29,8 +29,64 @@ DEFAULT_DOCUMENT_OPTIONS = {
 }
 
 
+def clean_surrogates(text: str) -> str:
+    """
+    Remove or recover surrogate code points from text.
+    Handles CP866 / CP1251 legacy byte sequences decoded as surrogateescape
+    (common in Russian government archives and zip members), and strips or
+    replaces any remaining lone surrogates so UTF-8 encoding never fails.
+    """
+    if not text:
+        return ""
+    if not any(0xD800 <= ord(c) <= 0xDFFF for c in text):
+        return text
+
+    def _replace_surrogateescape_run(match: re.Match) -> str:
+        s = match.group(0)
+        raw_bytes = bytes([ord(c) - 0xDC00 for c in s])
+        for enc in ("utf-8", "cp866", "cp1251"):
+            try:
+                decoded = raw_bytes.decode(enc)
+                if not any(0xD800 <= ord(c) <= 0xDFFF for c in decoded):
+                    return decoded
+            except UnicodeDecodeError:
+                pass
+        return ""
+
+    text = re.sub(r"[\udc80-\udcff]+", _replace_surrogateescape_run, text)
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in text):
+        text = re.sub(r"[\ud800-\udfff]+", "", text)
+    return text
+
+
+def fix_archive_filename(filename: str) -> str:
+    """
+    Restore legible filename from archives: cleans surrogates, and fixes
+    CP866/CP1251 Cyrillic filenames mistakenly decoded from CP437 or Latin-1.
+    """
+    if not filename:
+        return ""
+    cleaned = clean_surrogates(filename)
+    if any(0x0400 <= ord(c) <= 0x04FF for c in cleaned):
+        return cleaned
+    for source_enc in ("cp437", "latin1"):
+        try:
+            raw = cleaned.encode(source_enc)
+            for target_enc in ("cp866", "cp1251"):
+                try:
+                    candidate = raw.decode(target_enc)
+                    if any(0x0400 <= ord(c) <= 0x04FF for c in candidate):
+                        return candidate
+                except UnicodeDecodeError:
+                    pass
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return cleaned
+
+
 def _clean_text(value: str) -> str:
-    return str(value or "").replace("\ufeff", "").replace("\u200b", "").strip()
+    cleaned = clean_surrogates(str(value or ""))
+    return cleaned.replace("\ufeff", "").replace("\u200b", "").strip()
 
 
 def _natural_sort_key(s: str) -> list[int | str]:
@@ -39,7 +95,7 @@ def _natural_sort_key(s: str) -> list[int | str]:
 
 
 def sanitize_filename(value: str) -> str:
-    raw_val = str(value or "").strip()
+    raw_val = clean_surrogates(str(value or "")).strip()
     if not raw_val:
         return "upload"
     p = Path(raw_val)
@@ -649,7 +705,7 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
         return "", "archive_too_large"
     with tempfile.TemporaryDirectory(prefix="aipoisk-archive-") as tmp:
         tmp_path = Path(tmp)
-        if path.suffix.lower() == ".zip":
+        if zipfile.is_zipfile(path):
             extracted = _extract_zip_members(path, tmp_path, max_files)
         else:
             extracted = _extract_external_archive(path, tmp_path, max_files)
@@ -663,7 +719,7 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
             text, status = extract_text(item, options, _depth=depth - 1)
             statuses.append(status)
             if text.strip():
-                rel = item.relative_to(tmp_path)
+                rel = clean_surrogates(str(item.relative_to(tmp_path)))
                 parts.append(f"\n\n=== ARCHIVE FILE: {rel} ===\n{text}")
         if parts:
             status = "archive_ok" if all(item == "ok" for item in statuses) else "archive_partial"
@@ -679,7 +735,8 @@ def _extract_zip_members(path: Path, destination: Path, max_files: int) -> list[
                 break
             if member.is_dir():
                 continue
-            safe_name = sanitize_filename(Path(member.filename).name)
+            filename = fix_archive_filename(member.filename)
+            safe_name = sanitize_filename(Path(filename).name)
             if not safe_name:
                 continue
             target = destination / f"{len(extracted) + 1:03d}_{safe_name}"
@@ -699,7 +756,20 @@ def _extract_external_archive(path: Path, destination: Path, max_files: int) -> 
     if result.returncode != 0:
         return []
     files = [item for item in destination.rglob("*") if item.is_file()]
-    return files[: max_files or len(files)]
+    clean_files: list[Path] = []
+    for item in files:
+        raw_name = item.name
+        cleaned_name = fix_archive_filename(raw_name)
+        if cleaned_name != raw_name:
+            safe_name = sanitize_filename(cleaned_name)
+            new_target = item.parent / safe_name
+            try:
+                item.rename(new_target)
+                item = new_target
+            except Exception:
+                pass
+        clean_files.append(item)
+    return clean_files[: max_files or len(clean_files)]
 
 
 

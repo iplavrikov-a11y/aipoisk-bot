@@ -218,6 +218,51 @@ class DocumentParserTests(unittest.TestCase):
             self.assertEqual(reordered[1][0], "НМЦК.xlsx")
             self.assertEqual(reordered[2][0], "Проект_ГК.docx")
 
+    def test_clean_surrogates_recovers_cp866_and_replaces_illegal_code_points(self) -> None:
+        # Surrogateescaped CP866 bytes for 'ОНМЦК'
+        raw_cp866_surrogates = "\udc8e\udc8d\udc8c\udc96\udc8a"
+        recovered = document_parser.clean_surrogates(raw_cp866_surrogates)
+        self.assertEqual(recovered, "ОНМЦК")
+
+        # Lone surrogates (0xD800) must be sanitized without error
+        with_lone = f"Текст {chr(0xD800)} с суррогатом"
+        cleaned = document_parser.clean_surrogates(with_lone)
+        self.assertNotIn(chr(0xD800), cleaned)
+        # Must encode to utf-8 cleanly
+        cleaned.encode("utf-8")
+
+        # Mixed text: Russian UTF-8 text containing surrogateescaped CP866 archive filename
+        mixed = (
+            "Текст документа ТЗ\n"
+            "=== ARCHIVE FILE: \udc8e\udc8d\udc8c\udc96\udc8a..XLSX ===\n"
+            "Поставка расходных материалов"
+        )
+        cleaned_mixed = document_parser.clean_surrogates(mixed)
+        self.assertIn("Текст документа ТЗ", cleaned_mixed)
+        self.assertIn("ОНМЦК..XLSX", cleaned_mixed)
+        self.assertIn("Поставка расходных материалов", cleaned_mixed)
+        self.assertFalse(any(0xD800 <= ord(c) <= 0xDFFF for c in cleaned_mixed))
+        cleaned_mixed.encode("utf-8")
+
+    def test_zip_archive_with_cp866_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "cp866_archive.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                info = zipfile.ZipInfo("test.txt")
+                # Encode filename in CP866 and set filename to decoded cp437 (simulating non-UTF-8 zip)
+                cyrillic_name = "ОНМЦК_спецификация.txt"
+                info.filename = cyrillic_name.encode("cp866").decode("cp437")
+                info.flag_bits = 0  # No UTF-8 flag
+                archive.writestr(info, "Содержимое файла расчета цены 123456 руб.")
+
+            text, status = document_parser.extract_text(archive_path)
+
+        self.assertEqual(status, "archive_ok")
+        self.assertFalse(any(0xD800 <= ord(c) <= 0xDFFF for c in text))
+        self.assertIn("ОНМЦК_спецификация", text)
+        self.assertIn("Содержимое файла расчета цены", text)
+        text.encode("utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()

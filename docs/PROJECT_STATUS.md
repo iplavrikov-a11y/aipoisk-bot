@@ -1,6 +1,6 @@
 # TenderLex: Project Status
 
-Date: 2026-09-26
+Date: 2026-09-28
 
 ## Current Production State
 
@@ -12,6 +12,15 @@ Date: 2026-09-26
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- UTF-8 Surrogates & Archive CP866/CP1251 Encoding Fix (Tasks #769, #767) (2026-09-28):
+  - **Issue Diagnosed**: Procurement analysis tasks #769 and #767 failed with `UnicodeEncodeError: 'utf-8' codec can't encode characters in position ...: surrogates not allowed` across all attempted LLM providers (Gemini, Opencode mimo, Opencode laguna).
+  - **Root Cause**: Official procurement documents from EIS/Tenderplan bundled with digital signatures (.sig) inside ZIP archives frequently store filenames in legacy DOS/Windows encodings (CP866 or CP1251) without UTF-8 flag bits. When extracted, filenames produced Python `surrogateescape` Unicode characters (`\udc80..\udcff`). In `document_parser.py`, `=== ARCHIVE FILE: [path] ===` inserted these surrogate code points directly into the document context. During LLM requests, `httpx` serialization to UTF-8 failed because UTF-8 forbids surrogate code points.
+  - **Remediation**:
+    1. `backend/app/document_parser.py`: Implemented `clean_surrogates()` with run-based surrogateescape recovery and illegal code point sanitization. Added `fix_archive_filename()` to auto-detect and restore CP866/CP1251 filenames mistakenly decoded from CP437 or Latin-1. Made `_extract_archive()` recognize any valid zip file regardless of `.docx` extension.
+    2. `backend/app/ai.py`: Added defensive surrogate cleaning in `call_llm` and `_post_llm_request` before HTTP payload serialization.
+    3. `backend/app/procurement_report.py`: Added `clean_surrogates()` on incoming `document_text`.
+    4. Unit tests: Added 2 new test suites (`test_document_parser.py` and `test_ai_surrogates.py`) verifying recovery, sanitization, and encoding. All 704 tests pass.
+  - **Live Production Verification**: Re-ran both failed tasks (#769 and #767) through live worker pipeline. Both completed 100% with full reports and quote requests generated. Deployed live via `./scripts/deploy_tenderlex_live.sh`.
 - Multi-File Semantic Document Ordering, Rule 14 Ingestion & Context Window Expansion (2026-09-26):
   - **Issue Diagnosed (Task #758)**: Customer submitted 4 procurement files (`ПР_4_-_Проект_ГК.DOCX`, `ПР_1_-_Описание_объекта_закупки_(матрасы).docx`, `ПР_2_-_НМЦК.xlsx`, `technical_assignment.txt`) for a 44-FZ medical mattress procurement. Due to alphabetical sorting, `ПР_4` (contract draft, 45,040 chars) was parsed first. Legacy small context window limits (`[:16000]` slice in matcher and evidence miner) completely cut off `ПР_1` (the actual technical specification table starting at char 45,089). The system saw only 1 position instead of both items and matched an irrelevant consumer mattress (`Dreamline`).
   - **Rule 14 Semantic Categorization (`backend/app/document_parser.py`)**:

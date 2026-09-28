@@ -482,6 +482,39 @@ class ProcurementReportOfficialSourceContractTests(unittest.IsolatedAsyncioTestC
             ],
         )
 
+    async def test_generate_procurement_report_handles_surrogates_in_document_text(self) -> None:
+        original_call_llm = procurement_report.call_llm
+        original_get_model_selection = procurement_report.get_model_selection
+        prompts_seen = []
+
+        async def fake_call_llm(_settings, user_prompt, **_kwargs) -> str:
+            prompts_seen.append(user_prompt)
+            # Ensure prompt encodes cleanly to UTF-8 without raising UnicodeEncodeError
+            user_prompt.encode("utf-8")
+            return "# Анализ закупки\n\n## 1. Общие сведения\nВсе в порядке."
+
+        procurement_report.call_llm = fake_call_llm
+        procurement_report.get_model_selection = lambda *_args, **_kwargs: SimpleNamespace(
+            provider_id="test",
+            provider_name="TestAI",
+            model="model",
+        )
+        try:
+            settings = SimpleNamespace(
+                has_active_ai_provider=True,
+                prompt_settings_json="{}",
+                report_settings_json='{"verify_report": false}',
+            )
+            text_with_surrogates = "Текст ТЗ\n=== ARCHIVE FILE: \udc8e\udc8d\udc8c\udc96\udc8a..XLSX ===\nКонец."
+            result = await generate_procurement_report(settings, text_with_surrogates)
+            self.assertTrue(result.ai_used)
+            self.assertTrue(len(prompts_seen) > 0)
+            self.assertIn("ОНМЦК..XLSX", prompts_seen[0])
+            self.assertFalse(any(0xD800 <= ord(c) <= 0xDFFF for c in prompts_seen[0]))
+        finally:
+            procurement_report.call_llm = original_call_llm
+            procurement_report.get_model_selection = original_get_model_selection
+
     def test_clean_markdown_report_does_not_build_non_ai_fallback(self) -> None:
         self.assertEqual(clean_markdown_report(""), "")
 

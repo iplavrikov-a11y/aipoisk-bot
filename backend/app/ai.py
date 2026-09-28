@@ -15,6 +15,7 @@ from typing import Any, Callable
 import httpx
 
 from .models import SystemSettings, parse_json_dict, parse_json_list
+from .document_parser import clean_surrogates
 
 AI_ROUTING_FALLBACK_PRIMARY = "__primary__"
 AI_ROUTING_FALLBACK_LIGHT = "__light__"
@@ -553,9 +554,16 @@ async def _post_llm_request(
     max_retries: int | None = None,
     limiter_timeout_seconds: float | None = None,
 ) -> str:
+    safe_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            safe_messages.append({**msg, "content": clean_surrogates(content)})
+        else:
+            safe_messages.append(msg)
     payload: dict[str, Any] = {
         "model": selection.model,
-        "messages": messages,
+        "messages": safe_messages,
         "temperature": 0.2,
     }
     if json_mode:
@@ -690,8 +698,8 @@ async def call_llm(
 ) -> str:
     messages: list[dict[str, str]] = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "system", "content": clean_surrogates(system_prompt)})
+    messages.append({"role": "user", "content": clean_surrogates(prompt)})
     all_attempts = model_selection_attempts(settings, tier=tier, routing_key=routing_key, override=override)
     model_attempt_limit = _max_model_attempts()
     attempts = all_attempts[:model_attempt_limit]

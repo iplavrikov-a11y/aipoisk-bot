@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from .ai import call_llm, get_model_selection, parse_json_object
+from .document_parser import clean_surrogates
 from .models import SystemSettings, parse_json_dict
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -252,6 +253,7 @@ async def generate_procurement_report(settings: SystemSettings, document_text: s
     if not settings.has_active_ai_provider:
         raise ProcurementReportAIRequiredError("AI provider is required for procurement documentation analysis")
 
+    document_text = clean_surrogates(document_text)
     prompt_settings = parse_json_dict(settings.prompt_settings_json)
     report_settings = parse_json_dict(settings.report_settings_json)
     max_chars = int(report_settings.get("analysis_max_chars") or 800000)
