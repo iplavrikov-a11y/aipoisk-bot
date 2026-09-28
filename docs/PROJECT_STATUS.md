@@ -12,6 +12,14 @@ Date: 2026-09-28
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Telegram Bot Web Identifier Guard & Full System Health Audit (2026-09-28):
+  - **Issue Diagnosed**: In API logs, when an admin supplemented a job created via the web cabinet, the notification handler logged `Failed to send admin supplement telegram notification to web:...: Telegram server says - Bad Request: chat not found`.
+  - **Remediation (`backend/app/bot.py`)**: In `send_admin_supplement_telegram_notification()`, added early validation guarding against web cabinet IDs (`raw_tg.startswith("web:")`) or non-numeric chat IDs. Non-Telegram accounts are safely bypassed without attempting invalid Bot API calls or polluting error logs.
+  - **System-Wide Production Verification**:
+    1. Job Queues: Verified 0 jobs pending/running in SQLite; 0 job failures over the last 72 hours; all recent tasks completed 100%.
+    2. System Services: Verified all 4 systemd units (`tenderlex-api`, `tenderlex-worker`, `tenderlex-bot`, `tenderlex-site`) active and healthy. Bot service restarted and verified live.
+    3. Server Resources: 75 GB SSD free (59% used), 8.0 GB RAM available out of 17 GB.
+    4. Test Suites: All 711 backend tests passing (including bot and XML sanitization suites).
 - Systemic Hardening: XML 1.0, Docx & Openpyxl Control Character Sanitization (2026-09-28):
   - **Systemic Vulnerability Audited**: Beyond surrogate characters in HTTP payloads, external strings from parsed documents (PDFs with formfeed `\x0c`, vertical tab `\x0b`, null bytes `\x00`), scraped web supplier cards, and unvalidated URLs violate the XML 1.0 specification (`0x00-0x08`, `0x0B-0x0C`, `0x0E-0x1F`, `0xD800-0xDFFF`, `0xFFFE-0xFFFF`). Passing these characters to `python-docx` (`add_run`, `cell.text`, or `part.relate_to`) caused `ValueError: All strings must be XML compatible: Unicode or ASCII, no NULL bytes or control characters`, while `openpyxl` crashed with `openpyxl.utils.exceptions.IllegalCharacterError`. Furthermore, `write_evidence` would fail on JSON dump if payloads contained unhandled surrogates.
   - **Root Architectural Remediation**:
