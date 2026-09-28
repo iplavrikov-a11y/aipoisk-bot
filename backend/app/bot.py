@@ -4115,7 +4115,8 @@ async def send_admin_supplement_telegram(
     file_name: str | None = None,
     files: list[dict] | None = None,
 ) -> bool:
-    if not config.bot_token or not telegram_id:
+    raw_tg = str(telegram_id or "").strip()
+    if not config.bot_token or not raw_tg or raw_tg.startswith("web:") or not raw_tg.lstrip("-").isdigit():
         return False
     bot = Bot(token=config.bot_token)
     try:
