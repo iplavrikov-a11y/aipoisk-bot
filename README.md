@@ -1,5 +1,8 @@
 # TenderLex Bot
 
+SEO: [отчет 2 октября](docs/SEO_FOLLOWUP_REPORT_2026-10-02.md), [история ревизий](docs/SEO_AUDIT_LEDGER.md), [порядок недельного сравнения](docs/SEO_WEEKLY_COMPARISON.md). Исходные снимки 1 и 2 октября сохранены; оценка реализации — 8,9/10, поисковый рост пока не доказан.
+
+
 TenderLex Telegram bot and admin panel for procurement document analysis and
 supplier search.
 

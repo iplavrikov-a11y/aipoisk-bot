@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getSiteData } from "@/lib/site-data";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -41,14 +42,14 @@ export interface KnowledgeArticleLayoutProps {
   faqSchema?: object;
 }
 
-export function KnowledgeArticleLayout({
+export async function KnowledgeArticleLayout({
   tag,
   category = "Закупки и снабжение",
   title,
   subtitle,
-  readTime = "7 мин чтения",
-  publishedDate = "15 марта 2026",
-  updatedDate = "20 августа 2026",
+  readTime = "Краткий материал",
+  publishedDate,
+  updatedDate,
   steps,
   faq,
   toc,
@@ -59,7 +60,8 @@ export function KnowledgeArticleLayout({
   articleSchema,
   faqSchema,
 }: KnowledgeArticleLayoutProps) {
-  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
+  const data = await getSiteData();
+  const botUrl = data.bot.telegram_url;
 
   return (
     <>
@@ -121,10 +123,10 @@ export function KnowledgeArticleLayout({
                   <Clock size={13} className="text-[#075b63]" />
                   {readTime}
                 </span>
-                <span className="inline-flex items-center gap-1.5 text-xs text-[#697a77] font-semibold px-2.5 py-1 bg-white border border-[#d8e3e1] rounded-lg shadow-2xs">
+                {updatedDate && <span className="inline-flex items-center gap-1.5 text-xs text-[#697a77] font-semibold px-2.5 py-1 bg-white border border-[#d8e3e1] rounded-lg shadow-2xs">
                   <Calendar size={13} className="text-[#697a77]" />
                   Обновлено: {updatedDate}
-                </span>
+                </span>}
               </div>
 
               <h1 className="text-3xl sm:text-4xl md:text-5xl font-black text-[#172120] tracking-tight leading-[1.15]">
@@ -141,8 +143,8 @@ export function KnowledgeArticleLayout({
                   TL
                 </div>
                 <div>
-                  <span className="font-bold text-[#172120] block">Экспертная редакция TenderLex</span>
-                  <span className="text-[#697a77]">Материал проверен юристами и экспертами по закупкам 44-ФЗ / 223-ФЗ</span>
+                  <span className="font-bold text-[#172120] block">Редакция TenderLex</span>
+                  <span className="text-[#697a77]">Практические материалы по закупкам и снабжению</span>
                 </div>
               </div>
             </div>
@@ -169,7 +171,7 @@ export function KnowledgeArticleLayout({
                             className="text-[#075b63] hover:text-[#06464c] font-semibold hover:underline flex items-baseline gap-2"
                           >
                             <span className="text-[#697a77] text-xs font-mono">{idx + 1}.</span>
-                            <span>{item.title}</span>
+                            <span>{item.title.replace(/^\d+[.)]\s*/, "")}</span>
                           </a>
                         </li>
                       ))}
@@ -292,34 +294,34 @@ export function KnowledgeArticleLayout({
                       className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
                     >
                       <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
-                        Поиск товаров и аналогов по ТЗ
+                        Поиск поставщиков по ТЗ
                       </strong>
                       <span className="text-[11px] text-[#697a77] block leading-tight">
-                        Подбор эквивалентов и прямых поставщиков под ГОСТ и ТУ.
+                        Поиск компаний для проверки контактов и запроса КП.
                       </span>
                     </Link>
 
                     <Link
-                      href="/poisk-proizvoditeley-po-tz"
+                      href="/podbor-tovara-i-analogov-po-tz"
                       className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
                     >
                       <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
-                        Поиск заводов-производителей
+                        Подбор товара и аналогов по ТЗ
                       </strong>
                       <span className="text-[11px] text-[#697a77] block leading-tight">
-                        Прямой выход на отделы сбыта производственных предприятий.
+                        Рабочее сравнение требований и характеристик в DOCX.
                       </span>
                     </Link>
 
                     <Link
-                      href="/analiz-rynka-44-fz"
+                      href="/analiz-zakupochnoi-dokumentacii"
                       className="p-3.5 rounded-xl bg-[#f6f8f7] hover:bg-[#e5f4f3] border border-[#d8e3e1] hover:border-[#b8c8c5] transition-all group block"
                     >
                       <strong className="text-xs font-bold text-[#172120] group-hover:text-[#075b63] transition-colors block mb-1">
-                        Анализ рынка 44-ФЗ и НМЦК
+                        Анализ закупочной документации
                       </strong>
                       <span className="text-[11px] text-[#697a77] block leading-tight">
-                        Оценка конкурентной среды и цен до подачи заявки.
+                        Разбор условий и вопросов для проверки перед участием.
                       </span>
                     </Link>
 
@@ -343,7 +345,7 @@ export function KnowledgeArticleLayout({
                         Запрос коммерческих предложений
                       </strong>
                       <span className="text-[11px] text-[#697a77] block leading-tight">
-                        Автогенерация делового письма и веерная рассылка по отделам сбыта.
+                        Подготовка требований и проверка условий ответа поставщика.
                       </span>
                     </Link>
 
@@ -401,15 +403,15 @@ export function KnowledgeArticleLayout({
                     <Sparkles size={13} /> Автоматизация поиска и аудита
                   </div>
                   <h3 className="text-2xl sm:text-3xl font-black tracking-tight text-[#172120]">
-                    Найдите надежных поставщиков по вашему ТЗ за 3 минуты
+                    Найдите поставщиков по вашему ТЗ
                   </h3>
                   <p className="text-[#2f3f3d] text-sm sm:text-base leading-relaxed">
-                    Загрузите техническое задание или спецификацию. ИИ TenderLex сопоставит номенклатуру, найдет прямые контакты отделов сбыта заводов и официальных дилеров по всей России и сформирует готовый запрос КП.
+                    Загрузите техническое задание или спецификацию. TenderLex помогает подготовить кандидатов, опубликованные контакты и рабочий запрос КП. Статус изготовителя или дилера, контакт и условия предложения нужно подтвердить.
                   </p>
                   <div className="flex flex-wrap items-center gap-3 pt-2">
                     <Button asChild size="lg" className="bg-[#075b63] hover:bg-[#06464c] text-white font-black shadow-md shadow-[#075b63]/20">
                       <Link href="/cabinet">
-                        Начать бесплатно
+                        Перейти в кабинет
                       </Link>
                     </Button>
                     <Button asChild variant="secondary" size="lg" className="border-[#b8c8c5] bg-white text-[#172120] hover:bg-[#eef3f2] font-bold">
@@ -419,7 +421,7 @@ export function KnowledgeArticleLayout({
                     </Button>
                   </div>
                   <p className="text-xs text-[#697a77] font-semibold pt-1">
-                    ✓ Бесплатный тестовый доступ
+                    Условия доступа проверяйте в кабинете
                   </p>
                 </div>
               </article>
@@ -436,11 +438,11 @@ export function KnowledgeArticleLayout({
                       Поиск поставщиков и анализ документации
                     </h4>
                     <p className="text-xs text-[#2f3f3d] leading-relaxed">
-                      Автоматический анализ извещений, ТЗ и спецификаций. Бесплатный пробный доступ.
+                      Автоматический анализ извещений, ТЗ и спецификаций. Условия доступа — в кабинете.
                     </p>
                     <Button asChild className="w-full bg-[#075b63] hover:bg-[#06464c] text-white font-bold text-sm shadow-xs">
                       <Link href="/cabinet">
-                        Начать бесплатно
+                        Перейти в кабинет
                       </Link>
                     </Button>
                     <a
@@ -496,4 +498,3 @@ export function KnowledgeArticleLayout({
     </>
   );
 }
-

@@ -1,6 +1,6 @@
-'use client';
-
-import { Mail, Send, MessageSquare, Sparkles, ShieldCheck } from "lucide-react";
+import { Mail, Send, Sparkles } from "lucide-react";
+import { ContactChatButton } from "@/components/contact-chat-button";
+import { getSiteData } from "@/lib/site-data";
 
 interface ContactSectionProps {
   title?: string;
@@ -8,20 +8,21 @@ interface ContactSectionProps {
   showTrialBadge?: boolean;
 }
 
-export function ContactSection({
+export async function ContactSection({
   title = "Начните работу с TenderLex прямо сейчас",
-  subtitle = "Загрузите спецификацию в веб-кабинет или запустите Telegram-бота TenderLex для мгновенного сбора прямых контактов поставщиков и анализа рисков.",
+  subtitle = "Загрузите спецификацию в веб-кабинет или запустите Telegram-бота TenderLex для поиска поставщиков, подбора аналогов и анализа документации.",
   showTrialBadge = true,
 }: ContactSectionProps) {
-  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
+  const data = await getSiteData();
+  const botUrl = data.bot.telegram_url;
   const cabinetUrl = "/cabinet";
-  const telegramSupportUrl = "https://t.me/lexelence";
+  const telegramSupportUrl = data.contacts.telegram_url;
 
   return (
     <section id="contacts" className="py-16 sm:py-24 bg-gradient-to-b from-teal-50/50 via-slate-50 to-white border-b border-slate-200">
       <div className="container max-w-5xl mx-auto px-4 sm:px-6">
         <div className="text-center max-w-3xl mx-auto space-y-6">
-          {showTrialBadge && (
+          {showTrialBadge && data.trial.enabled && (
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold uppercase tracking-wider shadow-2xs">
               <Sparkles size={14} className="text-teal-600 animate-pulse" />
               <span>Бесплатный пробный доступ при регистрации</span>
@@ -42,7 +43,7 @@ export function ContactSection({
               href={cabinetUrl}
               className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold shadow-lg shadow-teal-600/20 text-sm transition-all hover:scale-[1.01]"
             >
-              <span>Попробовать бесплатно</span>
+              <span>{data.trial.enabled ? "Попробовать бесплатно" : "Перейти в кабинет"}</span>
             </a>
             <a
               href={botUrl}
@@ -71,37 +72,23 @@ export function ContactSection({
               >
                 <Send size={16} className="text-cyan-600 shrink-0" />
                 <strong className="text-sm font-bold text-slate-900 group-hover:text-cyan-700">
-                  Telegram
+                  {data.contacts.telegram || "Telegram"}
                 </strong>
               </a>
 
               {/* Email */}
               <a
-                href="mailto:info@tenderlex.ru"
+                href={`mailto:${data.contacts.email}`}
                 className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[120px]"
               >
                 <Mail size={16} className="text-teal-700 shrink-0" />
                 <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
-                  Email
+                  {data.contacts.email}
                 </strong>
               </a>
 
               {/* Chat */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
-                    (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
-                  }
-                }}
-                className="py-3 px-5 rounded-2xl bg-white border border-slate-200 shadow-2xs hover:border-teal-500 hover:shadow-md transition-all group flex items-center justify-center gap-2 shrink-0 min-w-[140px] cursor-pointer"
-              >
-                <MessageSquare size={16} className="text-teal-600 shrink-0" />
-                <strong className="text-sm font-bold text-slate-900 group-hover:text-teal-700">
-                  Чат на сайте
-                </strong>
-              </button>
+              <ContactChatButton />
             </div>
           </div>
         </div>

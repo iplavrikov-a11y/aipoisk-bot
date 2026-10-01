@@ -1,3 +1,5 @@
+import { getSiteData } from "@/lib/site-data";
+import { PublicSiteSettingsProvider } from "@/lib/public-site-settings";
 import { ChatWidget } from '@/components/chat-widget';
 import type { Metadata } from "next";
 import { Inter, Plus_Jakarta_Sans } from "next/font/google";
@@ -25,9 +27,9 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 const siteUrl = normalizedSiteUrl();
-const defaultTitle = "TenderLex — поиск поставщиков и анализ любых закупок";
+const defaultTitle = "TenderLex — поиск поставщиков, подбор аналогов и анализ закупок";
 const defaultDescription =
-  "ИИ-поиск поставщиков по ТЗ, подбор аналогов и аудит рисков контрактов 44-ФЗ, 223-ФЗ за 2 мин. Прямые контакты заводов. Попробуйте бесплатно!";
+  "ИИ-поиск поставщиков по ТЗ, подбор аналогов и анализ закупок 44-ФЗ, 223-ФЗ. Кандидаты для запроса КП и рабочие отчеты с источниками для проверки.";
 const defaultOgImage = "/tenderlex-product-preview.png";
 const yandexMetrikaId = process.env.TENDERLEX_YANDEX_METRIKA_ID?.trim();
 const googleSiteVerification = process.env.TENDERLEX_GOOGLE_SITE_VERIFICATION?.trim();
@@ -37,7 +39,6 @@ const verification = {
   ...(yandexVerification ? { yandex: yandexVerification } : {}),
 };
 
-const orgSchema = buildOrganizationJsonLd();
 const softwareSchema = buildSoftwareApplicationJsonLd();
 
 export const metadata: Metadata = {
@@ -114,7 +115,9 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+  const data = await getSiteData();
+  const orgSchema = buildOrganizationJsonLd({ botUrl: data.bot.telegram_url });
   return (
     <html lang="ru" className={`${inter.variable} ${plusJakartaSans.variable}`}>
       <head>
@@ -161,12 +164,14 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
         />
       </head>
       <body>
+        <PublicSiteSettingsProvider settings={{ contacts: data.contacts, bot: data.bot }}>
         {children}
         <div className="global-legal-link">
           <a href="/legal">Правовая информация</a>
         </div>
         <YandexMetrika counterId={yandexMetrikaId} />
         <ChatWidget />
+        </PublicSiteSettingsProvider>
       </body>
     </html>
   );

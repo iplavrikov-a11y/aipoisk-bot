@@ -1,100 +1,70 @@
-import os
 import json
 import time
 import pytest
-from pathlib import Path
-from app.yandex_wordstat import (
-    load_wordstat_credentials,
-    get_phrase_demand,
-    enrich_growth_points,
-    _estimate_demand,
-    CTR_TOP3,
-    CACHE_TTL_SECONDS
-)
+import app.yandex_wordstat as yws
 
+_REAL_FETCH = yws._fetch_wordstat_from_api
 
-def test_load_wordstat_credentials():
-    creds = load_wordstat_credentials()
-    assert "client_id" in creds
-    assert "token" in creds
-    assert creds["client_id"] == "a84a7a825d3c4cbb9b2ff237ad38e425"
-    assert creds["token"] == "y0__wgBELDitkEY0YBIII2s4uIYMM7MspMISpwm_Kxd3r0y_5uOlklAlmAEnic"
-
-
-def test_top3_potential_calculation():
-    assert CTR_TOP3 == 0.35
-    
-    demand = 100
-    expected_top3 = int(round(demand * 0.35))
-    assert expected_top3 == 35
-
-    res = get_phrase_demand("поиск товаров по тз", fallback_shows=10, avg_position=7.5)
-    assert res["demand"] > 0
-    assert res["top3_potential_clicks"] == int(round(res["demand"] * 0.35))
-    assert res["phrase"] == "поиск товаров по тз"
-
-
-def test_estimate_demand():
-    est1 = _estimate_demand("подбор аналогов по тз", shows=29, avg_position=7.0)
-    assert est1 > 100
-
-    est2 = _estimate_demand("редкий запрос", shows=0, avg_position=0.0)
-    assert est2 >= 15
-
-
-def test_wordstat_caching(tmp_path, monkeypatch):
-    test_cache_file = tmp_path / "test_wordstat_cache.json"
-    import app.yandex_wordstat as yws
-    monkeypatch.setattr(yws, "CACHE_FILE", test_cache_file)
+@pytest.fixture(autouse=True)
+def isolate_wordstat(tmp_path, monkeypatch):
     monkeypatch.setattr(yws, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(yws, "CACHE_FILE", tmp_path / "cache.json")
+    monkeypatch.setattr(yws, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(yws, "load_wordstat_credentials", lambda: {"client_id": "", "token": ""})
+    monkeypatch.setattr(yws, "_fetch_wordstat_from_api", lambda *args: None)
+    monkeypatch.setattr(yws.urllib.request, "urlopen", lambda *args, **kwargs: pytest.fail("unexpected network request"))
 
-    res1 = yws.get_phrase_demand("тендерный поиск тестовый", fallback_shows=5, avg_position=6.0)
-    assert test_cache_file.exists()
+def test_api_failure_never_fabricates_demand_or_click_forecast():
+    result = yws.get_phrase_demand("поиск по ТЗ", fallback_shows=1000, avg_position=7)
+    assert result["demand"] is None
+    assert result["top3_potential_clicks"] is None
+    assert result["source"] == "unavailable"
+    assert not yws.CACHE_FILE.exists()
 
-    with open(test_cache_file, "r", encoding="utf-8") as f:
-        cache_data = json.load(f)
-    assert "тендерный поиск тестовый" in cache_data["phrases"]
-    assert cache_data["phrases"]["тендерный поиск тестовый"]["demand"] == res1["demand"]
+def test_api_real_zero_has_period_and_provenance(monkeypatch):
+    monkeypatch.setattr(yws, "_fetch_wordstat_from_api", lambda *args: 0)
+    result = yws.get_phrase_demand("редкий запрос")
+    assert result["demand"] == 0
+    assert result["source"] == "wordstat_api"
+    assert result["period"]["period_days"] == 30
+    assert result["period"]["kind"] == "provider_defined_rolling"
+    assert result["regions"] == [225]
+    assert result["top3_potential_clicks"] is None
 
-    # Second call should read from cache
-    res2 = yws.get_phrase_demand("тендерный поиск тестовый")
-    assert res2["source"] == "cache"
-    assert res2["demand"] == res1["demand"]
-    assert res2["top3_potential_clicks"] == res1["top3_potential_clicks"]
+def test_estimated_legacy_cache_ignored_without_failed_refresh_write():
+    original = json.dumps({"phrases": {"запрос": {"demand": 900, "source": "estimated", "timestamp": int(time.time())}}})
+    yws.CACHE_FILE.write_text(original)
+    result = yws.get_phrase_demand("запрос")
+    assert result["demand"] is None
+    assert yws.CACHE_FILE.read_text() == original
 
+def test_verified_cache_retains_source_period_volume(monkeypatch):
+    monkeypatch.setattr(yws, "_fetch_wordstat_from_api", lambda *args: 123)
+    first = yws.get_phrase_demand("запрос")
+    monkeypatch.setattr(yws, "_fetch_wordstat_from_api", lambda *args: pytest.fail("cache avoids API"))
+    second = yws.get_phrase_demand("запрос")
+    assert second["source"] == "cache"
+    assert second["origin_source"] == "wordstat_api"
+    assert second["period"] == first["period"]
+    assert second["demand"] == 123
 
-def test_enrich_growth_points():
-    raw_points = [
-        {
-            "text": "мало показов",
-            "shows": 3,
-            "avg_position": 9.0,
-            "clicks": 0
-        },
-        {
-            "text": "поиск товаров по тз",
-            "shows": 73,
-            "avg_position": 8.3,
-            "clicks": 0
-        },
-        {
-            "text": "подбор аналогов по тз",
-            "shows": 29,
-            "avg_position": 7.0,
-            "clicks": 0
-        }
-    ]
+def test_growth_priority_without_wordstat_uses_observed_shows_only():
+    result = yws.enrich_growth_points([{"text": "редкий", "shows": 3}, {"text": "частый", "shows": 73}])
+    assert result[0]["text"] == "частый"
+    assert result[0]["priority"] == "high"
+    assert result[1]["priority"] == "normal"
+    assert all(item["wordstat_demand"] is None and item["top3_potential_clicks"] is None for item in result)
 
-    enriched = enrich_growth_points(raw_points)
-    assert len(enriched) == 3
-
-    # Check that it's sorted descending by wordstat_demand
-    assert enriched[0]["wordstat_demand"] >= enriched[1]["wordstat_demand"]
-    assert enriched[1]["wordstat_demand"] >= enriched[2]["wordstat_demand"]
-
-    # Check enriched fields
-    top_item = enriched[0]
-    assert top_item["priority"] == "high"
-    assert "wordstat_demand" in top_item
-    assert "top3_potential_clicks" in top_item
-    assert top_item["top3_potential_clicks"] == int(round(top_item["wordstat_demand"] * 0.35))
+def test_api_does_not_substitute_other_phrase_and_checks_tls(monkeypatch):
+    calls = []
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return json.dumps({"topRequests": [{"phrase": "другой запрос", "count": 999}]}).encode()
+    def fake_open(req, **kwargs):
+        calls.append(kwargs)
+        return Response()
+    monkeypatch.setattr(yws.urllib.request, "urlopen", fake_open)
+    assert _REAL_FETCH("нужный запрос", "test-token") is None
+    assert "context" not in calls[0] or calls[0]["context"].check_hostname

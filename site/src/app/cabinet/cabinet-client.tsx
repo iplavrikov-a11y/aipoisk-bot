@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
+import { trackGoal } from "@/lib/analytics";
 import {
   ArrowRight,
   Bell,
@@ -260,7 +261,7 @@ const modeCopy: Record<Scenario, {
     uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, TXT, ZIP)",
     multipleFiles: true,
     textLabel: "Или вставьте характеристики объекта закупки текстом",
-    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. ИИ определит скрытого производителя, сверит параметры и подберет 2–4 аналога.",
+    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. Сервис сопоставит параметры и предложит варианты для проверки по документации производителя.",
     hint: "ИИ выявит производителя, сверит соответствие параметров ТЗ, проверит реестр Минпромторга (ГИСП) и сформирует готовую таблицу характеристик и аналогов.",
     submit: "Запустить подбор",
   },
@@ -517,7 +518,6 @@ function formatInlineMarkdown(value: string) {
 function quoteMarkdownToHtml(markdown: string) {
   const value = String(markdown || "").trim();
   if (!value) return "<p></p>";
-  if (/^\s*</.test(value)) return value;
   const lines = value.split(/\r?\n/);
   const html: string[] = [];
   let tableRows: string[][] = [];
@@ -817,8 +817,8 @@ export function CabinetClient() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
-  const [termsAccepted, setTermsAccepted] = useState(true);
-  const [personalDataConsent, setPersonalDataConsent] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [personalDataConsent, setPersonalDataConsent] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("supplier_search");
@@ -905,6 +905,7 @@ export function CabinetClient() {
     }
     const payload = await readJson<SessionPayload>(response);
     setSession(payload.authenticated ? payload : null);
+    return payload;
   }
 
   const HISTORY_PAGE_SIZE = 12;
@@ -1047,11 +1048,19 @@ export function CabinetClient() {
   }
 
   useEffect(() => {
-    loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    const authEvent = window.location.hash.slice(1);
+    if (authEvent === "registration_success" || authEvent === "login_success") {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    loadSession().then((payload) => {
+      if (payload?.authenticated && (authEvent === "registration_success" || authEvent === "login_success")) trackGoal(authEvent);
+    }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
-    if (scenarioParam && (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "doc_analysis")) {
-      setScenario(scenarioParam as Scenario);
+    if (scenarioParam === "doc_analysis") {
+      setScenario("procurement_report");
+    } else if (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "procurement_report" || scenarioParam === "analysis_and_suppliers") {
+      setScenario(scenarioParam);
     }
     const textParam = params.get("text") || params.get("q");
     if (textParam) {
@@ -1097,7 +1106,8 @@ export function CabinetClient() {
           }
           return res.json();
         })
-        .then(() => {
+        .then((payload: { is_new?: boolean; success?: boolean }) => {
+          if (payload.success) trackGoal(payload.is_new ? "registration_success" : "login_success");
           return loadSession();
         })
         .catch((err) => {
@@ -1250,6 +1260,7 @@ export function CabinetClient() {
       });
       const payload = await readJson<SessionPayload>(response);
       setSession(payload);
+      if (payload.authenticated) trackGoal(authMode === "register" ? "registration_success" : "login_success");
       setPassword("");
       setWebsite("");
       setMessage(authMode === "register" ? (payload.message || "Кабинет создан. Подтвердите email, чтобы запускать задачи.") : "");
@@ -1320,6 +1331,7 @@ export function CabinetClient() {
         setSession((current) => (current ? { ...current, user: payload.user } : current));
       }
       setMessage("Email подтверждён. Теперь можно запускать задачи.");
+      trackGoal("email_verified");
       await loadSession();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1377,6 +1389,7 @@ export function CabinetClient() {
         body: form,
       });
       const payload = await readJson<{ batch: boolean; count: number }>(response);
+      trackGoal("task_started", { module: selectedMode });
       setText("");
       setSourceUrls("");
       clearSelectedFiles();
@@ -1398,6 +1411,7 @@ export function CabinetClient() {
       const response = await fetch(`/api/customer/jobs/${job.id}/download`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, `${job.human_title || "result"}.zip`));
+      trackGoal("result_downloaded", { module: job.mode });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1414,6 +1428,7 @@ export function CabinetClient() {
       const response = await fetch(`/api/customer/jobs/${job.id}/download/${encodeURIComponent(file.kind)}`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, file.filename || `${job.human_title || "result"}`));
+      trackGoal("result_downloaded", { module: job.mode });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1457,6 +1472,7 @@ export function CabinetClient() {
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос коммерческого предложения.docx"));
+      trackGoal("result_downloaded", { module: "supplier_search" });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1561,6 +1577,7 @@ export function CabinetClient() {
         body: JSON.stringify({ additional_prompt: promptToSend }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      trackGoal("task_started", { module: "supplier_search" });
       setMessage(payload.message || "Запущен дополнительный поиск поставщиков.");
       setJobsPage(1);
       await loadSession();
@@ -1596,6 +1613,7 @@ export function CabinetClient() {
         }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      trackGoal("task_started", { module: "supplier_search" });
       setMessage(payload.message || "Поиск поставщиков успешно запущен на основе подобранных товаров и аналогов.");
       setJobsPage(1);
       await loadSession();
@@ -2079,21 +2097,6 @@ export function CabinetClient() {
           return (
             <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
               <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор товара и аналогов</span>
-                <div className="space-y-1 mt-0.5">
-                  {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
-                    ? session.tariff_groups.exact_product
-                    : [{ id: 'exact-1', name: '1 подбор товара и аналогов', price_kopeks: 9900 }]
-                  ).slice(0, 3).map((tariff: any) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
                 <div className="space-y-1 mt-0.5">
                   {supplierOverride ? (
@@ -2116,6 +2119,21 @@ export function CabinetClient() {
                       {formatRubles(extraPriceKopeks)}
                     </b>
                   </div>
+                </div>
+              </div>
+
+              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор товара и аналогов</span>
+                <div className="space-y-1 mt-0.5">
+                  {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
+                    ? session.tariff_groups.exact_product
+                    : [{ id: 'exact-1', name: '1 подбор товара и аналогов', price_kopeks: 9900 }]
+                  ).slice(0, 3).map((tariff: any) => (
+                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -2163,6 +2181,14 @@ export function CabinetClient() {
                       : "bg-white border-slate-200/90 text-slate-700 hover:text-teal-800 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
                   role="tab"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectScenario(item.id);
+                    }
+                  }}
                   aria-selected={isSelected}
                 >
                   <div className="flex items-center gap-1.5 truncate">
@@ -2807,6 +2833,10 @@ export function CabinetClient() {
               className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[300px] shadow-inner leading-relaxed"
               contentEditable
               suppressContentEditableWarning
+              onPaste={(event) => {
+                event.preventDefault();
+                document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+              }}
               dangerouslySetInnerHTML={{ __html: quoteRequestModal.html }}
               onInput={() => {
                 if (quoteRequestModal.copied) {
@@ -2983,12 +3013,12 @@ export function CabinetClient() {
                     {
                       id: "normal",
                       label: "Обычный поиск",
-                      desc: "Все дилеры и склады РФ",
+                      desc: "Кандидаты по заданным условиям",
                     },
                     {
                       id: "minprom_registry_priority",
                       label: "Реестр в приоритете",
-                      desc: "Приоритет ГИСП (617/878)",
+                      desc: "Производители из ГИСП в приоритете",
                     },
                     {
                       id: "minprom_registry_only",
@@ -3183,18 +3213,6 @@ export function CabinetClient() {
               </button>
               <button
                 type="button"
-                onClick={() => setHelpModalTab("exact_product")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "exact_product"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
-                <span className="truncate">Подбор товара</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => setHelpModalTab("supplier_search")}
                 className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "supplier_search"
@@ -3204,6 +3222,18 @@ export function CabinetClient() {
               >
                 <Search size={14} className={helpModalTab === "supplier_search" ? "text-teal-600" : "text-slate-400"} />
                 <span className="truncate">Поиск поставщиков</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setHelpModalTab("exact_product")}
+                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                  helpModalTab === "exact_product"
+                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                }`}
+              >
+                <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
+                <span className="truncate">Подбор товара</span>
               </button>
               <button
                 type="button"
@@ -3241,7 +3271,7 @@ export function CabinetClient() {
                         Рекомендуемый пошаговый порядок работы
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        3 последовательных шага для победы в закупке: от аудита до прямых КП
+                        3 шага подготовки: поставщики, товар и аналоги, документация
                       </p>
                     </div>
                   </div>
@@ -3256,22 +3286,22 @@ export function CabinetClient() {
                             1
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                            Оценка рисков
+                            Запрос КП
                           </span>
                         </div>
                         <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Анализ документации
+                          Поиск поставщиков
                         </strong>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Экспресс-аудит проекта контракта: проверка сроков, штрафов, обеспечения заявки и ограничений нацрежима (ПП 616/617/878).
+                          Поиск кандидатов и опубликованных контактов для запроса КП. Наличие товара, цену и полномочия поставщика нужно подтвердить.
                         </p>
                       </div>
                       <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Безопасность сделки</span>
+                        <span className="text-[11px] text-slate-500 font-medium">Запрос цен</span>
                         <button
                           type="button"
                           onClick={() => {
-                            selectScenario("procurement_report");
+                            selectScenario("supplier_search");
                             setShowHelpModal(false);
                           }}
                           className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
@@ -3279,9 +3309,7 @@ export function CabinetClient() {
                           Выбрать →
                         </button>
                       </div>
-                    </div>
-
-                    {/* Step 2 */}
+                    </div>                    {/* Step 2 */}
                     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-emerald-400 transition-all shadow-2xs">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
@@ -3296,11 +3324,11 @@ export function CabinetClient() {
                           Подбор товара и аналогов
                         </strong>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Определение заложенной модели по ТЗ, характеристики для заявки без риска отклонения и 2–4 эквивалента РФ для снижения себестоимости.
+                          Определение заложенной модели по ТЗ, характеристики для проверки заявки и варианты российских аналогов для сравнения стоимости.
                         </p>
                       </div>
                       <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Допуск заявки</span>
+                        <span className="text-[11px] text-slate-500 font-medium">Проверка характеристик</span>
                         <button
                           type="button"
                           onClick={() => {
@@ -3322,22 +3350,22 @@ export function CabinetClient() {
                             3
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                            Запрос КП
+                            Оценка рисков
                           </span>
                         </div>
                         <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Поиск поставщиков
+                          Анализ документации
                         </strong>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Сбор базы прямых заводов РФ и официальных дилеров с телефонами и email для запроса КП и точного расчета цены заявки.
+                          Проверка проекта контракта: сроки, штрафы, обеспечение заявки и условия национального режима по действующей редакции ПП РФ № 1875.
                         </p>
                       </div>
                       <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Минимальная цена</span>
+                        <span className="text-[11px] text-slate-500 font-medium">Условия для проверки</span>
                         <button
                           type="button"
                           onClick={() => {
-                            selectScenario("supplier_search");
+                            selectScenario("procurement_report");
                             setShowHelpModal(false);
                           }}
                           className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
@@ -3346,6 +3374,8 @@ export function CabinetClient() {
                         </button>
                       </div>
                     </div>
+
+
                   </div>
 
                   {/* Complex Mode Banner (Emerald / Teal Theme, Zero Blue) */}
@@ -3382,7 +3412,7 @@ export function CabinetClient() {
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          ИИ детально анализирует технические характеристики ТЗ, определяет конкретную заводскую марку и производителя, составляет таблицу конкретных показателей без неопределенных формулировок («не менее/не более») и подбирает 2–4 российских эквивалента.
+                          ИИ детально анализирует технические характеристики ТЗ, предлагает возможную модель и производителя, составляет таблицу параметров и российских аналогов. Соответствие требованиям ТЗ нужно подтвердить по документации производителя.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
@@ -3403,9 +3433,9 @@ export function CabinetClient() {
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Официальный отчет Word (DOCX) с расшифровкой модели по ТЗ.<br />
+                          1) Рабочий отчет Word (DOCX) с кандидатами и сопоставлением характеристик ТЗ.<br />
                           2) Готовая таблица конкретных показателей для 1-й части заявки.<br />
-                          3) 2–4 аналога РФ с попараметрическим сравнением и номерами ГИСП.
+                          3) Варианты аналогов РФ с попараметрическим сравнением и доступными сведениями реестра ГИСП.
                         </p>
                       </div>
                     </div>
@@ -3437,15 +3467,15 @@ export function CabinetClient() {
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Поиск прямых заводов-производителей, официальных дилеров и оптовых дистрибьюторов по всей России. ИИ извлекает прямые телефоны, email отделов продаж, сайты и реквизиты (ИНН).
+                          Поиск производителей, дилеров и дистрибьюторов по заданным условиям. Опубликованные контакты и сведения о компании нужно подтвердить; статус официального дилера не гарантируется.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">⚙️ Фильтрация по Минпромторгу:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
                           • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
-                          • <strong>Только реестр (ГИСП)</strong> — строгий фильтр под ПП 616.<br />
-                          • <strong>Реестр в приоритете</strong> — заводы из ГИСП в начале под ПП 617/878.
+                          • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
+                          • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
                         </p>
                       </div>
                     </div>
@@ -3494,13 +3524,13 @@ export function CabinetClient() {
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Юридический и технический аудит условий закупки по 44-ФЗ и 223-ФЗ. Экспресс-проверка проекта контракта на кабальные штрафы, нереальные сроки поставки, требования лицензий, обеспечение заявки и контракта.
+                          Автоматизированный разбор условий закупки по 44-ФЗ и 223-ФЗ: сроки, штрафы, лицензии и обеспечение. Выводы нужно сверять с документами и применимыми нормами; отчет не заменяет юридическое заключение.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Перед подачей заявки для оценки целесообразности участия и защиты от непредвиденных убытков или включения в РНП.
+                          Перед подачей заявки для проверки условий и оценки рисков. Отчет не гарантирует допуск, исполнение контракта или отсутствие оснований для РНП.
                         </p>
                       </div>
                     </div>
@@ -3517,7 +3547,7 @@ export function CabinetClient() {
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
                           1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
                           2) Чек-лист ключевых требований и факторов риска.<br />
-                          3) Рекомендации по безопасному участию и исполнению.
+                          3) Вопросы и условия для самостоятельной проверки участия и исполнения.
                         </p>
                       </div>
                     </div>
@@ -3525,7 +3555,7 @@ export function CabinetClient() {
 
                   <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
                     <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: если закупка признана безопасной, перейдите к «Подбору товара» для первой части заявки.
+                      💡 Совет: сопоставьте отчет с исходными документами. Решение об участии принимает участник закупки.
                     </span>
                     <button
                       type="button"

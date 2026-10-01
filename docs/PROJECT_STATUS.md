@@ -1,6 +1,15 @@
 # TenderLex: Project Status
 
-Date: 2026-09-28
+Date: 2026-10-02
+
+## SEO continuation — 2026-10-02
+
+- SEO analytics corrections, 57 reviewed articles, distinct commercial intents, truthful public settings and read-only daily monitoring are implemented. Full prior validation: 776 tests + 54 subtests, 89 public URLs and 9 browser scenarios.
+- Latest follow-up corrects all regional/industry claims, the EIS supplier/manufacturer distinction and adds accessible mobile navigation. SSR/contact/handler tests and TypeScript pass; interactive browser verification of the new menu is unavailable in this session.
+- Owner excludes company requisites and OAuth/API-key rotation from scope. Working credentials and automation are retained and verified.
+- Four editorial proposals sent with Gmail; one independently hosted self-publication on Telegraph is live. Earned editorial publications and ranking uplift are not yet confirmed.
+- Independent scores: 9.1 / 8.3 / 9.2 / 9.1 / 8.7; average 8.88. Baselines dated October 1 and 2 are immutable comparison inputs, next owner review expected around October 8.
+- Reports: [October 2 follow-up](SEO_FOLLOWUP_REPORT_2026-10-02.md), [comparison protocol](SEO_WEEKLY_COMPARISON.md), [audit ledger](SEO_AUDIT_LEDGER.md).
 
 ## Current Production State
 

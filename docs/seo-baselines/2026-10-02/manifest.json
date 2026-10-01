@@ -1,0 +1,14 @@
+{
+  "date_moscow": "2026-10-02",
+  "compare_on": "2026-10-08",
+  "snapshot_type": "first closed day, manual readonly collection before daily timer",
+  "sha256": {
+    "metrics.md": "8e64474c9e5442c98f0f00fbe8bf87221cb0fb43f95f6540fa47fb61cb80270d",
+    "metrics.json": "0a0d45a4d7d5128b1d739f7968972f347172b5bdee5428da31f6bbbaa2621e6c",
+    "publication.json": "de7c5258ed19738d833835a6fdde42da298a06d81fb70942005e856d4fb565f5"
+  },
+  "editorial_emails_sent": 4,
+  "editorial_publications_confirmed": 0,
+  "external_self_publications": 1,
+  "google_yandex_new_publication_indexation": null
+}

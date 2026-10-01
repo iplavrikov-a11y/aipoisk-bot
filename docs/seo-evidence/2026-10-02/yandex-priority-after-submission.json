@@ -1,0 +1,32 @@
+{
+  "collected_at": "2026-10-01T13:00:06.968730+00:00",
+  "status": "available",
+  "scope": "post-submission current watchlist observations",
+  "items": [
+    {
+      "url": "https://tenderlex.ru/baza-znaniy/raschet-logistiki-dostavki-v-zakupkah-snizhenie-zatrat",
+      "searchable": false,
+      "excluded_url_status": "LOW_QUALITY",
+      "target_url": null,
+      "last_access": "2026-08-25T00:00:00.000+03:00",
+      "http_code": null
+    },
+    {
+      "url": "https://tenderlex.ru/baza-znaniy/postanovlenie-878-reestr-radioelektroniki-i-bally",
+      "searchable": false,
+      "excluded_url_status": "LOW_QUALITY",
+      "target_url": null,
+      "last_access": "2026-08-25T00:00:00.000+03:00",
+      "http_code": null
+    },
+    {
+      "url": "https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty",
+      "searchable": false,
+      "excluded_url_status": "LOW_QUALITY",
+      "target_url": null,
+      "last_access": "2026-08-25T00:00:00.000+03:00",
+      "http_code": null
+    }
+  ],
+  "limitations": "Accepted recrawl requests are separate from search status; last_access may still precede this release"
+}

@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ShieldCheck, CheckCircle2, FileText, Send, Building2, ShieldAlert } from "lucide-react";
@@ -15,7 +16,7 @@ import {
 export const metadata: Metadata = {
   title: "Оценка рисков закупок: 44-ФЗ, 223-ФЗ и коммерческие торги",
   description:
-    "Автоматическая оценка рисков закупок и проектов контрактов 44-ФЗ, 223-ФЗ: выявление скрытых штрафов, невыполнимых сроков поставки и условий приемки за 2 минуты.",
+    "Автоматическая оценка рисков закупок и проектов контрактов 44-ФЗ, 223-ФЗ: выявление скрытых штрафов, невыполнимых сроков поставки и условий приемки.",
   keywords: [
     "оценка рисков закупок",
     "оценка рисков закупки",
@@ -44,7 +45,7 @@ const faqItems: FaqItem[] = [
   {
     question: "Сколько времени занимает проверка?",
     answer:
-      "Анализ проекта контракта и спецификации занимает от 1 до 3 минут в кабинете или Telegram-боте.",
+      "Время анализа зависит от объёма файлов, сложности условий и нагрузки. Перед использованием отчёта проверьте выводы по документации закупки и действующим первоисточникам.",
   },
 ];
 
@@ -105,15 +106,15 @@ export default function OcenkaRisktovZakupkiPage() {
               >
                 <span>Оценить риски</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>

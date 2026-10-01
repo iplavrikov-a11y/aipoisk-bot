@@ -2,108 +2,101 @@
 
 import Script from "next/script";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-
-const ANALYTICS_CONSENT_KEY = "tenderlex_analytics_consent";
+import { useEffect, useRef, useState } from "react";
+import { ANALYTICS_CONSENT_KEY, configureAnalytics, safeAnalyticsUrl, trackGoal } from "@/lib/analytics";
 
 type Consent = "unknown" | "granted" | "denied";
 
 export function YandexMetrika({ counterId }: { counterId?: string }) {
   const pathname = usePathname();
   const [consent, setConsent] = useState<Consent>("unknown");
-  const allowed = Boolean(counterId && pathname && !pathname.startsWith("/api") && !pathname.startsWith("/cabinet"));
+  const initialized = useRef(false);
+  const lastPage = useRef("");
+  const allowed = Boolean(counterId && /^\d+$/.test(counterId) && pathname && !/^\/api(?:\/|$)/.test(pathname));
 
   useEffect(() => {
-    if (!allowed) return;
-
-    // Auto-consent for crawlers and bots (e.g. Yandex Webmaster, YandexBot, Googlebot)
-    if (typeof navigator !== "undefined" && navigator.userAgent) {
-      const ua = navigator.userAgent.toLowerCase();
-      if (
-        ua.includes("yandex") ||
-        ua.includes("google") ||
-        ua.includes("bot") ||
-        ua.includes("crawler") ||
-        ua.includes("spider") ||
-        ua.includes("lighthouse")
-      ) {
-        setConsent("granted");
-        return;
-      }
+    try {
+      const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
+      setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
+    } catch { setConsent("unknown"); }
+    function sync(event: StorageEvent) {
+      if (event.key !== ANALYTICS_CONSENT_KEY) return;
+      const next = event.newValue === "granted" || event.newValue === "denied" ? event.newValue : "unknown";
+      configureAnalytics(counterId, next === "granted");
+      setConsent(next);
     }
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, [counterId]);
 
-    const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
-    setConsent(stored === "granted" || stored === "denied" ? stored : "unknown");
-  }, [allowed]);
+  useEffect(() => {
+    const enabled = allowed && consent === "granted";
+    configureAnalytics(counterId, enabled);
+    if (!enabled || !counterId) {
+      if (initialized.current && window.ym && counterId) {
+        try { window.ym(Number(counterId), "destruct"); } catch { /* SDK may be blocked. */ }
+      }
+      initialized.current = false;
+      lastPage.current = "";
+      return;
+    }
+    if (!window.ym) {
+      const stub: NonNullable<Window["ym"]> = (...args: unknown[]) => { (stub.a ??= []).push(args); };
+      stub.l = Date.now();
+      window.ym = stub;
+    }
+    try {
+      if (!initialized.current) {
+        window.ym(Number(counterId), "init", {
+          defer: true, ssr: true, accurateTrackBounce: true,
+          webvisor: false, clickmap: false, trackLinks: false, ecommerce: false, sendTitle: false,
+          url: safeAnalyticsUrl(window.location.href), referrer: safeAnalyticsUrl(document.referrer),
+        });
+        initialized.current = true;
+      }
+      const page = safeAnalyticsUrl(window.location.origin + pathname);
+      if (page && lastPage.current !== page) {
+        window.ym(Number(counterId), "hit", page, {
+          title: pathname?.startsWith("/cabinet") ? "Личный кабинет TenderLex" : "TenderLex",
+          referer: lastPage.current || safeAnalyticsUrl(document.referrer),
+        });
+        lastPage.current = page;
+      }
+    } catch { /* Analytics failure must not affect the page. */ }
+    function click(event: MouseEvent) {
+      const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (!target) return;
+      let url: URL;
+      try { url = new URL(target.href, window.location.origin); } catch { return; }
+      if (url.origin === window.location.origin && /^\/cabinet(?:\/|$)/.test(url.pathname)) trackGoal("cabinet_click");
+      else if (url.hostname === "t.me") trackGoal("telegram_click");
+      else if (url.hostname === "wa.me") trackGoal("whatsapp_click");
+      else if (url.hostname === "max.ru") trackGoal("max_click");
+      else if (url.protocol === "tel:") trackGoal("phone_click");
+      else if (url.protocol === "mailto:") trackGoal("email_click");
+    }
+    document.addEventListener("click", click);
+    return () => document.removeEventListener("click", click);
+  }, [allowed, consent, counterId, pathname]);
 
   if (!allowed || !counterId) return null;
-
   function choose(next: Exclude<Consent, "unknown">) {
-    window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next);
+    try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { /* Choice remains valid for this page. */ }
+    configureAnalytics(counterId, next === "granted");
     setConsent(next);
   }
 
-  const tagUrl = `https://mc.yandex.ru/metrika/tag.js?id=${encodeURIComponent(counterId)}`;
-
-  return (
-    <>
-      {consent === "unknown" ? (
-        <aside className="cookie-consent" aria-label="Настройки аналитики">
-          <p>
-            TenderLex использует необходимые данные для работы сайта. Яндекс Метрика включится только с вашего разрешения. {" "}
-            <a href="/privacy#cookies">Подробнее</a>
-          </p>
-          <div>
-            <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
-            <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>
-          </div>
-        </aside>
-      ) : null}
-      {consent === "granted" ? (
-        <Script id="yandex-metrika" strategy="afterInteractive">
-          {`
-            (function(m,e,t,r,i,k,a){
-              m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
-              m[i].l=1*new Date();
-              for (var j = 0; j < document.scripts.length; j++) {
-                if (document.scripts[j].src === r) { return; }
-              }
-              k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
-            })(window, document, "script", ${JSON.stringify(tagUrl)}, "ym");
-            ym(${JSON.stringify(counterId)}, "init", {
-              ssr: true,
-              webvisor: true,
-              clickmap: true,
-              ecommerce: "dataLayer",
-              referrer: document.referrer,
-              url: location.href,
-              accurateTrackBounce: true,
-              informer: false,
-              trackLinks: true
-            });
-            document.addEventListener("click", function(event) {
-              var target = event.target && event.target.closest ? event.target.closest("a[href]") : null;
-              if (!target || !window.ym) { return; }
-              var href = target.href || "";
-              var goal = "";
-              if (href.indexOf("/cabinet") !== -1) {
-                goal = "cabinet_click";
-              } else if (href.toLowerCase().indexOf("t.me/tenderlex_bot") !== -1 || href.toLowerCase().indexOf("t.me/lexelence") !== -1) {
-                goal = "telegram_click";
-              } else if (href.toLowerCase().indexOf("wa.me") !== -1) {
-                goal = "whatsapp_click";
-              } else if (href.toLowerCase().indexOf("max.ru") !== -1) {
-                goal = "max_click";
-              } else if (href.indexOf("tel:") === 0) {
-                goal = "phone_click";
-              } else if (href.indexOf("mailto:") === 0) {
-                goal = "email_click";
-              }
-              if (goal) ym(${JSON.stringify(counterId)}, "reachGoal", goal, { page: location.pathname, href: href });
-            });
-          `}
-        </Script>
-      ) : null}
-    </>
-  );
+  return <>
+    {consent === "unknown" ? (
+      <aside className="cookie-consent" aria-label="Настройки аналитики">
+        <p>TenderLex использует необходимые данные для работы сайта. С вашего разрешения Яндекс Метрика учитывает посещения и действия, чтобы улучшать сервис. <a href="/privacy#cookies">Подробнее</a></p>
+        <div>
+          <button type="button" className="cookie-secondary" onClick={() => choose("denied")}>Только необходимые</button>
+          <button type="button" className="cookie-primary" onClick={() => choose("granted")}>Разрешить аналитику</button>
+        </div>
+      </aside>
+    ) : null}
+    {consent === "granted" ? <Script id="tenderlex-metrika-sdk" src="https://mc.yandex.ru/metrika/tag.js" strategy="afterInteractive" /> : null}
+    {consent !== "unknown" ? <button type="button" className="cookie-settings" onClick={() => { configureAnalytics(counterId, false); setConsent("unknown"); }}>Настройки аналитики</button> : null}
+  </>;
 }

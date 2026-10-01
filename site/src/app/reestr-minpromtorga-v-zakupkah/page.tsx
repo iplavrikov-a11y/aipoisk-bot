@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Award, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
@@ -13,7 +14,7 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Минпромторг закупки — проверка Реестра ГИСП, ПП 616 и 617",
+  title: "Минпромторг закупки — проверка Реестра ГИСП и нацрежима",
   description:
     "Экспресс-проверка товаров и производителей на включение в Реестр Минпромторга (ГИСП) в закупках по 44-ФЗ и 223-ФЗ. Поиск заводов с действующими реестровыми номерами.",
   keywords: [
@@ -37,7 +38,7 @@ const faqItems: FaqItem[] = [
   {
     question: "Как TenderLex проверяет требования Минпромторга в закупках?",
     answer:
-      "Сервис сопоставляет код ОКПД2 и характеристики товара из ТЗ с перечнями Постановлений Правительства № 616 (запрет) и № 617 (ограничения), выявляя необходимость предоставления реестровых номеров ГИСП.",
+      "Сервис помогает сопоставить код ОКПД2 и характеристики товара из ТЗ с требованиями национального режима и сведениями реестра ГИСП. Перед подачей заявки проверьте действующую редакцию ПП РФ № 1875 и документы извещения.",
   },
   {
     question: "Помогает ли сервис найти российских производителей с реестровыми записями?",
@@ -54,7 +55,7 @@ export default function ReestrMinpromtorgaPage() {
 
   const schemaService = buildServiceJsonLd({
     name: "Минпромторг закупки — Проверка Реестра ГИСП",
-    description: "Сервис экспресс-аудита требований национального режима (ПП 616/617) по ТЗ.",
+    description: "Сервис предварительной проверки требований национального режима и реестра российской промышленной продукции по ТЗ.",
     path: pagePath,
   });
 
@@ -64,7 +65,7 @@ export default function ReestrMinpromtorgaPage() {
     description: "Пошаговый процесс проверки национального режима в госзакупках.",
     steps: [
       { name: "Загрузка спецификации или кода ОКПД2", text: "Передайте параметры товара." },
-      { name: "Проверка наличия в перечнях ПП 616 и 617", text: "Анализ запретов и ограничений допуска." },
+      { name: "Проверка требований национального режима", text: "Сопоставление с действующей редакцией применимого нормативного акта." },
       { name: "Поиск производителей с реестровыми номерами ГИСП", text: "Сбор заводов с действующими выписками." },
       { name: "Формирование обоснованного запроса КП", text: "Готовое обращение с запросом реестровых номеров." },
     ],
@@ -93,7 +94,7 @@ export default function ReestrMinpromtorgaPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
-              Узнайте, попадает ли ваша номенклатура под Постановления № 616, № 617 и найдите российских производителей с действующими выписками из ГИСП.
+              Проверьте, какие требования национального режима применимы к номенклатуре, и сопоставьте ее со сведениями реестра ГИСП. Окончательное решение принимайте по извещению и действующей редакции ПП РФ № 1875.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -103,15 +104,15 @@ export default function ReestrMinpromtorgaPage() {
               >
                 <span>Проверить по реестру</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>
@@ -152,7 +153,7 @@ export default function ReestrMinpromtorgaPage() {
                   Нужно подобрать российские аналоги по техническому заданию?
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  ИИ TenderLex сопоставит параметры спецификации с реестром ГИСП Минпромторга, найдет от 2 до 4 отечественных эквивалентов и выгрузит подробный отчет в Word (DOCX).
+                  TenderLex поможет сопоставить требования спецификации с товаром и кандидатами на замену, подготовив рабочий отчет в Word (DOCX). Количество подходящих аналогов зависит от ТЗ и доступных подтверждений; актуальность реестровых записей проверяют перед подачей заявки.
                 </p>
               </div>
               <Link

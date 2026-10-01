@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
@@ -104,21 +105,15 @@ export default function LegalPage() {
             <div className="text-xs text-slate-700 space-y-4 max-w-md">
               <div>
                 <span className="text-slate-400 block uppercase font-bold text-[10px]">Поддержка в Telegram</span>
-                <a href="https://t.me/lexelence" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
-                  @lexelence
-                </a>
+                <PublicSiteLink channel="telegram" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
               </div>
               <div>
                 <span className="text-slate-400 block uppercase font-bold text-[10px]">Telegram-бот сервиса</span>
-                <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
-                  @tenderlex_bot
-                </a>
+                <PublicSiteLink channel="bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
               </div>
               <div>
                 <span className="text-slate-400 block uppercase font-bold text-[10px]">Электронная почта</span>
-                <a href="mailto:info@tenderlex.ru" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5">
-                  info@tenderlex.ru
-                </a>
+                <PublicSiteLink channel="email" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
               </div>
             </div>
           </div>

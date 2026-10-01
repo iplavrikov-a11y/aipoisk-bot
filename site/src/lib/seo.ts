@@ -111,7 +111,7 @@ export function buildBreadcrumbJsonLd(items: BreadcrumbItem[]) {
   };
 }
 
-export function buildOrganizationJsonLd() {
+export function buildOrganizationJsonLd({ botUrl }: { botUrl?: string } = {}) {
   const siteUrl = normalizedSiteUrl();
   return {
     "@context": "https://schema.org",
@@ -128,18 +128,6 @@ export function buildOrganizationJsonLd() {
     },
     description:
       "TenderLex — онлайн ИИ-сервис поиска поставщиков и анализа закупок под спецификации и технические задания по всей России.",
-    address: {
-      "@type": "PostalAddress",
-      streetAddress: "Пресненская набережная, д. 12",
-      addressLocality: "Москва",
-      postalCode: "123317",
-      addressCountry: "RU",
-    },
-    geo: {
-      "@type": "GeoCoordinates",
-      latitude: 55.749511,
-      longitude: 37.537083,
-    },
     areaServed: [
       {
         "@type": "Country",
@@ -178,13 +166,13 @@ export function buildOrganizationJsonLd() {
         name: "Самарская область",
       },
     ],
-    contactPoint: {
+    ...(botUrl ? { contactPoint: {
       "@type": "ContactPoint",
       contactType: "customer support",
-      url: "https://t.me/tenderlex_bot",
+      url: botUrl,
       availableLanguage: ["Russian"],
-    },
-    sameAs: ["https://t.me/tenderlex_bot", "https://productradar.ru/product/tenderlex"],
+    } } : {}),
+    sameAs: [...(botUrl ? [botUrl] : []), "https://productradar.ru/product/tenderlex"],
     knowsAbout: [
       "Поиск поставщиков по ТЗ",
       "Анализ закупочной документации",
@@ -230,13 +218,6 @@ export function buildServiceJsonLd({
       "@id": `${siteUrl}/#organization`,
       name: "TenderLex",
       url: siteUrl,
-      address: {
-        "@type": "PostalAddress",
-        streetAddress: "Пресненская набережная, д. 12",
-        addressLocality: "Москва",
-        postalCode: "123317",
-        addressCountry: "RU",
-      },
     },
     areaServed: {
       "@type": "Country",
@@ -245,13 +226,6 @@ export function buildServiceJsonLd({
     audience: {
       "@type": "Audience",
       audienceType: "Специалисты по закупкам, отделы снабжения, тендерные отделы",
-    },
-    offers: {
-      "@type": "Offer",
-      price: "0",
-      priceCurrency: "RUB",
-      description: "Бесплатный пробный доступ при регистрации для тестирования поиска или анализа документации.",
-      availability: "https://schema.org/InStock",
     },
   };
 }
@@ -274,9 +248,6 @@ export function buildRegionalServiceJsonLd({
   description,
   path,
   regionName,
-  regionLocality,
-  postalCode,
-  geo,
 }: RegionalServiceJsonLdOptions) {
   const siteUrl = normalizedSiteUrl();
   return {
@@ -291,55 +262,20 @@ export function buildRegionalServiceJsonLd({
       "@id": `${siteUrl}/#organization`,
       name: "TenderLex",
       url: siteUrl,
-      address: {
-        "@type": "PostalAddress",
-        addressLocality: regionLocality,
-        addressCountry: "RU",
-        ...(postalCode ? { postalCode } : {}),
-      },
-      ...(geo
-        ? {
-            geo: {
-              "@type": "GeoCoordinates",
-              latitude: geo.latitude,
-              longitude: geo.longitude,
-            },
-          }
-        : {}),
     },
     areaServed: {
       "@type": "AdministrativeArea",
       name: regionName,
       addressCountry: "RU",
     },
-    ...(geo
-      ? {
-          serviceArea: {
-            "@type": "GeoCircle",
-            geoMidpoint: {
-              "@type": "GeoCoordinates",
-              latitude: geo.latitude,
-              longitude: geo.longitude,
-            },
-            geoRadius: "300000",
-          },
-        }
-      : {}),
     audience: {
       "@type": "Audience",
       audienceType: "Специалисты по закупкам, отделы снабжения, тендерные отделы",
     },
-    offers: {
-      "@type": "Offer",
-      price: "0",
-      priceCurrency: "RUB",
-      description: "Бесплатный пробный доступ при регистрации для поиска поставщиков в регионе.",
-      availability: "https://schema.org/InStock",
-    },
   };
 }
 
-export function buildSoftwareApplicationJsonLd() {
+export function buildSoftwareApplicationJsonLd({ trialEnabled = false }: { trialEnabled?: boolean } = {}) {
   const siteUrl = normalizedSiteUrl();
   return {
     "@context": "https://schema.org",
@@ -347,19 +283,12 @@ export function buildSoftwareApplicationJsonLd() {
     name: "TenderLex",
     operatingSystem: "Web, Telegram, iOS, Android, Windows, macOS, Linux",
     applicationCategory: "BusinessApplication",
-    offers: {
+    ...(trialEnabled ? { offers: {
       "@type": "Offer",
       price: "0",
       priceCurrency: "RUB",
       description: "Бесплатный пробный доступ при регистрации.",
-    },
-    aggregateRating: {
-      "@type": "AggregateRating",
-      ratingValue: "4.9",
-      ratingCount: "148",
-      bestRating: "5",
-      worstRating: "1",
-    },
+    } } : {}),
     description:
       "TenderLex — веб-сервис и Telegram-бот для смыслового анализа технического задания, выявления рисков контрактов и поиска прямых контактов поставщиков.",
     url: siteUrl,
@@ -370,9 +299,9 @@ export function buildArticleJsonLd({
   title,
   description,
   path,
-  datePublished = "2026-03-15",
-  dateModified = "2026-08-20",
-  authorName = "Экспертная редакция TenderLex",
+  datePublished,
+  dateModified,
+  authorName = "TenderLex",
   category = "Закупки и снабжение",
 }: {
   title: string;
@@ -393,8 +322,8 @@ export function buildArticleJsonLd({
     headline: title,
     description,
     url: articleUrl,
-    datePublished,
-    dateModified,
+    ...(datePublished && /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(datePublished) ? { datePublished } : {}),
+    ...(dateModified && /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(dateModified) ? { dateModified } : {}),
     articleSection: category,
     inLanguage: "ru-RU",
     mainEntityOfPage: {
@@ -418,4 +347,3 @@ export function buildArticleJsonLd({
     image: `${siteUrl}/tenderlex-product-preview.png`,
   };
 }
-

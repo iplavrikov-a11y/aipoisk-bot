@@ -1,18 +1,14 @@
+import { getSiteData } from "@/lib/site-data";
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
   Sparkles,
   CheckCircle2,
-  AlertCircle,
-  FileSpreadsheet,
   FileText,
   Search,
   ArrowRight,
   ShieldCheck,
   Building2,
-  ExternalLink,
-  Layers,
-  Zap,
 } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
@@ -26,9 +22,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ",
+  title: { absolute: "Подбор товара и аналогов по ТЗ | TenderLex" },
   description:
-    "ИИ-подбор аналогов и эквивалентов по ТЗ за 2 мин. Сверка ГОСТ и Реестра Минпромторга (ГИСП), подробный отчет в Word. Проверьте 1 позицию бесплатно!",
+    "Подбор товара и аналогов по ТЗ: сопоставьте характеристики с документами изготовителя и получите рабочий отчёт в DOCX для проверки.",
   keywords: [
     "подбор аналогов по тз",
     "поиск товаров по тз",
@@ -46,9 +42,9 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: "/podbor-tovara-i-analogov-po-tz",
-    title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ | TenderLex",
+    title: "Подбор товара и аналогов по ТЗ | TenderLex",
     description:
-      "ИИ-подбор аналогов и эквивалентов по ТЗ за 2 мин: выявление модели-первоисточника, сверка параметров по паспортам и отчет в Word.",
+      "Сопоставление требований ТЗ с характеристиками товара и кандидатов на замену. Рабочий отчет в DOCX с данными для проверки.",
     siteName: "TenderLex",
     images: [
       {
@@ -61,7 +57,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Подбор аналогов по ТЗ онлайн: сверка ГОСТ | TenderLex",
+    title: "Подбор товара и аналогов по ТЗ | TenderLex",
     description:
       "ИИ-подбор товаров и отечественных аналогов по техническому заданию (44-ФЗ, 223-ФЗ). Сверка параметров и отчет в Word.",
     images: ["/tenderlex-product-preview.png"],
@@ -74,27 +70,27 @@ const faqItems: FaqItem[] = [
   {
     question: "Как TenderLex определяет скрытого производителя и модель по ТЗ?",
     answer:
-      "Заказчики по 44-ФЗ и 223-ФЗ обязаны описывать товар без указания товарных знаков, но используют уникальные числовые диапазоны, габариты и ГОСТы конкретного завода. Модуль Deep Search сопоставляет совокупность параметров со спецификациями, опросными листами и техническими паспортами производителей по всей РФ, безошибочно выявляя модель-первоисточник.",
+      "Заказчики по 44-ФЗ и 223-ФЗ могут описывать товар через характеристики. Модуль сопоставляет совокупность параметров со спецификациями, опросными листами и техническими паспортами производителей. Результат — гипотеза о модели-первоисточнике, которую нужно проверить по первичному документу производителя.",
   },
   {
     question: "Почему данные берутся из заводских паспортов, а не подгоняются под ТЗ?",
     answer:
-      "Искусственная подгонка характеристик под диапазон ТЗ ('не менее/не более') — главная причина отклонения заявок комиссией и штрафов ФАС за предоставление недостоверных сведений. TenderLex строго извлекает фактические заводские номиналы из каталогов и паспортов, подтверждая каждое значение ссылкой на первоисточник.",
+      "Характеристики предлагаемой модели должны подтверждаться документами изготовителя. Совпадение с диапазоном ТЗ не дает права придумывать значение. В отчете проверяйте источник каждого показателя; отсутствующие или неоднозначные данные нужно уточнять перед подачей заявки.",
   },
   {
-    question: "Как формируется таблица Формы 2 (конкретные показатели)?",
+    question: "Как формируется таблица конкретных показателей?",
     answer:
-      "Сервис формирует структурированную таблицу: наименование параметра, требование заказчика, фактический показатель производителя, статус соответствия ('соответствует' / 'отклонение') и обоснование. Готовый документ выгружается в форматах Word (DOCX) и Excel (XLSX).",
+      "Рабочий отчет сопоставляет требование ТЗ, сведения о предлагаемом товаре и доступные подтверждения. Проверьте расхождения и недостающие данные по документам изготовителя. Результат модуля предоставляется в Word (DOCX); это не официальная форма заявки и не гарантия допуска.",
   },
   {
     question: "Проверяются ли аналоги на включение в Реестр Минпромторга (ГИСП)?",
     answer:
-      "Да. Каждый подобранный эквивалент сверяется с официальным Реестром промышленной продукции Минпромторга РФ (ПП № 616, № 617, ПП № 719) с указанием реестрового номера записи и наименования завода-изготовителя.",
+      "Если к закупке применяется национальный режим, участник должен сверить конкретную модель и действующую запись в предусмотренном реестре. Проверьте применимую редакцию ПП РФ № 1875, позицию приложения и условия извещения. Результат подбора не заменяет подтверждение происхождения товара.",
   },
   {
     question: "Можно ли сразу после подбора аналогов запросить КП и найти поставщиков?",
     answer:
-      "Да, в веб-кабинете и Telegram-боте реализован бесшовный переход в 1 клик: на основе найденных аналогов автоматически формируется контекст для модуля поиска прямых поставщиков и генератора Запроса КП.",
+      "После проверки модели можно использовать модуль поиска поставщиков по ТЗ. Сверьте контакты найденных компаний и самостоятельно направьте запрос КП с нужной комплектацией, объемом и сроком. Цены и готовность к поставке подтверждает компания, а не отчет подбора.",
   },
 ];
 
@@ -104,44 +100,45 @@ const sampleSpecRows = [
     tz: "не менее 4.0 м и не более 4.5 м",
     fact: "4.2 м (номинал заводской серии)",
     status: "match",
-    source: "Паспорт изделия зав. № 14, табл. 2",
-    analog: "4.25 м (Аналог РФ, Завод 'ГидроМаш')",
+    source: "Условный паспорт, таблица размеров",
+    analog: "Кандидат: 4.25 м, источник нужно проверить",
   },
   {
     param: "Материал проточной части",
-    tz: "Коррозионностойкая сталь марки не ниже 12Х18Н10Т / AISI 304",
-    fact: "Сталь 12Х18Н10Т (ГОСТ 5632-2014)",
+    tz: "Коррозионностойкая сталь марки 12Х18Н10Т",
+    fact: "Сталь 12Х18Н10Т",
     status: "match",
-    source: "Сертификат качества производителя",
-    analog: "AISI 304 / 08Х18Н10 (в реестре ГИСП)",
+    source: "Условный документ о материале",
+    analog: "Кандидат: 12Х18Н10Т, нужен документ о материале",
   },
   {
     param: "Масса агрегата в сборе",
     tz: "не более 12 100 кг",
     fact: "11 850 кг",
     status: "match",
-    source: "Официальный каталог оборудования 2026",
-    analog: "11 600 кг (соответствует ТЗ)",
+    source: "Условный каталог оборудования",
+    analog: "Кандидат: 11 600 кг, комплектацию нужно проверить",
   },
   {
     param: "Мощность приводного электродвигателя",
     tz: "не менее 2х0.55 кВт",
-    fact: "2х0.55 кВт (IP67, взрывозащита 1Ex)",
+    fact: "2х0.55 кВт",
     status: "match",
-    source: "Электротехнический паспорт двигателя",
-    analog: "2х0.75 кВт (улучшенные характеристики)",
+    source: "Условный паспорт двигателя",
+    analog: "Кандидат: 2х0.75 кВт, условия применения нужно проверить",
   },
   {
     param: "Наличие в Реестре Минпромторга РФ",
-    tz: "Требуется в соответствии с ПП РФ № 616",
-    fact: "Запись № 1024\\2024 (действующая выписка ГИСП)",
-    status: "match",
-    source: "ГИСП Минпромторг РФ",
-    analog: "Запись № 891\\2024 (АО 'ПромАрматура')",
+    tz: "Проверьте применимую меру по ПП РФ № 1875",
+    fact: "Требуется проверить применимый реестр и запись",
+    status: "review",
+    source: "Официальный реестр для конкретной категории товара",
+    analog: "Требуется подтверждение происхождения кандидата",
   },
 ];
 
-export default function PodborTovaraPage() {
+export default async function PodborTovaraPage() {
+  const data = await getSiteData();
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
     { name: "Главная", item: "https://tenderlex.ru" },
     { name: "Подбор товара и аналогов по ТЗ", item: "https://tenderlex.ru" + pagePath },
@@ -150,7 +147,7 @@ export default function PodborTovaraPage() {
   const schemaService = buildServiceJsonLd({
     name: "Подбор товара и аналогов по ТЗ — Реестр Минпромторга",
     description:
-      "Автоматизированный подбор аналогов оборудования и материалов по техническому заданию: определение скрытого завода, таблица конкретных показателей, Реестр ГИСП.",
+      "Подбор товара и кандидатов на замену по техническому заданию: рабочее сравнение характеристик и источников в DOCX для последующей проверки.",
     path: pagePath,
   });
 
@@ -160,9 +157,9 @@ export default function PodborTovaraPage() {
     description: "Процесс сопоставления спецификации, выявления модели и подбора эквивалентов.",
     steps: [
       { name: "Загрузка спецификации", text: "Загрузите файл ТЗ (Word, Excel, PDF) или вставьте текст требований." },
-      { name: "Поиск первоисточников", text: "Алгоритм Deep Search сопоставляет требования с паспортами заводов и ГОСТ." },
-      { name: "Подбор характеристик и аналогов", text: "Получите таблицу конкретных параметров модели и 2–4 отечественных эквивалентов." },
-      { name: "Выгрузка отчета и поиск поставщиков", text: "Скачайте готовый отчет в Word (DOCX) и в 1 клик запустите сбор коммерческих предложений." },
+      { name: "Сопоставление характеристик", text: "Сопоставьте требования с данными товара и доступными документами изготовителя." },
+      { name: "Проверка кандидатов", text: "Проверьте найденные варианты, расхождения и недостающие подтверждения. Число подходящих аналогов зависит от требований и доступных данных." },
+      { name: "Выгрузка отчета и поиск поставщиков", text: "Скачайте рабочий отчет в DOCX, проверьте его и используйте отдельный модуль поиска поставщиков для подготовки запроса КП." },
     ],
   });
 
@@ -188,15 +185,15 @@ export default function PodborTovaraPage() {
 
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-bold shadow-2xs">
               <Sparkles size={14} className="text-teal-600 animate-pulse" />
-              <span>Реестр Минпромторга (ГИСП) • Подбор российских аналогов по ТЗ</span>
+              <span>Сопоставление требований и вариантов по ТЗ</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-extrabold text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
-              Подбор товара и отечественных аналогов по ТЗ
+              Подбор товара и аналогов по ТЗ
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-3xl mx-auto font-normal leading-relaxed">
-              Загрузите спецификацию или проект контракта. ИИ распознает заложенную заказчиком модель, проведет построчную сверку параметров по паспортам заводов РФ, подберет эквиваленты из реестра ГИСП и сформирует подробный отчет в Word (DOCX).
+              Загрузите спецификацию или проект контракта. TenderLex сопоставит параметры с доступными паспортами производителей, предложит варианты аналогов и сформирует подробный отчет в Word (DOCX). Перед подачей заявки проверьте применимость аналога и требования закупки по первоисточникам.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -207,7 +204,7 @@ export default function PodborTovaraPage() {
                 <span>Подобрать товар и аналоги</span>
               </a>
               <a
-                href="https://t.me/tenderlex_bot"
+                href={data.bot.telegram_url}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
@@ -271,7 +268,7 @@ export default function PodborTovaraPage() {
               <span className="hidden sm:inline text-slate-300">•</span>
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-teal-600" />
-                100% подтверждение первоисточниками
+                Источники для проверки характеристик
               </span>
               <span className="hidden sm:inline text-slate-300">•</span>
               <span className="flex items-center gap-1.5">
@@ -290,10 +287,10 @@ export default function PodborTovaraPage() {
                 Технология сопоставления
               </span>
               <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Почему тендерные специалисты доверяют подбору TenderLex
+                Что проверить в результате подбора TenderLex
               </h2>
               <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                Комиссия заказчика и ФАС отклоняют заявки, где характеристики искусственно скопированы из требований «не более/не менее». Мы находим реальные заводские паспорта.
+                Сведения о товаре должны подтверждаться документами изготовителя и соответствовать инструкции закупки. Диапазоны и конкретные показатели проверяют по каждому параметру; отчет помогает подготовить такое сравнение.
               </p>
             </div>
 
@@ -303,13 +300,13 @@ export default function PodborTovaraPage() {
                 <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center font-bold">
                   <Search className="w-6 h-6" />
                 </div>
-                <h3 className="text-xl font-extrabold text-slate-900">Выявление «заточек» и скрытых моделей</h3>
+                <h3 className="text-xl font-extrabold text-slate-900">Поиск возможной модели по характеристикам</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
-                  Заказчик убрал название бренда? Алгоритм Deep Search анализирует редкие комбинации габаритов, материалов и ТУ, мгновенно определяя заложенного производителя.
+                  Когда бренд не указан, сочетание габаритов, материалов и ТУ помогает найти возможные модели. Совпадение нужно подтвердить по паспорту; оно само по себе не доказывает ограничение конкуренции.
                 </p>
                 <div className="pt-2 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
                   <CheckCircle2 size={14} />
-                  <span>Точность распознавания первоисточника 96%</span>
+                  <span>Гипотеза о модели требует проверки</span>
                 </div>
               </div>
 
@@ -318,13 +315,13 @@ export default function PodborTovaraPage() {
                 <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center font-bold">
                   <FileText className="w-6 h-6" />
                 </div>
-                <h3 className="text-xl font-extrabold text-slate-900">Конкретные показатели без пустых ячеек</h3>
+                <h3 className="text-xl font-extrabold text-slate-900">Сравнение требований и подтвержденных данных</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
-                  Построчная таблица с четким разделением: требование заказчика vs реальный показатель завода vs статус соответствия. Никаких «не более/не менее» в заявке.
+                  Сопоставьте строку ТЗ с фактическим показателем и его источником. Недостающие сведения уточняйте у изготовителя; диапазон сохраняйте или заменяйте конкретным значением в соответствии с инструкцией закупки.
                 </p>
                 <div className="pt-2 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
                   <CheckCircle2 size={14} />
-                  <span>Защита от отклонения по ч. 2 ст. 48 44-ФЗ</span>
+                  <span>Рабочая основа для проверки заявки</span>
                 </div>
               </div>
 
@@ -333,16 +330,22 @@ export default function PodborTovaraPage() {
                 <div className="w-12 h-12 rounded-2xl bg-teal-100 border border-teal-200 text-teal-700 flex items-center justify-center font-bold">
                   <Building2 className="w-6 h-6" />
                 </div>
-                <h3 className="text-xl font-extrabold text-slate-900">2–4 эквивалента из Реестра Минпромторга</h3>
+                <h3 className="text-xl font-extrabold text-slate-900">Кандидаты на замену и проверка происхождения</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
-                  Автоматический поиск отечественных аналогов с действующими выписками ГИСП (ПП 616, 617, 719), позволяющий предложить альтернативу по меньшей цене.
+                  Число подходящих вариантов зависит от требований и доступных подтверждений. Если закупка предусматривает национальный режим, проверьте применимую редакцию ПП № 1875 и запись на конкретную модель. Цену и срок поставки уточняйте у поставщика.
                 </p>
                 <div className="pt-2 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
                   <CheckCircle2 size={14} />
-                  <span>Проверка реестровых номеров в режиме реального времени</span>
+                  <span>Актуальность записи проверяют перед подачей</span>
                 </div>
               </div>
             </div>
+            <p className="mt-8 text-xs text-slate-600 leading-relaxed">
+              Для проверки национального режима используйте {" "}
+              <a href="https://publication.pravo.gov.ru/document/0001202412250018" target="_blank" rel="noopener noreferrer" className="text-teal-700 underline underline-offset-4">официальную публикацию ПП № 1875</a>
+              {" "}с учетом последующих изменений и дат их применения. {" "}
+              <Link href="/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617" className="text-teal-700 underline underline-offset-4">Порядок проверки и ссылки на изменения</Link>.
+            </p>
           </div>
         </section>
 
@@ -357,7 +360,7 @@ export default function PodborTovaraPage() {
                 Как выглядит результат сопоставления в отчете
               </h2>
               <p className="text-slate-600 text-sm sm:text-base">
-                Фрагмент таблицы из итогового документа в Word (DOCX): конкретные показатели вместо диапазонных требований ТЗ.
+                Условный пример структуры DOCX: требования, показатели товара и источники. Названия модели и производителя ниже приведены для иллюстрации. В рабочем отчете сведения проверяют по документам изготовителя.
               </p>
             </div>
 
@@ -366,12 +369,12 @@ export default function PodborTovaraPage() {
                 <div>
                   <span className="text-xs text-teal-400 font-bold uppercase tracking-wider">Позиция № 1 в ТЗ</span>
                   <h4 className="text-lg font-bold text-white">
-                    Илосос поворотный для радиальных отстойников Ø40 м (выявлена модель: ИПР-40, завод 'ГидроПром')
+                    Илосос поворотный для радиальных отстойников Ø40 м (условная модель: ИПР-40, условный изготовитель: «ГидроПром»)
                   </h4>
                 </div>
                 <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-teal-500/20 border border-teal-400/40 text-teal-300 text-xs font-bold shrink-0">
                   <ShieldCheck size={14} />
-                  <span>Соответствие ТЗ: 100%</span>
+                  <span>Пример проверки параметров</span>
                 </div>
               </div>
 
@@ -382,7 +385,7 @@ export default function PodborTovaraPage() {
                       <th className="p-4 w-[28%]">Требуемый параметр (ТЗ)</th>
                       <th className="p-4 w-[24%]">Фактический показатель товара</th>
                       <th className="p-4 w-[16%]">Статус</th>
-                      <th className="p-4 w-[32%]">Отечественный аналог (Минпромторг)</th>
+                      <th className="p-4 w-[32%]">Кандидат на замену</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -399,14 +402,14 @@ export default function PodborTovaraPage() {
                           <span className="text-[10px] text-slate-400 font-normal block mt-1">{row.source}</span>
                         </td>
                         <td className="p-4">
-                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                          <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full border ${row.status === "review" ? "text-amber-800 bg-amber-50 border-amber-200" : "text-emerald-700 bg-emerald-50 border-emerald-200"}`}>
                             <CheckCircle2 size={12} />
-                            Соответствует
+                            {row.status === "review" ? "Нужна проверка" : "Совпадение в примере"}
                           </span>
                         </td>
                         <td className="p-4 text-slate-700">
                           <div className="font-semibold text-slate-900">{row.analog}</div>
-                          <div className="text-[11px] text-slate-500">Взаимозаменяемый эквивалент по ГОСТ</div>
+                          <div className="text-[11px] text-slate-500">Пригодность и источники нужно проверить</div>
                         </td>
                       </tr>
                     ))}
@@ -416,7 +419,7 @@ export default function PodborTovaraPage() {
 
               <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-slate-600">
                 <span className="flex items-center gap-2">
-                  <FileSpreadsheet size={16} className="text-teal-600" />
+                  <FileText size={16} className="text-teal-600" />
                   <span>Отчет выгружается в фирменном оформлении Word (DOCX).</span>
                 </span>
                 <a
@@ -440,10 +443,10 @@ export default function PodborTovaraPage() {
                   Сквозной процесс снабжения
                 </span>
                 <h3 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-                  От подбора аналогов до сбора коммерческих предложений в 1 клик
+                  После проверки товара найдите поставщиков для запроса КП
                 </h3>
                 <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-                  После завершения подбора аналогов вам не нужно заново вводить позиции. Нажмите кнопку «Найти поставщиков» прямо в карточке задачи — TenderLex автоматически сформирует манифест оборудования и найдет прямые отделы сбыта заводов для получения цен.
+                  Используйте проверенную спецификацию в модуле поиска поставщиков. Подтвердите контакты найденных компаний и направьте запрос с характеристиками, объемом и сроком поставки. Коммерческие условия и готовность отгрузить товар подтверждает поставщик.
                 </p>
                 <div className="pt-4 flex flex-wrap gap-4">
                   <a
@@ -465,60 +468,25 @@ export default function PodborTovaraPage() {
           </div>
         </section>
 
-        {/* PRICING TABLE COMPACT */}
+        {/* CURRENT TERMS */}
         <section className="py-16 sm:py-24 border-b border-slate-200 bg-slate-50">
-          <div className="container max-w-5xl mx-auto px-4 sm:px-6">
-            <div className="text-center max-w-2xl mx-auto mb-12 space-y-3">
+          <div className="container max-w-3xl mx-auto px-4 sm:px-6 text-center">
+            <div className="space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Тарифы на подбор товара и аналогов
+                Условия запуска
               </span>
               <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Прозрачная цена от 75.8 ₽ за позицию
+                Выберите доступный пакет в личном кабинете
               </h2>
-              <p className="text-slate-600 text-sm">
-                Включает распознавание скрытой модели, сверку с реестром Минпромторга и отчет в Word (DOCX).
+              <p className="text-slate-600 text-sm leading-relaxed">
+                Актуальные пакеты и условия отображаются перед запуском задачи в кабинете. Они управляются в системе, поэтому страница не фиксирует цену, объём или срок результата.
               </p>
             </div>
-
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="p-6 bg-white rounded-2xl border-2 border-slate-200 text-center space-y-3 shadow-2xs">
-                <span className="text-xs font-bold text-slate-500 uppercase">Разовый подбор</span>
-                <div className="text-3xl font-black text-slate-900">99 ₽</div>
-                <p className="text-xs text-slate-600">1 подбор товара и аналогов по ТЗ</p>
-                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
-                  Выбрать
-                </a>
-              </div>
-
-              <div className="p-6 bg-white rounded-2xl border-2 border-teal-500 text-center space-y-3 shadow-md relative">
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-teal-600 text-white text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full">
-                  Популярный
-                </div>
-                <span className="text-xs font-bold text-teal-700 uppercase">Пакет 10</span>
-                <div className="text-3xl font-black text-slate-900">890 ₽</div>
-                <p className="text-xs text-slate-600">89 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-teal-600 text-white hover:bg-teal-700 rounded-xl text-xs font-bold transition-all">
-                  Выбрать
-                </a>
-              </div>
-
-              <div className="p-6 bg-white rounded-2xl border-2 border-slate-200 text-center space-y-3 shadow-2xs">
-                <span className="text-xs font-bold text-slate-500 uppercase">Пакет 25</span>
-                <div className="text-3xl font-black text-slate-900">1 990 ₽</div>
-                <p className="text-xs text-slate-600">79.6 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
-                  Выбрать
-                </a>
-              </div>
-
-              <div className="p-6 bg-white rounded-2xl border-2 border-slate-200 text-center space-y-3 shadow-2xs">
-                <span className="text-xs font-bold text-slate-500 uppercase">Пакет 50</span>
-                <div className="text-3xl font-black text-slate-900">3 790 ₽</div>
-                <p className="text-xs text-slate-600">75.8 ₽ за подбор товара и аналогов</p>
-                <a href="/cabinet?scenario=exact_product" className="block w-full py-2 bg-slate-100 hover:bg-teal-600 hover:text-white rounded-xl text-xs font-bold transition-all">
-                  Выбрать
-                </a>
-              </div>
+            <a href="/cabinet?scenario=exact_product" className="inline-flex mt-7 px-6 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm transition-colors">Посмотреть условия в кабинете</a>
+            <div className="mt-8 flex flex-wrap justify-center gap-x-5 gap-y-3 text-sm">
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz">Как проверить аналог по ТЗ</Link>
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz">Как проверять гипотезу о модели</Link>
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli">Как работать с конкретными показателями</Link>
             </div>
           </div>
         </section>

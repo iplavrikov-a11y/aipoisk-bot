@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
@@ -129,15 +130,15 @@ export function RegionalPageLayout({
               >
                 <span>Найти поставщиков в регионе</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>
@@ -184,7 +185,7 @@ export function RegionalPageLayout({
                   Ключевые промышленные кластеры: {regionName}
                 </h2>
                 <p className="text-slate-600 text-sm sm:text-base">
-                  Прямой доступ к производителям и официальным распределительным центрам под спецификации любой сложности.
+                  Профильные производители и поставщики для вашего ТЗ. Полномочия компании, наличие товара и документы подтвердите перед заказом.
                 </p>
               </div>
 
@@ -250,7 +251,7 @@ export function RegionalPageLayout({
                   Логистические узлы и распределительные центры
                 </h2>
                 <p className="text-slate-600 text-sm sm:text-base">
-                  Оптимизация транспортных затрат за счет подбора контрагентов вблизи грузовых терминалов и магистралей.
+                  Учет расположения контрагентов при сравнении полной стоимости доставки. Близость к терминалу или магистрали сама по себе не гарантирует экономию.
                 </p>
               </div>
 
@@ -361,7 +362,7 @@ export function RegionalPageLayout({
 
         <ContactSection
           title={`Подбор поставщиков: ${regionName}`}
-          subtitle={`Загрузите файл ТЗ или спецификации для мгновенного сбора прямых контактов заводов в ${regionGenitive}.`}
+          subtitle={`Загрузите ТЗ или спецификацию, укажите адрес доставки и требования к поставщику в ${regionGenitive}.`}
         />
 
         <SiteFooter />

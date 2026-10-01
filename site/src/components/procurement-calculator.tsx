@@ -8,17 +8,17 @@ export function ProcurementCalculator() {
   const [itemsPerSpec, setItemsPerSpec] = useState<number>(5);
   const [procurementSpecialists, setProcurementSpecialists] = useState<number>(1);
 
-  // Realistic procurement calculations:
+  // Illustrative model assumptions; these are not measured customer outcomes.
   // An experienced procurement specialist spends ~10-12 minutes per item position
   // (searching verified manufacturers, finding direct sales emails, checking certificates, drafting RFQ).
   // With TenderLex automated semantic extraction: ~2-3 minutes per entire specification.
   const totalItems = specsPerMonth * itemsPerSpec;
-  const manualHours = Math.round((totalItems * 0.18 * procurementSpecialists) * 10) / 10;
+  const manualHours = Math.round((totalItems * 0.18) * 10) / 10;
   const tenderlexHours = Math.round((specsPerMonth * 0.04) * 10) / 10;
-  const savedHours = Math.max(1, Math.round(manualHours - tenderlexHours));
+  const savedHours = Math.max(0, Math.round((manualHours - tenderlexHours) * 10) / 10);
 
-  // Average procurement specialist hourly rate in RF: ~750 RUB/hour
-  const savedBudget = Math.round(savedHours * 750);
+  // Illustrative hourly cost, not a market statistic.
+  const savedBudget = Math.round(savedHours * procurementSpecialists * 750);
   const speedMultiplier = 10;
 
   return (
@@ -97,9 +97,9 @@ export function ProcurementCalculator() {
           {/* Slider 3 */}
           <div className="space-y-2 bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
             <div className="flex justify-between items-center text-sm font-bold text-slate-800">
-              <span>Специалистов в отделе снабжения:</span>
+              <span>Ставка часа в расчёте:</span>
               <span className="text-teal-700 font-extrabold text-base bg-teal-50 px-3 py-0.5 rounded-lg border border-teal-200">
-                {procurementSpecialists} чел.
+                {procurementSpecialists * 750} ₽
               </span>
             </div>
             <input
@@ -126,7 +126,7 @@ export function ProcurementCalculator() {
               Прогнозируемый результат в месяц
             </span>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
-              ~10x быстрее
+              Условная модель
             </span>
           </div>
 
@@ -134,20 +134,20 @@ export function ProcurementCalculator() {
             <div className="border-b border-slate-200 pb-4">
               <div className="flex items-center gap-2 text-slate-600 text-xs font-bold mb-1">
                 <Clock size={14} className="text-emerald-600" />
-                <span>Экономия рабочего времени:</span>
+                <span>Расчётная экономия времени:</span>
               </div>
               <div className="text-3xl sm:text-4xl font-extrabold text-emerald-700">
                 ~{savedHours} {savedHours === 1 ? "час" : savedHours < 5 ? "часа" : "часов"}
               </div>
               <span className="text-[11px] text-slate-500">
-                вместо ручного поиска аналогов по ГОСТ, сбора контактов заводов и набора запросов КП
+                расчётный пример для заданного объёма работы, не измеренный результат клиента
               </span>
             </div>
 
             <div>
               <div className="flex items-center gap-2 text-slate-600 text-xs font-bold mb-1">
                 <DollarSign size={14} className="text-emerald-600" />
-                <span>Экономия фонда оплаты труда:</span>
+                <span>Расчётная стоимость освобождённого времени:</span>
               </div>
               <div className="text-2xl sm:text-3xl font-extrabold text-slate-900">
                 ~{savedBudget.toLocaleString("ru-RU")} ₽
@@ -158,17 +158,18 @@ export function ProcurementCalculator() {
             </div>
           </div>
 
+          <p className="text-xs text-slate-500">Условная модель: 10,8 минуты вручную на позицию, 2,4 минуты на ТЗ в сервисе и {procurementSpecialists * 750} ₽ за час. Время проверки результата учитывайте отдельно. Фактическая экономия зависит от сложности задания и организации работы.</p>
           <div className="space-y-2">
             <a
-              href="/cabinet?scenario=analytics&tab=quick_request"
+              href="/cabinet?scenario=supplier_search"
               className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all shadow-md shadow-emerald-600/20 hover:scale-[1.01]"
             >
-              <span>Рассчитать закупку в кабинете (1 проверка бесплатно)</span>
+              <span>Найти поставщиков для запроса КП</span>
             </a>
             <div className="flex items-center justify-between text-[11px] text-slate-500 px-1 pt-1">
               <span>✓ Без установки программ</span>
               <a
-                href="/baza-znaniy/analiz-rynka-metod-sopostavimyh-cen-44-fz"
+                href="/baza-znaniy/raschet-nmck-metodom-sopostavimyh-cen"
                 className="text-teal-700 hover:underline font-semibold"
               >
                 Методика расчета НМЦК по 44-ФЗ →

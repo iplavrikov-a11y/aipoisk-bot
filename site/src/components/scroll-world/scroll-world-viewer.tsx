@@ -1,5 +1,7 @@
 "use client";
 
+import { PublicSiteLink } from "@/components/public-site-link";
+
 import React, { useRef, useState } from "react";
 import Link from "next/link";
 import {
@@ -46,15 +48,15 @@ export function ScrollWorldViewer() {
       label: "1. ТЗ и спецификация",
       stepNum: "01",
       eyebrow: "ИСХОДНЫЙ ДОКУМЕНТ",
-      title: "Загрузка сложного ТЗ или сметы",
-      body: "Система мгновенно принимает PDF, Word или Excel любого объема. Нейросеть распознает номенклатуру, вычленяет маркоразмеры, ГОСТы, чертежи и скрытые технические требования заказчика.",
-      tags: ["Парсинг 44-ФЗ / 223-ФЗ", "Любые форматы (PDF, Excel, Docx)", "Извлечение ГОСТ и марок"],
+      title: "Разбор ТЗ или сметы для проверки",
+      body: "Система принимает PDF, Word или Excel. Она выделяет номенклатуру, маркоразмеры, ГОСТы, чертежи и технические требования для последующей проверки.",
+      tags: ["Парсинг 44-ФЗ / 223-ФЗ", "PDF, Excel, Docx", "Извлечение ГОСТ и марок"],
       accent: "#059669",
       badge: "Шаг 1: Семантический парсинг",
       metrics: [
-        { label: "Скорость распознавания", value: "2.4 сек" },
-        { label: "Точность извлечения позиций", value: "99.4%" },
-        { label: "Выделено требований", value: "14 параметров" },
+        { label: "Результат", value: "Структура ТЗ" },
+        { label: "Проверка", value: "Номенклатура и параметры" },
+        { label: "Пример", value: "Учебная спецификация" },
       ],
       visualScene: (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 sm:p-6 relative">
@@ -65,7 +67,7 @@ export function ScrollWorldViewer() {
                 <div className="w-3 h-3 rounded-full bg-amber-400" />
                 <div className="w-3 h-3 rounded-full bg-emerald-500" />
                 <span className="text-xs font-mono ml-2 font-semibold text-slate-700">
-                  ТЗ_Закупка_Кабель_и_Трубы.pdf
+                  Условная_спецификация.pdf
                 </span>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -109,7 +111,7 @@ export function ScrollWorldViewer() {
               <span className="flex items-center gap-1.5 font-bold text-emerald-700">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-pulse" /> Спецификация структурирована
               </span>
-              <span className="font-mono font-bold text-slate-700">100% готовность</span>
+              <span className="font-mono font-bold text-slate-700">Нужна проверка данных</span>
             </div>
           </div>
         </div>
@@ -120,15 +122,15 @@ export function ScrollWorldViewer() {
       label: "2. Аудит рисков 44-ФЗ",
       stepNum: "02",
       eyebrow: "ЛАБОРАТОРИЯ АНАЛИЗА",
-      title: "Аудит ловушек, штрафов и Минпромторга",
-      body: "Автоматическая юридическая сверка проекта контракта: проверка на скрытые штрафы (ПП РФ № 1042), нереалистичные сроки поставки (3–5 дней), требования нацрежима (ПП 616/617) и риски попадания в РНП.",
-      tags: ["Защита от РНП", "Сверка со ст. 34 44-ФЗ", "Проверка реестра Минпромторга"],
+      title: "Проверка условий, штрафов и нацрежима",
+      body: "Предварительный анализ проекта контракта помогает выделить штрафы, сроки поставки, требования национального режима и условия, которые требуют правовой проверки.",
+      tags: ["Условия для проверки", "Сверка с проектом контракта", "Проверка реестра при необходимости"],
       accent: "#059669",
-      badge: "Шаг 2: Экспресс-аудит безопасности",
+      badge: "Шаг 2: Предварительный анализ условий",
       metrics: [
         { label: "Сверка штрафов", value: "ПП РФ № 1042" },
-        { label: "Нацрежим / Реестр", value: "ПП 616 / 617" },
-        { label: "Оценка риска заявки", value: "Безопасно" },
+        { label: "Нацрежим / Реестр", value: "ПП РФ № 1875" },
+        { label: "Оценка риска заявки", value: "Требует проверки" },
       ],
       visualScene: (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 sm:p-6 relative">
@@ -137,11 +139,11 @@ export function ScrollWorldViewer() {
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600" />
                 <span className="text-xs font-bold text-slate-900">
-                  Отчет экспресс-аудита рисков
+                  Учебный пример анализа условий
                 </span>
               </div>
               <span className="text-[10px] bg-emerald-50 text-emerald-800 font-bold px-2 py-0.5 rounded border border-emerald-200">
-                Индекс риска: 15% (Низкий)
+                Требует проверки
               </span>
             </div>
 
@@ -159,9 +161,9 @@ export function ScrollWorldViewer() {
               <div className="p-3 bg-emerald-50/90 rounded-xl border border-emerald-200 text-emerald-950 flex items-start gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <div>
-                  <div className="font-bold text-[11px]">Штрафы соответствуют ПП № 1042</div>
+                  <div className="font-bold text-[11px]">Штрафы: сверить с условиями закупки</div>
                   <div className="text-[10px] text-emerald-900/80 mt-0.5">
-                    Неправомерных штрафных санкций и кабальных условий не выявлено.
+                    Применимость нормы и расчёт проверяют по действующей редакции и проекту контракта.
                   </div>
                 </div>
               </div>
@@ -169,17 +171,17 @@ export function ScrollWorldViewer() {
               <div className="p-3 bg-teal-50/90 rounded-xl border border-teal-200 text-teal-950 flex items-start gap-2.5">
                 <Building2 className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
                 <div>
-                  <div className="font-bold text-[11px]">Реестр Минпромторга (ПП 616/617)</div>
+                  <div className="font-bold text-[11px]">Национальный режим и реестр</div>
                   <div className="text-[10px] text-teal-900/80 mt-0.5">
-                    Ограничений допуска нет. Разрешена поставка аналогов с сертификатом ГОСТ.
+                    Проверьте применимую меру, запись на модель и условия извещения.
                   </div>
                 </div>
               </div>
             </div>
 
             <div className="mt-4 pt-3 border-t border-emerald-100 flex items-center justify-between text-xs text-slate-600">
-              <span>Правовая проверка завершена</span>
-              <span className="text-emerald-700 font-bold">Допуск к торгам: Рекомендован</span>
+              <span>Учебный пример структуры проверки</span>
+              <span className="text-emerald-700 font-bold">Решение принимает участник</span>
             </div>
           </div>
         </div>
@@ -190,15 +192,15 @@ export function ScrollWorldViewer() {
       label: "3. Радар заводов и дилеров",
       stepNum: "03",
       eyebrow: "ГЕО-РАДАР ПОСТАВЩИКОВ",
-      title: "Поиск производителей и дилеров по всей РФ",
-      body: "Алгоритм опрашивает федеральную базу производственных предприятий и дистрибьюторов. Извлекаются прямые контакты отделов сбыта, коммерческих директоров и персональных менеджеров без перекупщиков.",
-      tags: ["Прямые заводы РФ", "Официальные дилеры", "Телефоны и email сбыта"],
+      title: "Поиск кандидатов на поставку",
+      body: "Поиск помогает сформировать список кандидатов для запроса КП. Роль компании, действительность контактов, наличие и условия поставки подтверждают перед заказом.",
+      tags: ["Кандидаты на поставку", "Проверка роли компании", "Контакты для уточнения"],
       accent: "#059669",
-      badge: "Шаг 3: Федеральный скан поставщиков",
+      badge: "Шаг 3: Подготовка списка кандидатов",
       metrics: [
-        { label: "База предприятий", value: "350 000+ заводов" },
-        { label: "Регионы охвата", value: "89 субъектов РФ" },
-        { label: "Исключение наценок", value: "Прямой сбыт" },
+        { label: "Результат", value: "Кандидаты" },
+        { label: "Проверка", value: "Роль и контакты" },
+        { label: "Условия", value: "Уточняются у компании" },
       ],
       visualScene: (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 sm:p-6 relative">
@@ -207,11 +209,11 @@ export function ScrollWorldViewer() {
               <div className="flex items-center gap-2">
                 <Search className="w-4 h-4 text-emerald-600" />
                 <span className="text-xs font-bold text-slate-900">
-                  Найденные производители и дилеры
+                  Учебный список кандидатов
                 </span>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-200">
-                12 прямых контактов
+                Проверить перед запросом
               </span>
             </div>
 
@@ -219,43 +221,43 @@ export function ScrollWorldViewer() {
               <div className="p-3.5 bg-emerald-50/50 rounded-xl border border-emerald-200 text-slate-800">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-bold flex items-center gap-1.5 text-slate-900">
-                    <Factory className="w-3.5 h-3.5 text-emerald-700" /> ООО &quot;Кавказкабель&quot;
+                    <Factory className="w-3.5 h-3.5 text-emerald-700" /> Условный изготовитель
                   </span>
                   <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-                    Завод-изготовитель
+                    Роль требует проверки
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-600">
-                  Россия, КБР (Прямой выпуск по ГОСТ 31996)
+                  Условный регион и сведения о продукции
                 </div>
                 <div className="mt-2.5 pt-2 border-t border-emerald-200/80 flex items-center justify-between text-[11px]">
-                  <span className="font-mono font-bold text-emerald-700">sales@kavkazkabel.ru</span>
-                  <span className="font-mono text-slate-700">+7 (866) 240-77-11</span>
+                  <span className="font-mono font-bold text-emerald-700">контакт для проверки</span>
+                  <span className="font-mono text-slate-700">—</span>
                 </div>
               </div>
 
               <div className="p-3.5 bg-emerald-50/50 rounded-xl border border-emerald-200 text-slate-800">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-bold flex items-center gap-1.5 text-slate-900">
-                    <Building2 className="w-3.5 h-3.5 text-teal-700" /> ООО &quot;Севкабель-Дистрибуция&quot;
+                    <Building2 className="w-3.5 h-3.5 text-teal-700" /> Условный поставщик
                   </span>
                   <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-teal-100 text-teal-900 border border-teal-300">
-                    Официальный дилер
+                    Статус требует проверки
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-600">
-                  Москва (Центральный распределительный склад)
+                  Условные сведения о поставке
                 </div>
                 <div className="mt-2.5 pt-2 border-t border-emerald-200/80 flex items-center justify-between text-[11px]">
-                  <span className="font-mono font-bold text-emerald-700">msk@sevkabel.ru</span>
-                  <span className="font-mono text-slate-700">+7 (495) 120-44-88</span>
+                  <span className="font-mono font-bold text-emerald-700">контакт для проверки</span>
+                  <span className="font-mono text-slate-700">—</span>
                 </div>
               </div>
             </div>
 
             <div className="mt-4 pt-3 border-t border-emerald-100 flex items-center justify-between text-xs text-slate-600">
               <span>Сортировка по логистике</span>
-              <span className="font-bold text-emerald-700">Охват 100% позиций</span>
+              <span className="font-bold text-emerald-700">Позиции для проверки</span>
             </div>
           </div>
         </div>
@@ -266,15 +268,15 @@ export function ScrollWorldViewer() {
       label: "4. Генерация Запросов КП (RFQ)",
       stepNum: "04",
       eyebrow: "АВТО-ГЕНЕРАТОР ЗАПРОСОВ",
-      title: "Формирование и веерная рассылка запросов цен",
-      body: "Платформа автоматически генерирует профессиональное официальное письмо-запрос с подробной номенклатурной таблицей, объемами партии, условиями доставки и запросом сертификатов качества.",
-      tags: ["Официальный бланк RFQ", "Веерный запрос КП", "Таблица с ГОСТами"],
+      title: "Проект запроса коммерческого предложения",
+      body: "Платформа готовит черновик запроса с номенклатурой, объёмом и вопросами о поставке. Пользователь проверяет адресатов и условия перед самостоятельной отправкой.",
+      tags: ["Проект запроса КП", "Проверка адресатов", "Таблица с требованиями"],
       accent: "#059669",
-      badge: "Шаг 4: Автоматизация запросов цен",
+      badge: "Шаг 4: Подготовка запроса КП",
       metrics: [
-        { label: "Время составления RFQ", value: "Мгновенно" },
-        { label: "Адресатов в рассылке", value: "до 15 компаний" },
-        { label: "Средний отклик", value: "от 40 минут" },
+        { label: "Результат", value: "Проект запроса" },
+        { label: "Адресаты", value: "Проверяются" },
+        { label: "Ответ", value: "Зависит от компании" },
       ],
       visualScene: (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 sm:p-6 relative">
@@ -283,11 +285,11 @@ export function ScrollWorldViewer() {
               <div className="flex items-center gap-2">
                 <Mail className="w-4 h-4 text-emerald-600" />
                 <span className="text-xs font-bold text-slate-900">
-                  Автоматически сгенерированный Запрос КП
+                  Учебный пример запроса КП
                 </span>
               </div>
               <span className="text-[10px] bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded border border-emerald-200">
-                Готов к отправке
+                Проверить перед отправкой
               </span>
             </div>
 
@@ -309,7 +311,7 @@ export function ScrollWorldViewer() {
 
             <div className="mt-4 pt-3 border-t border-emerald-100 flex items-center justify-between text-xs text-slate-600">
               <span className="flex items-center gap-1.5 text-emerald-800 font-bold">
-                <Send className="w-3.5 h-3.5 text-emerald-600" /> 8 адресатов выбрано
+                <Send className="w-3.5 h-3.5 text-emerald-600" /> Адресата выбирает пользователь
               </span>
               <span className="font-bold text-slate-800">Экспорт в 1 клик</span>
             </div>
@@ -322,15 +324,15 @@ export function ScrollWorldViewer() {
       label: "5. Выигранный контракт и экономия",
       stepNum: "05",
       eyebrow: "ФИНАЛЬНЫЙ РЕЗУЛЬТАТ",
-      title: "Победа в тендере с маржинальностью +18%",
-      body: "Вы получаете актуальные оптовые цены напрямую с заводов, снижаете себестоимость закупки, исключаете риски штрафов и выигрываете контракт с максимальной прибылью.",
-      tags: ["Экономия до 22% на закупке", "100% соблюдение ГОСТ", "Готовый комплект документов"],
+      title: "Подготовка данных для решения по закупке",
+      body: "Список поставщиков, проект запроса КП и карта условий помогают подготовить данные для сравнения вариантов. Итоговое решение и проверка документов остаются за участником закупки.",
+      tags: ["Сравнение вариантов", "Проверка ГОСТ", "Комплект документов"],
       accent: "#059669",
       badge: "Финал: Успешная сдача и маржа",
       metrics: [
-        { label: "Экономия бюджета", value: "до 22%" },
-        { label: "Сокращение времени поиска", value: "в 10 раз" },
-        { label: "Защита от штрафов", value: "100%" },
+        { label: "Экономия бюджета", value: "Сравнение КП" },
+        { label: "Время поиска", value: "Зависит от ТЗ" },
+        { label: "Риски", value: "Требуют проверки" },
       ],
       visualScene: (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 sm:p-6 relative">
@@ -339,16 +341,16 @@ export function ScrollWorldViewer() {
               <Sparkles className="w-7 h-7 text-emerald-700" />
             </div>
 
-            <span className="text-[11px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border bg-emerald-100 text-emerald-900 border-emerald-300">
-              Контракт защищен и укомплектован
+              <span className="text-[11px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border bg-emerald-100 text-emerald-900 border-emerald-300">
+              Учебный пример результата
             </span>
 
             <h3 className="text-2xl font-black mt-3 mb-2 tracking-tight text-slate-900">
-              Экономия 412 000 ₽ на партии
+              Данные для сравнения вариантов
             </h3>
 
             <p className="text-xs leading-relaxed max-w-xs mx-auto mb-6 text-slate-600">
-              Прямой контакт с заводом позволил снизить закупочную цену на 18.4% ниже НМЦК без риска срыва сроков.
+              Сравните подтверждённые КП, документы и условия поставки. Экономию, срок и исполнимость сделки подтверждает участник закупки.
             </p>
 
             <div className="space-y-2.5">
@@ -359,7 +361,7 @@ export function ScrollWorldViewer() {
               >
                 <Link href="/cabinet">
                   <Sparkles className="w-4 h-4 mr-2" />
-                  Попробовать бесплатно на своем ТЗ
+                  Открыть кабинет для своего ТЗ
                 </Link>
               </Button>
 
@@ -369,10 +371,10 @@ export function ScrollWorldViewer() {
                 size="default"
                 className="w-full text-xs text-slate-600 hover:text-slate-900 hover:bg-emerald-50/50"
               >
-                <a href="https://t.me/tenderlex_bot" target="_blank" rel="noreferrer">
+                <PublicSiteLink channel="bot" target="_blank" rel="noreferrer">
                   <Send className="w-3.5 h-3.5 mr-1.5 text-emerald-700" />
                   Открыть в Telegram @tenderlex_bot
-                </a>
+                </PublicSiteLink>
               </Button>
             </div>
           </div>
@@ -419,7 +421,7 @@ export function ScrollWorldViewer() {
           </div>
           <span className="text-emerald-300 text-xs hidden sm:inline">•</span>
           <span className="text-slate-600 text-xs hidden sm:inline font-medium">
-            От загрузки сырого ТЗ до прямого контакта с заводами
+            От ТЗ до данных для проверки поставки
           </span>
         </div>
 
