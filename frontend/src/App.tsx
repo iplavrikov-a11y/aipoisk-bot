@@ -2222,9 +2222,9 @@ type RecommendationItem = {
 
 type DailyMetricItem = {
   date: string
-  clicks: number
-  shows: number
-  avg_position?: number
+  clicks?: number | null
+  shows?: number | null
+  avg_position?: number | null
   ctr_percent?: number
   queries_count?: number
   clicks_delta?: number
@@ -2235,8 +2235,8 @@ type DailyMetricItem = {
 
 type CombinedDailyDynamic = {
   date: string
-  total_clicks: number
-  total_shows: number
+  total_clicks: number | null
+  total_shows: number | null
   total_queries: number
   yandex?: DailyMetricItem
   google?: DailyMetricItem
@@ -2255,47 +2255,45 @@ type PhraseDynamicItem = {
   trend: 'up' | 'down' | 'stable'
 }
 
-type TodayEngineProgress = {
-  clicks: number
-  shows: number
-  avg_position: number
-  queries_count: number
-  clicks_delta: number
-  shows_delta: number
-  pos_delta: number
-  trend: 'up' | 'down' | 'stable'
-  data_date?: string
-}
-
 type TodayProgress = {
-  date: string
-  today_site_visits: number
-  today_site_users: number
-  today_site_pageviews: number
+  status: 'available' | 'unavailable'
+  reason?: string
+  date?: string | null
   yandex: TodayEngineProgress
   google: TodayEngineProgress
-  combined: {
-    clicks: number
-    shows: number
-    avg_position: number
-    queries_count: number
-    ranking_status: string
-  }
+  combined: { clicks?: number; shows?: number; avg_position?: number | null; queries_count?: number; ranking_status?: string }
+}
+
+type TodayEngineProgress = {
+  clicks?: number
+  shows?: number
+  avg_position?: number | null
+  queries_count?: number
+  clicks_delta?: number | null
+  shows_delta?: number | null
+  pos_delta?: number | null
 }
 
 type SeoAnalytics = {
   updated_at: string
   collection_status: string
+  data_freshness?: {
+    collected_at?: string
+    webmaster?: { status?: string; period?: string }
+    metrika?: { status?: string; date_ready?: string; source?: string; timezone?: string }
+    google?: { start_date?: string; end_date?: string; period_days?: number; is_closed?: boolean }
+  }
   sample_size_ready: boolean
-  sample_visits: number
+  sample_visits: number | null
   sample_target: number
   today_progress?: TodayProgress
   daily_dynamics?: CombinedDailyDynamic[]
   phrase_dynamics?: PhraseDynamicItem[]
   webmaster: {
-    sqi: number
-    searchable_pages: number
-    excluded_pages: number
+    error?: string
+    sqi: number | null
+    searchable_pages: number | null
+    excluded_pages: number | null
     top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
     daily_dynamics?: DailyMetricItem[]
     phrase_dynamics?: PhraseDynamicItem[]
@@ -2304,10 +2302,7 @@ type SeoAnalytics = {
       shows: number
       clicks: number
       avg_position: number
-      wordstat_demand?: number
-      top3_potential_clicks?: number
       priority?: 'high' | 'medium' | 'normal'
-      demand_source?: string
       potential: string
       action: string
     }[]
@@ -2315,10 +2310,10 @@ type SeoAnalytics = {
   google?: {
     status: string
     site_url: string
-    period_days: number
-    total_impressions: number
-    total_clicks: number
-    avg_position: number
+    period_days?: number
+    total_impressions?: number | null
+    total_clicks?: number | null
+    avg_position?: number | null
     avg_ctr_percent: number
     top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
     daily_dynamics?: DailyMetricItem[]
@@ -2328,14 +2323,17 @@ type SeoAnalytics = {
       shows: number
       clicks: number
       avg_position: number
-      wordstat_demand?: number
-      top3_potential_clicks?: number
       priority?: 'high' | 'medium' | 'normal'
       potential: string
       action: string
     }[]
     sitemaps?: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number }[]
     error?: string
+    errors?: string[]
+    totals_status?: string
+    period?: { start_date?: string; end_date?: string; period_days?: number; is_closed?: boolean }
+    property_totals?: { clicks?: number | null; impressions?: number | null; ctr_percent?: number | null; avg_position?: number | null }
+    query_sample?: { status?: string; row_count?: number | null; clicks?: number | null; impressions?: number | null; ctr_percent?: number | null; avg_position?: number | null; impression_coverage_percent?: number | null }
   }
   combined_queries?: {
     text: string
@@ -2345,23 +2343,26 @@ type SeoAnalytics = {
     google_pos?: number | null
     google_shows: number
     google_clicks: number
-    total_shows: number
-    total_clicks: number
+    total_shows: number | null
+    total_clicks: number | null
     in_yandex: boolean
     in_google: boolean
   }[]
   metrika: {
-    period_days: number
-    visits: number
-    users: number
-    pageviews: number
-    bounce_rate: number
-    avg_duration_seconds: number
+    period_days?: number
+    period?: { start_date?: string; end_date?: string; period_days?: number; timezone?: string; is_closed?: boolean }
+    measurement_notes?: string[]
+    error?: string
+    visits?: number | null
+    users?: number | null
+    pageviews?: number | null
+    bounce_rate?: number | null
+    avg_duration_seconds?: number | null
     sources: { name: string; visits: number; users: number }[]
     top_pages: { path: string; visits: number; users: number; bounce_rate: number; avg_duration_seconds: number }[]
-    goals?: { id: number; name: string; type: string; reaches: number }[]
-    total_goal_reaches?: number
-    total_conversion_rate?: number
+    goals?: { id: number; name: string; type: string; reaches: number | null }[]
+    total_goal_reaches?: number | null
+    primary_conversion?: { visits?: number | null; period?: { start_date?: string; end_date?: string }; organic?: { status?: string; visits?: number | null; goal_visits?: number | null; rate_percent?: number | null }; status?: 'available' | 'unavailable'; goal_id?: number | null; goal_name?: string | null; goal_visits?: number | null; rate_percent?: number | null; reason?: string }
   }
   recommendations: RecommendationItem[]
 }
@@ -2379,7 +2380,9 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
 
   function classifyQuery(text: string): 'suppliers' | 'analog' | 'analysis' | 'other' {
     const t = (text || '').toLowerCase()
-    if (t.includes('постав') || t.includes('производ') || t.includes('кп') || t.includes('коммерческ') || t.includes('запрос') || t.includes('счет') || t.includes('завод') || t.includes('фабрик') || t.includes('дилер') || t.includes('сбыт')) {
+    const words = t.split(/[^а-яё0-9]+/u)
+    const hasKp = words.includes('кп')
+    if (t.includes('постав') || t.includes('производ') || hasKp || t.includes('коммерческ') || t.includes('запрос кп') || t.includes('счет') || t.includes('завод') || t.includes('фабрик') || t.includes('дилер') || t.includes('сбыт')) {
       return 'suppliers'
     }
     if (t.includes('аналог') || t.includes('товар') || t.includes('эквивалент') || t.includes('гисп') || t.includes('образец') || t.includes('номенклатур') || t.includes('оборудован')) {
@@ -2461,16 +2464,24 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
   }
 
   const { webmaster, metrika, google, combined_queries } = data
-  const durationMin = Math.floor((metrika.avg_duration_seconds || 0) / 60)
-  const durationSec = (metrika.avg_duration_seconds || 0) % 60
-  const durationFormatted = `${durationMin} мин ${durationSec} сек`
+  const known = (value: number | null | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
+  const displayNumber = (value: number | null | undefined, suffix = '') => known(value) ? `${value}${suffix}` : '—'
+  const durationFormatted = known(metrika.avg_duration_seconds)
+    ? `${Math.floor(metrika.avg_duration_seconds / 60)} мин ${Math.round(metrika.avg_duration_seconds % 60)} сек`
+    : '—'
+  const primaryConversion = metrika.primary_conversion
+  const primaryConversionAvailable = primaryConversion?.status === 'available' && known(primaryConversion.rate_percent)
+  const metrikaPeriod = metrika.period
+  const metrikaPeriodLabel = metrikaPeriod?.start_date && metrikaPeriod?.end_date
+    ? `${metrikaPeriod.start_date} — ${metrikaPeriod.end_date}`
+    : metrika.period_days ? `${metrika.period_days} дней` : 'период не указан'
 
   const metrics = [
-    { label: 'Посетители сайта', value: `${metrika.users || 0} чел.`, note: `за последние ${metrika.period_days || 30} дней`, icon: Users },
-    { label: 'Всего визитов', value: metrika.visits || 0, note: `${metrika.pageviews || 0} просмотров страниц`, icon: Globe },
-    { label: 'Конверсия в цели', value: `${metrika.total_conversion_rate || 0}%`, note: `${metrika.total_goal_reaches || 0} целевых действий`, icon: CheckCircle2 },
+    { label: 'Посетители сайта', value: displayNumber(metrika.users, ' чел.'), note: `Метрика: ${metrikaPeriodLabel}`, icon: Users },
+    { label: 'Всего визитов', value: displayNumber(metrika.visits), note: known(metrika.pageviews) ? `${metrika.pageviews} просмотров страниц` : 'просмотры недоступны', icon: Globe },
+    { label: 'Основная конверсия', value: primaryConversionAvailable ? `${primaryConversion.rate_percent}%` : '—', note: primaryConversionAvailable ? `${primaryConversion.goal_name || 'основная цель'}: ${primaryConversion.goal_visits ?? '—'} визитов` : (primaryConversion?.reason || 'цель не настроена или данные недоступны'), icon: CheckCircle2 },
     { label: 'Время на сайте', value: durationFormatted, note: 'средняя длительность визита', icon: ShieldCheck },
-    { label: 'Отказы', value: `${metrika.bounce_rate || 0}%`, note: 'ушли в первые 15 секунд', icon: ArrowDown },
+    { label: 'Отказы', value: displayNumber(metrika.bounce_rate, '%'), note: 'Метрика: доля отказов', icon: ArrowDown },
   ]
 
   const yandexGrowthPoints = (webmaster.growth_points || []).map(g => ({ ...g, engine: 'yandex' as const }))
@@ -2500,52 +2511,10 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
     ? phraseDynamicsAll
     : phraseDynamicsAll.filter(p => p.engine === searchEngine)
 
-  const currentClicks = searchEngine === 'all'
-    ? (todayProg?.combined.clicks ?? (metrika.visits || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.clicks ?? 0)
-    : (todayProg?.google.clicks ?? (google?.total_clicks || 0))
-
-  const currentClicksDelta = searchEngine === 'all'
-    ? ((todayProg?.yandex.clicks_delta || 0) + (todayProg?.google.clicks_delta || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.clicks_delta || 0)
-    : (todayProg?.google.clicks_delta || 0)
-
-  const currentShows = searchEngine === 'all'
-    ? (todayProg?.combined.shows ?? ((google?.total_impressions || 0) + 50))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.shows ?? 50)
-    : (todayProg?.google.shows ?? (google?.total_impressions || 0))
-
-  const currentShowsDelta = searchEngine === 'all'
-    ? ((todayProg?.yandex.shows_delta || 0) + (todayProg?.google.shows_delta || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.shows_delta || 0)
-    : (todayProg?.google.shows_delta || 0)
-
-  const currentPos = searchEngine === 'all'
-    ? (todayProg?.combined.avg_position || 14.0)
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.avg_position || 10.6)
-    : (todayProg?.google.avg_position || (google?.avg_position || 0.0))
-
-  const currentPosDelta = searchEngine === 'all'
-    ? Math.round((((todayProg?.yandex.pos_delta || 0) + (todayProg?.google.pos_delta || 0)) / 2) * 10) / 10
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.pos_delta || 0)
-    : (todayProg?.google.pos_delta || 0)
-
-  const currentQueries = searchEngine === 'all'
-    ? (todayProg?.combined.queries_count || combinedQueries.length)
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.queries_count || yandexQueries.length)
-    : (todayProg?.google.queries_count || googleQueries.length)
-
   const maxChartShows = Math.max(...slicedDynamics.map(d => {
-    if (searchEngine === 'yandex') return d.yandex?.shows || 0
-    if (searchEngine === 'google') return d.google?.shows || 0
-    return d.total_shows || 0
+    if (searchEngine === 'yandex') return d.yandex?.shows ?? 0
+    if (searchEngine === 'google') return d.google?.shows ?? 0
+    return d.total_shows ?? 0
   }), 10)
 
   function formatDynamicsDate(dStr: string) {
@@ -2616,7 +2585,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
               <span className="status-badge" style={{ background: '#e5f4f3', color: '#075b63', fontWeight: 'bold', padding: '3px 8px', borderRadius: 6 }}>
-                ● Автоматический сбор активен
+                ● Сбор: {data.collection_status === 'active' ? 'без ошибок' : data.collection_status === 'partial' ? 'частично доступен' : 'статус неизвестен'}
               </span>
               <small style={{ color: 'var(--muted)' }}>
                 Обновлено: {new Date(data.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
@@ -2625,7 +2594,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
               {recrawlMsg && <span style={{ color: '#047857', fontWeight: 'bold', fontSize: 12 }}>⚡ {recrawlMsg}</span>}
             </div>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)' }}>
-              Сервер самостоятельно опрашивает Яндекс.Метрику, Вебмастер, Wordstat и Google Search Console API в фоновом режиме.
+              Данные получены из Яндекс.Метрики, Вебмастера и Google Search Console. Периоды источников могут различаться.
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -2659,16 +2628,35 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         })}
       </div>
 
+      {(!data.sample_size_ready || metrika.error || google?.errors?.length || webmaster.error) && (
+        <div className="inline-note" style={{ padding: 12 }}>
+          {!data.sample_size_ready && `Органические визиты для оценки регистрации: ${displayNumber(data.sample_visits)}; ориентир накопления — ${displayNumber(data.sample_target)}. Это ориентир объёма, а не доказательство статистической значимости. `}
+          {metrika.error && `Метрика: ${metrika.error}. `}
+          {webmaster.error && `Вебмастер: ${webmaster.error}. `}
+          {google?.errors?.length ? `Google Search Console: ${google.errors.join('; ')}.` : ''}
+        </div>
+      )}
+
+      <p className="field-help" style={{ margin: 0 }}>
+        Периоды: Метрика — {metrikaPeriodLabel}; Google — {google?.period?.start_date && google?.period?.end_date ? `${google.period.start_date} — ${google.period.end_date}` : 'не указан'}; Вебмастер — {data.data_freshness?.webmaster?.period || 'период определяется источником'}.
+      </p>
+
+      <p className="field-help">
+        Новые события регистрации включены 30.09.2026; первый полный день для расчёта — 01.10.2026: {primaryConversion?.period?.start_date && primaryConversion?.period?.end_date ? `${primaryConversion.period.start_date} — ${primaryConversion.period.end_date}` : 'завершённый период ещё не накоплен'}.
+        Органика: {primaryConversion?.organic?.status === 'available' ? `${displayNumber(primaryConversion.organic.rate_percent, '%')} (${displayNumber(primaryConversion.organic.goal_visits)} из ${displayNumber(primaryConversion.organic.visits)} визитов)` : 'конверсия пока недоступна'}.
+        Google использует завершённые данные в часовом поясе America/Los_Angeles с задержкой 3 дня; Метрика — часовой пояс счётчика. Невидимые в API фразы не означают отсутствие показов.
+      </p>
+
       {/* 2.1 SEARCH ENGINES OVERVIEW CARDS */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
         <div style={{ background: '#fff', border: '1px solid #fed7aa', borderLeft: '4px solid #ea580c', borderRadius: 8, padding: '12px 16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: '#9a3412' }}>🔴 Яндекс Поиск</span>
-            <span className="pill tg" style={{ fontSize: 11 }}>ИКС: {webmaster.sqi || 10}</span>
+            <span className="pill tg" style={{ fontSize: 11 }}>ИКС: {displayNumber(webmaster.sqi)}</span>
           </div>
           <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
             <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в ТОПе:</span>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Видимых фраз API:</span>
               <strong style={{ fontSize: 16, color: '#0f172a' }}>{yandexQueries.length}</strong>
             </div>
             <div>
@@ -2677,7 +2665,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
             </div>
             <div>
               <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Страниц в индексе:</span>
-              <strong style={{ fontSize: 16, color: '#0f766e' }}>{webmaster.searchable_pages || 32}</strong>
+              <strong style={{ fontSize: 16, color: '#0f766e' }}>{displayNumber(webmaster.searchable_pages)}</strong>
             </div>
           </div>
         </div>
@@ -2685,20 +2673,20 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         <div style={{ background: '#fff', border: '1px solid #bfdbfe', borderLeft: '4px solid #2563eb', borderRadius: 8, padding: '12px 16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8' }}>🔵 Google Search Console</span>
-            <span className="pill web" style={{ fontSize: 11 }}>API v1: {google?.status === 'active' ? 'Активен' : 'Подключение'}</span>
+            <span className="pill web" style={{ fontSize: 11 }}>API v1: {google?.status === 'active' ? 'Данные получены' : google?.status === 'partial' ? 'Частичные данные' : 'Данные недоступны'}</span>
           </div>
           <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
             <div>
               <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Показы в Google:</span>
-              <strong style={{ fontSize: 16, color: '#0f172a' }}>{google?.total_impressions || 0}</strong>
+              <strong style={{ fontSize: 16, color: '#0f172a' }}>{displayNumber(google?.property_totals?.impressions ?? google?.total_impressions)}</strong>
             </div>
             <div>
               <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Клики из Google:</span>
-              <strong style={{ fontSize: 16, color: '#047857' }}>{google?.total_clicks || 0}</strong>
+              <strong style={{ fontSize: 16, color: '#047857' }}>{displayNumber(google?.property_totals?.clicks ?? google?.total_clicks)}</strong>
             </div>
             <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в выдаче:</span>
-              <strong style={{ fontSize: 16, color: '#1d4ed8' }}>{googleQueries.length}</strong>
+              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Запросов в выборке:</span>
+              <strong style={{ fontSize: 16, color: '#1d4ed8' }}>{google?.query_sample?.status === 'available' ? googleQueries.length : '—'}</strong>
             </div>
           </div>
         </div>
@@ -2727,11 +2715,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
             onClick={() => setSearchEngine('google')}
             style={{ borderRadius: 20, padding: '4px 12px', background: searchEngine === 'google' ? '#2563eb' : undefined, borderColor: searchEngine === 'google' ? '#2563eb' : undefined, color: searchEngine === 'google' ? '#fff' : undefined }}
           >
-            🔵 Google ({googleQueries.length})
+            🔵 Google ({google?.query_sample?.status === 'available' ? googleQueries.length : '—'})
           </button>
         </div>
         <small style={{ color: 'var(--muted)' }}>
-          {searchEngine === 'all' ? 'Объединенный анализ видимости' : searchEngine === 'yandex' ? 'Поисковые данные Яндекса' : 'Поисковые данные Google'}
+          {searchEngine === 'all' ? 'Объединённая выборка запросов' : searchEngine === 'yandex' ? 'Выборка запросов Яндекса' : 'Выборка запросов Google'}
         </small>
       </div>
 
@@ -2776,109 +2764,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </small>
       </div>
 
-      {/* 2.3 TODAY PROGRESS & KEY INDICATORS */}
-      <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid #0f766e', background: 'linear-gradient(135deg, #f0fdfa, #f8fafc)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-          <div>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17, color: '#0f766e' }}>
-              ⚡ Прогресс на сегодняшний день ({formatDynamicsDate(todayProg?.date || '')})
-            </h2>
-            <p className="field-help" style={{ margin: '4px 0 0 0' }}>
-              Мгновенный срез показателей для {searchEngine === 'all' ? 'всех поисковых систем' : searchEngine === 'yandex' ? 'Яндекс Поиска' : 'Google Search Console'}
-            </p>
-          </div>
-          <span className="pill web" style={{ fontSize: 12, padding: '4px 10px', background: '#e6fffa', color: '#047857', borderColor: '#a7f3d0' }}>
-            {todayProg?.combined.ranking_status || '🟢 Позиции стабильны'}
-          </span>
-        </div>
-
-        <div className="seo-today-grid">
-          {/* Card 1: Clicks */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🖱️ Клики из поиска</span>
-            <div className="seo-today-val">
-              <span>{currentClicks}</span>
-              {currentClicksDelta !== 0 && (
-                <span className={`seo-delta-badge ${currentClicksDelta > 0 ? 'up' : 'down'}`}>
-                  {currentClicksDelta > 0 ? `+${currentClicksDelta}` : currentClicksDelta} к вчера
-                </span>
-              )}
-              {currentClicksDelta === 0 && (
-                <span className="seo-delta-badge stable">0 к вчера</span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.clicks || 0} • 🔵 Google: ${todayProg?.google.clicks || 0}`
-                : searchEngine === 'yandex' ? 'Яндекс.Метрика + Вебмастер' : 'Google Search Console API'}
-            </small>
-          </div>
-
-          {/* Card 2: Shows */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>👁️ Показы в выдаче</span>
-            <div className="seo-today-val">
-              <span>{currentShows}</span>
-              {currentShowsDelta !== 0 && (
-                <span className={`seo-delta-badge ${currentShowsDelta > 0 ? 'up' : 'down'}`}>
-                  {currentShowsDelta > 0 ? `+${currentShowsDelta}` : currentShowsDelta} к вчера
-                </span>
-              )}
-              {currentShowsDelta === 0 && (
-                <span className="seo-delta-badge stable">0 к вчера</span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.shows || 0} • 🔵 Google: ${todayProg?.google.shows || 0}`
-                : 'Показы в результатах поиска'}
-            </small>
-          </div>
-
-          {/* Card 3: Avg Position */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🎯 Средняя позиция сайта</span>
-            <div className="seo-today-val">
-              <span>{currentPos}</span>
-              {currentPosDelta > 0 && (
-                <span className="seo-delta-badge up" title="Позиция стала выше (номер уменьшился)">
-                  <TrendingUp size={12} /> ▲ +{currentPosDelta} поз.
-                </span>
-              )}
-              {currentPosDelta < 0 && (
-                <span className="seo-delta-badge down" title="Позиция просела">
-                  <TrendingDown size={12} /> ▼ -{Math.abs(currentPosDelta)} поз.
-                </span>
-              )}
-              {currentPosDelta === 0 && (
-                <span className="seo-delta-badge stable">
-                  <Minus size={12} /> ▬ Стабильно
-                </span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {currentPosDelta > 0
-                ? '🟢 Ранжирование улучшается'
-                : currentPosDelta < 0
-                ? '🔴 Небольшое снижение позиций'
-                : '⚪ Результаты стабильны'}
-            </small>
-          </div>
-
-          {/* Card 4: Queries Count */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🗂️ Фраз в выдаче</span>
-            <div className="seo-today-val">
-              <span>{currentQueries}</span>
-              <span className="pill web" style={{ fontSize: 11 }}>В ТОП-100</span>
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.queries_count || yandexQueries.length} • 🔵 Google: ${todayProg?.google.queries_count || googleQueries.length}`
-                : 'Поисковые запросы, по которым сайт ранжируется'}
-            </small>
-          </div>
-        </div>
+      <div className="form-panel full-width-panel">
+        <h2 style={{ margin: 0, fontSize: 17 }}>Периоды источников</h2>
+        <p className="field-help">Метрика: {metrikaPeriodLabel} ({metrika.period?.timezone || 'часовой пояс не указан'}). Google: {google?.period?.start_date || '—'} — {google?.period?.end_date || '—'} (Pacific Time, завершённые данные).</p>
+        <p className="field-help">{todayProg?.reason || 'Поиск публикует данные с задержкой. Данные разных дней не объединяются в показатели за сегодня.'}</p>
+        <p className="field-help">Средняя позиция меняется вместе с составом запросов. Сравнивайте одинаковые фразы и периоды; её изменение само по себе не доказывает рост или падение позиций.</p>
       </div>
 
       {/* 2.4 DAILY DYNAMICS & TRENDS (CHART + TIMELINE TABLE) */}
@@ -2913,11 +2803,12 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           </div>
         </div>
         <p className="field-help" style={{ marginBottom: 10 }}>
-          Посуточный тренд показов, переходов и изменений позиций. Показывает, улучшаются или ухудшаются позиции сайта день за днем.
+          Посуточные данные источников; даты без метрики не равны нулю и могут отражать разную готовность данных. В Яндексе это выборка видимых фраз, в Google — итоги ресурса.
         </p>
 
+        {searchEngine === 'all' && <p className="field-help">Яндекс показывает выборку фраз, Google — итоги ресурса. Выберите поисковик для графика; несопоставимые показатели не суммируются.</p>}
         {/* Visual Bar Trend */}
-        {slicedDynamics.length > 0 && (
+        {searchEngine !== 'all' && slicedDynamics.length > 0 && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>
               <span>📊 График показов и тренда позиций по дням</span>
@@ -2926,15 +2817,15 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
             <div className="seo-chart-container">
               {slicedDynamics.map((d, i) => {
                 const shows = searchEngine === 'yandex'
-                  ? (d.yandex?.shows || 0)
+                  ? d.yandex?.shows
                   : searchEngine === 'google'
-                  ? (d.google?.shows || 0)
-                  : (d.total_shows || 0)
+                  ? d.google?.shows
+                  : d.total_shows
                 const clicks = searchEngine === 'yandex'
-                  ? (d.yandex?.clicks || 0)
+                  ? d.yandex?.clicks
                   : searchEngine === 'google'
-                  ? (d.google?.clicks || 0)
-                  : (d.total_clicks || 0)
+                  ? d.google?.clicks
+                  : d.total_clicks
                 const pos = searchEngine === 'yandex'
                   ? (d.yandex_pos || d.yandex?.avg_position)
                   : searchEngine === 'google'
@@ -2946,9 +2837,9 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                   ? (d.google?.trend || d.google_trend)
                   : (d.yandex_trend === 'up' || d.google_trend === 'up' ? 'up' : (d.yandex_trend === 'down' || d.google_trend === 'down' ? 'down' : 'stable'))
 
-                const barHeight = Math.max(8, Math.round((shows / maxChartShows) * 56))
+                const barHeight = known(shows) ? Math.round((shows / maxChartShows) * 56) : 0
                 const barColor = trend === 'up' ? '#059669' : trend === 'down' ? '#dc2626' : (searchEngine === 'google' ? '#2563eb' : searchEngine === 'yandex' ? '#ea580c' : '#0f766e')
-                const titleText = `${d.date}: ${shows} показов, ${clicks} кликов, ср. поз: ${pos || '—'}`
+                const titleText = `${d.date}: ${displayNumber(shows)} показов, ${displayNumber(clicks)} кликов, ср. поз: ${pos || '—'}`
 
                 return (
                   <div key={i} className="seo-chart-col" title={titleText}>
@@ -2957,7 +2848,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                       style={{
                         height: `${barHeight}px`,
                         backgroundColor: barColor,
-                        opacity: shows > 0 ? 1 : 0.25
+                        opacity: known(shows) && shows > 0 ? 1 : 0.25
                       }}
                     />
                     <span className="seo-chart-date">{d.date.slice(5)}</span>
@@ -2988,26 +2879,26 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                   const gData: Partial<DailyMetricItem> = row.google || {}
 
                   const clicks = searchEngine === 'yandex'
-                    ? (yData.clicks ?? 0)
+                    ? yData.clicks
                     : searchEngine === 'google'
-                    ? (gData.clicks ?? 0)
+                    ? gData.clicks
                     : row.total_clicks
                   const clicksDelta = searchEngine === 'yandex'
                     ? yData.clicks_delta
                     : searchEngine === 'google'
                     ? gData.clicks_delta
-                    : ((yData.clicks_delta || 0) + (gData.clicks_delta || 0))
+                    : undefined
 
                   const shows = searchEngine === 'yandex'
-                    ? (yData.shows ?? 0)
+                    ? yData.shows
                     : searchEngine === 'google'
-                    ? (gData.shows ?? 0)
+                    ? gData.shows
                     : row.total_shows
                   const showsDelta = searchEngine === 'yandex'
                     ? yData.shows_delta
                     : searchEngine === 'google'
                     ? gData.shows_delta
-                    : ((yData.shows_delta || 0) + (gData.shows_delta || 0))
+                    : undefined
 
                   const yPos = row.yandex_pos || yData.avg_position
                   const gPos = row.google_pos || gData.avg_position
@@ -3015,9 +2906,9 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                   const gPosDelta = gData.pos_delta
 
                   const queriesCount = searchEngine === 'yandex'
-                    ? (yData.queries_count || 0)
+                    ? yData.queries_count
                     : searchEngine === 'google'
-                    ? (gData.queries_count || 0)
+                    ? gData.queries_count
                     : row.total_queries
 
                   const engineTrend = searchEngine === 'yandex'
@@ -3033,7 +2924,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                         <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>{row.date}</small>
                       </td>
                       <td>
-                        <strong style={{ fontSize: 14 }}>{clicks}</strong>
+                        <strong style={{ fontSize: 14 }}>{searchEngine === 'all' ? `Я: ${displayNumber(yData.clicks)} / G: ${displayNumber(gData.clicks)}` : displayNumber(clicks)}</strong>
                         {clicksDelta !== undefined && clicksDelta !== 0 && (
                           <span className={`seo-delta-badge ${clicksDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
                             {clicksDelta > 0 ? `+${clicksDelta}` : clicksDelta}
@@ -3041,7 +2932,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                         )}
                       </td>
                       <td>
-                        <strong style={{ fontSize: 14 }}>{shows}</strong>
+                        <strong style={{ fontSize: 14 }}>{searchEngine === 'all' ? `Я: ${displayNumber(yData.shows)} / G: ${displayNumber(gData.shows)}` : displayNumber(shows)}</strong>
                         {showsDelta !== undefined && showsDelta !== 0 && (
                           <span className={`seo-delta-badge ${showsDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
                             {showsDelta > 0 ? `+${showsDelta}` : showsDelta}
@@ -3097,7 +2988,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                         )}
                       </td>
                       <td>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>{queriesCount}</span> <small style={{ color: 'var(--muted)' }}>фраз</small>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{displayNumber(queriesCount)}</span> <small style={{ color: 'var(--muted)' }}>фраз</small>
                       </td>
                       <td>
                         {engineTrend === 'up' ? (
@@ -3200,18 +3091,18 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         </div>
       )}
 
-      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS WITH WORDSTAT DEMAND */}
+      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS */}
       <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
-            🔥 Точки быстрого роста (Потенциал выхода в ТОП-3)
+            🔥 Запросы для ручной проверки
           </h2>
           <span className="pill tg" style={{ fontSize: 11 }}>
             {searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс (поз. 4–10)' : 'Google (поз. 4–20)'}
           </span>
         </div>
         <p className="field-help" style={{ marginBottom: 12 }}>
-          По этим запросам поисковики уже выводят сайт близко к ТОП-3. Дожим в ТОП-3 по этим фразам обеспечит основной приток целевых B2B-клиентов.
+          Это гипотезы по позициям и показам. Перед изменениями проверьте интент, посадочную страницу и CTR; результат не гарантирован.
         </p>
         
         {displayGrowthPoints.length > 0 ? (
@@ -3223,16 +3114,12 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                   <th style={{ width: '12%' }}>Поисковик</th>
                   <th style={{ width: '11%' }}>Позиция</th>
                   <th style={{ width: '10%' }}>Показы</th>
-                  <th style={{ width: '18%' }}>Спрос Вордстат / Рынок</th>
-                  <th style={{ width: '14%' }}>Потенциал ТОП-3</th>
-                  <th style={{ width: '15%' }}>SEO-Приоритет</th>
+                  <th style={{ width: '29%' }}>Следующее действие</th>
                 </tr>
               </thead>
               <tbody>
                 {displayGrowthPoints.map((g, idx) => {
-                  const isHighPriority = g.priority === 'high' || (idx === 0 && (g.wordstat_demand || 0) > 0)
-                  const demand = g.wordstat_demand || 0
-                  const potentialClicks = g.top3_potential_clicks || Math.round(demand * 0.35)
+                  const isHighPriority = g.priority === 'high'
                   const isGoogle = (g as any).engine === 'google'
                   return (
                     <tr key={idx} className={isHighPriority ? 'priority-row-high' : ''}>
@@ -3271,21 +3158,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                         <strong style={{ fontSize: 14 }}>{g.shows}</strong> <small style={{ color: 'var(--muted)' }}>показов</small>
                       </td>
                       <td>
-                        <span className="wordstat-demand-val">{demand.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>запр./мес</small>
-                      </td>
-                      <td>
-                        <span className="wordstat-potential-val">+{potentialClicks.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>кл./мес (35%)</small>
-                      </td>
-                      <td>
-                        {isHighPriority ? (
-                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px', background: '#fef3c7', color: '#92400e', borderColor: '#fde68a' }}>
-                            SEO-дожим в ТОП-3
-                          </span>
-                        ) : (
-                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px' }}>
-                            Дожать в ТОП-3
-                          </span>
-                        )}
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{g.action}</span>
                       </td>
                     </tr>
                   )
@@ -3318,7 +3191,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
           </div>
         </div>
         <p className="field-help" style={{ marginBottom: 12 }}>
-          Точные поисковые запросы реальных людей, средняя позиция показа и клики в поисковых системах
+          Доступная выборка API, а не полный список запросов. Google может скрывать низкочастотные запросы по правилам конфиденциальности.
         </p>
 
         {filteredQueries.length > 0 ? (
@@ -3359,8 +3232,8 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                   const bestPos = yPos && gPos ? Math.min(yPos, gPos) : (yPos || gPos || 0)
                   const isTop3 = bestPos > 0 && bestPos <= 3.5
                   const isGrowth = bestPos > 3.5 && bestPos <= 12.0
-                  const totalShows = (q as any).total_shows ?? (q as any).shows ?? 0
-                  const totalClicks = (q as any).total_clicks ?? (q as any).clicks ?? 0
+                  const totalShows: number | null | undefined = (q as any).total_shows ?? (q as any).shows
+                  const totalClicks: number | null | undefined = (q as any).total_clicks ?? (q as any).clicks
 
                   return (
                     <tr key={idx}>
@@ -3412,11 +3285,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                             )}
                           </td>
                           <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                            <strong style={{ fontSize: 14 }}>Я: {displayNumber((q as any).yandex_shows)} / G: {displayNumber((q as any).google_shows)}</strong>
                           </td>
                           <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
+                            <span style={{ fontSize: 13, color: known(totalClicks) && totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              Я: {displayNumber((q as any).yandex_clicks)} / G: {displayNumber((q as any).google_clicks)}
                             </span>
                           </td>
                           <td>
@@ -3441,11 +3314,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                             )}
                           </td>
                           <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                            <strong style={{ fontSize: 14 }}>{displayNumber(totalShows)}</strong>
                           </td>
                           <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
+                            <span style={{ fontSize: 13, color: known(totalClicks) && totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              {displayNumber(totalClicks)}
                             </span>
                           </td>
                           <td>
@@ -3470,11 +3343,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
                             )}
                           </td>
                           <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
+                            <strong style={{ fontSize: 14 }}>{displayNumber(totalShows)}</strong>
                           </td>
                           <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
+                            <span style={{ fontSize: 13, color: known(totalClicks) && totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
+                              {displayNumber(totalClicks)}
                             </span>
                           </td>
                           <td>
@@ -3505,7 +3378,7 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
       <div className="ops-grid">
         <div className="form-panel">
           <h2 style={{ fontSize: 16, marginBottom: 4 }}>Источники переходов на сайт</h2>
-          <p className="field-help" style={{ marginBottom: 14 }}>Откуда приходят посетители за последние 30 дней</p>
+          <p className="field-help" style={{ marginBottom: 14 }}>Откуда приходят посетители: {metrikaPeriodLabel}</p>
           
           <div style={{ display: 'grid', gap: 10 }}>
             {(metrika.sources || []).map((s, idx) => {
@@ -3516,17 +3389,16 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
               else if (s.name === 'Social network traffic') label = 'Telegram и соцсети'
               else if (s.name === 'Internal traffic') label = 'Внутренние переходы'
 
-              const totalVisits = metrika.visits || 1
-              const percent = Math.round((s.visits / totalVisits) * 100)
+              const percent = known(metrika.visits) && metrika.visits > 0 ? Math.round((s.visits / metrika.visits) * 100) : null
 
               return (
                 <div key={idx} style={{ padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{label}</span>
-                    <strong style={{ fontSize: 13 }}>{s.visits} визитов <small style={{ color: 'var(--muted)', fontWeight: 'normal' }}>({percent}%)</small></strong>
+                    <strong style={{ fontSize: 13 }}>{s.visits} визитов {percent !== null && <small style={{ color: 'var(--muted)', fontWeight: 'normal' }}>({percent}%)</small>}</strong>
                   </div>
                   <div className="seo-progress-bar-bg">
-                    <div className="seo-progress-bar-fill" style={{ width: `${percent}%` }} />
+                    <div className="seo-progress-bar-fill" style={{ width: `${percent ?? 0}%` }} />
                   </div>
                 </div>
               )
@@ -3538,22 +3410,23 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         <div className="form-panel">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <h2 style={{ fontSize: 16, margin: 0 }}>🎯 Цели и конверсии (Метрика)</h2>
-            <span className="pill balance" style={{ fontSize: 11 }}>Конверсия: {metrika.total_conversion_rate || 0}%</span>
+            <span className="pill balance" style={{ fontSize: 11 }}>Основная конверсия: {primaryConversionAvailable ? `${primaryConversion.rate_percent}%` : '—'}</span>
           </div>
-          <p className="field-help" style={{ marginBottom: 14 }}>Реальные целевые действия посетителей (кнопки, формы, кабинет)</p>
+          <p className="field-help" style={{ marginBottom: 14 }}>Сумма достижений — объём событий, а не конверсия: события могут пересекаться у одного визита.</p>
           
           <div style={{ display: 'grid', gap: 10 }}>
             {goals.map((g, idx) => {
-              const reaches = g.reaches || 0
+              const reaches = g.reaches
+              const reached = known(reaches) && reaches > 0
               return (
-                <div key={idx} style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: reaches > 0 ? '#f0fdf4' : '#fff', borderColor: reaches > 0 ? '#bbf7d0' : '#e2e8f0' }}>
+                <div key={idx} style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: reached ? '#f0fdf4' : '#fff', borderColor: reached ? '#bbf7d0' : '#e2e8f0' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <strong style={{ fontSize: 13, color: reaches > 0 ? '#166534' : '#0f172a' }}>{g.name}</strong>
+                      <strong style={{ fontSize: 13, color: reached ? '#166534' : '#0f172a' }}>{g.name}</strong>
                       <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>Тип: {g.type}</small>
                     </div>
-                    <span className={reaches > 0 ? 'pill balance' : 'pill web'} style={{ fontSize: 12 }}>
-                      {reaches} {reaches === 1 ? 'действие' : reaches > 1 && reaches < 5 ? 'действия' : 'действий'}
+                    <span className={reached ? 'pill balance' : 'pill web'} style={{ fontSize: 12 }}>
+                      {displayNumber(reaches)} {reaches === 1 ? 'действие' : known(reaches) && reaches > 1 && reaches < 5 ? 'действия' : 'действий'}
                     </span>
                   </div>
                 </div>
@@ -3572,30 +3445,30 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
             <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>ИКС сайта (Яндекс)</span>
-            <strong style={{ display: 'block', fontSize: 22, color: '#0f766e', marginTop: 4 }}>{webmaster.sqi || 10}</strong>
+            <strong style={{ display: 'block', fontSize: 22, color: '#0f766e', marginTop: 4 }}>{displayNumber(webmaster.sqi)}</strong>
             <small style={{ color: 'var(--muted)', fontSize: 11 }}>Индекс качества сайта</small>
           </div>
           
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
             <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Яндекс: страниц в поиске</span>
-            <strong style={{ display: 'block', fontSize: 22, color: '#0f172a', marginTop: 4 }}>{webmaster.searchable_pages || 32}</strong>
+            <strong style={{ display: 'block', fontSize: 22, color: '#0f172a', marginTop: 4 }}>{displayNumber(webmaster.searchable_pages)}</strong>
             <small style={{ color: 'var(--muted)', fontSize: 11 }}>Проиндексировано роботом</small>
           </div>
           
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
             <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Google: показы в выдаче</span>
             <strong style={{ display: 'block', fontSize: 22, color: '#2563eb', marginTop: 4 }}>
-              {google?.total_impressions || 0}
+              {displayNumber(google?.property_totals?.impressions ?? google?.total_impressions)}
             </strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>За последние 30 дней</small>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>{google?.period?.start_date && google?.period?.end_date ? `${google.period.start_date} — ${google.period.end_date}` : 'Период не указан'}</small>
           </div>
 
           <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
             <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Статус Google API</span>
             <strong style={{ display: 'block', fontSize: 16, color: google?.status === 'active' ? '#047857' : '#9a3412', marginTop: 6 }}>
-              {google?.status === 'active' ? '● Активен' : 'Подключение'}
+              {google?.status === 'active' ? '● Данные получены' : google?.status === 'partial' ? 'Частичные данные' : 'Данные недоступны'}
             </strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>{google?.site_url || 'sc-domain:tenderlex.ru'}</small>
+            <small style={{ color: 'var(--muted)', fontSize: 11 }}>{google?.site_url || 'ресурс не указан'}</small>
           </div>
         </div>
       </div>
@@ -3604,11 +3477,11 @@ function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; load
       <div className="form-panel full-width-panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>🧠 AI-Рекомендации по оптимизации (Согласование владельцем)</h2>
-          <span className="pill web">Выборка: {metrika.visits} / {data.sample_target || 300} визитов</span>
+          <span className="pill web">Органические визиты: {displayNumber(data.sample_visits)} / {displayNumber(data.sample_target)}</span>
         </div>
         
         <p className="field-help" style={{ marginBottom: 14 }}>
-          Интеллектуальные рекомендации сформированы на основе реальных поисковых фраз Вебмастера, Google Search Console и поведенческих конверсий Метрики. Вы можете согласовать или отклонить любое предложение.
+          Рекомендации основаны на доступных выборках источников и требуют проверки до применения. Вы можете согласовать или отклонить любое предложение.
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>

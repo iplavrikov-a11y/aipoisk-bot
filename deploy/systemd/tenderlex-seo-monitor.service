@@ -1,0 +1,44 @@
+[Unit]
+Description=TenderLex read-only SEO observations
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=tenderlex-seo-monitor
+WorkingDirectory=/var/lib/tenderlex-seo-monitor
+Environment=PYTHONPATH=/opt/tenderlex-seo/backend
+Environment=GOOGLE_APPLICATION_CREDENTIALS=%d/google-gsc.json
+LoadCredential=seo-monitor.env:/root/.config/tenderlex/seo-monitor.env
+LoadCredential=google-gsc.json:/root/.config/tenderlex/google-gsc.json
+BindReadOnlyPaths=/root/projects/tenderlex/backend/app:/opt/tenderlex-seo/backend/app
+BindReadOnlyPaths=/root/projects/tenderlex/backend/.venv:/opt/tenderlex-seo/venv
+BindReadOnlyPaths=/root/projects/tenderlex/scripts/seo_growth_monitor.py:/opt/tenderlex-seo/scripts/seo_growth_monitor.py
+ExecStart=/usr/bin/env /opt/tenderlex-seo/venv/bin/python -P /opt/tenderlex-seo/scripts/seo_growth_monitor.py --output /var/lib/tenderlex-seo-monitor
+TimeoutStartSec=8min
+UMask=0077
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictRealtime=true
+RestrictSUIDSGID=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadWritePaths=/var/lib/tenderlex-seo-monitor

@@ -243,10 +243,14 @@ def balance_counter(db: Session, client: Client, kind: str) -> dict:
     return counter
 
 
+LOW_BALANCE_MONEY_THRESHOLD_KOPEKS = 10_000  # 100.00 ₽
+
+
 def money_balance_summary(db: Session, client: Client) -> dict:
     balance = max(0, int(getattr(client, "money_balance_kopeks", 0) or 0))
     reserved = max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0))
     available = max(0, balance - reserved)
+    threshold = max(LOW_BALANCE_MONEY_THRESHOLD_KOPEKS, _lowest_active_function_price(db, client))
     return {
         "balance_kopeks": balance,
         "reserved_kopeks": reserved,
@@ -255,7 +259,7 @@ def money_balance_summary(db: Session, client: Client) -> dict:
         "reserved_rub": round(reserved / 100, 2),
         "available_rub": round(available / 100, 2),
         "source": "money_ledger",
-        "low": available <= _lowest_active_function_price(db, client),
+        "low": available <= threshold,
     }
 
 
@@ -952,6 +956,11 @@ def _grant_money_balance_locked(
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
+    try:
+        from .bot import reset_client_low_balance_alert
+        reset_client_low_balance_alert(client.id)
+    except Exception:
+        pass
     return transaction
 
 
@@ -1072,6 +1081,11 @@ def _grant_trial_balance_locked(
             )
         )
         db.flush()
+        try:
+            from .bot import reset_client_low_balance_alert
+            reset_client_low_balance_alert(client.id)
+        except Exception:
+            pass
         return
 
     for kind, units in (

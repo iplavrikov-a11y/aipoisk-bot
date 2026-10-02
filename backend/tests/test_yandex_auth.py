@@ -171,7 +171,10 @@ class YandexAuthTestCase(unittest.TestCase):
         )
 
         self.assertEqual(redirect_resp.status_code, 303)
-        self.assertEqual(redirect_resp.headers.get("location"), "/cabinet")
+        self.assertEqual(
+            redirect_resp.headers.get("location"),
+            "/cabinet#registration_success",
+        )
         set_cookie = str(redirect_resp.headers.get("set-cookie", ""))
         self.assertIn(CUSTOMER_COOKIE, set_cookie)
 
@@ -180,6 +183,18 @@ class YandexAuthTestCase(unittest.TestCase):
         self.assertIsNotNone(user)
         self.assertEqual(user.email, "success@yandex.ru")
         self.assertTrue(user.is_email_verified)
+
+        repeat_response = customer_yandex_callback_api(
+            request,
+            Response(),
+            code="test_oauth_code_repeat",
+            state=test_state,
+            db=self.db,
+        )
+        self.assertEqual(
+            repeat_response.headers.get("location"),
+            "/cabinet#login_success",
+        )
 
     def test_customer_yandex_callback_api_state_mismatch(self) -> None:
         request = SimpleNamespace(

@@ -1,0 +1,99 @@
+{
+  "status": "implemented_verified_with_external_dependencies",
+  "date": "2026-10-01",
+  "fully_done": false,
+  "deployed": true,
+  "backend_tests": 776,
+  "subtests": 54,
+  "public_urls": 89,
+  "browser_checks": 9,
+  "source_tests": "passed",
+  "public_graph": {
+    "urls": 89,
+    "orphans": [],
+    "unknown_internal_links": [],
+    "invalid_fragments": [],
+    "assets": {
+      "https://tenderlex.ru/materialy/matrica-sravneniya-kp.csv": {
+        "status": 200,
+        "bytes": 1362
+      },
+      "https://tenderlex.ru/materialy/shablon-zaprosa-kp.docx": {
+        "status": 200,
+        "bytes": 37915
+      },
+      "https://tenderlex.ru/materialy/kak-sopostavit-kommercheskie-predlozheniya.md": {
+        "status": 200,
+        "bytes": 13036
+      }
+    }
+  },
+  "api_readiness": {
+    "ok": true,
+    "database": {
+      "ok": true
+    },
+    "queue": {
+      "ok": true,
+      "pending": 0,
+      "running": 0,
+      "stale_running": 0
+    },
+    "tender_source": {
+      "configured": true,
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 186,
+      "cached": false
+    }
+  },
+  "recrawl_accepted": 9,
+  "indexnow_accepted_urls": 89,
+  "monitor": {
+    "enabled": true,
+    "active": true,
+    "next_run_moscow": "2026-10-02 approximately08:00",
+    "collection_complete": true,
+    "field_cwv_available": false
+  },
+  "five_independent_experts": [
+    {
+      "area": "Техническое SEO",
+      "score": 9.1,
+      "report": "expert-technical-updated.md"
+    },
+    {
+      "area": "Контент и источники",
+      "score": 8.3,
+      "report": "expert-content-updated.md"
+    },
+    {
+      "area": "Аналитика и мониторинг",
+      "score": 9.2,
+      "report": "expert-measurement-updated.md"
+    },
+    {
+      "area": "CRO, доверие и интерфейс",
+      "score": 9.0,
+      "report": "expert-cro-updated.md"
+    },
+    {
+      "area": "Стратегия и внешняя видимость",
+      "score": 8.5,
+      "report": "expert-strategy-updated.md"
+    }
+  ],
+  "expert_average": 8.82,
+  "seo_uplift_proven": false,
+  "company_details": "excluded_by_owner",
+  "external_publications": 0,
+  "oauth_rotation": "pending_owner_reauthorization",
+  "third_party_messages": "not_sent_approval_pending",
+  "limitations": [
+    "YandexthreeLOW_QUALITYoldcrawl25August",
+    "Googleinspectionindexedversion",
+    "fieldCWV/INPunknown",
+    "nohumanlegalrevieworrealcases",
+    "needfuturecomparableperiods"
+  ]
+}

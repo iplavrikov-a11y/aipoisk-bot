@@ -16,18 +16,9 @@ export function SiteFooter() {
           <div className="pt-1 flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-800 bg-teal-50 px-3 py-1.5 rounded-xl border border-teal-200">
               <ShieldCheck size={14} className="text-teal-600" />
-              Соответствие 152-ФЗ
+              Политика обработки данных
             </span>
-            <a
-              href="https://productradar.ru"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 transition-colors"
-              title="TenderLex на Product Radar"
-            >
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              Мы на <strong>Product Radar</strong>
-            </a>
+
           </div>
         </div>
 
@@ -37,12 +28,13 @@ export function SiteFooter() {
           <ul className="space-y-2.5">
             <li><Link href="/poisk-postavshchikov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск поставщиков по ТЗ</Link></li>
             <li><Link href="/podbor-tovara-i-analogov-po-tz" className="hover:text-teal-700 transition-colors font-medium">Подбор товара и аналогов</Link></li>
+            <li><Link href="/analiz-zakupochnoi-dokumentacii" className="hover:text-teal-700 transition-colors font-medium">Анализ документации</Link></li>
             <li><Link href="/poisk-proizvoditeley-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск заводов-производителей</Link></li>
             <li><Link href="/poisk-postavshchikov-dlya-tendera" className="hover:text-teal-700 transition-colors font-medium">Подбор поставщиков под тендер</Link></li>
             <li><Link href="/postavshchiki-dlya-zaprosa-kp" className="hover:text-teal-700 transition-colors font-medium">База адресатов для запроса КП</Link></li>
             <li><Link href="/zapros-kp-po-tz" className="hover:text-teal-700 transition-colors font-medium">Генератор Запроса КП (RFQ)</Link></li>
-            <li><Link href="/analiz-zakupochnoi-dokumentacii" className="hover:text-teal-700 transition-colors font-medium">Анализ документации</Link></li>
-            <li><Link href="/reestr-minpromtorga-v-zakupkah" className="hover:text-teal-700 transition-colors font-medium">Реестр Минпромторга (ПП 616/617)</Link></li>
+            <li><Link href="/analiz-rynka-44-fz" className="hover:text-teal-700 transition-colors font-medium">Анализ рынка и подготовка НМЦК</Link></li>
+            <li><Link href="/reestr-minpromtorga-v-zakupkah" className="hover:text-teal-700 transition-colors font-medium">Реестр Минпромторга и нацрежим</Link></li>
           </ul>
         </div>
 
@@ -53,7 +45,7 @@ export function SiteFooter() {
             <li><Link href="/baza-znaniy" className="hover:text-teal-700 font-bold transition-colors">Все руководства и статьи</Link></li>
             <li><Link href="/baza-znaniy/kak-naiti-postavshchika-po-tz" className="hover:text-teal-700 transition-colors font-medium">Как найти поставщика по ТЗ</Link></li>
             <li><Link href="/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz" className="hover:text-teal-700 transition-colors font-medium">Чек-лист рисков 44-ФЗ</Link></li>
-            <li><Link href="/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617" className="hover:text-teal-700 transition-colors font-medium">Постановления № 616 и 617</Link></li>
+            <li><Link href="/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617" className="hover:text-teal-700 transition-colors font-medium">Национальный режим: ПП № 1875</Link></li>
             <li><Link href="/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku" className="hover:text-teal-700 transition-colors font-medium">Как составить Запрос КП</Link></li>
             <li><Link href="/baza-znaniy/proverka-dilerskih-sertifikatov-b2b" className="hover:text-teal-700 transition-colors font-medium">Проверка дилерских сертификатов</Link></li>
             <li><Link href="/baza-znaniy/sekrety-snizheniya-sebestoimosti-zakupok-dlya-predpriyatiya" className="hover:text-teal-700 transition-colors font-medium">Снижение себестоимости закупок</Link></li>

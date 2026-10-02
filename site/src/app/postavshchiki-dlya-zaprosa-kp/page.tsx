@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Mail, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
@@ -15,7 +16,7 @@ import {
 export const metadata: Metadata = {
   title: "Поставщики для запроса КП — поиск отделов продаж",
   description:
-    "Быстрый отбор проверенных поставщиков и заводов для веерной рассылки запросов коммерческих предложений (RFQ) по спецификации.",
+    "Отбор кандидатов среди поставщиков и заводов для веерной рассылки запросов коммерческих предложений (RFQ) по спецификации.",
   keywords: [
     "поставщики для запроса КП",
     "база поставщиков для RFQ",
@@ -100,15 +101,15 @@ export default function PostavshchikiDlyaZaprosaKpPage() {
               >
                 <span>Отобрать поставщиков</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>
@@ -134,7 +135,7 @@ export default function PostavshchikiDlyaZaprosaKpPage() {
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
                 <h3 className="text-lg font-black text-slate-900">Экономия времени</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Подготовка базы и текста запроса занимает 3 минуты вместо полудня.
+                  Подготовьте список адресатов и текст запроса для проверки перед рассылкой.
                 </p>
               </div>
             </div>

@@ -1,5 +1,8 @@
 # TenderLex Bot
 
+SEO: [отчет 2 октября](docs/SEO_FOLLOWUP_REPORT_2026-10-02.md), [история ревизий](docs/SEO_AUDIT_LEDGER.md), [порядок недельного сравнения](docs/SEO_WEEKLY_COMPARISON.md). Исходные снимки 1 и 2 октября сохранены; оценка реализации — 8,9/10, поисковый рост пока не доказан.
+
+
 TenderLex Telegram bot and admin panel for procurement document analysis and
 supplier search.
 
@@ -13,6 +16,12 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
+  - Proactive early detection when a client's balance drops to 100 ₽ or less (`money_balance_kopeks <= 10_000`) after job delivery or before tasks, preventing blocked workflows.
+  - Client UX: clear, non-technical notification in the Telegram bot with a 1-click inline button `💬 Написать в Telegram для пополнения` opening a chat with the owner and pre-filled text: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`.
+  - Owner Telegram Alerts: immediate actionable Telegram notification to the owner (`AIPOISK_OWNER_TELEGRAM_ID`) containing client name, `@username`, database client number, remaining balance, attempted action/service, and an inline button `💬 Написать @<username>` to immediately start a chat.
+  - Dual status handling: early reminder at ≤ 100 ₽ (`хватит не более чем на 1 задачу`) and zero-balance alert at 0 ₽.
+  - Throttling & Test Isolation: anti-spam throttling (1 alert per hour per client, automatically reset upon balance top-up) and strict test-environment isolation preventing test mocks from leaking to live chats. 11 comprehensive unit tests in `backend/tests/test_low_balance_notifications.py` + 787 backend tests passing.
 - Multi-File Semantic Document Ordering & Rule 14 Ingestion (2026-09-26):
   - Solved multi-file procurement truncation (task #758): when multiple customer files are attached (e.g. contract draft, specification, NMCK, tender notice), files were previously sorted alphabetically, causing large contract drafts (`ПР_4`) to consume context and truncate specification tables (`ПР_1`).
   - Implemented semantic AI-based document classification in `backend/app/document_parser.py` (`organize_procurement_documents_ai`, `organize_procurement_documents`) following Rule 14, dynamically prioritizing technical specifications over contract drafts and extracting real procurement subjects.

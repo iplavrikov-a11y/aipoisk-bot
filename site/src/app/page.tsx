@@ -42,7 +42,7 @@ export const metadata: Metadata = {
     absolute: "TenderLex — Поиск поставщиков, подбор аналогов по ТЗ и анализ закупок",
   },
   description:
-    "Поиск надежных поставщиков и производителей по ТЗ, ГОСТ и спецификациям онлайн. Подбор российских аналогов оборудования, проверка ИНН и запрос КП в 1 клик. Попробуйте бесплатно!",
+    "Поиск поставщиков по ТЗ, подбор товара и аналогов, анализ закупочной документации. Подготовьте данные для проверки и запроса КП.",
   keywords: [
     "поиск поставщиков по ТЗ",
     "подбор аналогов по ТЗ",
@@ -62,7 +62,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "TenderLex — Поиск поставщиков по ТЗ и анализ любых закупок",
     description:
-      "ИИ-помощник отдела снабжения. Прямые контакты производителей и аудит рисков по 44-ФЗ, 223-ФЗ и коммерческим торгам.",
+      "ИИ-помощник для разбора ТЗ, поиска кандидатов на поставку и анализа условий закупки перед проверкой.",
     url: "https://tenderlex.ru",
     siteName: "TenderLex",
     locale: "ru_RU",
@@ -75,33 +75,33 @@ const mainFaqItems: FaqItem[] = [
   {
     question: "Как TenderLex находит поставщиков по всей России?",
     answer:
-      "TenderLex выполняет смысловой анализ вашего ТЗ или спецификации, определяет маркоразмеры, ГОСТы и технические требования, после чего сопоставляет данные с общероссийской базой предприятий. Сервис извлекает прямые email-адреса отделов сбыта, телефоны и классифицирует поставщиков на заводы-изготовители и официальных дилеров.",
+      "TenderLex помогает разобрать ТЗ или спецификацию, выделить маркоразмеры, ГОСТы и технические требования, затем сформировать список кандидатов и проект запроса КП. Роль компании, контакты, наличие товара, цену и срок поставки нужно подтвердить у поставщика и по его документам.",
   },
   {
     question: "Как формируется готовый Запрос коммерческого предложения (КП)?",
     answer:
-      "На основе номенклатуры ТЗ алгоритм автоматически собирает официальное письмо с таблицей позиций, объемами, требованиями по доставке и запросом сертификатов соответствия.",
+      "На основе номенклатуры ТЗ модуль готовит проект запроса с позициями и вопросами о поставке. Перед отправкой проверьте объёмы, сроки, адрес, комплектность, документы и адресата.",
   },
   {
     question: "Что проверяет модуль анализа документации 44-ФЗ и 223-ФЗ?",
     answer:
-      "Модуль проверяет проект контракта и извещение на наличие нетипичных штрафов, несоответствия сроков поставки и приемки, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).",
+      "Модуль помогает структурировать проект контракта и извещение: сроки, приемку, оплату, обеспечение, штрафы и требования национального режима. Выводы сверяют с первичными документами процедуры и применимыми нормами.",
   },
   {
     question: "Как работает подбор товара и аналогов по ТЗ?",
     answer:
-      "Алгоритм анализирует параметры спецификации и сопоставляет их с паспортами оборудования заводов РФ. ИИ выявляет модель-первоисточник, заложенную заказчиком, построчно сверяет параметры ТЗ с заводскими характеристиками без искусственной подгонки цифр, находит отечественные аналоги из Реестра Минпромторга (ГИСП) и формирует подробный структурированный отчет в Word (DOCX).",
+      "Модуль сопоставляет параметры спецификации с доступными документами изготовителей, помогает сформировать гипотезы о модели и кандидаты на замену, а также рабочий отчёт в Word (DOCX). Гипотезу, применимость аналога, происхождение и каждый показатель проверяют по первоисточникам и условиям закупки.",
   },
   {
-    question: "Как протестировать сервис бесплатно?",
+    question: "Где посмотреть условия запуска и тарифы?",
     answer:
-      "При регистрации в личном кабинете или в Telegram-боте каждому новому пользователю автоматически предоставляется бесплатный пробный доступ для тестирования поиска или аудита контракта.",
+      "Доступные пакеты и условия запуска отображаются в личном кабинете. Они управляются в системе, поэтому до запуска проверьте актуальные объём, стоимость и доступность пробного доступа.",
   },
 ];
 
 export default async function HomePage() {
   const data = await getSiteData();
-  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
+  const botUrl = data.bot.telegram_url;
   const cabinetUrl = "/cabinet";
   const supplierTariffs = data.tariff_groups?.supplier_search || [];
   const exactProductTariffs = data.tariff_groups?.exact_product || [];
@@ -139,14 +139,14 @@ export default async function HomePage() {
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 font-normal leading-relaxed max-w-2xl mx-auto">
-                От выявления производителя и сопоставления аналогов по ГОСТ до прямых контактов заводов РФ и проверки проекта контракта с помощью ИИ.
+                От разбора требований ТЗ и сопоставления вариантов до подготовки запроса КП и проверки условий проекта контракта.
               </p>
 
               {/* Responsive Quick-Action CTAs for Mobile & Desktop CRO */}
               <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-lg mx-auto">
                 <Button asChild className="w-full sm:w-auto bg-teal-600 hover:bg-teal-700 text-white font-extrabold px-7 h-12 text-sm shadow-lg shadow-teal-600/25 transition-all">
                   <Link href={cabinetUrl} className="flex items-center justify-center gap-2">
-                    <span>Попробовать бесплатно</span>
+                    <span>Открыть кабинет</span>
                   </Link>
                 </Button>
                 <Button asChild variant="secondary" className="w-full sm:w-auto border-2 border-slate-300 hover:border-teal-600 hover:text-teal-700 bg-white font-bold px-6 h-12 text-sm text-slate-800 shadow-2xs transition-all">
@@ -161,17 +161,17 @@ export default async function HomePage() {
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-slate-500 font-medium pt-1">
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Бесплатный пробный доступ при регистрации
+                  Условия доступа — в кабинете
                 </span>
                 <span className="hidden sm:inline text-slate-300">•</span>
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Без привязки банковской карты
+                  Выберите нужный модуль
                 </span>
                 <span className="hidden sm:inline text-slate-300">•</span>
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                  Живой поиск в Яндекс & Google
+                  Проверяйте результат по первоисточникам
                 </span>
               </div>
             </div>
@@ -184,20 +184,20 @@ export default async function HomePage() {
             {/* Metrics Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-6 bg-white rounded-2xl border border-slate-200 shadow-sm text-center">
               <div>
-                <strong className="block text-2xl font-black text-teal-700">3 минуты</strong>
-                <span className="text-xs text-slate-500">на разбор любого ТЗ</span>
+                <strong className="block text-2xl font-black text-teal-700">ТЗ и спецификация</strong>
+                <span className="text-xs text-slate-500">анализ номенклатуры и требований</span>
               </div>
               <div>
                 <strong className="block text-2xl font-black text-teal-700">Яндекс & Google</strong>
                 <span className="text-xs text-slate-500">живой поиск по сайтам РФ</span>
               </div>
               <div>
-                <strong className="block text-2xl font-black text-teal-700">до 22%</strong>
-                <span className="text-xs text-slate-500">снижение себестоимости</span>
+                <strong className="block text-2xl font-black text-teal-700">Сравнение вариантов</strong>
+                <span className="text-xs text-slate-500">для обоснованного выбора поставщика</span>
               </div>
               <div>
-                <strong className="block text-2xl font-black text-teal-700">100%</strong>
-                <span className="text-xs text-slate-500">защита от штрафов и РНП</span>
+                <strong className="block text-2xl font-black text-teal-700">Карта рисков</strong>
+                <span className="text-xs text-slate-500">для проверки условий до подачи заявки</span>
               </div>
             </div>
 
@@ -217,7 +217,7 @@ export default async function HomePage() {
                 Инструменты для снабжения и участия в закупках
               </h2>
               <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                TenderLex автоматизирует три ключевые задачи тендерного бизнеса: поиск прямых заводов, подготовку Формы 2 с подбором аналогов и правовой аудит контракта.
+                TenderLex помогает решать три ключевые задачи снабжения: поиск поставщиков, подбор товара и аналогов и анализ закупочной документации.
               </p>
             </div>
 
@@ -230,24 +230,24 @@ export default async function HomePage() {
                   </div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">1. Поиск поставщиков</span>
                   <h3 className="text-xl font-extrabold text-slate-900 leading-snug">
-                    Поиск поставщиков и заводов по всей России
+                    Поиск поставщиков по ТЗ
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Автоматический разбор сложных спецификаций, распознавание ГОСТ, марок сталей и типоразмеров. Сбор прямых контактов отделов сбыта без посредников.
+                    Разбор спецификации, список кандидатов для запроса КП и проект обращения. Роль компании и контакты подтверждаются перед заказом.
                   </p>
 
                   <ul className="space-y-2.5 pt-2 border-t border-slate-200">
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Прямые e-mail адреса и телефоны сбыта</span>
+                      <span>Кандидаты и контакты для проверки</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Разделение заводов и дилерских сетей</span>
+                      <span>Проверка роли изготовителя или дилера</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Авто-генератор готового Запроса КП (RFQ)</span>
+                      <span>Проект запроса коммерческого предложения</span>
                     </li>
                   </ul>
                 </div>
@@ -272,17 +272,17 @@ export default async function HomePage() {
                     Подбор товара и аналогов по ТЗ
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Распознавание заложенного заказчиком бренда, сверка параметров по паспортам без подгонки, реестр Минпромторга (ГИСП) и 2–4 эквивалента.
+                    Сопоставление параметров с доступными документами изготовителя и варианты для дальнейшей проверки эквивалентности.
                   </p>
 
                   <ul className="space-y-2.5 pt-2 border-t border-slate-200">
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Конкретные заводские показатели без «не более»</span>
+                      <span>Требования ТЗ и сведения для проверки</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Отечественные аналоги из реестра ГИСП</span>
+                      <span>Кандидаты на замену при наличии подтверждений</span>
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
@@ -311,7 +311,7 @@ export default async function HomePage() {
                     Экспресс-аудит документации: 44-ФЗ, 223-ФЗ
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Проверка проекта контракта до подачи заявки: выявление скрытых штрафов, невыполнимых сроков и ограничений национального режима.
+                    Рабочая структура условий проекта контракта: сроки, обеспечение, штрафы, приёмка и национальный режим для дальнейшей проверки.
                   </p>
 
                   <ul className="space-y-2.5 pt-2 border-t border-slate-200">
@@ -325,7 +325,7 @@ export default async function HomePage() {
                     </li>
                     <li className="flex items-start text-xs text-slate-700 font-semibold">
                       <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2 shrink-0 mt-0.5" />
-                      <span>Проверка ПП № 616 и № 617 (нацрежим)</span>
+                      <span>Проверка требований национального режима</span>
                     </li>
                   </ul>
                 </div>
@@ -353,7 +353,7 @@ export default async function HomePage() {
                 Ручной поиск в поисковиках против ИИ TenderLex
               </h2>
               <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                Почему специалисты по закупкам выбирают автоматизированный сбор контактов.
+                    Когда полезно структурировать требования и проверять кандидатов перед запросом КП.
               </p>
             </div>
 
@@ -386,9 +386,11 @@ export default async function HomePage() {
                 Прозрачная стоимость без скрытых платежей
               </h2>
               <p className="text-slate-600 text-sm sm:text-base">
-                Бесплатный пробный доступ предоставляется автоматически при регистрации.
+                Актуальные пакеты, цены и доступность пробного доступа отображаются перед запуском в личном кабинете.
               </p>
             </div>
+
+            {data.tariffs.length === 0 && <p role="status" className="text-center text-sm text-slate-600 mb-6">Цены временно недоступны. Проверьте действующие условия в кабинете перед оплатой.</p>}
 
             <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
               {/* 1. Поставщики */}
@@ -396,7 +398,7 @@ export default async function HomePage() {
                 <div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
                   <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
-                  <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
+                  <p className="text-xs text-slate-600 mb-4">Список кандидатов и контактов для запроса КП с последующей проверкой роли компании и условий поставки.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {supplierTariffs.map((t: PublicTariff) => (
                       <div key={t.id} className="flex justify-between items-center text-xs">
@@ -416,7 +418,7 @@ export default async function HomePage() {
                 <div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Подбор по спецификации</span>
                   <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Подбор товара и аналогов</h3>
-                  <p className="text-xs text-slate-600 mb-4">Выявление скрытой модели по ТЗ, сопоставление показателей, реестр Минпромторга (ГИСП) и 2–4 эквивалента.</p>
+                  <p className="text-xs text-slate-600 mb-4">Сопоставление показателей, кандидаты на замену и данные для проверки эквивалентности по документам изготовителя.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {exactProductTariffs.length > 0 ? (
                       exactProductTariffs.map((t: PublicTariff) => (
@@ -427,14 +429,14 @@ export default async function HomePage() {
                       ))
                     ) : (
                       <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">1 подбор товара и аналогов</span>
-                        <strong className="text-teal-700 font-extrabold">99 ₽</strong>
+                        <span className="text-slate-800 font-bold">Условия подбора</span>
+                        <strong className="text-teal-700 font-extrabold">в кабинете</strong>
                       </div>
                     )}
                   </div>
                 </div>
                 <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href={cabinetUrl}>Подобрать товар и аналоги</a>
+                  <a href="/cabinet?scenario=exact_product">Подобрать товар и аналоги</a>
                 </Button>
               </div>
 
@@ -443,7 +445,7 @@ export default async function HomePage() {
                 <div>
                   <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Аудит рисков закупки</span>
                   <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Анализ документации</h3>
-                  <p className="text-xs text-slate-600 mb-4">Аудит рисков контракта, нетипичных штрафов, сроков и нацрежима (44/223-ФЗ).</p>
+                  <p className="text-xs text-slate-600 mb-4">Сроки, штрафы, обеспечение, приёмка и национальный режим как список условий для проверки перед подачей заявки.</p>
                   <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                     {reportTariffs.map((t: PublicTariff) => (
                       <div key={t.id} className="flex justify-between items-center text-xs">
@@ -454,7 +456,7 @@ export default async function HomePage() {
                   </div>
                 </div>
                 <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href={cabinetUrl}>Выбрать пакет отчетов</a>
+                  <a href="/cabinet?scenario=procurement_report">Выбрать пакет отчетов</a>
                 </Button>
               </div>
             </div>

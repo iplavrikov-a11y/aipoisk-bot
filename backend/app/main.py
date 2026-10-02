@@ -608,7 +608,8 @@ def customer_yandex_callback_api(
         return resp
 
     token, csrf_token, session = create_web_session(db, user, request=request)
-    resp = RedirectResponse(url="/cabinet", status_code=303)
+    success_fragment = "registration_success" if is_new else "login_success"
+    resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
     clear_yandex_oauth_state_cookie(resp)
     return resp
@@ -676,7 +677,8 @@ def customer_telegram_callback_api(
         )
 
     token, csrf_token, session = create_web_session(db, user, request=request)
-    resp = RedirectResponse(url="/cabinet", status_code=303)
+    success_fragment = "registration_success" if is_new else "login_success"
+    resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
     return resp
 

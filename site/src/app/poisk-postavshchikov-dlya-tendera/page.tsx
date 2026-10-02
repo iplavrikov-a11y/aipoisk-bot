@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ShieldCheck, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
@@ -13,7 +14,7 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков для тендеров: 44-ФЗ и 223-ФЗ | TenderLex",
+  title: "Поиск поставщиков для тендеров: 44-ФЗ и 223-ФЗ",
   description:
     "Быстрый поиск надежных поставщиков под тендеры 44-ФЗ, 223-ФЗ и коммерческие закупки: прямые контакты дилеров и расчет себестоимости. Проверьте бесплатно!",
   keywords: [
@@ -124,15 +125,15 @@ export default function PoiskPostavshchikovDlyaTenderaPage() {
               >
                 <span>Найти под тендер</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>
@@ -158,7 +159,7 @@ export default function PoiskPostavshchikovDlyaTenderaPage() {
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
                 <h3 className="text-lg font-black text-slate-900">Сжатые сроки подготовки</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Выход на контакты лиц, принимающих решения, за 3 минуты вместо дней ручного обзвона.
+                  Поиск контактов компаний и подготовка данных для их проверки перед обращением.
                 </p>
               </div>
             </div>

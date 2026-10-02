@@ -1,6 +1,15 @@
 # TenderLex: Project Status
 
-Date: 2026-09-28
+Date: 2026-10-02
+
+## SEO continuation — 2026-10-02
+
+- SEO analytics corrections, 57 reviewed articles, distinct commercial intents, truthful public settings and read-only daily monitoring are implemented. Full prior validation: 776 tests + 54 subtests, 89 public URLs and 9 browser scenarios.
+- Latest follow-up corrects all regional/industry claims, the EIS supplier/manufacturer distinction and adds accessible mobile navigation. SSR/contact/handler tests and TypeScript pass; interactive browser verification of the new menu is unavailable in this session.
+- Owner excludes company requisites and OAuth/API-key rotation from scope. Working credentials and automation are retained and verified.
+- Four editorial proposals sent with Gmail; one independently hosted self-publication on Telegraph is live. Earned editorial publications and ranking uplift are not yet confirmed.
+- Independent scores: 9.1 / 8.3 / 9.2 / 9.1 / 8.7; average 8.88. Baselines dated October 1 and 2 are immutable comparison inputs, next owner review expected around October 8.
+- Reports: [October 2 follow-up](SEO_FOLLOWUP_REPORT_2026-10-02.md), [comparison protocol](SEO_WEEKLY_COMPARISON.md), [audit ledger](SEO_AUDIT_LEDGER.md).
 
 ## Current Production State
 
@@ -12,6 +21,15 @@ Date: 2026-09-28
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
+  - **Feature**: Proactive detection and alerts when a client's balance drops to 100 ₽ or less (`money_balance_kopeks <= 10_000`), allowing the owner to remind the client before their final/next task is blocked.
+  - **Client Experience**: Client receives short, actionable message in Telegram with an inline button `💬 Написать в Telegram для пополнения` linking directly to owner's Telegram (`t.me/<owner>?text=...`) with pre-filled message: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`. Also displayed under task delivery captions and in `/cabinet`.
+  - **Owner Alerts**: Immediate Telegram alert sent to `AIPOISK_OWNER_TELEGRAM_ID` containing client name, `@username`, client number, exact remaining balance, attempted action/mode, and direct links + inline button `💬 Написать @<username>` to contact the client.
+  - **Two Notification Modes**:
+    1. Early warning when balance drops to ≤ 100 ₽: `⚠️ У клиента заканчивается баланс (осталось ≤ 100 ₽)! (хватит не более чем на 1 задачу)` so owner can reach out in advance.
+    2. Zero balance / blocked: `💳 У клиента закончился баланс! (0.00 ₽)`.
+  - **Anti-Spam & Reset**: Owner alerts are throttled to 1 per hour per client; throttle automatically resets when balance is topped up via admin panel or billing transactions. Test mocks isolated from live messaging.
+  - **Verification**: 11 unit tests in `backend/tests/test_low_balance_notifications.py` + full 787 backend tests passing.
 - Telegram Bot Web Identifier Guard & Full System Health Audit (2026-09-28):
   - **Issue Diagnosed**: In API logs, when an admin supplemented a job created via the web cabinet, the notification handler logged `Failed to send admin supplement telegram notification to web:...: Telegram server says - Bad Request: chat not found`.
   - **Remediation (`backend/app/bot.py`)**: In `send_admin_supplement_telegram_notification()`, added early validation guarding against web cabinet IDs (`raw_tg.startswith("web:")`) or non-numeric chat IDs. Non-Telegram accounts are safely bypassed without attempting invalid Bot API calls or polluting error logs.

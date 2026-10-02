@@ -1,13 +1,15 @@
 'use client';
 
 import Link from "next/link";
+import { usePublicSiteContacts } from "@/lib/public-site-settings";
 import { TenderLexLogo } from "@/components/logo";
 import { Send, Sparkles, Mail, MessageSquare } from "lucide-react";
 
 export function SiteHeader() {
-  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || "https://t.me/tenderlex_bot";
+  const data = usePublicSiteContacts();
+  const botUrl = data.bot.telegram_url;
   const cabinetUrl = "/cabinet";
-  const telegramSupportUrl = "https://t.me/lexelence";
+  const telegramSupportUrl = data.contacts.telegram_url;
 
   return (
     <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs">
@@ -35,11 +37,11 @@ export function SiteHeader() {
             </a>
             <span className="text-slate-700">|</span>
             <a
-              href="mailto:info@tenderlex.ru"
+              href={`mailto:${data.contacts.email}`}
               className="hover:text-teal-300 transition-colors flex items-center gap-1"
             >
               <Mail size={12} className="text-teal-400" />
-              info@tenderlex.ru
+              {data.contacts.email}
             </a>
             <span className="text-slate-700">|</span>
             <button
@@ -125,6 +127,29 @@ export function SiteHeader() {
           </a>
         </div>
       </div>
+      <details className="border-t border-slate-200 lg:hidden">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700 focus-visible:outline-2 focus-visible:outline-teal-600 focus-visible:outline-offset-2">
+          Меню
+        </summary>
+        <nav aria-label="Мобильная навигация" className="grid gap-1 px-4 pb-3">
+          {[
+            ["/poisk-postavshchikov-po-tz", "Поиск поставщиков"],
+            ["/podbor-tovara-i-analogov-po-tz", "Подбор товара и аналогов"],
+            ["/analiz-zakupochnoi-dokumentacii", "Анализ документации"],
+            ["/#pricing", "Тарифы"],
+            ["/baza-znaniy", "База знаний"],
+          ].map(([href, label]) => (
+            <Link
+              key={href}
+              href={href}
+              onClick={(event) => event.currentTarget.closest("details")?.removeAttribute("open")}
+              className="rounded-lg px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-teal-600"
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
+      </details>
     </header>
   );
 }
