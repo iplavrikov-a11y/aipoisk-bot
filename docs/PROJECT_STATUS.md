@@ -21,6 +21,12 @@ Date: 2026-10-02
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
+  - **Feature**: Automatic Telegram notifications when client runs out of balance (0 ₽ or below minimum generation cost).
+  - **Client Experience**: Client receives short, actionable message in Telegram with an inline button `💬 Написать в Telegram для пополнения` linking directly to owner's Telegram (`t.me/<owner>?text=...`) with pre-filled message: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`. Also available directly in the bot's cabinet (`/cabinet` / `Мой кабинет`).
+  - **Owner Alerts**: Immediate Telegram alert sent to `AIPOISK_OWNER_TELEGRAM_ID` containing client name, `@username`, client number, remaining balance, attempted action/mode, and direct links to contact the client.
+  - **Anti-Spam & Reset**: Owner alerts are throttled to 1 per hour per client; throttle automatically resets when balance is topped up via admin panel or billing transactions.
+  - **Verification**: 8 unit tests in `backend/tests/test_low_balance_notifications.py` + full 784 backend tests passing.
 - Telegram Bot Web Identifier Guard & Full System Health Audit (2026-09-28):
   - **Issue Diagnosed**: In API logs, when an admin supplemented a job created via the web cabinet, the notification handler logged `Failed to send admin supplement telegram notification to web:...: Telegram server says - Bad Request: chat not found`.
   - **Remediation (`backend/app/bot.py`)**: In `send_admin_supplement_telegram_notification()`, added early validation guarding against web cabinet IDs (`raw_tg.startswith("web:")`) or non-numeric chat IDs. Non-Telegram accounts are safely bypassed without attempting invalid Bot API calls or polluting error logs.

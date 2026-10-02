@@ -952,6 +952,11 @@ def _grant_money_balance_locked(
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
+    try:
+        from .bot import reset_client_low_balance_alert
+        reset_client_low_balance_alert(client.id)
+    except Exception:
+        pass
     return transaction
 
 
@@ -1072,6 +1077,11 @@ def _grant_trial_balance_locked(
             )
         )
         db.flush()
+        try:
+            from .bot import reset_client_low_balance_alert
+            reset_client_low_balance_alert(client.id)
+        except Exception:
+            pass
         return
 
     for kind, units in (
