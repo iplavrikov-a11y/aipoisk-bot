@@ -1407,8 +1407,17 @@ async def _alert_owner_about_low_balance(
     balance_rub = round(max(0, int(balance_kopeks or 0)) / 100, 2)
     mode_name = _mode_label(mode) if mode else ""
 
+    if balance_rub <= 0:
+        header = "💳 <b>У клиента закончился баланс!</b>"
+        balance_note = "0.00 ₽"
+        advice = "ℹ️ <i>Клиенту в боте отправлено уведомление о пополнении с кнопкой связи с вами.</i>"
+    else:
+        header = "⚠️ <b>У клиента заканчивается баланс (осталось ≤ 100 ₽)!</b>"
+        balance_note = f"{balance_rub:.2f} ₽ (хватит не более чем на 1 задачу)"
+        advice = "ℹ️ <i>Напомните клиенту об оплате, чтобы не блокировать следующую задачу.</i>"
+
     lines = [
-        "💳 <b>У клиента закончился баланс!</b>",
+        header,
         "",
         f"👤 <b>Клиент:</b> {client_display}",
         f"🆔 <b>Номер клиента:</b> {client_num_str}",
@@ -1416,7 +1425,7 @@ async def _alert_owner_about_low_balance(
     if client_tg and client_tg.isdigit():
         lines.append(f"📱 <b>Telegram ID:</b> <code>{client_tg}</code>")
 
-    lines.append(f"💰 <b>Остаток:</b> {balance_rub:.2f} ₽")
+    lines.append(f"💰 <b>Остаток:</b> {balance_note}")
 
     if mode_name:
         lines.append(f"⚙️ <b>Услуга:</b> {html_escape(mode_name.capitalize())}")
@@ -1427,7 +1436,7 @@ async def _alert_owner_about_low_balance(
 
     lines.extend([
         "",
-        "ℹ️ <i>Клиенту в боте отправлено уведомление о пополнении с кнопкой связи с вами.</i>",
+        advice,
     ])
 
     if username:
@@ -2961,13 +2970,19 @@ async def _send_result_offer_outputs(
                 try:
                     balances = client_service_balance_summary(db, job.client)
                     money_summary = balances.get("money") or {}
+                    available_kopeks = int(money_summary.get("available_kopeks", 0) or 0)
                     if isinstance(money_summary, dict) and (
-                        money_summary.get("available_kopeks", 0) <= 0 or money_summary.get("low")
+                        available_kopeks <= 10_000 or money_summary.get("low")
                     ):
+                        reason = (
+                            "Баланс исчерпан (0 ₽) после выдачи результата"
+                            if available_kopeks <= 0
+                            else f"Осталось ≤ 100 ₽ ({available_kopeks / 100:.2f} ₽) после выполнения задачи"
+                        )
                         await _alert_owner_about_low_balance(
                             _message_bot(message),
                             job.client,
-                            reason="Баланс исчерпан после выдачи результата",
+                            reason=reason,
                             job_title=getattr(job, "title", ""),
                             mode=str(getattr(job, "mode", "") or ""),
                         )
@@ -3055,13 +3070,19 @@ async def _send_job_outputs_locked(
                 try:
                     balances = client_service_balance_summary(db, done_job.client)
                     money_summary = balances.get("money") or {}
+                    available_kopeks = int(money_summary.get("available_kopeks", 0) or 0)
                     if isinstance(money_summary, dict) and (
-                        money_summary.get("available_kopeks", 0) <= 0 or money_summary.get("low")
+                        available_kopeks <= 10_000 or money_summary.get("low")
                     ):
+                        reason = (
+                            "Баланс исчерпан (0 ₽) после выдачи результата"
+                            if available_kopeks <= 0
+                            else f"Осталось ≤ 100 ₽ ({available_kopeks / 100:.2f} ₽) после выполнения задачи"
+                        )
                         await _alert_owner_about_low_balance(
                             _message_bot(message),
                             done_job.client,
-                            reason="Баланс исчерпан после выдачи результата",
+                            reason=reason,
                             job_title=getattr(done_job, "title", ""),
                             mode=str(getattr(done_job, "mode", "") or ""),
                         )

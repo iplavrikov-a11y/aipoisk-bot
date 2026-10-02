@@ -235,3 +235,36 @@ class LowBalanceNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply_markup.inline_keyboard[0][0].text, "💬 Написать @ivan_tg")
         self.assertEqual(reply_markup.inline_keyboard[0][0].url, "https://t.me/ivan_tg")
 
+    @patch("app.bot.config")
+    async def test_alert_owner_when_balance_is_100_rubles_or_less(self, mock_config: MagicMock) -> None:
+        mock_config.owner_telegram_id = "998877"
+        mock_config.bot_token = "fake-token"
+
+        bot = AsyncMock()
+        client = Client(
+            id="c_user_99",
+            client_number=99,
+            name="Ольга Петрова",
+            username="olga_petrova",
+            telegram_id="998811",
+            money_balance_kopeks=10_000,  # exactly 100.00 ₽
+        )
+        reset_client_low_balance_alert(client.id)
+
+        await _alert_owner_about_low_balance(
+            bot,
+            client,
+            reason="Осталось ≤ 100 ₽ (100.00 ₽) после выполнения задачи",
+            job_title="Спецификация_оборудование.xlsx",
+            mode="supplier_search",
+        )
+        self.assertEqual(bot.send_message.call_count, 1)
+        args, kwargs = bot.send_message.call_args
+        text = kwargs.get("text", "")
+        self.assertIn("У клиента заканчивается баланс (осталось ≤ 100 ₽)!", text)
+        self.assertIn("100.00 ₽ (хватит не более чем на 1 задачу)", text)
+        self.assertIn("Напомните клиенту об оплате, чтобы не блокировать следующую задачу.", text)
+        self.assertIn("Ольга Петрова", text)
+        self.assertIn("№ 99", text)
+
+
