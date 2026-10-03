@@ -5829,7 +5829,7 @@ function JobsView({
                     title={`Входной файл клиента: ${inputFiles[0].original_filename}`}
                   >
                     <FileText size={12} />
-                    <span className="pill-filename" style={{ maxWidth: 180 }}>{inputFiles[0].original_filename}</span>
+                    <span className="pill-filename" title={inputFiles[0].original_filename}>{inputFiles[0].original_filename}</span>
                   </button>
                 ) : null}
 
