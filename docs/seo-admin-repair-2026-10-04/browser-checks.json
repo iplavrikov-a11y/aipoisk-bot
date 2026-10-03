@@ -1,0 +1,60 @@
+{
+  "checks": [
+    {
+      "mode": "available",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "mobile",
+      "width": 390,
+      "status": "passed"
+    },
+    {
+      "mode": "unavailable",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "error",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "malformed",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "recovery",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "stale",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "unauthorized",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "login",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "reopen",
+      "width": 1440,
+      "status": "passed"
+    },
+    {
+      "mode": "network",
+      "width": 1440,
+      "status": "passed"
+    }
+  ],
+  "recorded_at_utc": "2026-10-03T23:37:42.196589+00:00"
+}

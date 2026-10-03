@@ -1,6 +1,14 @@
 # TenderLex: Project Status
 
-Date: 2026-10-02
+Date: 2026-10-04 (MSK)
+
+## SEO admin repair — 2026-10-04 (MSK)
+
+- SEO traffic dashboard now displays Yandex and Google separately, with automatic bounded refresh, Russian status messages and source-specific periods. Owner approval/reject workflows and SEO action buttons removed; SEO decisions are handled with the agent.
+- Fixed the inherited 1120 px table minimum width inside SEO only, registration-period explanations, snapshot freshness by collection timestamp, and concurrent expired reads within the API process. Other admin panes retained.
+- Verified: 791 backend tests + 54 subtests; TypeScript/Vite production build; 11 synthetic browser scenarios and 13 authenticated live checks. All 9 admin panes opened without JavaScript errors; desktop columns and mobile 390 px checked. No business mutations in browser QA.
+- Required backend deployment completed; public site not rebuilt, all 4 checked public responses unchanged. Existing FastAPI deprecation and bundle-size warnings remain. Ranking uplift is not established by this repair.
+- Report: [SEO admin repair](SEO_ADMIN_REPAIR_2026-10-04.md). Historical audit and publication evidence below describe previous sessions.
 
 ## SEO continuation — 2026-10-02
 

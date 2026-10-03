@@ -1389,7 +1389,8 @@ def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) 
 
 
 @app.get("/api/seo-analytics", dependencies=[Depends(require_admin)])
-def seo_analytics_api(refresh: bool = False) -> dict:
+def seo_analytics_api(response: Response, refresh: bool = False) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     from app.yandex_seo import get_cached_or_fresh_analytics
     return get_cached_or_fresh_analytics(force_refresh=refresh)
 

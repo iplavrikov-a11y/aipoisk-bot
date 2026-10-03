@@ -12,6 +12,7 @@ import urllib.error
 import logging
 import re
 import math
+from threading import Lock
 from html import escape
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,7 @@ RECS_STATE_PATH = DATA_DIR / "seo_recommendations_state.json"
 HISTORY_PATH = DATA_DIR / "seo_daily_history.json"
 ENV_PATH = ROOT_DIR / ".env"
 PRIMARY_CONVERSION_CUTOFF = "2026-10-01"
+_ANALYTICS_LOCK = Lock()
 
 
 def _load_env_tokens():
@@ -904,18 +906,20 @@ def fetch_fresh_snapshot() -> dict:
 
 
 def get_cached_or_fresh_analytics(force_refresh: bool = False) -> dict:
-    if not force_refresh and SNAPSHOT_PATH.exists():
-        try:
-            mtime = SNAPSHOT_PATH.stat().st_mtime
-            if time.time() - mtime < 21600:
+    # Recheck freshness inside the lock so concurrent admin reads collect once.
+    with _ANALYTICS_LOCK:
+        if not force_refresh and SNAPSHOT_PATH.exists():
+            try:
                 with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
                     snapshot = json.load(f)
-                    if snapshot.get("schema_version", 0) >= 2:
-                        return snapshot
-        except Exception:
-            pass
+                collected_at = datetime.fromisoformat(snapshot["updated_at"].replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - collected_at).total_seconds()
+                if snapshot.get("schema_version", 0) >= 2 and 0 <= age < 21600:
+                    return snapshot
+            except Exception:
+                pass
             
-    return fetch_fresh_snapshot()
+        return fetch_fresh_snapshot()
 
 
 def build_seo_digest(data: dict) -> str:
