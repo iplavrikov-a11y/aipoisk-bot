@@ -21,6 +21,18 @@ Date: 2026-10-02
 - Durable job worker: `tenderlex-worker.service`.
 - Frontend: static Vite build served by nginx from `frontend/dist`.
 - Public TenderLex site: Next.js landing page and web cabinet served by `tenderlex-site.service` on `127.0.0.1:3093`.
+- Admin Panel UI/UX: Task Action Buttons & Unclipped Filename Overlap Fix (Task #810) (2026-10-03):
+  - **Issue Diagnosed**: In `admin.tenderlex.ru`, section "Задачи" (e.g. task #810), long input filenames (e.g. `Приложение № 1 Описание предмета закупки новая редакция.docx`) inside the single-file download button broke layout: unclipped filename text spilled out of its 180px boundary, physically drew over adjacent action buttons (`MessageSquarePlus`, `Play`), and leaked past the right edge of the card container (`ная реда...`).
+  - **Root Cause**: In `frontend/src/App.tsx`, the single-file fallback button used class `pill-filename` with an inline `maxWidth: 180`, but `.pill-filename` was only styled inside `.download-pill` (an obsolete legacy selector) and lacked `overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;`. Because text wasn't clipped, the 180px span allowed the overflowing text to draw over adjacent flex children. Additionally, `.btn-files-dropdown` and `.btn-primary-download` lacked `overflow: hidden; max-width;` and `.job-actions-strip` lacked `margin-left: auto`.
+  - **Remediation**:
+    1. `frontend/src/App.tsx`: Added `title={inputFiles[0].original_filename}` tooltip to `.pill-filename` span and removed hardcoded inline styling in favor of responsive CSS rules.
+    2. `frontend/src/styles.css`:
+       - `.btn-files-dropdown`: Added `max-width: 220px; overflow: hidden; box-sizing: border-box;` and ellipsis truncation for child `span` and `.pill-filename` (max-width: 170px).
+       - `.btn-primary-download`: Added `max-width: 220px; overflow: hidden;` and text-overflow ellipsis for inner label.
+       - Global `.pill-filename`: Added `overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; display: inline-block; vertical-align: middle;`.
+       - `.job-actions-strip`: Added `margin-left: auto` to ensure action buttons stay right-aligned when wrapping, and sized `.icon-button.small` to `26×26px` matching file button height.
+       - `.job-card-top` and `.job-title-row h2`: Added `flex-wrap: wrap` and `word-break: break-word; overflow-wrap: anywhere;` preventing horizontal page stretch on long procurement titles.
+  - **Verification**: Built with Vite (`npm run build`), verified 787 backend unit tests passing (0 failures), checked live served bundle at `https://admin.tenderlex.ru/assets/index-BmXxZEfF.css`.
 - Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
   - **Feature**: Proactive detection and alerts when a client's balance drops to 100 ₽ or less (`money_balance_kopeks <= 10_000`), allowing the owner to remind the client before their final/next task is blocked.
   - **Client Experience**: Client receives short, actionable message in Telegram with an inline button `💬 Написать в Telegram для пополнения` linking directly to owner's Telegram (`t.me/<owner>?text=...`) with pre-filled message: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`. Also displayed under task delivery captions and in `/cabinet`.

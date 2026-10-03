@@ -16,6 +16,9 @@ Admin/internal domain: `https://aipoisk.lexelence.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Admin Panel UI/UX: Task Action Buttons & Unclipped Filename Overlap Fix (2026-10-03):
+  - Solved button overlap and layout distortion in admin panel (`admin.tenderlex.ru`, tasks section): long input filenames (e.g. `Приложение № 1 Описание предмета закупки новая редакция.docx`) previously lacked CSS text clipping, causing the filename string to draw directly over adjacent action buttons (`💬+`, `▶`) and overflow the card container.
+  - Implemented strict CSS ellipsis truncation (`max-width: 170px`) for `.btn-files-dropdown`, `.btn-primary-download`, and `.pill-filename`, added `title` tooltips, aligned icon buttons to `26×26px`, added `margin-left: auto` to `.job-actions-strip` to stay right-aligned on wrap, and enabled word-wrapping on long procurement titles.
 - Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
   - Proactive early detection when a client's balance drops to 100 ₽ or less (`money_balance_kopeks <= 10_000`) after job delivery or before tasks, preventing blocked workflows.
   - Client UX: clear, non-technical notification in the Telegram bot with a 1-click inline button `💬 Написать в Telegram для пополнения` opening a chat with the owner and pre-filled text: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`.
