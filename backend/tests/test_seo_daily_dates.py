@@ -1,9 +1,21 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.google_seo import fetch_google_analytics
 from app.yandex_seo import fetch_fresh_snapshot
 from test_yandex_seo import _mock_snapshot
+
+
+@pytest.fixture(autouse=True)
+def fixed_google_calendar(monkeypatch):
+    class Calendar(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    monkeypatch.setattr('app.google_seo.datetime', Calendar)
 
 
 def test_yandex_daily_uses_all_queries_history_not_phrase_sample(tmp_path, monkeypatch):
