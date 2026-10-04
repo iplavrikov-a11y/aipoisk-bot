@@ -81,7 +81,8 @@ def test_google_analytics_uses_closed_property_total_and_labels_query_coverage()
     assert data["period"]["data_state"] == "final"
     assert data["period"]["lag_days"] == 3
     for call in service.searchanalytics().query.call_args_list:
-        assert call.kwargs["body"]["dataState"] == "final"
+        body = call.kwargs["body"]
+        assert body["dataState"] == ("all" if body["dimensions"] == ["date"] and body["endDate"] == data["daily_period"]["end_date"] else "final")
 
 
 def test_google_analytics_paginates_visible_query_rows():

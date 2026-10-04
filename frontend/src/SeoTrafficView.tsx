@@ -54,6 +54,46 @@ const stamp = (value: unknown) => {
 }
 const percent = (value: unknown) =>
   number(value) === null ? '—' : `${shown(value, 1)}%`
+const dayInZone = (zone: string) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const part = (type: string) => parts.find((item) => item.type === type)?.value
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+const calendarDays = (
+  reported: Data[],
+  google: boolean,
+  unavailable: boolean,
+): Data[] => {
+  const byDate = new Map(reported.map((row) => [text(row.date), row]))
+  const today = dayInZone('Europe/Moscow')
+  const sourceToday = dayInZone(
+    google ? 'America/Los_Angeles' : 'Europe/Moscow',
+  )
+  return Array.from({ length: 30 }, (_, offset) => {
+    const day = new Date(`${today}T00:00:00Z`)
+    day.setUTCDate(day.getUTCDate() - offset)
+    const iso = day.toISOString().slice(0, 10)
+    const row = byDate.get(iso)
+    const state =
+      iso > sourceToday
+        ? 'День ещё не начался у источника'
+        : row
+          ? row.data_status === 'preliminary'
+            ? 'Предварительные данные'
+            : row.data_status === 'final'
+              ? 'Завершённые данные'
+              : 'Данные получены'
+          : unavailable
+            ? 'Источник временно недоступен'
+            : 'Источник не вернул данные'
+    return { ...row, date: iso, state }
+  })
+}
 function Card({
   title,
   value,
@@ -151,21 +191,32 @@ function Source({
   source: Data
   google?: boolean
 }) {
+  const components = object(source.component_status)
   const unavailable = google
     ? !['active', 'partial'].includes(text(source.status))
-    : Boolean(source.error) || !Object.keys(source).length
+    : !Object.keys(source).length ||
+      (components.summary === 'error' && components.daily_dynamics === 'error')
   const totals = object(source.property_totals)
   const queriesUnavailable =
-    unavailable || object(source.query_sample).status === 'unavailable'
+    unavailable ||
+    ['error', 'unavailable'].includes(
+      text(object(source.query_sample).status),
+    ) ||
+    components.query_sample === 'error'
   const queries = queriesUnavailable ? [] : rows(source.top_queries)
-  const daily = unavailable
-    ? []
-    : rows(source.daily_dynamics)
-        .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(text(row.date)))
-        .sort((a, b) => text(b.date).localeCompare(text(a.date)))
-        .slice(0, 14)
+  const dailyUnavailable =
+    unavailable ||
+    ['error', 'unavailable'].includes(text(components.daily_dynamics))
+  const reported = rows(source.daily_dynamics).filter((row) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(text(row.date)),
+  )
+  const daily = calendarDays(reported, Boolean(google), dailyUnavailable)
+  const latest = reported
+    .map((row) => text(row.date))
+    .sort()
+    .at(-1)
   const totalsUnavailable =
-    unavailable || source.totals_status === 'unavailable'
+    unavailable || ['error', 'unavailable'].includes(text(source.totals_status))
   const field = (key: string, fallback: string) =>
     totalsUnavailable ? null : key in totals ? totals[key] : source[fallback]
   return (
@@ -241,11 +292,15 @@ function Source({
       </p>
       <h3>Динамика по дням</h3>
       <p className="seo-caption">
-        {daily.length > 0 &&
-          `${date(daily.at(-1)?.date)} — ${date(daily[0]?.date)}. `}
-        Последние {daily.length} доступных дней. Средняя позиция зависит от
-        состава запросов; её изменение не подтверждает рост ранжирования.
-        Отсутствующие значения обозначены прочерком.
+        Календарь за 30 дней: {date(daily.at(-1)?.date)} —{' '}
+        {date(daily[0]?.date)}. Последние полученные данные: {date(latest)}. Все
+        запросы ресурса;{' '}
+        {google
+          ? 'America/Los_Angeles. Свежие данные могут уточняться.'
+          : 'Europe/Moscow. Текущий день предварительный; позиция может поступить позже показов и кликов.'}{' '}
+        Отсутствующие значения обозначены прочерком и не равны нулю. Средняя
+        позиция зависит от состава запросов; её изменение не подтверждает рост
+        ранжирования.
       </p>
       {daily.length ? (
         <div className="seo-daily">
@@ -260,7 +315,7 @@ function Source({
               'Клики',
               'Показы',
               'Средняя позиция',
-              ...(google ? [] : ['Фраз в выборке']),
+              'Состояние данных',
             ]}
           >
             {daily.map((row) => (
@@ -273,7 +328,7 @@ function Source({
                     ? '—'
                     : shown(row.avg_position, 2)}
                 </td>
-                {!google && <td>{shown(row.queries_count)}</td>}
+                <td>{text(row.state)}</td>
               </tr>
             ))}
           </Table>
@@ -426,7 +481,7 @@ export function SeoTrafficView() {
   const stale =
     !Number.isFinite(collected) ||
     collected > Date.now() + 300000 ||
-    Date.now() - collected >= 21600000
+    Date.now() - collected >= 3600000
   return (
     <div className="seo-overview" aria-busy={loading}>
       <section className="seo-panel seo-status">

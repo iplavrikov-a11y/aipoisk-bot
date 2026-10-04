@@ -3,6 +3,7 @@
 import json
 import mimetypes
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -56,7 +57,7 @@ with sync_playwright() as p:
             else:
                 asset=ROOT/'frontend/dist'/path.lstrip('/') if path.startswith('/assets/') else ROOT/'frontend/dist/index.html'
                 route.fulfill(status=200,content_type=mimetypes.guess_type(str(asset))[0] or 'application/octet-stream',body=asset.read_bytes())
-        context.route('**/*',intercept); page=context.new_page();page.clock.install();page.on('pageerror',lambda e:errors.append(str(e)))
+        context.route('**/*',intercept); page=context.new_page();page.clock.install(time=datetime(2026, 10, 4, 1, tzinfo=timezone.utc));page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://tenderlex.test/#seo',wait_until='networkidle')
         if mode=='login':
             page.locator('input').first.fill('test');page.locator('input[type=password]').fill('test');page.get_by_role('button',name='Войти',exact=True).click()
@@ -80,7 +81,9 @@ with sync_playwright() as p:
                 assert page.locator('.seo-table-scroll').evaluate_all('(tables)=>tables.every(t=>t.scrollWidth <= t.clientWidth+1)'), 'Desktop SEO columns must be visible without horizontal scrolling'
             assert 'Часть источников не предоставила' not in text
             assert 'В периоде регистрации ещё нет визитов' in text
-            assert page.locator('.seo-daily tbody tr').count()==2,'Both source histories render automatically'
+            assert page.locator('.seo-daily tbody tr').count()==60,'Every calendar day renders for both sources'
+            assert '04.10.2026' in text and 'Источник не вернул данные' in text
+            assert 'День ещё не начался у источника' in text
         if mode in ['error','stale','network']:
             assert 'Не удалось обновить данные' in text
             assert len(requests)==(2 if mode=='stale' else 1),'No request loop on failure'

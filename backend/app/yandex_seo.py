@@ -13,6 +13,7 @@ import logging
 import re
 import math
 from threading import Lock
+import fcntl
 from html import escape
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
@@ -474,6 +475,18 @@ def fetch_fresh_snapshot() -> dict:
         wm_analytics_error = str(qa_err)
         logger.warning("Error fetching Yandex query-analytics: %s", qa_err)
     
+    # Site-level daily totals have a wider/fresher window than the phrase sample.
+    from .seo_daily import yandex_daily
+    daily_today = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+    daily_start = (datetime.now(ZoneInfo("Europe/Moscow")).date() - timedelta(days=29)).isoformat()
+    daily_response = _http_json(f"{wm_base}/search-queries/all/history?query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&device_type_indicator=ALL&date_from={daily_start}&date_to={daily_today}", headers=wm_headers, timeout=15) if user_id else {"error": "Webmaster identity unavailable"}
+    daily_error = daily_response.get("error")
+    full_yandex_daily = []
+    try:
+        full_yandex_daily = yandex_daily(daily_response, daily_today)
+    except (TypeError, ValueError) as exc:
+        daily_error = daily_error or str(exc)
+
     # 2. Fetch Metrika Core Metrics
     m_headers = {"Authorization": f"OAuth {tokens['metrika']}"}
     counter_id = tokens["counter_id"]
@@ -747,6 +760,9 @@ def fetch_fresh_snapshot() -> dict:
         prev_y_clicks = d_clicks
         prev_y_shows = d_shows
 
+    yandex_query_daily_dynamics = yandex_daily_dynamics
+    yandex_daily_dynamics = full_yandex_daily
+
     yandex_phrase_dynamics = []
     for q_text, d_map in yandex_phrase_history.items():
         sorted_dates = sorted(d_map.keys())
@@ -775,7 +791,7 @@ def fetch_fresh_snapshot() -> dict:
     }
 
     # 8. Build Combined Daily Dynamics (All Dates)
-    all_dates = sorted(list(set(list(wm_daily_raw.keys()) + [d["date"] for d in google_dynamics])))
+    all_dates = sorted(list(set([d["date"] for d in yandex_daily_dynamics] + [d["date"] for d in google_dynamics])))
     y_by_date = {d["date"]: d for d in yandex_daily_dynamics}
     g_by_date = {d["date"]: d for d in google_dynamics}
 
@@ -783,12 +799,6 @@ def fetch_fresh_snapshot() -> dict:
     for dt in all_dates:
         yd = y_by_date.get(dt, {})
         gd = g_by_date.get(dt, {})
-        y_c = yd.get("clicks", 0)
-        g_c = gd.get("clicks", 0)
-        y_s = yd.get("shows", 0)
-        g_s = gd.get("shows", 0)
-        y_q = yd.get("queries_count", 0)
-        g_q = gd.get("queries_count", 0)
         y_p = yd.get("avg_position")
         g_p = gd.get("avg_position")
         y_trend = yd.get("trend", "stable")
@@ -799,8 +809,8 @@ def fetch_fresh_snapshot() -> dict:
             "total_clicks": None,
             "total_shows": None,
             "totals_comparable": False,
-            "coverage": "Yandex visible query rows versus Google property totals; compare engines separately.",
-            "total_queries": y_q + g_q,
+            "coverage": "Resource totals with independent source timezones and publication states; compare engines separately.",
+            "total_queries": None,
             "yandex": yd,
             "google": gd,
             "yandex_pos": y_p,
@@ -820,7 +830,15 @@ def fetch_fresh_snapshot() -> dict:
             with open(HISTORY_PATH, "r", encoding="utf-8") as f:
                 existing_history = json.load(f)
         for item in combined_daily_dynamics:
-            existing_history[item["date"]] = item
+            previous = existing_history.get(item["date"], {})
+            saved = {**item, "collected_at": now_iso}
+            for engine in ("yandex", "google"):
+                if not item.get(engine) and previous.get(engine):
+                    saved[engine] = previous[engine]
+                    saved[engine + "_collected_at"] = previous.get(engine + "_collected_at", previous.get("collected_at"))
+                elif item.get(engine):
+                    saved[engine + "_collected_at"] = now_iso
+            existing_history[item["date"]] = saved
         with open(HISTORY_PATH, "w", encoding="utf-8") as f:
             json.dump(existing_history, f, ensure_ascii=False, indent=2)
     except Exception as h_err:
@@ -828,17 +846,19 @@ def fetch_fresh_snapshot() -> dict:
     
     collection_errors = {**{f"metrika_{key}": value for key, value in metrika_errors.items()},
                          **({"webmaster": wm_summary.get("error") or wm_queries.get("error")} if wm_summary.get("error") or wm_queries.get("error") else {}),
-                         **({"webmaster_query_analytics": wm_analytics_error} if wm_analytics_error else {})}
+                         **({"webmaster_query_analytics": wm_analytics_error} if wm_analytics_error else {}),
+                         **({"webmaster_daily": daily_error} if daily_error else {})}
     if google_data.get("status") != "active" or google_data.get("errors") or google_data.get("error"):
         collection_errors["google"] = google_data.get("errors") or google_data.get("error") or "Google analytics is unavailable."
     snapshot = {
         "schema_version": 2,
+        "daily_schema_version": 1,
         "updated_at": now_iso,
         "collection_status": "partial" if collection_errors else "active",
         "collection_errors": collection_errors,
         "data_freshness": {
             "collected_at": now_iso,
-            "webmaster": {"status": "error" if wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error else "available",
+            "webmaster": {"status": "error" if wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error else "available",
                           "period": f"{webmaster_period['start_date']} — {webmaster_period['end_date']}" if webmaster_period["start_date"] and webmaster_period["end_date"] else "provider-defined; dates unavailable", "popular_queries_period": webmaster_period},
             "metrika": {"status": "error" if metrika_errors else "available", "period": metrika_period, "source": "all measured traffic", "timezone": metrika_period["timezone"]},
             "google": google_data.get("period", {}),
@@ -855,13 +875,17 @@ def fetch_fresh_snapshot() -> dict:
             "sqi": wm_summary.get("sqi"),
             "searchable_pages": wm_summary.get("searchable_pages_count"),
             "excluded_pages": wm_summary.get("excluded_pages_count"),
-            "error": wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error,
+            "error": wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error,
+            "component_status": {"summary": "error" if wm_summary.get("error") else "available", "query_sample": "error" if wm_queries.get("error") else "available", "daily_dynamics": "error" if daily_error else "available", "phrase_dynamics": "error" if wm_analytics_error else "available"},
+            "daily_scope": "property_totals",
+            "daily_period": {"start_date": daily_start, "end_date": daily_today, "timezone": "Europe/Moscow", "available_start_date": min((row["date"] for row in full_yandex_daily), default=None), "available_end_date": max((row["date"] for row in full_yandex_daily), default=None)},
             "period": webmaster_period,
             "query_coverage": "All returned popular queries after pagination; not all site searches.",
-            "daily_coverage": "Visible query rows only; daily totals are not property totals.",
+            "daily_coverage": "All-query resource totals; missing metrics remain unknown.",
             "top_queries": queries_clean[:50],
             "growth_points": growth_points[:15],
             "daily_dynamics": yandex_daily_dynamics,
+            "query_daily_dynamics": yandex_query_daily_dynamics,
             "phrase_dynamics": yandex_phrase_dynamics[:25]
         },
         "google": google_data,
@@ -908,18 +932,25 @@ def fetch_fresh_snapshot() -> dict:
 def get_cached_or_fresh_analytics(force_refresh: bool = False) -> dict:
     # Recheck freshness inside the lock so concurrent admin reads collect once.
     with _ANALYTICS_LOCK:
-        if not force_refresh and SNAPSHOT_PATH.exists():
-            try:
-                with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
-                    snapshot = json.load(f)
-                collected_at = datetime.fromisoformat(snapshot["updated_at"].replace("Z", "+00:00"))
-                age = (datetime.now(timezone.utc) - collected_at).total_seconds()
-                if snapshot.get("schema_version", 0) >= 2 and 0 <= age < 21600:
-                    return snapshot
-            except Exception:
-                pass
-            
-        return fetch_fresh_snapshot()
+        SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SNAPSHOT_PATH.with_suffix(".collection.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return _cached_or_collect(force_refresh)
+
+
+def _cached_or_collect(force_refresh: bool) -> dict:
+    if not force_refresh and SNAPSHOT_PATH.exists():
+        try:
+            with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            collected_at = datetime.fromisoformat(snapshot["updated_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - collected_at).total_seconds()
+            if snapshot.get("schema_version", 0) >= 2 and snapshot.get("daily_schema_version") == 1 and 0 <= age < 3600:
+                return snapshot
+        except Exception:
+            pass
+
+    return fetch_fresh_snapshot()
 
 
 def build_seo_digest(data: dict) -> str:

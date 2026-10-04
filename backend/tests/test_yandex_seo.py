@@ -133,6 +133,7 @@ def _mock_snapshot(tmp_path, monkeypatch, fail_primary=False):
         query = parse_qs(parsed.query)
         if parsed.path.endswith("/v4/user"): return {"user_id": 1}
         if parsed.path.endswith("/summary"): return {"sqi": 10, "searchable_pages_count": 57, "excluded_pages_count": 3}
+        if parsed.path.endswith("/all/history"): return {"indicators": {}}
         if parsed.path.endswith("/popular"): return {"queries": [], "date_from": "2026-09-21", "date_to": "2026-09-27"}
         if parsed.path.endswith("/goals"): return {"goals": goals}
         if "/management/" in parsed.path: return {"counter": {"time_zone_name": "Europe/Moscow", "time_zone_offset": 180, "filter_robots": 1}}

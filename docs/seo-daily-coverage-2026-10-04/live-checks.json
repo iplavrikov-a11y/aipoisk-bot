@@ -1,0 +1,188 @@
+{
+  "checks": [
+    {
+      "check": "authenticated_desktop_no_manual_workflow",
+      "passed": true
+    },
+    {
+      "check": "mobile_390_no_page_overflow",
+      "passed": true
+    },
+    {
+      "check": "pane_dashboard",
+      "passed": true
+    },
+    {
+      "check": "pane_clients",
+      "passed": true
+    },
+    {
+      "check": "pane_jobs",
+      "passed": true
+    },
+    {
+      "check": "pane_outreach",
+      "passed": true
+    },
+    {
+      "check": "pane_billing",
+      "passed": true
+    },
+    {
+      "check": "pane_settings",
+      "passed": true
+    },
+    {
+      "check": "pane_ai",
+      "passed": true
+    },
+    {
+      "check": "pane_mcp",
+      "passed": true
+    },
+    {
+      "check": "pane_seo",
+      "passed": true
+    },
+    {
+      "check": "no_business_mutations_or_JS_errors",
+      "passed": true
+    },
+    {
+      "check": "real_login_without_reload",
+      "passed": true
+    }
+  ],
+  "api_no_store": true,
+  "calendar_rows": 60,
+  "daily_coverage": {
+    "webmaster": {
+      "period": {
+        "start_date": "2026-09-05",
+        "end_date": "2026-10-04",
+        "timezone": "Europe/Moscow",
+        "available_start_date": "2026-09-05",
+        "available_end_date": "2026-10-04"
+      },
+      "last_rows": [
+        {
+          "date": "2026-10-01",
+          "shows": 13.0,
+          "clicks": 0.0,
+          "avg_position": 7.54,
+          "queries_count": null,
+          "coverage": "All queries reported by Webmaster; not a phrase sample.",
+          "data_status": "reported",
+          "ctr_percent": 0.0
+        },
+        {
+          "date": "2026-10-02",
+          "shows": 14.0,
+          "clicks": 0.0,
+          "avg_position": 8.07,
+          "queries_count": null,
+          "coverage": "All queries reported by Webmaster; not a phrase sample.",
+          "data_status": "reported",
+          "ctr_percent": 0.0
+        },
+        {
+          "date": "2026-10-03",
+          "shows": 0.0,
+          "clicks": 0.0,
+          "avg_position": null,
+          "queries_count": null,
+          "coverage": "All queries reported by Webmaster; not a phrase sample.",
+          "data_status": "reported",
+          "ctr_percent": null
+        },
+        {
+          "date": "2026-10-04",
+          "shows": 0.0,
+          "clicks": 0.0,
+          "avg_position": null,
+          "queries_count": null,
+          "coverage": "All queries reported by Webmaster; not a phrase sample.",
+          "data_status": "preliminary",
+          "ctr_percent": null
+        }
+      ],
+      "first_incomplete_date": null
+    },
+    "google": {
+      "period": {
+        "start_date": "2026-09-05",
+        "end_date": "2026-10-04",
+        "period_days": 30,
+        "timezone": "America/Los_Angeles",
+        "data_state": "all",
+        "lag_days": 0,
+        "is_closed": false,
+        "collected_at": "2026-10-04T01:30:46.394858-07:00",
+        "available_start_date": "2026-09-05",
+        "available_end_date": "2026-10-03"
+      },
+      "last_rows": [
+        {
+          "date": "2026-09-30",
+          "clicks": 2,
+          "shows": 56,
+          "avg_position": 23.32,
+          "ctr_percent": 3.57,
+          "data_status": "preliminary"
+        },
+        {
+          "date": "2026-10-01",
+          "clicks": 1,
+          "shows": 32,
+          "avg_position": 15.81,
+          "ctr_percent": 3.12,
+          "data_status": "preliminary"
+        },
+        {
+          "date": "2026-10-02",
+          "clicks": 2,
+          "shows": 27,
+          "avg_position": 23.0,
+          "ctr_percent": 7.41,
+          "data_status": "preliminary"
+        },
+        {
+          "date": "2026-10-03",
+          "clicks": 0,
+          "shows": 28,
+          "avg_position": 30.64,
+          "ctr_percent": 0.0,
+          "data_status": "preliminary"
+        }
+      ],
+      "first_incomplete_date": "2026-09-30"
+    }
+  },
+  "updated_at": "2026-10-04T08:30:40.594174+00:00",
+  "browser_api_failures": [],
+  "public_responses_unchanged": {
+    "https://tenderlex.ru/": true,
+    "https://tenderlex.ru/robots.txt": true,
+    "https://tenderlex.ru/sitemap.xml": true,
+    "http://127.0.0.1:8088/api/public/site": true
+  },
+  "site_pid": "2627901",
+  "historical_baseline": {
+    "historical_digest_matches": {
+      "https://tenderlex.ru/": false,
+      "https://tenderlex.ru/robots.txt": true,
+      "https://tenderlex.ru/sitemap.xml": true,
+      "http://127.0.0.1:8088/api/public/site": true
+    },
+    "homepage_revalidate_seconds": 300,
+    "site_pid": 2627901,
+    "note": "Raw historical homepage digest differs. ISR is configured; no public source edits or site restart in this task. Exact cause of historical byte difference is not established."
+  },
+  "validation": {
+    "full_backend_tests_passed": 799,
+    "subtests_passed": 54,
+    "final_targeted_tests_passed": 44,
+    "browser_synthetic_cases": 11,
+    "admin_build": "passed"
+  }
+}
