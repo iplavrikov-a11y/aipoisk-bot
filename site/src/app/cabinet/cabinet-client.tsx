@@ -2080,20 +2080,6 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
-              onClick={() => {
-                if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
-                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
-                }
-                window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
-              }}
-            >
-              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>Чат</span>
-            </button>
-
-            <button
-              type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowApiModal(true);
@@ -2104,20 +2090,6 @@ export function CabinetClient() {
               <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>API</span>
             </button>
-
-            {session?.contacts?.telegram_url ? (
-              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
-                <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
-                <span>Telegram</span>
-              </a>
-            ) : null}
-
-            {session?.contacts?.email ? (
-              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
-                <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
-                <span>Email</span>
-              </a>
-            ) : null}
 
             <button
               type="button"
@@ -2146,6 +2118,43 @@ export function CabinetClient() {
                 +1 000 ₽
               </span>
             </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
+                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
+                }
+                window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+              }}
+              title="Онлайн-чат поддержки"
+            >
+              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>Чат</span>
+            </button>
+
+            {session?.contacts?.telegram_url ? (
+              <a
+                className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs shrink-0"
+                href={session.contacts.telegram_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Написать в Telegram"
+              >
+                <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
+                <span>Telegram</span>
+              </a>
+            ) : null}
+
+            <a
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs shrink-0"
+              href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
+              title="Написать на электронную почту"
+            >
+              <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
+              <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
+            </a>
           </div>
 
           {/* Right-aligned items: Function Guide and Notification Bell */}
