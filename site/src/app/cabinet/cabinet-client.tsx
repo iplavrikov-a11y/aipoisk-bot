@@ -35,6 +35,7 @@ import {
   Receipt,
   RotateCcw,
   Search,
+  Send,
   ShieldAlert,
   Sliders,
   Sparkles,
@@ -2121,7 +2122,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1 px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
                   (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
@@ -2136,19 +2137,19 @@ export function CabinetClient() {
 
             {session?.contacts?.telegram_url ? (
               <a
-                className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs shrink-0"
+                className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
                 href={session.contacts.telegram_url}
                 target="_blank"
                 rel="noreferrer"
                 title="Написать в Telegram"
               >
-                <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
+                <Send size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
                 <span>Telegram</span>
               </a>
             ) : null}
 
             <a
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
               href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
               title="Написать на электронную почту"
             >
