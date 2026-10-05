@@ -17,6 +17,10 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- B2B API & CRM Integration Unified Money Balance Billing (2026-10-05):
+  - Unified client money balance (`money_balance_kopeks`) debiting for external API keys: removed isolated per-service quota limits in favor of single ruble balance debiting.
+  - Automatic pricing resolution via `effective_price_kopeks(db, client, service)` accounting for individual client tariff overrides (`ClientTariffOverride`), writing standard `BillingTransaction(operation="charge")`, and raising HTTP 402 ("Недостаточно средств") when money balance is exhausted.
+  - Admin Panel CRM & Clients Integration: added `🔑 API` filter tab in client list, `🔑 API` badge next to client names, detailed API keys subsection inside expanded client cards with total call statistics, and redesigned `MCP & API` key creation/edit modal displaying the client's live ruble balance and module access toggles.
 - Admin Panel UI/UX: Task Action Buttons & Unclipped Filename Overlap Fix (2026-10-03):
   - Solved button overlap and layout distortion in admin panel (`admin.tenderlex.ru`, tasks section): long input filenames (e.g. `Приложение № 1 Описание предмета закупки новая редакция.docx`) previously lacked CSS text clipping, causing the filename string to draw directly over adjacent action buttons (`💬+`, `▶`) and overflow the card container.
   - Implemented strict CSS ellipsis truncation (`max-width: 170px`) for `.btn-files-dropdown`, `.btn-primary-download`, and `.pill-filename`, added `title` tooltips, aligned icon buttons to `26×26px`, added `margin-left: auto` to `.job-actions-strip` to stay right-aligned on wrap, and enabled word-wrapping on long procurement titles.

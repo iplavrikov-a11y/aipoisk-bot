@@ -225,3 +225,74 @@ def test_admin_api_test_endpoint():
         assert kwargs.get("target") == 3
 
 
+def test_mcp_client_unified_money_balance_consumption():
+    from app.models import Client, BillingTransaction, ClientTariffOverride
+    from app.mcp_api import consume_quota
+    from fastapi import HTTPException
+    db = TestingSessionLocal()
+
+    # Create client with 200 rubles (20000 kopeks)
+    client_obj = Client(
+        name="Denis Weinstein CRM",
+        telegram_id="test_tg_denis_crm",
+        is_active=True,
+        money_balance_kopeks=20000,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    # Set custom price for client: 80 rubles (8000 kopeks) per search
+    override = ClientTariffOverride(
+        client_id=client_obj.id,
+        kind="supplier_search",
+        price_kopeks=8000,
+        is_enabled=True,
+    )
+    db.add(override)
+    db.commit()
+
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="Denis CRM Key",
+        client_id=client_obj.id,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=True,
+        allowed_procurement_report=True,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    # First request: should deduct money from client's balance
+    rem = consume_quota(db, api_key, "supplier_search", count=1)
+    db.refresh(client_obj)
+    db.refresh(api_key)
+
+    assert api_key.spent_supplier_search == 1
+    # Balance should have decreased from 20000 kopeks
+    assert client_obj.money_balance_kopeks < 20000
+    assert rem >= 0
+
+    # Verify billing transaction was created
+    tx = db.query(BillingTransaction).filter(BillingTransaction.client_id == client_obj.id).first()
+    assert tx is not None
+    assert tx.operation == "charge"
+    assert tx.kind == "supplier_search"
+
+    # Set client balance to 0 and verify 402 is raised
+    client_obj.money_balance_kopeks = 0
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        consume_quota(db, api_key, "supplier_search", count=1)
+    assert exc_info.value.status_code == 402
+    assert "Недостаточно средств" in exc_info.value.detail
+
+    db.close()
+
+
+

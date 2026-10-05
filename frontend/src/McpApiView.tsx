@@ -24,6 +24,13 @@ type Client = {
   name: string
   username?: string
   telegram_id?: string
+  money_balance_kopeks?: number
+  usage?: {
+    money?: {
+      available_kopeks?: number
+      balance_kopeks?: number
+    }
+  } | null
 }
 
 type ApiKeyItem = {
@@ -32,6 +39,7 @@ type ApiKeyItem = {
   name: string
   client_id?: string | null
   client_name?: string | null
+  client_balance_rub?: number | null
   is_admin: boolean
   is_active: boolean
   allowed_supplier_search: boolean
@@ -144,9 +152,9 @@ export function McpApiView({ clients }: { clients: Client[] }) {
         allowed_supplier_search: createForm.allowed_supplier_search,
         allowed_exact_product: createForm.allowed_exact_product,
         allowed_procurement_report: createForm.allowed_procurement_report,
-        quota_supplier_search: Number(createForm.quota_supplier_search) || 0,
-        quota_exact_product: Number(createForm.quota_exact_product) || 0,
-        quota_procurement_report: Number(createForm.quota_procurement_report) || 0,
+        quota_supplier_search: 999999,
+        quota_exact_product: 999999,
+        quota_procurement_report: 999999,
         rate_limit_per_minute: Number(createForm.rate_limit_per_minute) || 30,
         notes: createForm.notes.trim(),
         expires_days: createForm.expires_days ? Number(createForm.expires_days) : null,
@@ -164,9 +172,9 @@ export function McpApiView({ clients }: { clients: Client[] }) {
         allowed_supplier_search: true,
         allowed_exact_product: true,
         allowed_procurement_report: true,
-        quota_supplier_search: 20,
-        quota_exact_product: 10,
-        quota_procurement_report: 10,
+        quota_supplier_search: 999999,
+        quota_exact_product: 999999,
+        quota_procurement_report: 999999,
         rate_limit_per_minute: 30,
         notes: '',
         expires_days: '',
@@ -524,7 +532,7 @@ print(resp.json())`
                 <tr>
                   <th>Название & Клиент</th>
                   <th>Префикс ключа</th>
-                  <th>Модули & Квоты (Использовано / Лимит)</th>
+                  <th>Разрешенные модули & Вызовы</th>
                   <th>Статус</th>
                   <th>Использован</th>
                   <th style={{ textAlign: 'right' }}>Действия</th>
@@ -538,7 +546,22 @@ print(resp.json())`
                       <td>
                         <strong className="key-name-cell">{k.name}</strong>
                         {k.client_name && (
-                          <div className="key-client-sub">👤 {k.client_name}</div>
+                          <div className="key-client-sub" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span>👤 {k.client_name}</span>
+                            {k.client_balance_rub !== undefined && k.client_balance_rub !== null && (
+                              <span style={{
+                                background: '#f0fdf4',
+                                color: '#166534',
+                                border: '1px solid #bbf7d0',
+                                padding: '1px 6px',
+                                borderRadius: 4,
+                                fontSize: 11,
+                                fontWeight: 600,
+                              }}>
+                                {k.client_balance_rub.toLocaleString('ru-RU')} ₽
+                              </span>
+                            )}
+                          </div>
                         )}
                         {k.notes && <div className="key-note-sub">{k.notes}</div>}
                       </td>
@@ -549,17 +572,17 @@ print(resp.json())`
                         <div className="mcp-quota-pills">
                           {k.allowed_supplier_search && (
                             <span className="mcp-quota-badge search">
-                              🔍 Поиск: <strong>{k.spent_supplier_search}/{k.quota_supplier_search}</strong>
+                              🔍 Поиск {k.spent_supplier_search > 0 ? `(${k.spent_supplier_search})` : ''}
                             </span>
                           )}
                           {k.allowed_exact_product && (
                             <span className="mcp-quota-badge exact">
-                              🔬 Аналоги: <strong>{k.spent_exact_product}/{k.quota_exact_product}</strong>
+                              🔬 Аналоги {k.spent_exact_product > 0 ? `(${k.spent_exact_product})` : ''}
                             </span>
                           )}
                           {k.allowed_procurement_report && (
                             <span className="mcp-quota-badge audit">
-                              📑 Анализ: <strong>{k.spent_procurement_report}/{k.quota_procurement_report}</strong>
+                              📑 Анализ {k.spent_procurement_report > 0 ? `(${k.spent_procurement_report})` : ''}
                             </span>
                           )}
                         </div>
@@ -743,81 +766,83 @@ print(resp.json())`
                   value={createForm.client_id}
                   onChange={e => setCreateForm({ ...createForm, client_id: e.target.value })}
                 >
-                  <option value="">-- Без привязки --</option>
-                  {clients.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.username ? `(@${c.username})` : ''}
-                    </option>
-                  ))}
+                  <option value="">-- Без привязки (автономный тестовый ключ) --</option>
+                  {clients.map(c => {
+                    const bal = Math.round((c.money_balance_kopeks || c.usage?.money?.available_kopeks || 0) / 100)
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.name || 'Без имени'} {c.username ? `(@${c.username})` : ''} · Баланс: {bal} ₽
+                      </option>
+                    )
+                  })}
                 </select>
               </label>
 
-              {/* MODULE QUOTAS BOX */}
+              {(() => {
+                const selectedClient = clients.find(c => c.id === createForm.client_id)
+                if (!selectedClient) return null
+                const bal = Math.round((selectedClient.money_balance_kopeks || selectedClient.usage?.money?.available_kopeks || 0) / 100)
+                return (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: 8,
+                    padding: '10px 14px',
+                    marginBottom: 12,
+                    fontSize: 13,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600, color: '#166534' }}>
+                        👤 {selectedClient.name || 'Без имени'}
+                      </span>
+                      <span style={{
+                        background: '#dcfce7',
+                        color: '#15803d',
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        fontWeight: 700,
+                        fontSize: 12,
+                      }}>
+                        Единый баланс: {bal.toLocaleString('ru-RU')} ₽
+                      </span>
+                    </div>
+                    <div style={{ color: '#4b5563', fontSize: 11, marginTop: 4, lineHeight: 1.4 }}>
+                      ⚡ Запросы списываются с единого денежного баланса клиента по его тарифам (или индивидуальным ценам).
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* MODULE ACCESS BOX */}
               <div className="mcp-modal-quotas-box">
-                <span className="mcp-modal-quotas-title">Разрешенные модули и квоты (лимиты):</span>
+                <span className="mcp-modal-quotas-title">Разрешенные модули для ключа:</span>
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={createForm.allowed_supplier_search}
-                      onChange={e => setCreateForm({ ...createForm, allowed_supplier_search: e.target.checked })}
-                    />
-                    <span>🔍 Поиск поставщиков</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={createForm.quota_supplier_search}
-                      onChange={e => setCreateForm({ ...createForm, quota_supplier_search: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
-                  </div>
-                </div>
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={createForm.allowed_supplier_search}
+                    onChange={e => setCreateForm({ ...createForm, allowed_supplier_search: e.target.checked })}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>🔍 Поиск поставщиков</span>
+                </label>
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={createForm.allowed_exact_product}
-                      onChange={e => setCreateForm({ ...createForm, allowed_exact_product: e.target.checked })}
-                    />
-                    <span>🔬 Подбор товара и аналогов</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={createForm.quota_exact_product}
-                      onChange={e => setCreateForm({ ...createForm, quota_exact_product: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
-                  </div>
-                </div>
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={createForm.allowed_exact_product}
+                    onChange={e => setCreateForm({ ...createForm, allowed_exact_product: e.target.checked })}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>🔬 Подбор товара и аналогов</span>
+                </label>
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={createForm.allowed_procurement_report}
-                      onChange={e => setCreateForm({ ...createForm, allowed_procurement_report: e.target.checked })}
-                    />
-                    <span>📑 Анализ документации</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={createForm.quota_procurement_report}
-                      onChange={e => setCreateForm({ ...createForm, quota_procurement_report: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
-                  </div>
-                </div>
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={createForm.allowed_procurement_report}
+                    onChange={e => setCreateForm({ ...createForm, allowed_procurement_report: e.target.checked })}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>📑 Анализ документации</span>
+                </label>
               </div>
 
               <div className="mcp-modal-2col">
@@ -882,71 +907,83 @@ print(resp.json())`
                 />
               </label>
 
-              <div className="mcp-modal-quotas-box">
-                <span className="mcp-modal-quotas-title">Квоты и разрешения:</span>
+              {(() => {
+                const selectedClient = editingKey.client_id ? clients.find(c => c.id === editingKey.client_id) : null
+                const bal = editingKey.client_balance_rub !== undefined && editingKey.client_balance_rub !== null
+                  ? editingKey.client_balance_rub
+                  : (selectedClient ? Math.round((selectedClient.money_balance_kopeks || selectedClient.usage?.money?.available_kopeks || 0) / 100) : null)
+                if (!selectedClient && bal === null) return null
+                return (
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: 8,
+                    padding: '10px 14px',
+                    marginBottom: 12,
+                    fontSize: 13,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600, color: '#166534' }}>
+                        👤 {editingKey.client_name || selectedClient?.name || 'Клиент'}
+                      </span>
+                      {bal !== null && (
+                        <span style={{
+                          background: '#dcfce7',
+                          color: '#15803d',
+                          padding: '2px 8px',
+                          borderRadius: 6,
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}>
+                          Единый баланс: {bal.toLocaleString('ru-RU')} ₽
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ color: '#4b5563', fontSize: 11, marginTop: 4, lineHeight: 1.4 }}>
+                      ⚡ Запросы списываются с единого денежного баланса клиента по его тарифам (или индивидуальным ценам).
+                    </div>
+                  </div>
+                )
+              })()}
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
+              <div className="mcp-modal-quotas-box">
+                <span className="mcp-modal-quotas-title">Разрешенные модули & вызовы:</span>
+
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <input
                       type="checkbox"
                       checked={editingKey.allowed_supplier_search}
                       onChange={e => setEditingKey({ ...editingKey, allowed_supplier_search: e.target.checked })}
                     />
-                    <span>🔍 Поиск (расход: {editingKey.spent_supplier_search})</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={editingKey.quota_supplier_search}
-                      onChange={e => setEditingKey({ ...editingKey, quota_supplier_search: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>🔍 Поиск поставщиков</span>
                   </div>
-                </div>
+                  <small style={{ color: '#64748b' }}>Вызовов: <strong>{editingKey.spent_supplier_search}</strong></small>
+                </label>
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <input
                       type="checkbox"
                       checked={editingKey.allowed_exact_product}
                       onChange={e => setEditingKey({ ...editingKey, allowed_exact_product: e.target.checked })}
                     />
-                    <span>🔬 Аналоги (расход: {editingKey.spent_exact_product})</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={editingKey.quota_exact_product}
-                      onChange={e => setEditingKey({ ...editingKey, quota_exact_product: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>🔬 Подбор товара и аналогов</span>
                   </div>
-                </div>
+                  <small style={{ color: '#64748b' }}>Вызовов: <strong>{editingKey.spent_exact_product}</strong></small>
+                </label>
 
-                <div className="mcp-quota-row">
-                  <label className="mcp-checkbox-label">
+                <label className="mcp-checkbox-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <input
                       type="checkbox"
                       checked={editingKey.allowed_procurement_report}
                       onChange={e => setEditingKey({ ...editingKey, allowed_procurement_report: e.target.checked })}
                     />
-                    <span>📑 Анализ (расход: {editingKey.spent_procurement_report})</span>
-                  </label>
-                  <div className="mcp-quota-input-wrap">
-                    <input
-                      type="number"
-                      min={0}
-                      className="mcp-quota-input"
-                      value={editingKey.quota_procurement_report}
-                      onChange={e => setEditingKey({ ...editingKey, quota_procurement_report: Number(e.target.value) })}
-                    />
-                    <small>запросов</small>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>📑 Анализ документации</span>
                   </div>
-                </div>
+                  <small style={{ color: '#64748b' }}>Вызовов: <strong>{editingKey.spent_procurement_report}</strong></small>
+                </label>
               </div>
 
               <label className="mcp-form-label">

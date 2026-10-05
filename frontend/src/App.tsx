@@ -90,6 +90,22 @@ type Client = {
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
   recent_billing: BillingTransaction[]
+  has_api_key?: boolean
+  api_keys?: Array<{
+    id: string
+    key_prefix: string
+    name: string
+    is_active: boolean
+    allowed_supplier_search: boolean
+    allowed_exact_product: boolean
+    allowed_procurement_report: boolean
+    spent_supplier_search: number
+    spent_exact_product: number
+    spent_procurement_report: number
+    total_spent: number
+    last_used_at?: string | null
+    created_at?: string | null
+  }>
   created_at?: string | null
   updated_at?: string | null
   onboarding?: {
@@ -1637,6 +1653,7 @@ export function App() {
             passwordResets={passwordResets}
             onChange={loadAll}
             onNavigateToClientJobs={handleNavigateToClientJobs}
+            onNavigateToMcp={() => setView('mcp')}
             isSyncing={isClientsSyncing}
             lastSyncAt={lastClientsSyncAt}
             onManualSync={handleManualClientsSync}
@@ -2274,6 +2291,7 @@ function ClientsView({
   passwordResets,
   onChange,
   onNavigateToClientJobs,
+  onNavigateToMcp,
   isSyncing,
   lastSyncAt,
   onManualSync,
@@ -2285,6 +2303,7 @@ function ClientsView({
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
   onNavigateToClientJobs?: (clientId: string) => void
+  onNavigateToMcp?: () => void
   isSyncing?: boolean
   lastSyncAt?: number
   onManualSync?: () => void
@@ -2316,7 +2335,7 @@ function ClientsView({
       setPage(1)
     }
   }, [selectedClientIdFromParent])
-  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
+  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'api'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
@@ -2363,6 +2382,10 @@ function ClientsView({
     () => clients.filter(c => (c.usage?.money?.available_kopeks || 0) > 0).length,
     [clients]
   )
+  const apiClientsCount = useMemo(
+    () => clients.filter(c => c.has_api_key || (c.api_keys && c.api_keys.length > 0) || c.source === 'api').length,
+    [clients]
+  )
 
   const filteredClients = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -2377,6 +2400,8 @@ function ClientsView({
         if (!realAccounts.length && !client.telegram_id) return false
       } else if (clientFilter === 'balance') {
         if (!client.usage?.money || client.usage.money.available_kopeks <= 0) return false
+      } else if (clientFilter === 'api') {
+        if (!client.has_api_key && (!client.api_keys || client.api_keys.length === 0) && client.source !== 'api') return false
       }
 
       if (!q) return true
@@ -2882,6 +2907,25 @@ function ClientsView({
             >
               С балансом ({balanceClientsCount})
             </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'api' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'api' ? '#7e22ce' : 'transparent',
+                color: clientFilter === 'api' ? '#fff' : '#7e22ce',
+                border: '1px solid #d8b4fe',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('api')
+                setPage(1)
+              }}
+            >
+              🔑 API ({apiClientsCount})
+            </button>
           </div>
           <select
             value={pageSize}
@@ -2941,6 +2985,33 @@ function ClientsView({
                       {isNewClient && (
                         <span className="badge-new-client" title="Зарегистрирован недавно">
                           Новый
+                        </span>
+                      )}
+                      {(client.has_api_key || (client.api_keys && client.api_keys.length > 0)) && (
+                        <span
+                          className="badge-api-client"
+                          style={{
+                            background: '#ede9fe',
+                            color: '#6d28d9',
+                            border: '1px solid #c4b5fd',
+                            borderRadius: 4,
+                            padding: '1px 6px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            cursor: onNavigateToMcp ? 'pointer' : 'default',
+                          }}
+                          title="Подключен API-доступ (TenderLex API / CRM). Нажмите для перехода в MCP & API"
+                          onClick={(e) => {
+                            if (onNavigateToMcp) {
+                              e.stopPropagation()
+                              onNavigateToMcp()
+                            }
+                          }}
+                        >
+                          🔑 API
                         </span>
                       )}
                       {!client.is_active && <StatusBadge status="disabled" />}
@@ -3011,7 +3082,13 @@ function ClientsView({
                 <div className="client-section client-telegram-section">
                   <div className="section-head">
                     <h3>Доступы</h3>
-                    <span>{webUsers.length ? `Web: ${webUsers.length} · Telegram: ${accounts.length}` : accounts.length || 'нет'}</span>
+                    <span>
+                      {[
+                        webUsers.length ? `Web: ${webUsers.length}` : '',
+                        accounts.length ? `Telegram: ${accounts.length}` : '',
+                        client.api_keys && client.api_keys.length ? `API: ${client.api_keys.length}` : '',
+                      ].filter(Boolean).join(' · ') || 'нет'}
+                    </span>
                   </div>
                   <div className="access-subsection">
                     <div className="subsection-label">Web-доступ</div>
@@ -3104,6 +3181,53 @@ function ClientsView({
                         </div>
                       </details>
                     </div>
+                  </div>
+                  <div className="access-subsection">
+                    <div className="subsection-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>API-доступ (CRM / Интеграции)</span>
+                      {onNavigateToMcp && (
+                        <button
+                          type="button"
+                          className="small-text"
+                          style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                          onClick={onNavigateToMcp}
+                        >
+                          Управление в MCP & API →
+                        </button>
+                      )}
+                    </div>
+                    {client.api_keys && client.api_keys.length > 0 ? (
+                      <div className="account-edit-list">
+                        {client.api_keys.map(k => (
+                          <div className="account-edit-row" key={k.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: '#f8fafc', borderRadius: 6, marginBottom: 4 }}>
+                            <div>
+                              <strong style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>{k.key_prefix}...</strong>
+                              <span style={{ marginLeft: 8, fontSize: '0.82rem', color: '#475569' }}>{k.name || 'API Key'}</span>
+                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                                Всего вызовов: <strong>{k.total_spent || 0}</strong> · Списание с единого баланса клиента
+                              </div>
+                            </div>
+                            <div className="account-edit-actions">
+                              {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="inline-note" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>API-ключ пока не привязан.</span>
+                        {onNavigateToMcp && (
+                          <button
+                            type="button"
+                            className="small-text"
+                            style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer' }}
+                            onClick={onNavigateToMcp}
+                          >
+                            + Создать ключ
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

@@ -1566,6 +1566,7 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
             selectinload(Client.telegram_accounts),
             selectinload(Client.web_users),
             selectinload(Client.tariff_overrides),
+            selectinload(Client.api_keys),
         )
         .order_by(Client.created_at.desc())
         .all()
@@ -4985,6 +4986,29 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
             .scalar()
             or 0
         )
+    raw_api_keys = getattr(client, "api_keys", None)
+    if raw_api_keys is None and db is not None:
+        from app.models import ApiKey
+        raw_api_keys = db.query(ApiKey).filter(ApiKey.client_id == client.id).all()
+    client_keys = sorted(raw_api_keys or [], key=lambda k: k.created_at or datetime.min, reverse=True)
+    serialized_keys = [
+        {
+            "id": k.id,
+            "key_prefix": k.key_prefix,
+            "name": k.name,
+            "is_active": k.is_active,
+            "allowed_supplier_search": k.allowed_supplier_search,
+            "allowed_exact_product": k.allowed_exact_product,
+            "allowed_procurement_report": k.allowed_procurement_report,
+            "spent_supplier_search": k.spent_supplier_search,
+            "spent_exact_product": k.spent_exact_product,
+            "spent_procurement_report": k.spent_procurement_report,
+            "total_spent": (k.spent_supplier_search + k.spent_exact_product + k.spent_procurement_report),
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+        }
+        for k in client_keys
+    ]
     return {
         "id": client.id,
         "client_number": getattr(client, "client_number", None),
@@ -5007,7 +5031,9 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "jobs_count": int(jobs_count or 0),
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
         "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],
-        "source": "web" if client.web_users else "telegram",
+        "has_api_key": bool(serialized_keys),
+        "api_keys": serialized_keys,
+        "source": "api" if (serialized_keys and not client.web_users and not client.telegram_accounts) else ("web" if client.web_users else "telegram"),
         "usage": client_usage_summary(db, client) if db else None,
         "recent_usage": client_recent_usage(db, client) if db else [],
         "recent_billing": recent_billing_transactions(db, client) if db else [],

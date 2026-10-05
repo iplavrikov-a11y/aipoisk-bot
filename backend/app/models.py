@@ -204,6 +204,7 @@ class Client(Base):
         cascade="all, delete-orphan",
     )
     billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
+    api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="client")
 
 
 class ClientTelegramAccount(Base):
@@ -594,7 +595,7 @@ class ApiKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    client: Mapped[Client | None] = relationship(foreign_keys=[client_id])
+    client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
 
 
 class PartnerPayoutRequest(Base):
