@@ -24,36 +24,38 @@
   --radius: 12px;
 }
 
-* {
-  box-sizing: border-box;
-}
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-html {
-  scroll-behavior: smooth;
-}
+  html {
+    scroll-behavior: smooth;
+  }
 
-body {
-  min-height: 100vh;
-  margin: 0;
-  background: var(--background);
-  color: var(--ink);
-  font-family: var(--font-body), Arial, sans-serif;
-  letter-spacing: 0;
-}
+  body {
+    min-height: 100vh;
+    margin: 0;
+    background: var(--background);
+    color: var(--ink);
+    font-family: var(--font-body), Arial, sans-serif;
+    letter-spacing: 0;
+  }
 
-a {
-  text-decoration: none;
-}
+  a {
+    text-decoration: none;
+  }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 
-::selection {
-  background: rgba(7, 91, 99, 0.18);
+  ::selection {
+    background: rgba(7, 91, 99, 0.18);
+  }
 }
 
 .container {
