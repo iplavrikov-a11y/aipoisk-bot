@@ -4171,10 +4171,9 @@ ${webLink}`;
 4. Проверка остатка баланса:
    - Метод: GET https://tenderlex.ru/api/v1/mcp/balance
 
-Правила списания и обработки ошибок:
-- Оплата происходит за каждую операцию с единого рублёвого счёта TenderLex.
-- Если на балансе 0 ₽, API возвращает HTTP 402 ("Недостаточно средств").
-  В этом случае выведи пользователю уведомление: "Баланс в TenderLex исчерпан. Пополните счёт в личном кабинете tenderlex.ru".`;
+Правила списания:
+- Оплата списывается за каждый выполненный запрос с баланса аккаунта.
+- При нехватке средств на балансе выведи пользователю уведомление: "Баланс в TenderLex исчерпан. Пополните счёт в личном кабинете tenderlex.ru".`;
 
         const mcpConfigText = JSON.stringify(
           {
@@ -4279,7 +4278,7 @@ ${webLink}`;
                   }`}
                 >
                   <Sparkles size={13} className={apiModalTab === "ai_prompt" ? "text-amber-600" : "text-slate-400"} />
-                  <span>Для ИИ и CRM</span>
+                  <span>Для ИИ</span>
                 </button>
 
                 <button
@@ -4300,20 +4299,13 @@ ${webLink}`;
               {apiModalTab === "key" && (
                 <div className="space-y-4">
                   {/* Balance Callout */}
-                  <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl p-3.5 flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-semibold text-teal-800">Единый счёт списаний</div>
-                      <div className="text-lg sm:text-xl font-black text-teal-950">
-                        {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
-                      </div>
-                      <div className="text-[11px] text-teal-700/90 mt-0.5">
-                        API списывает средства напрямую с этого баланса по вашим тарифам.
-                      </div>
+                  <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl p-3.5">
+                    <div className="text-xs font-semibold text-teal-800">Баланс аккаунта</div>
+                    <div className="text-lg sm:text-xl font-black text-teal-950 mt-0.5">
+                      {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
                     </div>
-                    <div className="text-right shrink-0">
-                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-teal-200 text-teal-800 font-bold text-xs shadow-2xs">
-                        Без скрытых подписок
-                      </span>
+                    <div className="text-[11px] text-teal-700/90 mt-0.5">
+                      Списание происходит с вашего общего баланса по тарифам аккаунта.
                     </div>
                   </div>
 
@@ -4427,11 +4419,10 @@ ${webLink}`;
 
                   {/* Policy and Safety notice */}
                   <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1 leading-relaxed">
-                    <div className="font-bold text-slate-800">Контроль расходов и безопасность:</div>
                     <ul className="list-disc list-inside space-y-0.5 text-slate-500">
-                      <li>Средства списываются за каждый успешный запрос по тарифам вашего аккаунта.</li>
-                      <li>При нулевом балансе запросы блокируются с кодом 402 ("Недостаточно средств") — долгов не возникает.</li>
-                      <li>Если ключ скомпрометирован, нажмите «Отозвать» — он отключится моментально.</li>
+                      <li>Списание происходит только за выполненные запросы.</li>
+                      <li>При нулевом балансе запросы автоматически приостанавливаются — задолженность не образуется.</li>
+                      <li>Ключ можно отозвать в любой момент.</li>
                     </ul>
                   </div>
                 </div>
