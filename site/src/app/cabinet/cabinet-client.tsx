@@ -2082,19 +2082,6 @@ export function CabinetClient() {
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
-                setShowApiModal(true);
-                loadCustomerApiKeys();
-              }}
-              title="API и интеграции (CRM, ИИ-агенты, MCP, вайб-кодинг)"
-            >
-              <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>API</span>
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-              onClick={() => {
                 setShowHistoryModal(true);
                 loadHistoryTransactions(1);
               }}
@@ -2117,6 +2104,19 @@ export function CabinetClient() {
               <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white font-black text-[10px] tracking-tight leading-none shadow-2xs">
                 +1 000 ₽
               </span>
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowApiModal(true);
+                loadCustomerApiKeys();
+              }}
+              title="API и интеграции (CRM, ИИ-агенты, MCP, вайб-кодинг)"
+            >
+              <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>API</span>
             </button>
 
             <button
