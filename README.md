@@ -17,10 +17,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
-- B2B API & CRM Integration Unified Money Balance Billing (2026-10-05):
+- B2B API & CRM Integration with Unified Ruble Balance & Key Auto-Substitution (2026-10-05):
   - Unified client money balance (`money_balance_kopeks`) debiting for external API keys: removed isolated per-service quota limits in favor of single ruble balance debiting.
-  - Automatic pricing resolution via `effective_price_kopeks(db, client, service)` accounting for individual client tariff overrides (`ClientTariffOverride`), writing standard `BillingTransaction(operation="charge")`, and raising HTTP 402 ("Недостаточно средств") when money balance is exhausted.
+  - Automatic pricing resolution via `effective_price_kopeks(db, client, service)` accounting for individual client tariff overrides (`ClientTariffOverride`), writing standard `BillingTransaction(operation="charge")`, and pausing requests when money balance is exhausted.
   - Customer Cabinet Self-Service API & Vibe-Coding Hub: added `[🔑 API]` button in cabinet toolbar, streamlined toolbar buttons (`Тарифы`, `Чат`), and launched a 4-tab integration modal (Key & Balance, API Methods & cURL, Ready-to-copy AI & CRM Vibe-Coding Prompt, and Claude Desktop MCP config).
+  - Seamless Key Auto-Substitution: all curl commands, AI prompts, and Claude Desktop MCP configurations in the web cabinet automatically pre-populate the client's actual active API key, eliminating manual copy-pasting into configuration files.
+  - Persistent Key Security & Reveal: active API keys can be unmasked and copied in full directly within Tab 1 at any time; full keys are securely stored in `ApiKey.secret_token` and served exclusively over authenticated customer sessions.
   - Central Job Table Audit & Admin Panel Visibility: all API operations now write directly to `Job` table with `created_by_telegram_id="api:<prefix>"`, displaying a distinctive purple `🔑 API: <prefix>` badge in admin tasks view with full tracking of search parameters, results, and execution metrics.
   - Admin Panel CRM & Clients Integration: added `🔑 API` filter tab in client list, `🔑 API` badge next to client names, detailed API keys subsection inside expanded client cards with total call statistics, and redesigned `MCP & API` key creation/edit modal displaying the client's live ruble balance and module access toggles.
 - Admin Panel UI/UX: Task Action Buttons & Unclipped Filename Overlap Fix (2026-10-03):
