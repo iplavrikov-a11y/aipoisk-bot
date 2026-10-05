@@ -349,6 +349,7 @@ def test_customer_api_keys_flow_and_job_logging():
     keys = list_resp2.json()["keys"]
     assert len(keys) == 1
     assert keys[0]["id"] == key_id
+    assert keys[0]["raw_key"] == created_data["raw_key"]
     assert keys[0]["is_active"] is True
 
     # 5. Test record_api_job for admin audit

@@ -19,6 +19,7 @@ import {
   Copy,
   Download,
   Eye,
+  EyeOff,
   FileText,
   Gift,
   HelpCircle,
@@ -856,12 +857,14 @@ export function CabinetClient() {
   const [apiKeys, setApiKeys] = useState<Array<{
     id: string;
     key_prefix: string;
+    raw_key?: string | null;
     name: string;
     created_at: string | null;
     is_active: boolean;
     last_used_at: string | null;
     total_spent: number;
   }>>([]);
+  const [revealedKeyIds, setRevealedKeyIds] = useState<Record<string, boolean>>({});
   const [loadingApiKeys, setLoadingApiKeys] = useState(false);
   const [generatingApiKey, setGeneratingApiKey] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
@@ -4110,11 +4113,13 @@ ${webLink}`;
       {/* API & MCP Integration Modal */}
       {showApiModal ? (() => {
         const activeKey = apiKeys.find((k) => k.is_active) || null;
+        const currentApiKey = newlyGeneratedKey || activeKey?.raw_key || activeKey?.key_prefix || "";
+        const effectiveKeyPlaceholder = currentApiKey || "<ВАШ_API_КЛЮЧ>";
         const balanceRub = (session?.balance?.money?.available_kopeks || 0) / 100.0;
 
         const aiPromptText = `Интегрируй API сервиса TenderLex в нашу систему / CRM.
 Базовый URL: https://tenderlex.ru/api/v1/mcp
-Авторизация: Header "Authorization: Bearer ${newlyGeneratedKey || "<ВАШ_API_КЛЮЧ>"}"
+Авторизация: Header "Authorization: Bearer ${effectiveKeyPlaceholder}"
 
 Требуемые функции:
 1. Поиск прямых поставщиков и заводов по ТЗ / закупке:
@@ -4142,7 +4147,7 @@ ${webLink}`;
        ]
      }
 
-2. Подбор точной модели товара и аналогов (ГОСТ, Форма 2, реестр Минпромторга):
+2. Подбор точной модели товара и аналогов (ГОСТ, реестр Минпромторга):
    - Метод: POST https://tenderlex.ru/api/v1/mcp/products/exact-analogs
    - Тело JSON:
      {
@@ -4184,7 +4189,7 @@ ${webLink}`;
                   "-y",
                   "@tenderlex/mcp-server",
                   "--api-key",
-                  newlyGeneratedKey || (activeKey ? activeKey.key_prefix : "YOUR_API_KEY"),
+                  effectiveKeyPlaceholder,
                 ],
               },
             },
@@ -4194,7 +4199,7 @@ ${webLink}`;
         );
 
         const curlExampleText = `curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
-  -H "Authorization: Bearer ${newlyGeneratedKey || (activeKey ? activeKey.key_prefix : "<ВАШ_API_КЛЮЧ>")}" \\
+  -H "Authorization: Bearer ${effectiveKeyPlaceholder}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "specification": "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012",
@@ -4311,12 +4316,12 @@ ${webLink}`;
 
                   {/* Newly Generated Key Alert */}
                   {newlyGeneratedKey && (
-                    <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3.5 space-y-2 animate-fadeIn">
-                      <div className="flex items-center gap-2 text-amber-900 font-extrabold text-xs">
+                    <div className="bg-emerald-50 border-2 border-emerald-300 rounded-xl p-3.5 space-y-2 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-emerald-950 font-extrabold text-xs">
                         <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
-                        <span>Ключ успешно сгенерирован! Скопируйте и сохраните его:</span>
+                        <span>Ключ успешно создан и готов к работе:</span>
                       </div>
-                      <div className="flex items-center gap-2 bg-white border border-amber-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 bg-white border border-emerald-200 rounded-lg p-2">
                         <code className="text-xs font-mono font-bold text-slate-800 break-all select-all flex-1">
                           {newlyGeneratedKey}
                         </code>
@@ -4329,8 +4334,8 @@ ${webLink}`;
                           <span>{apiCopiedField === "new_key" ? "Скопировано" : "Копировать"}</span>
                         </button>
                       </div>
-                      <div className="text-[11px] text-amber-800">
-                        ⚠️ В целях безопасности полный ключ показывается только один раз. В будущем будет доступен только его префикс.
+                      <div className="text-[11px] text-emerald-800">
+                        Ключ сохранён и автоматически подставлен во все примеры запросов и инструкций на соседних вкладках.
                       </div>
                     </div>
                   )}
@@ -4344,44 +4349,57 @@ ${webLink}`;
                   ) : apiKeys.length > 0 ? (
                     <div className="space-y-3">
                       <div className="text-xs font-bold text-slate-700">Ваш активный ключ доступа:</div>
-                      {apiKeys.map((k) => (
-                        <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-bold text-sm text-slate-800 bg-white px-2 py-0.5 rounded border border-slate-200">
-                                {k.key_prefix}...
-                              </span>
-                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                                Активен
-                              </span>
+                      {apiKeys.map((k) => {
+                        const fullKey = k.raw_key || k.key_prefix;
+                        const isRevealed = revealedKeyIds[k.id];
+                        return (
+                          <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-bold text-xs text-slate-800 bg-white px-2.5 py-1 rounded border border-slate-200 select-all max-w-[260px] sm:max-w-xs truncate">
+                                  {isRevealed ? fullKey : `${k.key_prefix}••••••••••••`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setRevealedKeyIds((prev) => ({ ...prev, [k.id]: !prev[k.id] }))}
+                                  className="p-1 text-slate-500 hover:text-slate-700 rounded transition-colors cursor-pointer"
+                                  title={isRevealed ? "Скрыть" : "Показать полный ключ"}
+                                  aria-label={isRevealed ? "Скрыть" : "Показать полный ключ"}
+                                >
+                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                  Активен
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => copyApiText(fullKey, `full_${k.id}`)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  {apiCopiedField === `full_${k.id}` ? <Check size={12} /> : <Copy size={12} />}
+                                  <span>{apiCopiedField === `full_${k.id}` ? "Скопировано" : "Копировать ключ"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => revokeCustomerApiKey(k.id)}
+                                  disabled={revokingKeyId === k.id}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
+                                  <span>Отозвать</span>
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => copyApiText(k.key_prefix, `pfx_${k.id}`)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
-                              >
-                                {apiCopiedField === `pfx_${k.id}` ? <Check size={12} /> : <Copy size={12} />}
-                                <span>{apiCopiedField === `pfx_${k.id}` ? "Скопировано" : "Копировать префикс"}</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => revokeCustomerApiKey(k.id)}
-                                disabled={revokingKeyId === k.id}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
-                              >
-                                {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
-                                <span>Отозвать</span>
-                              </button>
+                            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3">
+                              <span>Создан: {k.created_at ? new Date(k.created_at).toLocaleDateString("ru-RU") : "—"}</span>
+                              <span>Всего вызовов: <strong>{k.total_spent || 0}</strong></span>
+                              {k.last_used_at && <span>Последний вызов: {new Date(k.last_used_at).toLocaleDateString("ru-RU")}</span>}
                             </div>
                           </div>
-                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3">
-                            <span>Создан: {k.created_at ? new Date(k.created_at).toLocaleDateString("ru-RU") : "—"}</span>
-                            <span>Всего вызовов: <strong>{k.total_spent || 0}</strong></span>
-                            {k.last_used_at && <span>Последний вызов: {new Date(k.last_used_at).toLocaleDateString("ru-RU")}</span>}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                       <div className="pt-1">
                         <button
                           type="button"
@@ -4434,7 +4452,7 @@ ${webLink}`;
                   <div className="bg-slate-900 text-slate-100 p-3 rounded-xl font-mono text-[11px] space-y-1">
                     <div className="text-slate-400"># Базовый адрес API и авторизация:</div>
                     <div><span className="text-teal-400">BASE_URL:</span> https://tenderlex.ru/api/v1/mcp</div>
-                    <div><span className="text-teal-400">HEADER:</span> Authorization: Bearer &lt;ВАШ_КЛЮЧ&gt;</div>
+                    <div className="break-all"><span className="text-teal-400">HEADER:</span> Authorization: Bearer {effectiveKeyPlaceholder}</div>
                   </div>
 
                   <div className="space-y-2">
@@ -4458,7 +4476,7 @@ ${webLink}`;
                         <span className="text-slate-500 text-[11px] font-semibold">Подбор товара и аналогов</span>
                       </div>
                       <p className="text-slate-600 text-[11px]">
-                        Определение скрытой модели, эквивалентов по ГОСТ/Форме 2, реестр Минпромторга и прямая ссылка на скачивание отчёта в DOCX.
+                        Определение скрытой модели, эквивалентов по ГОСТ, реестр Минпромторга и прямая ссылка на скачивание отчёта в DOCX.
                       </p>
                     </div>
 

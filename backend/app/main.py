@@ -957,6 +957,7 @@ def customer_list_api_keys(
         items.append({
             "id": k.id,
             "key_prefix": k.key_prefix,
+            "raw_key": k.secret_token or k.key_prefix,
             "name": k.name,
             "created_at": k.created_at.isoformat() if k.created_at else None,
             "is_active": k.is_active,
@@ -981,6 +982,7 @@ def customer_create_api_key(
     api_key = ApiKey(
         key_hash=key_hash,
         key_prefix=key_prefix,
+        secret_token=raw_key,
         name="Ключ API (Личный кабинет)",
         client_id=client.id,
         is_admin=False,
