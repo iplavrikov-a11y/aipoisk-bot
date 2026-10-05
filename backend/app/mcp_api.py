@@ -30,7 +30,7 @@ from .exact_product import (
     analyze_exact_product,
     write_exact_product_docx,
 )
-from .models import ApiKey, Client, SystemSettings, now_utc
+from .models import ApiKey, Client, Job, SystemSettings, now_utc
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -610,6 +610,46 @@ def get_mcp_balance(
     )
 
 
+def record_api_job(
+    db: Session,
+    api_key: ApiKey,
+    mode: str,
+    title: str,
+    status: str = "completed",
+    error: str = "",
+    target_count: int = 0,
+    verified_count: int = 0,
+    result_path: str = "",
+    evidence_path: str = "",
+) -> Optional[Job]:
+    """Records an executed or failed API request into the central jobs table for audit and admin visibility."""
+    if not api_key or not api_key.client_id:
+        return None
+    try:
+        from .jobs import next_job_number
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=api_key.client_id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=mode,
+            status=status,
+            progress=100 if status == "completed" else 0,
+            title=title[:250],
+            target_suppliers=target_count,
+            verified_count=verified_count,
+            result_path=result_path,
+            evidence_path=evidence_path,
+            error=error,
+            completed_at=now_utc() if status == "completed" else None,
+        )
+        db.add(job)
+        db.commit()
+        return job
+    except Exception as exc:
+        logger.warning("failed_to_record_api_job: %s", exc)
+        return None
+
+
 @router.post("/suppliers/search", response_model=McpSupplierSearchResponse)
 async def mcp_supplier_search(
     req: McpSupplierSearchRequest,
@@ -642,6 +682,13 @@ async def mcp_supplier_search(
             )
     except Exception as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
+        record_api_job(
+            db, api_key,
+            mode="supplier_search",
+            title=f"API: Поиск поставщиков — {clean_context[:80].strip()}",
+            status="failed",
+            error=str(exc),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Supplier search processing error: {str(exc)}",
@@ -679,6 +726,16 @@ async def mcp_supplier_search(
         except Exception as exc:
             logger.warning("mcp_quote_request_gen_failed: %s", exc)
 
+    source_title = str(evidence.get("subject") or "").strip()
+    record_api_job(
+        db, api_key,
+        mode="supplier_search",
+        title=f"API: Поиск поставщиков — {(source_title or clean_context)[:80].strip()}",
+        status="completed",
+        target_count=req.target_count,
+        verified_count=len(supplier_items),
+    )
+
     return McpSupplierSearchResponse(
         ok=True,
         total_found=len(supplier_items),
@@ -686,7 +743,7 @@ async def mcp_supplier_search(
         suppliers=supplier_items,
         quote_request_markdown=quote_markdown,
         quota_remaining=remaining_quota,
-        source_title=str(evidence.get("subject") or "").strip(),
+        source_title=source_title,
     )
 
 
@@ -714,6 +771,13 @@ async def mcp_exact_product(
         )
     except Exception as exc:
         logger.error("mcp_exact_product_failed: %s", exc, exc_info=True)
+        record_api_job(
+            db, api_key,
+            mode="exact_product",
+            title=f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}",
+            status="failed",
+            error=str(exc),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Exact product analysis error: {str(exc)}",
@@ -780,6 +844,15 @@ async def mcp_exact_product(
             )
         )
 
+    record_api_job(
+        db, api_key,
+        mode="exact_product",
+        title=f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}",
+        status="completed",
+        verified_count=len(report.positions) if (report and hasattr(report, "positions")) else 0,
+        result_path=docx_rel_url or "",
+    )
+
     return McpExactProductResponse(
         ok=True,
         summary=report.summary,
@@ -807,10 +880,24 @@ async def mcp_procurement_analyze(
         gen_result = await generate_procurement_report(settings, doc_text)
     except Exception as exc:
         logger.error("mcp_procurement_analyze_failed: %s", exc, exc_info=True)
+        record_api_job(
+            db, api_key,
+            mode="procurement_report",
+            title=f"API: Анализ документации — {doc_text[:80].strip()}",
+            status="failed",
+            error=str(exc),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Procurement report analysis error: {str(exc)}",
         )
+
+    record_api_job(
+        db, api_key,
+        mode="procurement_report",
+        title=f"API: Анализ документации — {doc_text[:80].strip()}",
+        status="completed",
+    )
 
     return McpProcurementAnalyzeResponse(
         ok=True,

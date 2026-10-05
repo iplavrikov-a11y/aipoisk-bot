@@ -3994,10 +3994,16 @@ function JobsView({
                     {job.client_email ? ` (${job.client_email})` : ''}
                   </span>
                   {' · '}
-                  {job.created_by_label || (
-                    String(job.created_by_telegram_id || '').startsWith('web:')
-                      ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
-                      : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
+                  {job.created_by_label?.startsWith('API:') ? (
+                    <span style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd', borderRadius: 4, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600 }}>
+                      🔑 {job.created_by_label}
+                    </span>
+                  ) : (
+                    job.created_by_label || (
+                      String(job.created_by_telegram_id || '').startsWith('web:')
+                        ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
+                        : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
+                    )
                   )}
                 </p>
               </div>

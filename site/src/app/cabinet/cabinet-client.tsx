@@ -23,6 +23,7 @@ import {
   Gift,
   HelpCircle,
   History,
+  Key,
   Layers,
   Loader2,
   LogOut,
@@ -850,6 +851,87 @@ export function CabinetClient() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
+  const [showApiModal, setShowApiModal] = useState(false);
+  const [apiModalTab, setApiModalTab] = useState<"key" | "methods" | "ai_prompt" | "mcp">("key");
+  const [apiKeys, setApiKeys] = useState<Array<{
+    id: string;
+    key_prefix: string;
+    name: string;
+    created_at: string | null;
+    is_active: boolean;
+    last_used_at: string | null;
+    total_spent: number;
+  }>>([]);
+  const [loadingApiKeys, setLoadingApiKeys] = useState(false);
+  const [generatingApiKey, setGeneratingApiKey] = useState(false);
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+  const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
+  const [apiCopiedField, setApiCopiedField] = useState<string | null>(null);
+
+  async function loadCustomerApiKeys() {
+    setLoadingApiKeys(true);
+    try {
+      const res = await fetch("/api/customer/api-keys", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setApiKeys(data.keys || []);
+      }
+    } catch (err) {
+      console.error("loadCustomerApiKeys failed:", err);
+    } finally {
+      setLoadingApiKeys(false);
+    }
+  }
+
+  async function createCustomerApiKey() {
+    if (!csrf) return;
+    setGeneratingApiKey(true);
+    try {
+      const res = await fetch("/api/customer/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNewlyGeneratedKey(data.raw_key);
+        await loadCustomerApiKeys();
+      }
+    } catch (err) {
+      console.error("createCustomerApiKey failed:", err);
+    } finally {
+      setGeneratingApiKey(false);
+    }
+  }
+
+  async function revokeCustomerApiKey(keyId: string) {
+    if (!csrf) return;
+    setRevokingKeyId(keyId);
+    try {
+      const res = await fetch(`/api/customer/api-keys/${keyId}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        setNewlyGeneratedKey(null);
+        await loadCustomerApiKeys();
+      }
+    } catch (err) {
+      console.error("revokeCustomerApiKey failed:", err);
+    } finally {
+      setRevokingKeyId(null);
+    }
+  }
+
+  function copyApiText(text: string, fieldId: string) {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        setApiCopiedField(fieldId);
+        setTimeout(() => setApiCopiedField(null), 2500);
+      });
+    }
+  }
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [viewedJobIds, setViewedJobIds] = useState<string[]>([]);
   const [activeToast, setActiveToast] = useState<ActiveToast | null>(null);
@@ -1990,7 +2072,7 @@ export function CabinetClient() {
               onClick={() => setShowTariffs((v) => !v)}
             >
               <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>{showTariffs ? "Скрыть тарифы ▲" : "Тарифы и цены ▼"}</span>
+              <span>{showTariffs ? "Тарифы ▲" : "Тарифы ▼"}</span>
             </button>
 
             <button
@@ -2004,7 +2086,20 @@ export function CabinetClient() {
               }}
             >
               <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>Чат сайта</span>
+              <span>Чат</span>
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowApiModal(true);
+                loadCustomerApiKeys();
+              }}
+              title="API и интеграции (CRM, ИИ-агенты, MCP, вайб-кодинг)"
+            >
+              <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>API</span>
             </button>
 
             {session?.contacts?.telegram_url ? (
@@ -4003,6 +4098,488 @@ ${webLink}`;
                   type="button"
                   onClick={() => setShowReferralModal(false)}
                   className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </section>
+          </div>
+        );
+      })() : null}
+
+      {/* API & MCP Integration Modal */}
+      {showApiModal ? (() => {
+        const activeKey = apiKeys.find((k) => k.is_active) || null;
+        const balanceRub = (session?.balance?.money?.available_kopeks || 0) / 100.0;
+
+        const aiPromptText = `Интегрируй API сервиса TenderLex в нашу систему / CRM.
+Базовый URL: https://tenderlex.ru/api/v1/mcp
+Авторизация: Header "Authorization: Bearer ${newlyGeneratedKey || "<ВАШ_API_КЛЮЧ>"}"
+
+Требуемые функции:
+1. Поиск прямых поставщиков и заводов по ТЗ / закупке:
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/suppliers/search
+   - Тело JSON:
+     {
+       "specification": "<текст технического задания или номер закупки ЕИС>",
+       "city": "<город или регион поставки, например: Москва>",
+       "target_count": 5
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "total_found": 5,
+       "suppliers": [
+         {
+           "company_name": "ООО Завод...",
+           "inn": "7701234567",
+           "status": "производитель",
+           "product": "кабель ВВГнг...",
+           "site": "https://...",
+           "email": "sales@...",
+           "phone": "+7 (495)..."
+         }
+       ]
+     }
+
+2. Подбор точной модели товара и аналогов (ГОСТ, Форма 2, реестр Минпромторга):
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/products/exact-analogs
+   - Тело JSON:
+     {
+       "specification": "<текст ТЗ>",
+       "procurement_title": "<название закупки>"
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "positions": [...],
+       "docx_download_url": "https://tenderlex.ru/api/v1/mcp/downloads/exact_product_....docx"
+     }
+
+3. Анализ документации и рисков закупки:
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/procurements/analyze
+   - Тело JSON:
+     {
+       "document_text": "<текст проекта контракта или извещения>"
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "report_markdown": "<подробный аудит рисков>"
+     }
+
+4. Проверка остатка баланса:
+   - Метод: GET https://tenderlex.ru/api/v1/mcp/balance
+
+Правила списания и обработки ошибок:
+- Оплата происходит за каждую операцию с единого рублёвого счёта TenderLex.
+- Если на балансе 0 ₽, API возвращает HTTP 402 ("Недостаточно средств").
+  В этом случае выведи пользователю уведомление: "Баланс в TenderLex исчерпан. Пополните счёт в личном кабинете tenderlex.ru".`;
+
+        const mcpConfigText = JSON.stringify(
+          {
+            mcpServers: {
+              tenderlex: {
+                command: "npx",
+                args: [
+                  "-y",
+                  "@tenderlex/mcp-server",
+                  "--api-key",
+                  newlyGeneratedKey || (activeKey ? activeKey.key_prefix : "YOUR_API_KEY"),
+                ],
+              },
+            },
+          },
+          null,
+          2
+        );
+
+        const curlExampleText = `curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
+  -H "Authorization: Bearer ${newlyGeneratedKey || (activeKey ? activeKey.key_prefix : "<ВАШ_API_КЛЮЧ>")}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "specification": "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012",
+    "city": "Москва",
+    "target_count": 5
+  }'`;
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setShowApiModal(false);
+            }}
+          >
+            <section
+              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans max-h-[90vh] overflow-y-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="api-modal-title"
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                    <Key size={18} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="api-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                      API и интеграции TenderLex
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Программный доступ к поиску поставщиков, подбору товара и анализу документации
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowApiModal(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                  aria-label="Закрыть"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Tabs Navigation */}
+              <div className="bg-slate-100 p-1.5 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-1 text-xs shrink-0 font-bold">
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("key")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "key"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Key size={13} className={apiModalTab === "key" ? "text-teal-700" : "text-slate-400"} />
+                  <span>Ключ и баланс</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("methods")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "methods"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Layers size={13} className={apiModalTab === "methods" ? "text-teal-700" : "text-slate-400"} />
+                  <span>Методы API</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("ai_prompt")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "ai_prompt"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Sparkles size={13} className={apiModalTab === "ai_prompt" ? "text-amber-600" : "text-slate-400"} />
+                  <span>Для ИИ и CRM</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("mcp")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "mcp"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Compass size={13} className={apiModalTab === "mcp" ? "text-teal-700" : "text-slate-400"} />
+                  <span>MCP (Claude)</span>
+                </button>
+              </div>
+
+              {/* Tab 1: Ключ и баланс */}
+              {apiModalTab === "key" && (
+                <div className="space-y-4">
+                  {/* Balance Callout */}
+                  <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-teal-800">Единый счёт списаний</div>
+                      <div className="text-lg sm:text-xl font-black text-teal-950">
+                        {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
+                      </div>
+                      <div className="text-[11px] text-teal-700/90 mt-0.5">
+                        API списывает средства напрямую с этого баланса по вашим тарифам.
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-teal-200 text-teal-800 font-bold text-xs shadow-2xs">
+                        Без скрытых подписок
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Newly Generated Key Alert */}
+                  {newlyGeneratedKey && (
+                    <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3.5 space-y-2 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-amber-900 font-extrabold text-xs">
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                        <span>Ключ успешно сгенерирован! Скопируйте и сохраните его:</span>
+                      </div>
+                      <div className="flex items-center gap-2 bg-white border border-amber-200 rounded-lg p-2">
+                        <code className="text-xs font-mono font-bold text-slate-800 break-all select-all flex-1">
+                          {newlyGeneratedKey}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => copyApiText(newlyGeneratedKey, "new_key")}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors cursor-pointer shrink-0 flex items-center gap-1"
+                        >
+                          {apiCopiedField === "new_key" ? <Check size={13} /> : <Copy size={13} />}
+                          <span>{apiCopiedField === "new_key" ? "Скопировано" : "Копировать"}</span>
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-amber-800">
+                        ⚠️ В целях безопасности полный ключ показывается только один раз. В будущем будет доступен только его префикс.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Existing Key Management */}
+                  {loadingApiKeys ? (
+                    <div className="py-8 flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <Loader2 size={24} className="animate-spin text-teal-600" />
+                      <span className="text-xs">Загрузка ключей доступа...</span>
+                    </div>
+                  ) : apiKeys.length > 0 ? (
+                    <div className="space-y-3">
+                      <div className="text-xs font-bold text-slate-700">Ваш активный ключ доступа:</div>
+                      {apiKeys.map((k) => (
+                        <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-bold text-sm text-slate-800 bg-white px-2 py-0.5 rounded border border-slate-200">
+                                {k.key_prefix}...
+                              </span>
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                Активен
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => copyApiText(k.key_prefix, `pfx_${k.id}`)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                              >
+                                {apiCopiedField === `pfx_${k.id}` ? <Check size={12} /> : <Copy size={12} />}
+                                <span>{apiCopiedField === `pfx_${k.id}` ? "Скопировано" : "Копировать префикс"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => revokeCustomerApiKey(k.id)}
+                                disabled={revokingKeyId === k.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                              >
+                                {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
+                                <span>Отозвать</span>
+                              </button>
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3">
+                            <span>Создан: {k.created_at ? new Date(k.created_at).toLocaleDateString("ru-RU") : "—"}</span>
+                            <span>Всего вызовов: <strong>{k.total_spent || 0}</strong></span>
+                            {k.last_used_at && <span>Последний вызов: {new Date(k.last_used_at).toLocaleDateString("ru-RU")}</span>}
+                          </div>
+                        </div>
+                      ))}
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={createCustomerApiKey}
+                          disabled={generatingApiKey}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          {generatingApiKey ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
+                          <span>Сгенерировать дополнительный ключ</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-6 text-center space-y-3">
+                      <div className="w-10 h-10 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center mx-auto">
+                        <Key size={20} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="font-extrabold text-sm text-slate-900">У вас пока нет API-ключа</div>
+                        <p className="text-xs text-slate-500 max-w-md mx-auto">
+                          Создайте ключ в 1 клик, чтобы подключить TenderLex к вашей CRM, боту, скрипту или ИИ-агенту.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={createCustomerApiKey}
+                        disabled={generatingApiKey}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+                      >
+                        {generatingApiKey ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                        <span>Создать API-ключ</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Policy and Safety notice */}
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1 leading-relaxed">
+                    <div className="font-bold text-slate-800">Контроль расходов и безопасность:</div>
+                    <ul className="list-disc list-inside space-y-0.5 text-slate-500">
+                      <li>Средства списываются за каждый успешный запрос по тарифам вашего аккаунта.</li>
+                      <li>При нулевом балансе запросы блокируются с кодом 402 ("Недостаточно средств") — долгов не возникает.</li>
+                      <li>Если ключ скомпрометирован, нажмите «Отозвать» — он отключится моментально.</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Методы API */}
+              {apiModalTab === "methods" && (
+                <div className="space-y-3.5 text-xs text-slate-700">
+                  <div className="bg-slate-900 text-slate-100 p-3 rounded-xl font-mono text-[11px] space-y-1">
+                    <div className="text-slate-400"># Базовый адрес API и авторизация:</div>
+                    <div><span className="text-teal-400">BASE_URL:</span> https://tenderlex.ru/api/v1/mcp</div>
+                    <div><span className="text-teal-400">HEADER:</span> Authorization: Bearer &lt;ВАШ_КЛЮЧ&gt;</div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 text-[11px]">
+                          POST /suppliers/search
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Поиск поставщиков</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Поиск проверенных поставщиков и заводов по тексту ТЗ или номеру закупки. Возвращает ИНН, сайт, телефон, email, статус производителя.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                          POST /products/exact-analogs
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Подбор товара и аналогов</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Определение скрытой модели, эквивалентов по ГОСТ/Форме 2, реестр Минпромторга и прямая ссылка на скачивание отчёта в DOCX.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 text-[11px]">
+                          POST /procurements/analyze
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Анализ документации и рисков</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Выявление скрытых ловушек контракта, штрафов, неоднозначных требований и условий приёмки по 44-ФЗ и 223-ФЗ.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 text-[11px]">
+                          GET /balance
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Проверка баланса</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Проверка текущего рублёвого остатка и статуса авторизации.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* cURL snippet */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-800">Пример запроса (cURL):</span>
+                      <button
+                        type="button"
+                        onClick={() => copyApiText(curlExampleText, "curl")}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                      >
+                        {apiCopiedField === "curl" ? <Check size={12} /> : <Copy size={12} />}
+                        <span>{apiCopiedField === "curl" ? "Скопировано!" : "Скопировать cURL"}</span>
+                      </button>
+                    </div>
+                    <pre className="bg-slate-900 text-teal-300 p-3 rounded-xl font-mono text-[10.5px] overflow-x-auto leading-relaxed">
+                      {curlExampleText}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 3: Для ИИ и вайб-кодинга */}
+              {apiModalTab === "ai_prompt" && (
+                <div className="space-y-3">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed">
+                    <strong>Инструкция для вайб-кодинга:</strong> скопируйте текст ниже и отправьте в Cursor, Lovable, v0, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Готовая задача для нейросети:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyApiText(aiPromptText, "ai_prompt")}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-extrabold transition-colors cursor-pointer shadow-2xs"
+                    >
+                      {apiCopiedField === "ai_prompt" ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{apiCopiedField === "ai_prompt" ? "Скопировано в буфер!" : "Скопировать задачу для ИИ"}</span>
+                    </button>
+                  </div>
+
+                  <div className="text-[11px] font-mono text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 leading-relaxed whitespace-pre-wrap select-all max-h-60 overflow-y-auto">
+                    {aiPromptText}
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 4: MCP (Claude Desktop) */}
+              {apiModalTab === "mcp" && (
+                <div className="space-y-3">
+                  <div className="bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-900 leading-relaxed">
+                    <strong>Прямое подключение к Claude Desktop по протоколу MCP:</strong> позволяет модели напрямую вызывать поиск поставщиков и проверку товаров TenderLex прямо из чата Claude.
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Конфиг для claude_desktop_config.json:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyApiText(mcpConfigText, "mcp_cfg")}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                    >
+                      {apiCopiedField === "mcp_cfg" ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{apiCopiedField === "mcp_cfg" ? "Скопировано!" : "Скопировать JSON"}</span>
+                    </button>
+                  </div>
+
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded-xl font-mono text-[11px] overflow-x-auto leading-relaxed select-all">
+                    {mcpConfigText}
+                  </pre>
+
+                  <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
+                    <div className="font-bold text-slate-700">Где находится файл конфигурации:</div>
+                    <div className="font-mono text-[10px] text-slate-500">
+                      • Windows: %APPDATA%\Claude\claude_desktop_config.json<br />
+                      • macOS: ~/Library/Application Support/Claude/claude_desktop_config.json
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Footer */}
+              <div className="flex justify-end pt-2 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowApiModal(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
                 >
                   Закрыть
                 </button>

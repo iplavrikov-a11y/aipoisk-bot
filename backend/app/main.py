@@ -103,6 +103,7 @@ from .jobs import (
 )
 from .models import (
     AccountLinkToken,
+    ApiKey,
     BillingTransaction,
     Client,
     ClientTariffOverride,
@@ -218,7 +219,7 @@ ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
-from .mcp_api import router as mcp_router, admin_router as mcp_admin_router
+from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
@@ -937,6 +938,89 @@ def customer_referral_api(
 ) -> dict:
     from .referral import get_referral_stats
     return get_referral_stats(db, context.user.client)
+
+
+@app.get("/api/customer/api-keys")
+def customer_list_api_keys(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client = context.user.client
+    keys = (
+        db.query(ApiKey)
+        .filter(ApiKey.client_id == client.id, ApiKey.is_active == True)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+    items = []
+    for k in keys:
+        items.append({
+            "id": k.id,
+            "key_prefix": k.key_prefix,
+            "name": k.name,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+            "is_active": k.is_active,
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0),
+        })
+    return {
+        "keys": items,
+        "balance_rub": (client.money_balance_kopeks or 0) / 100.0,
+    }
+
+
+@app.post("/api/customer/api-keys")
+def customer_create_api_key(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="Ключ API (Личный кабинет)",
+        client_id=client.id,
+        is_admin=False,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=True,
+        allowed_procurement_report=True,
+        quota_supplier_search=999999,
+        quota_exact_product=999999,
+        quota_procurement_report=999999,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    return {
+        "ok": True,
+        "raw_key": raw_key,
+        "key_prefix": key_prefix,
+        "id": api_key.id,
+        "name": api_key.name,
+        "created_at": api_key.created_at.isoformat() if api_key.created_at else None,
+        "balance_rub": (client.money_balance_kopeks or 0) / 100.0,
+    }
+
+
+@app.post("/api/customer/api-keys/{key_id}/revoke")
+def customer_revoke_api_key(
+    key_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    api_key = db.query(ApiKey).filter(ApiKey.id == key_id, ApiKey.client_id == client.id).first()
+    if not api_key:
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+    api_key.is_active = False
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/customer/jobs")
@@ -5117,6 +5201,9 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
             created_by_label = f"Веб: {client_email}"
         else:
             created_by_label = "Веб-кабинет"
+    elif created_by_raw.startswith("api:"):
+        key_pfx = created_by_raw[4:]
+        created_by_label = f"API: {key_pfx}"
     elif created_by_raw:
         if created_by_raw.startswith("@"):
             created_by_label = f"TG: {created_by_raw}"

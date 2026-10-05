@@ -295,4 +295,89 @@ def test_mcp_client_unified_money_balance_consumption():
     db.close()
 
 
+def test_customer_api_keys_flow_and_job_logging():
+    from app.models import Client, WebUser, ApiKey, Job
+    from app.web_auth import create_web_session
+    from app.mcp_api import record_api_job
+    db = TestingSessionLocal()
+    client = TestClient(app)
+
+    # 1. Setup client and web session
+    client_obj = Client(
+        name="API Test Client",
+        telegram_id="test_tg_api_cust",
+        is_active=True,
+        money_balance_kopeks=50000,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    web_user = WebUser(
+        client_id=client_obj.id,
+        email="api_cust@example.com",
+        name="API Customer",
+        is_active=True,
+        is_email_verified=True,
+    )
+    db.add(web_user)
+    db.commit()
+    db.refresh(web_user)
+
+    raw_token, csrf_token, session_obj = create_web_session(db, web_user, request=None)
+
+    cookies = {"tenderlex_customer_session": raw_token}
+    headers = {"X-CSRF-Token": csrf_token}
+
+    # 2. List keys (initially empty)
+    list_resp = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp.status_code == 200
+    assert list_resp.json()["keys"] == []
+    assert list_resp.json()["balance_rub"] == 500.0
+
+    # 3. Create key
+    create_resp = client.post("/api/customer/api-keys", cookies=cookies, headers=headers)
+    assert create_resp.status_code == 200
+    created_data = create_resp.json()
+    assert created_data["ok"] is True
+    assert created_data["raw_key"].startswith("tl_live_")
+    key_id = created_data["id"]
+
+    # 4. List keys again (now has 1 key)
+    list_resp2 = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp2.status_code == 200
+    keys = list_resp2.json()["keys"]
+    assert len(keys) == 1
+    assert keys[0]["id"] == key_id
+    assert keys[0]["is_active"] is True
+
+    # 5. Test record_api_job for admin audit
+    api_key_db = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    job = record_api_job(
+        db,
+        api_key=api_key_db,
+        mode="supplier_search",
+        title="API: Поиск поставщиков — Кабель ВВГнг",
+        status="completed",
+        target_count=5,
+        verified_count=5,
+    )
+    assert job is not None
+    assert job.client_id == client_obj.id
+    assert job.created_by_telegram_id.startswith("api:")
+    assert job.status == "completed"
+
+    # 6. Revoke key
+    revoke_resp = client.post(f"/api/customer/api-keys/{key_id}/revoke", cookies=cookies, headers=headers)
+    assert revoke_resp.status_code == 200
+    assert revoke_resp.json()["ok"] is True
+
+    # 7. List keys again (revoked key filtered from active)
+    list_resp3 = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp3.status_code == 200
+    assert list_resp3.json()["keys"] == []
+
+    db.close()
+
+
 
