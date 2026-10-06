@@ -17,6 +17,16 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Cabinet Task Launcher & Help Workflow Reordering (2026-10-06):
+  - In customer web cabinet (`cabinet-client.tsx`), reordered task launching tabs:
+    1. «Анализ документации» (`procurement_report`) — set as default on load.
+    2. «Поиск поставщиков» (`supplier_search`)
+    3. «Анализ + поиск» (`analysis_and_suppliers`)
+    4. «Подбор товара и аналогов» (`exact_product`)
+  - Cabinet job filter dropdown (`jobModeFilter`) aligned to match the exact same order.
+  - Help Modal («Справочник функций и алгоритм работы TenderLex») updated: navigation tabs and Step 1/2/3 cards in «Маршрут работы» reordered (Step 1: Анализ документации, Step 2: Поиск поставщиков, Step 3: Подбор товара и аналогов; «Комплексный запуск» combines Step 1 and Step 2).
+  - Telegram bot help command (`/help`) synchronized with new workflow order.
+  - Verified with 802 passing backend tests, clean TypeScript check, Next.js build, and live server deployment.
 - B2B API & CRM Integration with Unified Ruble Balance & Key Auto-Substitution (2026-10-05):
   - Unified client money balance (`money_balance_kopeks`) debiting for external API keys: removed isolated per-service quota limits in favor of single ruble balance debiting.
   - Automatic pricing resolution via `effective_price_kopeks(db, client, service)` accounting for individual client tariff overrides (`ClientTariffOverride`), writing standard `BillingTransaction(operation="charge")`, and pausing requests when money balance is exhausted.

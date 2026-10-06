@@ -19,11 +19,11 @@
 - Linked Telegram and website accounts share the same customer job history.
   A Telegram-launched job can therefore appear in the website cabinet; this is
   not a duplicate job.
-- The cabinet mirrors the Telegram bot scenarios:
-  - `Одно ТЗ`
-  - `Несколько ТЗ`
-  - `Анализ закупки`
-  - `Анализ + поиск`
+- The web cabinet provides four task launching modes in the order:
+  1. `Анализ документации` (`procurement_report`) — дефолтный сценарий при входе.
+  2. `Поиск поставщиков` (`supplier_search`)
+  3. `Анализ + поиск` (`analysis_and_suppliers`)
+  4. `Подбор товара и аналогов` (`exact_product`)
 
 ## Customer UX Contract
 
