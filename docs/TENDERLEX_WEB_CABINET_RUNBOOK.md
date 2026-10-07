@@ -78,6 +78,10 @@ Notes:
   collapsed `Индивидуальные цены` block under `Настройки клиента`. The global
   package list remains in `Тарифы`. If `Добор` is not configured explicitly, the
   system displays and charges 50% of the effective `Поиск` price.
+- **Deposit Bonuses & Custom Price Exclusions**:
+  - Standard clients receive progressive deposit bonuses when topped up with packages or larger sums (`+17%` at 3 000 ₽ up to `+50%` at 25 000 ₽).
+  - Clients with active individual prices (`ClientTariffOverride`) are strictly excluded from deposit bonuses. The system automatically switches quick chips to clean rounded sums (`1 000 ₽`, `3 000 ₽`, `5 000 ₽`, `10 000 ₽`, `25 000 ₽`), shows a clear notification «Индивидуальный тариф: к зачислению ровно X ₽ (без бонуса)», and credits strictly 100% of the entered sum (1:1) with zero bonus.
+  - In the customer cabinet top-up modal, custom-tariff clients see 1:1 crediting without bonus promises, and the generated Telegram confirmation specifies `(индивидуальный тариф)`.
 - Do not expose internal `web:<id>` markers or service notes such as website-trial creation text in the admin client card.
 - Web logins and Telegram accounts are separate access types inside one
   customer card. Removing a web login must remove only that website access and
