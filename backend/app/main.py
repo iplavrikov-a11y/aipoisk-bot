@@ -36,6 +36,11 @@ from .result_offers import (
 from .billing import (
     BillingError,
     KIND_MONEY,
+    KIND_DEPOSIT,
+    KIND_SUPPLIER_SEARCH,
+    KIND_EXACT_PRODUCT,
+    KIND_PROCUREMENT_REPORT,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     OP_CHARGE,
     OP_GRANT,
     OP_MANUAL_DEBIT,
@@ -47,6 +52,7 @@ from .billing import (
     STATUS_DELIVERY_EXPIRED,
     VALID_BILLING_KINDS,
     billing_kind_label,
+    calculate_deposit_bonus_kopeks,
     charge_job_reservation,
     charge_job_kind_reservation,
     client_balance_summary,
@@ -54,6 +60,7 @@ from .billing import (
     client_uses_trial_access,
     debit_money_balance,
     debit_package_units,
+    effective_price_kopeks,
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
@@ -1889,16 +1896,48 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         raise HTTPException(status_code=400, detail="Tariff package can only be used for grants")
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
-    if kind == KIND_MONEY:
-        if package:
-            raise HTTPException(status_code=400, detail="Money balance can only be changed directly")
+    if kind in {KIND_MONEY, KIND_DEPOSIT}:
+        if package and package.kind == KIND_DEPOSIT:
+            pay_kopeks = int(package.price_kopeks or 0)
+            bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+            total_amount_kopeks = pay_kopeks + bonus_kopeks
+            bonus_rub = round(bonus_kopeks / 100)
+            pay_rub = round(pay_kopeks / 100)
+            grant_note = (
+                data.note
+                or (
+                    f"Пополнение по тарифу «{package.name}» (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
+                    if bonus_rub > 0
+                    else f"Пополнение по тарифу «{package.name}» ({pay_rub} ₽)"
+                )
+            )
+        elif operation == "grant":
+            pay_kopeks = int(data.amount_kopeks or 0)
+            bonus_kopeks = int(getattr(data, "bonus_kopeks", 0) or 0)
+            if bonus_kopeks <= 0 and pay_kopeks > 0:
+                bonus_kopeks = calculate_deposit_bonus_kopeks(pay_kopeks, db)
+            total_amount_kopeks = pay_kopeks + bonus_kopeks
+            bonus_rub = round(bonus_kopeks / 100)
+            pay_rub = round(pay_kopeks / 100)
+            grant_note = (
+                data.note
+                or (
+                    f"Пополнение баланса (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
+                    if bonus_rub > 0
+                    else "Ручное пополнение баланса"
+                )
+            )
+        else:
+            total_amount_kopeks = int(data.amount_kopeks or 0)
+            grant_note = data.note or "Ручное списание с баланса"
+
         try:
             if operation == "grant":
                 transaction = grant_money_balance(
                     db,
                     client,
-                    amount_kopeks=data.amount_kopeks,
-                    note=data.note or "Ручное пополнение баланса",
+                    amount_kopeks=total_amount_kopeks,
+                    note=grant_note,
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
@@ -1906,8 +1945,8 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 transaction = debit_money_balance(
                     db,
                     client,
-                    amount_kopeks=data.amount_kopeks,
-                    note=data.note or "Ручное списание с баланса",
+                    amount_kopeks=total_amount_kopeks,
+                    note=grant_note,
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
@@ -3471,6 +3510,18 @@ def _settings_yookassa_ready(settings: SystemSettings) -> bool:
 def public_site_payload(db: Session) -> dict:
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
+    price_search = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact = effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900
+    price_report = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
+    price_extra = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    function_prices = {
+        "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
+        "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
+        "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
+        "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
+        "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+    }
     return {
         "site": {
             "name": "TenderLex",
@@ -3505,7 +3556,10 @@ def public_site_payload(db: Session) -> dict:
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
         },
         "tariffs": tariffs,
+        "deposit_packages": deposit_packages,
+        "function_prices": function_prices,
         "tariff_groups": {
+            "deposit": deposit_packages,
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
             "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
@@ -3516,14 +3570,24 @@ def public_site_payload(db: Session) -> dict:
 
 
 def tariff_to_public_dict(package: TariffPackage) -> dict:
+    price_kopeks = int(package.price_kopeks or 0)
+    bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+    total_credit_kopeks = price_kopeks + bonus_kopeks
     return {
         "id": package.id,
         "kind": package.kind,
         "label": billing_kind_label(package.kind),
         "name": package.name,
         "units": package.units,
-        "price_kopeks": package.price_kopeks,
-        "price_rub": round(package.price_kopeks / 100, 2),
+        "price_kopeks": price_kopeks,
+        "price_rub": round(price_kopeks / 100, 2),
+        "bonus_kopeks": bonus_kopeks,
+        "bonus_rub": round(bonus_kopeks / 100, 2),
+        "credit_kopeks": total_credit_kopeks,
+        "credit_rub": round(total_credit_kopeks / 100, 2),
+        "total_kopeks": total_credit_kopeks,
+        "total_rub": round(total_credit_kopeks / 100, 2),
+        "badge": getattr(package, "badge", "") or "",
         "description": package.description,
         "sort_order": package.sort_order,
     }
@@ -3564,6 +3628,19 @@ def max_public_url(value: str) -> str:
 
 def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = "", authenticated: bool = True) -> dict:
     settings = get_or_create_settings(db)
+    tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
+    price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
+    price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
+    price_extra = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    function_prices = {
+        "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
+        "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
+        "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
+        "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
+        "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+    }
     return {
         "authenticated": authenticated,
         "csrf_token": csrf_token,
@@ -3581,12 +3658,15 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
         },
-        "tariffs": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)],
+        "tariffs": tariffs,
+        "deposit_packages": deposit_packages,
+        "function_prices": function_prices,
         "tariff_groups": {
-            "exact_product": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "exact_product"],
-            "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
-            "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
-            "supplier_search_extra": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search_extra"],
+            "deposit": deposit_packages,
+            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
+            "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+            "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
         "contacts": {
             "email": settings.contact_email,

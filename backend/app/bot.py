@@ -154,10 +154,9 @@ INDIVIDUAL_TERMS_NOTE = (
 )
 BOT_PAYMENT_INSTRUCTIONS = (
     "🧾 Чтобы пополнить баланс:\n"
-    "1. Посмотрите стоимость функций выше.\n"
-    "2. Напишите владельцу сервиса в Telegram или на email.\n"
-    "3. Укажите сумму пополнения и ваш Telegram ID.\n"
-    "4. После подтверждения оплаты деньги будут зачислены на баланс."
+    "1. Выберите подходящий пакет пополнения или произвольную сумму.\n"
+    "2. Напишите владельцу сервиса в Telegram (кнопка ниже).\n"
+    "3. После перевода на карту или по реквизитам баланс с бонусом будет зачислен моментально."
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
@@ -1800,15 +1799,44 @@ def _money_text(amount_kopeks: int) -> str:
 
 def _tariffs_text(db, settings) -> str:
     packages = [tariff_to_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposits = [item for item in packages if item["kind"] == "deposit"]
     supplier = [item for item in packages if item["kind"] == "supplier_search"]
     exact_product = [item for item in packages if item["kind"] == "exact_product"]
     reports = [item for item in packages if item["kind"] == "procurement_report"]
     extra = [item for item in packages if item["kind"] == "supplier_search_extra"]
+
     lines = [
-        "💳 Тарифы и оплата",
+        "💳 <b>Тарифы и единый баланс TenderLex</b>",
         "",
-        "Баланс пополняется в рублях. При запуске стоимость услуги резервируется по тарифу, после успешной выдачи результата — списывается.",
+        "Баланс единый в рублях и расходуется на любые услуги без сгорания.",
     ]
+
+    if deposits:
+        lines.extend(["", "🎁 <b>Пакеты пополнения баланса (с бонусом):</b>"])
+        for item in deposits:
+            bonus = item.get("bonus_kopeks") or 0
+            badge = f" 🔥" if item.get("badge") else ""
+            if bonus > 0:
+                lines.append(
+                    f"• «{html_escape(item['name'])}»{badge} — {_price_text(item['price_kopeks'])} "
+                    f"(на баланс <b>{_price_text(item['credit_kopeks'])}</b>, +{_price_text(bonus)} бонус, ~{item.get('units', 1)} задач)"
+                )
+            else:
+                lines.append(
+                    f"• «{html_escape(item['name'])}» — {_price_text(item['price_kopeks'])} "
+                    f"(на баланс <b>{_price_text(item['credit_kopeks'])}</b>, ~{item.get('units', 1)} задач)"
+                )
+        lines.append("<i>При пополнении от 25 000 ₽ — максимальный бонус +50% и персональные условия.</i>")
+
+    lines.extend([
+        "",
+        "<b>Стоимость операций (списание с баланса):</b>",
+        "• 🔎 Поиск поставщиков: 99 ₽",
+        "• 🎯 Подбор товара и аналогов: 99 ₽",
+        "• 📄 Анализ документации: 99 ₽",
+        "• ⚡ Анализ + поиск: 198 ₽",
+    ])
+
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
         for item in supplier:
@@ -1829,8 +1857,10 @@ def _tariffs_text(db, settings) -> str:
         unit_price = _default_extra_supplier_price_kopeks(supplier[0])
         lines.extend(["", "🔎 Добор поставщиков:"])
         lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (по тому же ТЗ)")
-    if not supplier and not exact_product and not reports and not extra:
-        lines.extend(["", "Тарифы пока не настроены в админ-панели."])
+    else:
+        lines.extend(["", "🔎 Добор поставщиков:"])
+        lines.append("• 1 добор поставщиков — 49 ₽ (по тому же ТЗ)")
+
     lines.extend(["", _bot_payment_instructions(settings)])
     lines.extend(["", INDIVIDUAL_TERMS_NOTE])
     lines.extend(["", AI_HELP_NOTE])

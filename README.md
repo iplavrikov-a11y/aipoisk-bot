@@ -16,7 +16,13 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
-  concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Production Unified Wallet, Deposit Bonus Tiers, Manual Card Top-up & CI/CD Pipelines (2026-10-07):
+  - Unified Wallet & Flat Function Pricing: Reworked tariffs from segregated feature packages into a single unified wallet balance (`money_balance_kopeks`) with flat pay-as-you-go task execution (Поиск поставщиков — 99 ₽, Добор — 49 ₽, Подбор товара и аналогов — 99 ₽, Анализ документации — 99 ₽, Анализ + поиск — 198 ₽).
+  - Progressive Deposit Bonuses: Increasing deposit bonuses reward larger top-ups: «Старт» (1 000 ₽ → 1 000 ₽), «Оптимальный» (3 000 ₽ → 3 500 ₽, +500 ₽), «Про» (5 000 ₽ → 6 500 ₽, +1 500 ₽, «Хит»), «Бизнес» (10 000 ₽ → 14 000 ₽, +4 000 ₽), «Корпоративный» (25 000 ₽ → 37 500 ₽, +12 500 ₽ / +50%).
+  - Manual Card Top-Up Flow: Direct transfer to owner's card/account with instant Telegram notification and manual admin crediting (self-service payment gateway deferred for future phase). Added modal with live calculator, transfer instructions, and 1-click Telegram notification with prefilled details.
+  - Admin Panel Live Bonus Calculator: Rapid top-up chips and automatic bonus tier calculation on custom ruble amounts.
+  - CI/CD Pipelines (`.github/workflows/ci.yml`): Parallel GitHub Actions workflows for backend pytest suite (Python 3.12), admin frontend build (Vite), and Next.js site & cabinet build.
+  - Playwright E2E Suite (`scripts/test_tariffs_e2e.py`): Full headless browser verification of landing pricing, cabinet top-up modal, interactive reactivity, and screenshot evidence.
 - Production B2B API Public Launch, Two-Phase Billing & Enterprise 1C/MCP Integration (2026-10-07):
   - Backend Two-Phase Reservation (`backend/app/mcp_api.py`): Replaced pre-billing risk with ACID two-phase reservation (`OP_RESERVE` on launch, `OP_CHARGE` on success, `OP_RELEASE` on exceptions or zero results). Customer balance is 100% protected against timeouts or unfulfilled searches.
   - Standalone MCP Client (`site/public/scripts/tenderlex_mcp.py`): Eliminated missing npm package 404s by publishing standalone, zero-dependency Python script for Claude Desktop, Cursor, and enterprise agents with 1-click download in web cabinet.

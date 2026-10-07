@@ -447,6 +447,8 @@ class TariffPackage(Base):
     units: Mapped[int] = mapped_column(Integer, default=1)
     price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
+    bonus_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    badge: Mapped[str] = mapped_column(String(40), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

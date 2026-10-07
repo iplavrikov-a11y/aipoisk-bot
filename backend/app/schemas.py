@@ -173,6 +173,8 @@ class TariffPackageCreate(BaseModel):
     name: str
     units: int = Field(default=1, ge=1, le=100000)
     price_kopeks: int = Field(default=0, ge=0, le=1000000000)
+    bonus_kopeks: int = Field(default=0, ge=0, le=1000000000)
+    badge: str = Field(default="", max_length=40)
     description: str = ""
     is_active: bool = True
     sort_order: int = Field(default=100, ge=0, le=100000)
@@ -183,6 +185,8 @@ class TariffPackagePatch(BaseModel):
     name: str | None = None
     units: int | None = Field(default=None, ge=1, le=100000)
     price_kopeks: int | None = Field(default=None, ge=0, le=1000000000)
+    bonus_kopeks: int | None = Field(default=None, ge=0, le=1000000000)
+    badge: str | None = None
     description: str | None = None
     is_active: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=100000)
@@ -192,6 +196,7 @@ class BillingGrantCreate(BaseModel):
     kind: str
     units: int = Field(default=1, ge=1, le=100000)
     amount_kopeks: int = Field(default=0, ge=0, le=1000000000)
+    bonus_kopeks: int = Field(default=0, ge=0, le=1000000000)
     package_id: str = ""
     note: str = ""
     operation: str = "grant"

@@ -368,6 +368,14 @@ def _ensure_schema() -> None:
         for column, definition in api_keys_additions.items():
             if api_keys_existing and column not in api_keys_existing:
                 connection.execute(text(f"ALTER TABLE api_keys ADD COLUMN {column} {definition}"))
+        tariff_packages_existing = _existing_columns(inspector, "tariff_packages")
+        tariff_package_additions = {
+            "bonus_kopeks": "INTEGER DEFAULT 0",
+            "badge": "VARCHAR(40) DEFAULT ''",
+        }
+        for column, definition in tariff_package_additions.items():
+            if tariff_packages_existing and column not in tariff_packages_existing:
+                connection.execute(text(f"ALTER TABLE tariff_packages ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:
@@ -471,6 +479,31 @@ def _ensure_default_tariffs() -> None:
                         name=name,
                         units=units,
                         price_kopeks=price,
+                        sort_order=order,
+                        is_active=True,
+                    )
+                )
+            db.commit()
+
+        deposit_exists = db.query(TariffPackage).filter(TariffPackage.kind == "deposit").first()
+        if not deposit_exists:
+            deposit_defaults = [
+                ("Старт", 10, 100000, 0, "", "Для разовых процедур и тестирования в бою", 10),
+                ("Оптимальный", 35, 300000, 50000, "", "Для регулярной работы специалиста", 20),
+                ("Про", 65, 500000, 150000, "Хит", "Для активного отдела закупок (несколько тендеров в неделю)", 30),
+                ("Бизнес", 140, 1000000, 400000, "", "Для дистрибьюторов, интеграторов и работы по API", 40),
+                ("Корпоративный", 375, 2500000, 1250000, "Максимум", "Для масштабных процедур и CRM-интеграций", 50),
+            ]
+            for name, units, price, bonus, badge, desc, order in deposit_defaults:
+                db.add(
+                    TariffPackage(
+                        kind="deposit",
+                        name=name,
+                        units=units,
+                        price_kopeks=price,
+                        bonus_kopeks=bonus,
+                        badge=badge,
+                        description=desc,
                         sort_order=order,
                         is_active=True,
                     )

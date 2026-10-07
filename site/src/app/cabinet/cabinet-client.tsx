@@ -17,6 +17,7 @@ import {
   Clock3,
   Compass,
   Copy,
+  CreditCard,
   Download,
   Eye,
   EyeOff,
@@ -32,6 +33,7 @@ import {
   MessageCircle,
   Paperclip,
   Pencil,
+  PlusCircle,
   Receipt,
   RotateCcw,
   Search,
@@ -41,6 +43,7 @@ import {
   Sparkles,
   Upload,
   User,
+  Wallet,
   X,
   XCircle,
   type LucideIcon,
@@ -70,6 +73,52 @@ type Tariff = {
   description: string;
 };
 
+type DepositPackage = {
+  id: string;
+  kind?: string;
+  name: string;
+  price_kopeks: number;
+  bonus_kopeks: number;
+  total_kopeks: number;
+  credit_kopeks?: number;
+  price_rub: number;
+  bonus_rub: number;
+  total_rub: number;
+  credit_rub?: number;
+  bonus_percent?: number;
+  badge?: string;
+  description?: string;
+  approx_tasks?: number;
+};
+
+const DEFAULT_DEPOSIT_PACKAGES: DepositPackage[] = [
+  { id: "dep-1000", name: "Старт", price_kopeks: 100000, bonus_kopeks: 0, total_kopeks: 100000, price_rub: 1000, bonus_rub: 0, total_rub: 1000, bonus_percent: 0, badge: "", approx_tasks: 10 },
+  { id: "dep-3000", name: "Оптимальный", price_kopeks: 300000, bonus_kopeks: 50000, total_kopeks: 350000, price_rub: 3000, bonus_rub: 500, total_rub: 3500, bonus_percent: 17, badge: "+500 ₽", approx_tasks: 35 },
+  { id: "dep-5000", name: "Про", price_kopeks: 500000, bonus_kopeks: 150000, total_kopeks: 650000, price_rub: 5000, bonus_rub: 1500, total_rub: 6500, bonus_percent: 30, badge: "Хит (+1 500 ₽)", approx_tasks: 65 },
+  { id: "dep-10000", name: "Бизнес", price_kopeks: 1000000, bonus_kopeks: 400000, total_kopeks: 1400000, price_rub: 10000, bonus_rub: 4000, total_rub: 14000, bonus_percent: 40, badge: "+4 000 ₽", approx_tasks: 140 },
+  { id: "dep-25000", name: "Корпоративный", price_kopeks: 2500000, bonus_kopeks: 1250000, total_kopeks: 3750000, price_rub: 25000, bonus_rub: 12500, total_rub: 37500, bonus_percent: 50, badge: "+12 500 ₽", approx_tasks: 375 },
+];
+
+function calculateDepositBonus(amountRub: number): { bonusRub: number; totalRub: number; percent: number } {
+  const safeRub = Math.max(0, Math.floor(amountRub || 0));
+  if (safeRub < 1000) return { bonusRub: 0, totalRub: safeRub, percent: 0 };
+  if (safeRub < 3000) return { bonusRub: 0, totalRub: safeRub, percent: 0 };
+  if (safeRub < 5000) {
+    const bonus = Math.round(safeRub * 0.1667);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 17 };
+  }
+  if (safeRub < 10000) {
+    const bonus = Math.round(safeRub * 0.30);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 30 };
+  }
+  if (safeRub < 25000) {
+    const bonus = Math.round(safeRub * 0.40);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 40 };
+  }
+  const bonus = Math.round(safeRub * 0.50);
+  return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 50 };
+}
+
 type SessionPayload = {
   authenticated: boolean;
   csrf_token?: string;
@@ -98,7 +147,10 @@ type SessionPayload = {
     max_files_per_batch: number;
     default_supplier_target: number;
   };
+  deposit_packages?: DepositPackage[];
+  function_prices?: Record<string, { price_rub: number; price_kopeks: number }>;
   tariff_groups?: {
+    deposit?: DepositPackage[];
     supplier_search: Tariff[];
     exact_product?: Tariff[];
     procurement_report: Tariff[];
@@ -842,6 +894,10 @@ export function CabinetClient() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
+  const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
+  const [topUpCopied, setTopUpCopied] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
@@ -2071,6 +2127,26 @@ export function CabinetClient() {
               ) : null}
             </div>
 
+            {/* Top-up Button */}
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-3 h-[30px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                setSelectedTopUpPackage(defPkg);
+                setCustomTopUpRub(defPkg?.price_rub || 5000);
+                setShowTopUpModal(true);
+              }}
+              title="Пополнить баланс с бонусом до +50%"
+            >
+              <PlusCircle size={13} className="text-emerald-100 shrink-0" aria-hidden="true" />
+              <span>Пополнить</span>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-800/80 text-emerald-100 font-extrabold text-[9px] leading-none">
+                бонус до +50%
+              </span>
+            </button>
+
             <button
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
@@ -2199,66 +2275,106 @@ export function CabinetClient() {
           const extraIsOverride = session?.balance?.effective_prices?.supplier_search_extra?.source === "client_override";
           const supplierOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override" ? session.balance.effective_prices.supplier_search : null;
           const reportOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override" ? session.balance.effective_prices.procurement_report : null;
+          const exactOverride = session?.balance?.effective_prices?.exact_product?.source === "client_override" ? session.balance.effective_prices.exact_product : null;
+          const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
 
           return (
-            <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
-                <div className="space-y-1 mt-0.5">
-                  {supplierOverride ? (
-                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 поиск поставщиков (индивидуально)</span>
-                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(supplierOverride.price_kopeks)}</b>
-                    </div>
-                  ) : null}
-                  {(session?.tariff_groups?.supplier_search || []).slice(0, 3).map((tariff) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                  <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                    <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
-                      {extraIsOverride ? '1 добор поставщиков (индивидуально)' : '1 добор поставщиков (по тому же ТЗ)'}
+            <div className="pt-2.5 border-t border-slate-100 transition-all space-y-2.5">
+              <div className="grid md:grid-cols-2 gap-2.5">
+                {/* Column 1: Списание за операции по прайсу */}
+                <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
+                  <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      Списание за задачи с баланса
                     </span>
-                    <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap text-xs`}>
-                      {formatRubles(extraPriceKopeks)}
-                    </b>
+                    <span className="text-[10px] text-slate-400">без подписок и скрытых условий</span>
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700">1. Поиск поставщиков</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {supplierOverride ? formatRubles(supplierOverride.price_kopeks) : "99 ₽"}
+                      </b>
+                    </div>
+                    <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                      <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
+                        ↳ Добор поставщиков (по тому же ТЗ)
+                      </span>
+                      <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap`}>
+                        {formatRubles(extraPriceKopeks)}
+                      </b>
+                    </div>
+                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {exactOverride ? formatRubles(exactOverride.price_kopeks) : "99 ₽"}
+                      </b>
+                    </div>
+                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-700">3. Анализ документации</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {reportOverride ? formatRubles(reportOverride.price_kopeks) : "99 ₽"}
+                      </b>
+                    </div>
+                    <div className="px-2 py-1 bg-slate-100/90 border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-600">4. Анализ + поиск (комбо)</span>
+                      <b className="font-extrabold text-slate-800 shrink-0 whitespace-nowrap">198 ₽</b>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Column 2: Бонусы при пополнении баланса */}
+                <div className="space-y-1 bg-gradient-to-br from-emerald-50/60 to-teal-50/40 p-2.5 rounded-xl border border-emerald-200/80">
+                  <div className="flex items-center justify-between pb-1 border-b border-emerald-200/60">
+                    <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                      Бонусы при пополнении баланса
+                    </span>
+                    <span className="text-[10px] font-bold text-emerald-700">до +50% к платежу</span>
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    {depositPkgs.map((pkg) => (
+                      <div
+                        key={pkg.id}
+                        className="px-2 py-1 bg-white/90 border border-emerald-200/70 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs"
+                      >
+                        <div className="flex items-center gap-1.5 truncate mr-2">
+                          <span className="font-bold text-slate-900">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
+                          <span className="text-slate-400">→</span>
+                          <span className="font-extrabold text-emerald-700">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {pkg.bonus_rub > 0 ? (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
+                              +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-medium">Старт</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор товара и аналогов</span>
-                <div className="space-y-1 mt-0.5">
-                  {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
-                    ? session.tariff_groups.exact_product
-                    : [{ id: 'exact-1', name: '1 подбор товара и аналогов', price_kopeks: 9900 }]
-                  ).slice(0, 3).map((tariff: any) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Анализ закупки</span>
-                <div className="space-y-1 mt-0.5">
-                  {reportOverride ? (
-                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 анализ закупки (индивидуально)</span>
-                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(reportOverride.price_kopeks)}</b>
-                    </div>
-                  ) : null}
-                  {(session?.tariff_groups?.procurement_report || []).slice(0, 3).map((tariff) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                </div>
+              {/* Action Banner inside Tariffs */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200/70 text-xs">
+                <span className="text-slate-600 text-[11px]">
+                  Средства на балансе не сгорают, расходуются только по факту выполненных задач.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                    setSelectedTopUpPackage(defPkg);
+                    setCustomTopUpRub(defPkg?.price_rub || 5000);
+                    setShowTopUpModal(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ml-auto"
+                >
+                  <PlusCircle size={13} />
+                  <span>Пополнить баланс с бонусом</span>
+                </button>
               </div>
             </div>
           );
@@ -4689,6 +4805,227 @@ ${webLink}`;
                 Понятно
               </button>
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {/* Top-Up Balance Modal */}
+      {showTopUpModal ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowTopUpModal(false);
+          }}
+        >
+          <section
+            className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans my-auto max-h-[95vh] overflow-y-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="topup-modal-title"
+          >
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
+                  <Wallet size={20} aria-hidden="true" />
+                </div>
+                <div>
+                  <h2 id="topup-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                    Пополнение баланса
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Единый баланс на все 3 модуля. Чем больше сумма — тем выше бонус на счёт.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
+                onClick={() => setShowTopUpModal(false)}
+                aria-label="Закрыть окно"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Quick Packages Grid */}
+            <div className="space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                Выберите пакет с бонусом:
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                  const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                  return (
+                    <button
+                      key={pkg.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTopUpPackage(pkg);
+                        setCustomTopUpRub(pkg.price_rub);
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                          : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                      }`}
+                    >
+                      {pkg.badge ? (
+                        <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                          {pkg.badge}
+                        </span>
+                      ) : null}
+                      <div>
+                        <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                        <div className="text-sm font-black text-slate-900 mt-0.5">
+                          {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                        </div>
+                      </div>
+                      <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                        <div className="text-emerald-700 font-bold">
+                          На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                        </div>
+                        {pkg.bonus_rub > 0 ? (
+                          <div className="text-[10px] text-emerald-600 font-medium">
+                            +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Custom Amount Input */}
+            <div className="space-y-1.5 pt-1">
+              <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                Или введите другую сумму:
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    id="custom-topup-input"
+                    type="number"
+                    min={500}
+                    step={500}
+                    value={customTopUpRub || ""}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10) || 0;
+                      setCustomTopUpRub(val);
+                      const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                      setSelectedTopUpPackage(match || null);
+                    }}
+                    placeholder="5000"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                    ₽
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Calculation Card */}
+            {(() => {
+              const calc = calculateDepositBonus(customTopUpRub);
+              const approxTasks = Math.floor(calc.totalRub / 99);
+              return (
+                <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                    <span>Сумма к оплате:</span>
+                    <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                  </div>
+                  {calc.bonusRub > 0 ? (
+                    <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
+                      <span>Бонус сервиса ({calc.percent}%):</span>
+                      <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
+                    </div>
+                  ) : null}
+                  <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
+                      <span className="text-[10px] text-slate-500">хватит примерно на {approxTasks} задач по 99 ₽</span>
+                    </div>
+                    <div className="text-lg sm:text-xl font-black text-emerald-700">
+                      {calc.totalRub.toLocaleString("ru-RU")} ₽
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* How to Pay Instructions */}
+            <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                <CreditCard size={14} className="text-teal-700" />
+                <span>Инструкция по оплате переводом:</span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                1. Переведите выбранную сумму на банковскую карту или счет владельца сервиса.
+              </p>
+              <p className="text-[11px] text-slate-600">
+                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс с причитающимся бонусом (обычно 5–15 минут).
+              </p>
+              <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-slate-500">Ваш email аккаунта:</span>
+                <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+              </div>
+            </div>
+
+            {/* Contact Action Buttons */}
+            {(() => {
+              const calc = calculateDepositBonus(customTopUpRub);
+              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+              const tgMsg = encodeURIComponent(
+                `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+              );
+              const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
+
+              return (
+                <div className="space-y-2 pt-1">
+                  <a
+                    href={tgUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  >
+                    <Send size={15} />
+                    <span>
+                      {calc.bonusRub > 0
+                        ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
+                        : `Написать в Telegram для зачисления`}
+                    </span>
+                  </a>
+
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
+                        navigator.clipboard.writeText(copyText).then(() => {
+                          setTopUpCopied(true);
+                          setTimeout(() => setTopUpCopied(false), 2500);
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                    >
+                      <Copy size={13} />
+                      <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                    </button>
+
+                    <a
+                      href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
+                      className="text-xs text-slate-500 hover:text-slate-700 underline"
+                    >
+                      Написать на email
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
           </section>
         </div>
       ) : null}

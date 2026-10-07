@@ -107,6 +107,11 @@ export default async function HomePage() {
   const data = await getSiteData();
   const botUrl = data.bot.telegram_url;
   const cabinetUrl = "/cabinet";
+  const depositPackages = (
+    data.deposit_packages && data.deposit_packages.length > 0
+      ? data.deposit_packages
+      : data.tariff_groups?.deposit || []
+  ).filter((p) => (p as any).is_active !== false);
   const supplierTariffs = data.tariff_groups?.supplier_search || [];
   const exactProductTariffs = data.tariff_groups?.exact_product || [];
   const reportTariffs = data.tariff_groups?.procurement_report || [];
@@ -449,87 +454,152 @@ export default async function HomePage() {
         {/* PRICING & TARIFFS */}
         <section id="pricing" className="py-16 sm:py-24 bg-white border-b border-slate-200">
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
-            <div className="text-center max-w-3xl mx-auto mb-16 space-y-3">
+            <div className="text-center max-w-3xl mx-auto mb-10 space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
-                Тарифы сервиса
+                Тарифы и единый баланс
               </span>
               <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Прозрачная стоимость без скрытых платежей
+                Единый баланс на все модули. Чем больше пополнение — тем больше выгода
               </h2>
               <p className="text-slate-600 text-sm sm:text-base">
-                Актуальные пакеты, цены и доступность пробного доступа отображаются перед запуском в личном кабинете.
+                Баланс расходуется на любые задачи сервиса и никогда не сгорает. Списание происходит только за результат по прозрачному фиксированному прайсу.
               </p>
             </div>
 
-            {data.tariffs.length === 0 && <p role="status" className="text-center text-sm text-slate-600 mb-6">Цены временно недоступны. Проверьте действующие условия в кабинете перед оплатой.</p>}
-
-            <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
-              {/* 1. Поставщики */}
-              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
-                <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Контакты отделов продаж</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Контакты поставщиков</h3>
-                  <p className="text-xs text-slate-600 mb-4">Список кандидатов и контактов для запроса КП с последующей проверкой роли компании и условий поставки.</p>
-                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
-                    {supplierTariffs.map((t: PublicTariff) => (
-                      <div key={t.id} className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">{t.name}</span>
-                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href={cabinetUrl}>Выбрать пакет поставщиков</a>
-                </Button>
+            {/* Flat Rate Base Pricing Bar */}
+            <div className="max-w-4xl mx-auto mb-10 p-3 sm:p-4 bg-slate-50 border border-slate-200/90 rounded-2xl shadow-2xs">
+              <div className="text-center text-xs font-bold uppercase tracking-wider text-slate-500 mb-2.5">
+                Прозрачная стоимость списания с баланса за результат:
               </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="block text-slate-500 text-[11px]">Поиск поставщиков</span>
+                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">добор: 49 ₽</span>
+                </div>
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="block text-slate-500 text-[11px]">Подбор товара и аналогов</span>
+                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">по ТЗ и ГОСТ</span>
+                </div>
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="block text-slate-500 text-[11px]">Анализ документации</span>
+                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">риски и условия</span>
+                </div>
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="block text-slate-500 text-[11px]">Анализ + поиск</span>
+                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">198 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">комбо в 1 клик</span>
+                </div>
+              </div>
+            </div>
 
-              {/* 2. Подбор товара и аналогов */}
-              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
-                <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Подбор по спецификации</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Подбор товара и аналогов</h3>
-                  <p className="text-xs text-slate-600 mb-4">Сопоставление показателей, кандидаты на замену и данные для проверки эквивалентности по документам изготовителя.</p>
-                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
-                    {exactProductTariffs.length > 0 ? (
-                      exactProductTariffs.map((t: PublicTariff) => (
-                        <div key={t.id} className="flex justify-between items-center text-xs">
-                          <span className="text-slate-800 font-bold">{t.name}</span>
-                          <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+            {/* Deposit Packages Grid */}
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5 max-w-6xl mx-auto mb-8">
+              {depositPackages.slice(0, 4).map((pkg) => {
+                const isPro = pkg.badge === "Хит" || pkg.name.toLowerCase().includes("про");
+                const bonusRub = (pkg as any).bonus_rub || Math.round(((pkg as any).bonus_kopeks || 0) / 100);
+                const creditRub = (pkg as any).credit_rub || Math.round(((pkg as any).credit_kopeks || pkg.price_kopeks) / 100);
+                const payRub = Math.round(pkg.price_kopeks / 100);
+                const taskCount = pkg.units || Math.round(creditRub / 99);
+                const unitPrice = Math.round(payRub / taskCount);
+
+                return (
+                  <div
+                    key={pkg.id}
+                    className={`relative p-5 sm:p-6 rounded-3xl border-2 flex flex-col justify-between transition-all ${
+                      isPro
+                        ? "bg-gradient-to-br from-teal-50/70 via-white to-teal-50/40 border-teal-500 shadow-lg shadow-teal-500/10 ring-2 ring-teal-500/20"
+                        : "bg-white border-slate-200 shadow-xs hover:border-slate-300"
+                    }`}
+                  >
+                    {isPro ? (
+                      <span className="absolute -top-3 right-6 bg-teal-600 text-white text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-full shadow-xs">
+                        Популярный
+                      </span>
+                    ) : null}
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <h3 className="text-lg font-extrabold text-slate-900">{pkg.name}</h3>
+                        {bonusRub > 0 ? (
+                          <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                            +{bonusRub.toLocaleString("ru-RU")} ₽ бонус
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-2 mb-3">
+                        <div className="flex items-baseline gap-1.5">
+                          <span className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                            {formatRubles(pkg.price_kopeks)}
+                          </span>
                         </div>
-                      ))
-                    ) : (
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">Условия подбора</span>
-                        <strong className="text-teal-700 font-extrabold">в кабинете</strong>
+                        <div className="text-xs font-semibold text-slate-500 mt-0.5">
+                          на баланс: <strong className="text-teal-700 font-extrabold">{creditRub.toLocaleString("ru-RU")} ₽</strong>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href="/cabinet?scenario=exact_product">Подобрать товар и аналоги</a>
-                </Button>
-              </div>
 
-              {/* 3. Анализ документации */}
-              <div className="p-6 bg-gradient-to-br from-white to-teal-50/40 rounded-3xl border-2 border-slate-200 shadow-md flex flex-col justify-between">
-                <div>
-                  <span className="text-xs font-bold text-teal-700 uppercase tracking-wider bg-teal-100/60 px-2.5 py-0.5 rounded-full">Аудит рисков закупки</span>
-                  <h3 className="text-xl font-extrabold text-slate-900 mt-2 mb-2">Анализ документации</h3>
-                  <p className="text-xs text-slate-600 mb-4">Сроки, штрафы, обеспечение, приёмка и национальный режим как список условий для проверки перед подачей заявки.</p>
-                  <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
-                    {reportTariffs.map((t: PublicTariff) => (
-                      <div key={t.id} className="flex justify-between items-center text-xs">
-                        <span className="text-slate-800 font-bold">{t.name}</span>
-                        <strong className="text-teal-700 font-extrabold">{formatRubles(t.price_kopeks)}</strong>
+                      <p className="text-xs text-slate-600 mb-4 min-h-[36px] leading-relaxed">
+                        {pkg.description || "Пополнение баланса для решения закупочных задач."}
+                      </p>
+
+                      <div className="space-y-1.5 border-t border-slate-100 pt-3 mb-5 text-xs text-slate-700">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-500">Ориентир задач:</span>
+                          <strong className="font-bold text-slate-900">~{taskCount} процедур</strong>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-500">Цена за задачу:</span>
+                          <strong className="font-extrabold text-teal-700">~{unitPrice} ₽</strong>
+                        </div>
+                        <div className="flex justify-between items-center text-[11px] text-slate-400">
+                          <span>Срок действия:</span>
+                          <span className="font-medium text-slate-600">бессрочно</span>
+                        </div>
                       </div>
-                    ))}
+                    </div>
+
+                    <Button
+                      asChild
+                      className={`w-full font-bold h-10 text-xs shadow-xs ${
+                        isPro
+                          ? "bg-teal-600 hover:bg-teal-700 text-white shadow-teal-600/20"
+                          : "bg-slate-900 hover:bg-slate-800 text-white"
+                      }`}
+                    >
+                      <a href={`${cabinetUrl}?topup=${pkg.id}`}>Выбрать «{pkg.name}»</a>
+                    </Button>
                   </div>
+                );
+              })}
+            </div>
+
+            {/* Corporate Tier Banner */}
+            <div className="max-w-4xl mx-auto p-4 sm:p-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-2xl shadow-md flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="space-y-1 text-center sm:text-left">
+                <div className="flex items-center justify-center sm:justify-start gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider bg-teal-500/20 text-teal-300 px-2 py-0.5 rounded border border-teal-500/30">
+                    Корпоративный тариф от 25 000 ₽
+                  </span>
+                  <span className="text-xs text-amber-300 font-bold">+50% к балансу</span>
                 </div>
-                <Button asChild className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold h-11 text-xs shadow-md shadow-teal-600/20">
-                  <a href="/cabinet?scenario=procurement_report">Выбрать пакет отчетов</a>
-                </Button>
+                <h4 className="text-sm sm:text-base font-extrabold text-white">
+                  Для дистрибьюторов, интеграторов и отделов закупок
+                </h4>
+                <p className="text-xs text-slate-300 max-w-xl">
+                  Пополнение от 25 000 ₽ даёт 37 500 ₽ на баланс (~375 задач), доступ по API, помощь с интеграцией в CRM, договор и акты для юридических лиц.
+                </p>
               </div>
+              <Button
+                asChild
+                className="bg-teal-500 hover:bg-teal-600 text-slate-950 font-extrabold text-xs h-10 px-5 shrink-0 shadow-sm"
+              >
+                <a href={data.contacts.telegram_url || botUrl} target="_blank" rel="noopener noreferrer">
+                  Обсудить с менеджером
+                </a>
+              </Button>
             </div>
           </div>
         </section>
