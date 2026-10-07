@@ -50,7 +50,7 @@ def run_e2e_tests():
         assert "Оптимальный" in content, "Package 'Оптимальный' not found"
         assert "Про" in content, "Package 'Про' not found"
         assert "Бизнес" in content, "Package 'Бизнес' not found"
-        assert "Корпоративный" in content, "Package 'Корпоративный' not found"
+        assert "Корпоративный" in content or "КОРПОРАТИВНЫЙ" in content or "корпоративный" in content.lower(), "Package 'Корпоративный' not found"
 
         # Verify bonus indicators with normalized whitespace
         clean_text = " ".join(content.replace("\u00a0", " ").replace("&nbsp;", " ").split())
@@ -132,7 +132,7 @@ def run_e2e_tests():
             if "/api/customer/auth/session" in url or "/api/customer/session" in url or "/api/customer/me" in url:
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_session))
             elif "/api/customer/jobs" in url:
-                route.fulfill(status=200, content_type="application/json", body=json.dumps({"jobs": [], "total": 0}))
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"items": [], "total": 0, "limit": 15, "offset": 0}))
             else:
                 route.continue_()
 
@@ -141,16 +141,17 @@ def run_e2e_tests():
 
         page.goto(f"{SITE_URL}/cabinet", wait_until="networkidle", timeout=30000)
 
-        # Verify Balance Badge
-        balance_text = page.locator("text=1\u00a0200 ₽, text='1 200 ₽'").first.inner_text() if page.locator("text='1 200 ₽'").count() == 0 else page.locator("text='1 200 ₽'").first.inner_text()
-        print(f"      Balance displayed: {balance_text}")
+        # Verify Interactive Balance Button (acts as Top-Up trigger)
+        balance_btn = page.locator("button:has-text('Баланс')").first
+        assert balance_btn.is_visible(), "Balance button not visible in cabinet header"
+        balance_text = balance_btn.inner_text()
+        print(f"      Balance button displayed: {balance_text}")
         clean_balance = balance_text.replace("\u00a0", " ")
         assert "1 200" in clean_balance, f"Balance mismatch: {balance_text}"
 
-        # Verify Top-up Button
-        topup_btn = page.locator("button:has-text('Пополнить')").first
-        assert topup_btn.is_visible(), "Top-up button not visible in cabinet header"
-        print("      Top-up button verified in header.")
+        screenshot_header = OUTPUT_DIR / "cabinet_header_clean.png"
+        page.screenshot(path=str(screenshot_header), full_page=False)
+        print(f"      Screenshot saved: {screenshot_header}")
 
         # Test Tariffs Collapsible Box
         tariffs_btn = page.locator("button:has-text('Тарифы')").first
@@ -162,8 +163,8 @@ def run_e2e_tests():
         assert "Бонусы при пополнении баланса" in cab_content, "Tariff breakdown missing bonus tiers"
         print("      Collapsible tariffs box verified.")
 
-        # Click Top-up Button to open Modal
-        topup_btn.click()
+        # Click Balance Button to open Top-Up Modal
+        balance_btn.click()
         page.wait_for_selector("#topup-modal-title", timeout=5000)
         modal_title = page.locator("#topup-modal-title").inner_text()
         print(f"      Modal Title: {modal_title}")

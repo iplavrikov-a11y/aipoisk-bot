@@ -458,45 +458,51 @@ export default async function HomePage() {
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
                 Тарифы и единый баланс
               </span>
-              <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-                Единый баланс на все модули. Чем больше пополнение — тем больше выгода
+              <h2 className="text-2xl sm:text-4xl lg:text-5xl font-black text-slate-900 tracking-tight">
+                Единый баланс на все модули. Чем больше сумма — тем выше выгода
               </h2>
-              <p className="text-slate-600 text-sm sm:text-base">
+              <p className="text-slate-600 text-sm sm:text-base max-w-2xl mx-auto mt-2">
                 Баланс расходуется на любые задачи сервиса и никогда не сгорает. Списание происходит только за результат по прозрачному фиксированному прайсу.
               </p>
             </div>
 
             {/* Flat Rate Base Pricing Bar */}
-            <div className="max-w-4xl mx-auto mb-10 p-3 sm:p-4 bg-slate-50 border border-slate-200/90 rounded-2xl shadow-2xs">
-              <div className="text-center text-xs font-bold uppercase tracking-wider text-slate-500 mb-2.5">
-                Прозрачная стоимость списания с баланса за результат:
+            <div className="max-w-4xl mx-auto mb-10 p-4 sm:p-5 bg-gradient-to-br from-slate-50 to-teal-50/20 border border-slate-200/90 rounded-3xl shadow-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-3 px-1">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <Zap size={14} className="text-teal-600" />
+                  Фиксированная стоимость списания с баланса:
+                </span>
+                <span className="text-[11px] text-teal-800 font-semibold bg-teal-100/70 px-2 py-0.5 rounded-full">
+                  без абонентской платы и скрытых комиссий
+                </span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                  <span className="block text-slate-500 text-[11px]">Поиск поставщиков</span>
-                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">добор: 49 ₽</span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center text-xs">
+                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
+                  <span className="block text-slate-500 text-[11px] font-medium">Поиск поставщиков</span>
+                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">добор: 49 ₽</span>
                 </div>
-                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                  <span className="block text-slate-500 text-[11px]">Подбор товара и аналогов</span>
-                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">по ТЗ и ГОСТ</span>
+                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
+                  <span className="block text-slate-500 text-[11px] font-medium">Подбор товара и аналогов</span>
+                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">по ТЗ и ГОСТ</span>
                 </div>
-                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                  <span className="block text-slate-500 text-[11px]">Анализ документации</span>
-                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">99 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">риски и условия</span>
+                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
+                  <span className="block text-slate-500 text-[11px] font-medium">Анализ документации</span>
+                  <strong className="text-base sm:text-lg font-black text-slate-900">99 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">риски и условия</span>
                 </div>
-                <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                  <span className="block text-slate-500 text-[11px]">Анализ + поиск</span>
-                  <strong className="text-sm sm:text-base font-extrabold text-slate-900">198 ₽</strong>
-                  <span className="block text-[10px] text-teal-700 font-semibold mt-0.5">комбо в 1 клик</span>
+                <div className="p-3 bg-white rounded-2xl border border-slate-200/90 shadow-2xs hover:border-teal-300 transition-colors">
+                  <span className="block text-slate-500 text-[11px] font-medium">Анализ + поиск</span>
+                  <strong className="text-base sm:text-lg font-black text-slate-900">198 ₽</strong>
+                  <span className="block text-[10px] text-teal-700 font-bold mt-0.5">комбо в 1 клик</span>
                 </div>
               </div>
             </div>
 
             {/* Deposit Packages Grid */}
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5 max-w-6xl mx-auto mb-8">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto mb-10 items-stretch">
               {depositPackages.slice(0, 4).map((pkg) => {
                 const isPro = pkg.badge === "Хит" || pkg.name.toLowerCase().includes("про");
                 const bonusRub = (pkg as any).bonus_rub || Math.round(((pkg as any).bonus_kopeks || 0) / 100);
@@ -508,68 +514,107 @@ export default async function HomePage() {
                 return (
                   <div
                     key={pkg.id}
-                    className={`relative p-5 sm:p-6 rounded-3xl border-2 flex flex-col justify-between transition-all ${
+                    className={`relative p-6 rounded-3xl border-2 flex flex-col justify-between transition-all duration-200 ${
                       isPro
-                        ? "bg-gradient-to-br from-teal-50/70 via-white to-teal-50/40 border-teal-500 shadow-lg shadow-teal-500/10 ring-2 ring-teal-500/20"
-                        : "bg-white border-slate-200 shadow-xs hover:border-slate-300"
+                        ? "bg-gradient-to-b from-teal-50/70 via-white to-white border-teal-600 shadow-xl shadow-teal-600/10 ring-2 ring-teal-500/25 sm:-translate-y-2 hover:sm:-translate-y-3"
+                        : "bg-white border-slate-200/90 shadow-sm hover:border-teal-400/60 hover:shadow-lg hover:-translate-y-1"
                     }`}
                   >
                     {isPro ? (
-                      <span className="absolute -top-3 right-6 bg-teal-600 text-white text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-full shadow-xs">
-                        Популярный
-                      </span>
+                      <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 bg-gradient-to-r from-teal-700 to-emerald-700 text-white text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-md flex items-center gap-1.5 whitespace-nowrap">
+                        <Sparkles size={11} className="text-amber-300" />
+                        <span>ХИТ ПРОДАЖ • ВЫБОР ЗАКУПЩИКОВ</span>
+                      </div>
                     ) : null}
 
                     <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <h3 className="text-lg font-extrabold text-slate-900">{pkg.name}</h3>
+                      {/* Title & Badge */}
+                      <div className="flex items-center justify-between mb-1 mt-0.5">
+                        <h3 className="text-xl font-black text-slate-900">{pkg.name}</h3>
                         {bonusRub > 0 ? (
-                          <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                          <span className="text-[10px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
                             +{bonusRub.toLocaleString("ru-RU")} ₽ бонус
                           </span>
-                        ) : null}
+                        ) : (
+                          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                            Старт
+                          </span>
+                        )}
                       </div>
 
-                      <div className="mt-2 mb-3">
+                      {/* Main Price */}
+                      <div className="mt-3 mb-3">
                         <div className="flex items-baseline gap-1.5">
-                          <span className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                          <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
                             {formatRubles(pkg.price_kopeks)}
                           </span>
                         </div>
-                        <div className="text-xs font-semibold text-slate-500 mt-0.5">
-                          на баланс: <strong className="text-teal-700 font-extrabold">{creditRub.toLocaleString("ru-RU")} ₽</strong>
+                      </div>
+
+                      {/* Balance Credit Highlight Callout */}
+                      <div className={`p-3 rounded-2xl border text-xs mb-4 flex flex-col gap-0.5 transition-colors ${
+                        isPro
+                          ? "bg-emerald-500/10 border-emerald-300/80 text-emerald-950"
+                          : "bg-slate-50 border-slate-200/80 text-slate-700"
+                      }`}>
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                          Поступает на баланс:
+                        </span>
+                        <div className="flex items-baseline justify-between mt-0.5">
+                          <strong className="text-base font-black text-teal-800">
+                            {creditRub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                          {bonusRub > 0 ? (
+                            <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-md">
+                              +{bonusRub.toLocaleString("ru-RU")} ₽ на баланс
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-medium">100% на счёт</span>
+                          )}
                         </div>
                       </div>
 
-                      <p className="text-xs text-slate-600 mb-4 min-h-[36px] leading-relaxed">
+                      <p className="text-xs text-slate-600 mb-5 min-h-[36px] leading-relaxed">
                         {pkg.description || "Пополнение баланса для решения закупочных задач."}
                       </p>
 
-                      <div className="space-y-1.5 border-t border-slate-100 pt-3 mb-5 text-xs text-slate-700">
-                        <div className="flex justify-between items-center">
-                          <span className="text-slate-500">Ориентир задач:</span>
-                          <strong className="font-bold text-slate-900">~{taskCount} процедур</strong>
+                      {/* Clean Checklist with Checkmarks */}
+                      <div className="space-y-2 border-t border-slate-100 pt-4 mb-6 text-xs text-slate-700">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
+                          <span className="text-slate-600">
+                            Ориентир: <strong className="text-slate-900 font-bold">~{taskCount} процедур</strong>
+                          </span>
                         </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-slate-500">Цена за задачу:</span>
-                          <strong className="font-extrabold text-teal-700">~{unitPrice} ₽</strong>
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
+                          <span className="text-slate-600">
+                            Цена за задачу: <strong className="text-teal-700 font-black">~{unitPrice} ₽</strong>
+                          </span>
                         </div>
-                        <div className="flex justify-between items-center text-[11px] text-slate-400">
-                          <span>Срок действия:</span>
-                          <span className="font-medium text-slate-600">бессрочно</span>
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 size={14} className="text-teal-600 shrink-0" />
+                          <span className="text-slate-600">Все 3 модуля платформы</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                          <CheckCircle2 size={14} className="text-slate-400 shrink-0" />
+                          <span>Срок: бессрочно, не сгорает</span>
                         </div>
                       </div>
                     </div>
 
                     <Button
                       asChild
-                      className={`w-full font-bold h-10 text-xs shadow-xs ${
+                      className={`w-full font-black h-11 text-xs rounded-xl shadow-sm transition-all ${
                         isPro
-                          ? "bg-teal-600 hover:bg-teal-700 text-white shadow-teal-600/20"
+                          ? "bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white shadow-teal-700/20"
                           : "bg-slate-900 hover:bg-slate-800 text-white"
                       }`}
                     >
-                      <a href={`${cabinetUrl}?topup=${pkg.id}`}>Выбрать «{pkg.name}»</a>
+                      <a href={`${cabinetUrl}?topup=${pkg.id}`} className="flex items-center justify-center gap-1.5">
+                        <span>Выбрать «{pkg.name}»</span>
+                        <ArrowRight size={13} />
+                      </a>
                     </Button>
                   </div>
                 );
@@ -577,27 +622,39 @@ export default async function HomePage() {
             </div>
 
             {/* Corporate Tier Banner */}
-            <div className="max-w-4xl mx-auto p-4 sm:p-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-2xl shadow-md flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div className="space-y-1 text-center sm:text-left">
-                <div className="flex items-center justify-center sm:justify-start gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider bg-teal-500/20 text-teal-300 px-2 py-0.5 rounded border border-teal-500/30">
+            <div className="max-w-5xl mx-auto p-5 sm:p-7 bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white rounded-3xl shadow-xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="space-y-2 text-center md:text-left flex-1">
+                <div className="flex items-center justify-center md:justify-start gap-2.5 flex-wrap">
+                  <span className="text-[10px] font-black uppercase tracking-wider bg-teal-500/20 text-teal-300 px-2.5 py-1 rounded-lg border border-teal-500/30">
                     Корпоративный тариф от 25 000 ₽
                   </span>
-                  <span className="text-xs text-amber-300 font-bold">+50% к балансу</span>
+                  <span className="text-xs text-amber-300 font-extrabold bg-amber-400/10 px-2 py-0.5 rounded-md border border-amber-400/20">
+                    +50% к балансу (+12 500 ₽)
+                  </span>
                 </div>
-                <h4 className="text-sm sm:text-base font-extrabold text-white">
+                <h4 className="text-lg sm:text-xl font-black text-white">
                   Для дистрибьюторов, интеграторов и отделов закупок
                 </h4>
-                <p className="text-xs text-slate-300 max-w-xl">
-                  Пополнение от 25 000 ₽ даёт 37 500 ₽ на баланс (~375 задач), доступ по API, помощь с интеграцией в CRM, договор и акты для юридических лиц.
+                <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+                  Пополнение от 25 000 ₽ даёт 37 500 ₽ на баланс (~375 задач по ~66 ₽), доступ по API и 1С, персональное сопровождение, официальный договор и закрывающие акты для юридических лиц.
                 </p>
+                <div className="flex items-center justify-center md:justify-start gap-3 pt-1 text-[11px] text-teal-200/80 font-medium flex-wrap">
+                  <span>✓ 37 500 ₽ на счёт</span>
+                  <span>•</span>
+                  <span>✓ Доступ по API и MCP</span>
+                  <span>•</span>
+                  <span>✓ Договор и акты (ЭДО)</span>
+                  <span>•</span>
+                  <span>✓ Персональный менеджер</span>
+                </div>
               </div>
               <Button
                 asChild
-                className="bg-teal-500 hover:bg-teal-600 text-slate-950 font-extrabold text-xs h-10 px-5 shrink-0 shadow-sm"
+                className="bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-slate-950 font-black text-xs h-11 px-6 rounded-xl shrink-0 shadow-lg shadow-teal-500/20"
               >
-                <a href={data.contacts.telegram_url || botUrl} target="_blank" rel="noopener noreferrer">
-                  Обсудить с менеджером
+                <a href={data.contacts.telegram_url || botUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+                  <Send size={14} />
+                  <span>Обсудить с менеджером</span>
                 </a>
               </Button>
             </div>

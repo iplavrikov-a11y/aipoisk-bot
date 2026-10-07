@@ -1101,7 +1101,8 @@ export function CabinetClient() {
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
-      const incomingItems = Array.isArray(payload) ? payload : payload.items;
+      const rawItems = Array.isArray(payload) ? payload : (payload?.items || (payload as { jobs?: CustomerJob[] })?.jobs || []);
+      const incomingItems: CustomerJob[] = Array.isArray(rawItems) ? rawItems : [];
 
       if (!hasInitializedJobsRef.current) {
         const map = new Map<string, string>();
@@ -1139,13 +1140,15 @@ export function CabinetClient() {
         setJobsTotal(payload.length);
         return;
       }
-      const nextPageCount = Math.max(1, Math.ceil(payload.total / payload.limit));
-      setJobsTotal(payload.total);
+      const total = typeof payload?.total === "number" ? payload.total : incomingItems.length;
+      const limit = typeof payload?.limit === "number" && payload.limit > 0 ? payload.limit : 15;
+      const nextPageCount = Math.max(1, Math.ceil(total / limit));
+      setJobsTotal(total);
       if (page > nextPageCount) {
         setJobsPage(nextPageCount);
         return;
       }
-      setJobs(payload.items);
+      setJobs(incomingItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2111,26 +2114,9 @@ export function CabinetClient() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* Balance Badge */}
-            <div className="inline-flex items-center gap-2 h-[30px] bg-gradient-to-r from-teal-700 to-teal-800 text-white px-2.5 rounded-lg shadow-2xs shrink-0 text-xs">
-              <Receipt size={14} className="text-teal-200 shrink-0" aria-hidden="true" />
-              <div className="flex items-center gap-1.5 leading-none">
-                <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
-                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none">
-                  {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
-                </strong>
-              </div>
-              {session?.user?.is_trial ? (
-                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1 leading-none">
-                  пробный доступ
-                </span>
-              ) : null}
-            </div>
-
-            {/* Top-up Button */}
+            {/* Balance Button (Click to Top-Up) */}
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-3 h-[30px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
                 const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
@@ -2138,13 +2124,24 @@ export function CabinetClient() {
                 setCustomTopUpRub(defPkg?.price_rub || 5000);
                 setShowTopUpModal(true);
               }}
-              title="Пополнить баланс с бонусом до +50%"
+              className="inline-flex items-center gap-1.5 h-[30px] bg-gradient-to-r from-teal-700 to-teal-800 hover:from-teal-600 hover:to-teal-700 text-white px-2.5 rounded-lg shadow-2xs shrink-0 text-xs transition-all cursor-pointer border border-teal-600/50 group"
+              title="Баланс аккаунта. Нажмите, чтобы пополнить"
             >
-              <PlusCircle size={13} className="text-emerald-100 shrink-0" aria-hidden="true" />
-              <span>Пополнить</span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-800/80 text-emerald-100 font-extrabold text-[9px] leading-none">
-                бонус до +50%
+              <Receipt size={14} className="text-teal-200 group-hover:scale-105 transition-transform shrink-0" aria-hidden="true" />
+              <div className="flex items-center gap-1.5 leading-none">
+                <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
+                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none">
+                  {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
+                </strong>
+              </div>
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-teal-600 group-hover:bg-emerald-500 text-white text-[10px] font-black shrink-0 transition-colors ml-0.5" title="Пополнить">
+                +
               </span>
+              {session?.user?.is_trial ? (
+                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1 leading-none">
+                  пробный доступ
+                </span>
+              ) : null}
             </button>
 
             <button
