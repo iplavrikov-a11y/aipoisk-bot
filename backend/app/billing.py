@@ -177,6 +177,7 @@ def client_balance_summary(db: Session, client: Client) -> dict:
             kind: effective_price_to_dict(db, client, kind)
             for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
         },
+        "has_custom_tariffs": client_has_custom_tariffs(db, client),
     }
 
 
@@ -386,6 +387,21 @@ def _client_tariff_override(db: Session, client: Client, kind: str) -> ClientTar
         .filter(ClientTariffOverride.kind == kind)
         .order_by(ClientTariffOverride.updated_at.desc())
         .first()
+    )
+
+
+def client_has_custom_tariffs(db: Session, client: Client | None) -> bool:
+    if not client:
+        return False
+    overrides = getattr(client, "tariff_overrides", None)
+    if overrides is not None and isinstance(overrides, list):
+        return any(bool(ov.is_enabled and (ov.price_kopeks is not None and ov.price_kopeks > 0)) for ov in overrides)
+    return (
+        db.query(ClientTariffOverride)
+        .filter(ClientTariffOverride.client_id == client.id)
+        .filter(ClientTariffOverride.is_enabled.is_(True))
+        .filter(ClientTariffOverride.price_kopeks > 0)
+        .count() > 0
     )
 
 
@@ -1234,9 +1250,10 @@ def list_deposit_packages(db: Session, *, active_only: bool = True) -> list[Tari
     return query.order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc()).all()
 
 
-def calculate_deposit_bonus_kopeks(amount_kopeks: int, db: Session | None = None) -> int:
+def calculate_deposit_bonus_kopeks(amount_kopeks: int, db: Session | None = None, client: Client | None = None) -> int:
     """Рассчитать бонус при пополнении баланса.
 
+    Если у клиента установлены индивидуальные тарифы — бонус не действует (всегда 0).
     Если в базе есть активный пакет deposit с такой ценой — берётся его bonus_kopeks.
     Иначе действует базовая прогрессивная шкала:
     - до 3 000 ₽: 0 ₽
@@ -1247,6 +1264,8 @@ def calculate_deposit_bonus_kopeks(amount_kopeks: int, db: Session | None = None
     """
     safe_amount = max(0, int(amount_kopeks or 0))
     if safe_amount <= 0:
+        return 0
+    if db is not None and client is not None and client_has_custom_tariffs(db, client):
         return 0
     if db is not None:
         matched = (

@@ -56,6 +56,7 @@ from .billing import (
     charge_job_reservation,
     charge_job_kind_reservation,
     client_balance_summary,
+    client_has_custom_tariffs,
     client_service_balance_summary,
     client_uses_trial_access,
     debit_money_balance,
@@ -1897,9 +1898,10 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
     if kind in {KIND_MONEY, KIND_DEPOSIT}:
+        has_custom_tariffs = client_has_custom_tariffs(db, client)
         if package and package.kind == KIND_DEPOSIT:
             pay_kopeks = int(package.price_kopeks or 0)
-            bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+            bonus_kopeks = 0 if has_custom_tariffs else int(getattr(package, "bonus_kopeks", 0) or 0)
             total_amount_kopeks = pay_kopeks + bonus_kopeks
             bonus_rub = round(bonus_kopeks / 100)
             pay_rub = round(pay_kopeks / 100)
@@ -1908,14 +1910,21 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 or (
                     f"Пополнение по тарифу «{package.name}» (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
                     if bonus_rub > 0
-                    else f"Пополнение по тарифу «{package.name}» ({pay_rub} ₽)"
+                    else (
+                        f"Пополнение по индивидуальному тарифу ({pay_rub} ₽)"
+                        if has_custom_tariffs
+                        else f"Пополнение по тарифу «{package.name}» ({pay_rub} ₽)"
+                    )
                 )
             )
         elif operation == "grant":
             pay_kopeks = int(data.amount_kopeks or 0)
-            bonus_kopeks = int(getattr(data, "bonus_kopeks", 0) or 0)
-            if bonus_kopeks <= 0 and pay_kopeks > 0:
-                bonus_kopeks = calculate_deposit_bonus_kopeks(pay_kopeks, db)
+            if has_custom_tariffs:
+                bonus_kopeks = 0
+            else:
+                bonus_kopeks = int(getattr(data, "bonus_kopeks", 0) or 0)
+                if bonus_kopeks <= 0 and pay_kopeks > 0:
+                    bonus_kopeks = calculate_deposit_bonus_kopeks(pay_kopeks, db, client)
             total_amount_kopeks = pay_kopeks + bonus_kopeks
             bonus_rub = round(bonus_kopeks / 100)
             pay_rub = round(pay_kopeks / 100)
@@ -1924,7 +1933,11 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 or (
                     f"Пополнение баланса (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
                     if bonus_rub > 0
-                    else "Ручное пополнение баланса"
+                    else (
+                        f"Пополнение баланса по индивидуальному тарифу ({pay_rub} ₽)"
+                        if has_custom_tariffs
+                        else f"Пополнение баланса ({pay_rub} ₽)"
+                    )
                 )
             )
         else:
@@ -3630,6 +3643,19 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
     deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
+    if client_has_custom_tariffs(db, user.client):
+        deposit_packages = [
+            {
+                **item,
+                "bonus_kopeks": 0,
+                "bonus_rub": 0,
+                "total_kopeks": item.get("price_kopeks", 0),
+                "total_rub": item.get("price_rub", 0),
+                "credit_rub": item.get("price_rub", 0),
+                "badge": "",
+            }
+            for item in deposit_packages
+        ]
     price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
     price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
     price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
@@ -5199,6 +5225,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],
         "has_api_key": bool(serialized_keys),
         "api_keys": serialized_keys,
+        "has_custom_tariffs": client_has_custom_tariffs(db, client) if db else False,
         "source": "api" if (serialized_keys and not client.web_users and not client.telegram_accounts) else ("web" if client.web_users else "telegram"),
         "usage": client_usage_summary(db, client) if db else None,
         "recent_usage": client_recent_usage(db, client) if db else [],

@@ -85,6 +85,7 @@ type Client = {
   supplier_target_min: number
   notes: string
   jobs_count?: number
+  has_custom_tariffs?: boolean
   telegram_accounts: TelegramAccount[]
   web_users: WebUser[]
   usage: ClientUsage | null
@@ -155,6 +156,7 @@ type ClientUsage = {
     available_rub: number
   }
   effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>
+  has_custom_tariffs?: boolean
 }
 
 type UsageCounter = {
@@ -2585,7 +2587,13 @@ function ClientsView({
     const amountRub = Number(String(draft.amount_rub || 0).replace(',', '.'))
     const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
     if (amountKopeks <= 0) return
-    const bonusRub = calculateBonusRub(amountRub)
+    const hasCustomPrices = Boolean(
+      client.has_custom_tariffs ||
+      client.usage?.has_custom_tariffs ||
+      (client.usage?.effective_prices &&
+        Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+    )
+    const bonusRub = hasCustomPrices ? 0 : calculateBonusRub(amountRub)
     const bonusKopeks = rublesToKopeks(bonusRub)
     const requestSlot = `${client.id}:grant`
     if (balanceRequestsInFlight.current[requestSlot]) return
@@ -3269,63 +3277,95 @@ function ClientsView({
                   )}
                   <div className="subsection-label">Операции с балансом</div>
                   <div className="balance-adjust-panel">
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-                      {[
-                        { label: '1 000 ₽', val: '1000' },
-                        { label: '3 000 ₽ (+500)', val: '3000' },
-                        { label: '5 000 ₽ (+1.5k)', val: '5000' },
-                        { label: '10 000 ₽ (+4k)', val: '10000' },
-                        { label: '25 000 ₽ (+12.5k)', val: '25000' },
-                      ].map(p => (
-                        <button
-                          key={p.val}
-                          type="button"
-                          className="ghost small-text"
-                          style={{
-                            padding: '2px 8px',
-                            fontSize: 11,
-                            background: grant.amount_rub === p.val ? '#0f766e' : '#f1f5f9',
-                            color: grant.amount_rub === p.val ? '#fff' : '#0f766e',
-                            fontWeight: 600,
-                            borderRadius: 6,
-                          }}
-                          onClick={() => setGrantDraft(client, { amount_rub: p.val })}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="balance-adjust-row">
-                      <label className="mini-field">
-                        <span>Пополнить баланс, ₽</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          placeholder="Сумма"
-                          value={grant.amount_rub}
-                          onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
-                          }}
-                        />
-                        {(() => {
-                          const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
-                          const bonus = calculateBonusRub(amt)
-                          if (bonus > 0) {
-                            return (
-                              <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
-                                Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ (оплата {amt} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
-                              </small>
-                            )
-                          }
-                          return null
-                        })()}
-                      </label>
-                      <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
-                        <Plus size={16} />Пополнить
-                      </button>
-                    </div>
+                    {(() => {
+                      const hasCustomPrices = Boolean(
+                        client.has_custom_tariffs ||
+                        client.usage?.has_custom_tariffs ||
+                        (client.usage?.effective_prices &&
+                          Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+                      )
+                      const quickChips = hasCustomPrices
+                        ? [
+                            { label: '1 000 ₽', val: '1000' },
+                            { label: '3 000 ₽', val: '3000' },
+                            { label: '5 000 ₽', val: '5000' },
+                            { label: '10 000 ₽', val: '10000' },
+                            { label: '25 000 ₽', val: '25000' },
+                          ]
+                        : [
+                            { label: '1 000 ₽', val: '1000' },
+                            { label: '3 000 ₽ (+500)', val: '3000' },
+                            { label: '5 000 ₽ (+1.5k)', val: '5000' },
+                            { label: '10 000 ₽ (+4k)', val: '10000' },
+                            { label: '25 000 ₽ (+12.5k)', val: '25000' },
+                          ]
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                            {quickChips.map(p => (
+                              <button
+                                key={p.val}
+                                type="button"
+                                className="ghost small-text"
+                                style={{
+                                  padding: '2px 8px',
+                                  fontSize: 11,
+                                  background: grant.amount_rub === p.val ? '#0f766e' : '#f1f5f9',
+                                  color: grant.amount_rub === p.val ? '#fff' : '#0f766e',
+                                  fontWeight: 600,
+                                  borderRadius: 6,
+                                }}
+                                onClick={() => setGrantDraft(client, { amount_rub: p.val })}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="balance-adjust-row">
+                            <label className="mini-field">
+                              <span>Пополнить баланс, ₽</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                placeholder="Сумма"
+                                value={grant.amount_rub}
+                                onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
+                                }}
+                              />
+                              {(() => {
+                                const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
+                                if (hasCustomPrices) {
+                                  if (amt > 0) {
+                                    return (
+                                      <small style={{ color: '#64748b', fontWeight: 600, display: 'block', marginTop: 2 }}>
+                                        Индивидуальный тариф: к зачислению ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
+                                      </small>
+                                    )
+                                  }
+                                  return null
+                                }
+                                const bonus = calculateBonusRub(amt)
+                                if (bonus > 0) {
+                                  return (
+                                    <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
+                                      Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ (оплата {amt} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
+                                    </small>
+                                  )
+                                }
+                                return null
+                              })()}
+                            </label>
+                            <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
+                              <Plus size={16} />Пополнить
+                            </button>
+                          </div>
+                        </>
+                      )
+                    })()}
                     <div className="balance-adjust-row">
                       <label className="mini-field">
                         <span>Списать с баланса, ₽</span>

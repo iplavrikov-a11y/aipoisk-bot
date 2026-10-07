@@ -140,8 +140,10 @@ type SessionPayload = {
       reserved_rub: number;
       available_rub: number;
     };
+    has_custom_tariffs?: boolean;
     effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>;
   };
+  has_custom_tariffs?: boolean;
   limits?: {
     max_upload_mb: number;
     max_files_per_batch: number;
@@ -4927,7 +4929,14 @@ ${webLink}`;
 
             {/* Live Calculation Card */}
             {(() => {
-              const calc = calculateDepositBonus(customTopUpRub);
+              const hasCustomPrices = Boolean(
+                session?.balance?.has_custom_tariffs ||
+                (session?.balance?.effective_prices &&
+                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
+              );
+              const calc = hasCustomPrices
+                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
+                : calculateDepositBonus(customTopUpRub);
               const approxTasks = Math.floor(calc.totalRub / 99);
               return (
                 <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
@@ -4940,11 +4949,18 @@ ${webLink}`;
                       <span>Бонус сервиса ({calc.percent}%):</span>
                       <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
                     </div>
+                  ) : hasCustomPrices ? (
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                      <span>Тариф:</span>
+                      <span className="font-medium text-slate-600">индивидуальные цены, без бонуса</span>
+                    </div>
                   ) : null}
                   <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
                     <div>
                       <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
-                      <span className="text-[10px] text-slate-500">хватит примерно на {approxTasks} задач по 99 ₽</span>
+                      <span className="text-[10px] text-slate-500">
+                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач по 99 ₽`}
+                      </span>
                     </div>
                     <div className="text-lg sm:text-xl font-black text-emerald-700">
                       {calc.totalRub.toLocaleString("ru-RU")} ₽
@@ -4964,7 +4980,7 @@ ${webLink}`;
                 1. Переведите выбранную сумму на банковскую карту или счет владельца сервиса.
               </p>
               <p className="text-[11px] text-slate-600">
-                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс с причитающимся бонусом (обычно 5–15 минут).
+                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс (обычно 5–15 минут).
               </p>
               <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
                 <span className="text-slate-500">Ваш email аккаунта:</span>
@@ -4974,10 +4990,19 @@ ${webLink}`;
 
             {/* Contact Action Buttons */}
             {(() => {
-              const calc = calculateDepositBonus(customTopUpRub);
+              const hasCustomPrices = Boolean(
+                session?.balance?.has_custom_tariffs ||
+                (session?.balance?.effective_prices &&
+                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
+              );
+              const calc = hasCustomPrices
+                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
+                : calculateDepositBonus(customTopUpRub);
               const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
               const tgMsg = encodeURIComponent(
-                `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+                hasCustomPrices
+                  ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (индивидуальный тариф). Мой email в сервисе: ${session?.user?.email || ""}`
+                  : `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
               );
               const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
 
