@@ -25,6 +25,7 @@ Admin/internal domain: `https://admin.tenderlex.ru`
   - Knowledge Base Article (`site/src/data/knowledge-base.ts`: `avtomatizaciya-zakupok-cherez-api-1c`).
   - GEO LLM Knowledge (`site/public/llms.txt`, `site/public/llms-full.txt`): Full API reference and endpoints exposed to search crawlers and AI answer engines.
   - Nginx 301 Exact Route (`/etc/nginx/sites-enabled/tenderlex.ru.conf`): Clean redirect from `/api` to `/api-integracii` avoiding conflicts with backend reverse proxy `/api/`.
+  - Autonomous Multi-Engine Search Indexing (`scripts/reindex_all_search_engines.py`): Programmatically submitted priority URLs to Yandex.Webmaster recrawl queue (`/recrawl/queue`, quota 150/150), broadcasted 91 sitemap URLs via IndexNow API (Yandex/Bing HTTP 200/202), and submitted `sitemap.xml` to Google Search Console API.
   - Comprehensive Verification: 804 passing backend tests (including 10 MCP suite tests), clean Next.js static build (106 routes), deployed live on production server.
 - Cabinet Task Launcher & Help Workflow Reordering (2026-10-06):
   - In customer web cabinet (`cabinet-client.tsx`), reordered task launching tabs:
