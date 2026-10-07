@@ -65,6 +65,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.75,
     },
     {
+      url: `${siteUrl}/api-integracii`,
+      lastModified: growthUpdated,
+      changeFrequency: "weekly",
+      priority: 0.9,
+    },
+    {
       url: `${siteUrl}/ocenka-riskov-zakupki`,
       lastModified: currentSeoUpdated,
       changeFrequency: "weekly",

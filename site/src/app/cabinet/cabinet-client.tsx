@@ -4192,10 +4192,9 @@ ${webLink}`;
           {
             mcpServers: {
               tenderlex: {
-                command: "npx",
+                command: "python3",
                 args: [
-                  "-y",
-                  "@tenderlex/mcp-server",
+                  "tenderlex_mcp.py",
                   "--api-key",
                   effectiveKeyPlaceholder,
                 ],
@@ -4561,8 +4560,23 @@ ${webLink}`;
               {/* Tab 4: MCP (Claude Desktop) */}
               {apiModalTab === "mcp" && (
                 <div className="space-y-3">
-                  <div className="bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-900 leading-relaxed">
-                    <strong>Прямое подключение к Claude Desktop по протоколу MCP:</strong> позволяет модели напрямую вызывать поиск поставщиков и проверку товаров TenderLex прямо из чата Claude.
+                  <div className="bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-900 leading-relaxed space-y-2">
+                    <div>
+                      <strong>Прямое подключение к Claude Desktop по протоколу MCP:</strong> позволяет Claude напрямую искать поставщиков, подбирать аналоги и анализировать документацию TenderLex из чата.
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <a
+                        href="/scripts/tenderlex_mcp.py"
+                        download="tenderlex_mcp.py"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <Download size={13} />
+                        <span>Скачать tenderlex_mcp.py</span>
+                      </a>
+                      <span className="text-[11px] text-teal-800">
+                        (Автономный Python-скрипт, без сторонних библиотек)
+                      </span>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -4582,8 +4596,12 @@ ${webLink}`;
                   </pre>
 
                   <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
-                    <div className="font-bold text-slate-700">Где находится файл конфигурации:</div>
-                    <div className="font-mono text-[10px] text-slate-500">
+                    <div className="font-bold text-slate-700">Быстрый запуск за 2 шага:</div>
+                    <div className="text-[11px] text-slate-600 space-y-0.5">
+                      <div>1. Сохраните скачанный <code>tenderlex_mcp.py</code> в удобную папку.</div>
+                      <div>2. В конфиге укажите полный путь к скрипту и добавьте блок в:</div>
+                    </div>
+                    <div className="font-mono text-[10px] text-slate-500 pt-0.5">
                       • Windows: %APPDATA%\Claude\claude_desktop_config.json<br />
                       • macOS: ~/Library/Application Support/Claude/claude_desktop_config.json
                     </div>

@@ -19,11 +19,17 @@ from .ai import get_model_selection
 from .config import config
 from .db import db_session
 from .billing import (
+    BillingError,
     BillingTransaction,
     OP_CHARGE,
+    OP_RELEASE,
+    OP_RESERVE,
     _billing_client_lock,
     billing_kind_label,
+    charge_job_reservation,
     effective_price_kopeks,
+    release_job_reservation,
+    reserve_job_units,
 )
 from .exact_product import (
     ExactProductReport,
@@ -285,6 +291,208 @@ def consume_quota(db: Session, api_key: ApiKey, service: str, count: int = 1) ->
         return max(0, api_key.quota_procurement_report - api_key.spent_procurement_report)
 
     return -1
+
+
+def check_api_service_permission(api_key: ApiKey, service: str) -> None:
+    """Validates that the API key has permission for the specified service."""
+    if api_key.is_admin:
+        return
+    if service == "supplier_search":
+        if not api_key.allowed_supplier_search:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Supplier search service ('supplier_search') is not permitted for this API key",
+            )
+    elif service == "exact_product":
+        if not api_key.allowed_exact_product:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Exact product service ('exact_product') is not permitted for this API key",
+            )
+    elif service == "procurement_report":
+        if not api_key.allowed_procurement_report:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Procurement documentation analysis service ('procurement_report') is not permitted for this API key",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown service '{service}'",
+        )
+
+
+def start_api_job_with_reservation(
+    db: Session,
+    api_key: ApiKey,
+    service: str,
+    title: str,
+    target_count: int = 0,
+) -> tuple[Optional[Job], int]:
+    """
+    Begins an API request with two-phase reservation:
+    1. Validates permissions and account status.
+    2. For linked clients: creates a Job in 'running' status and reserves required funds (OP_RESERVE).
+       If balance is insufficient, raises 402 HTTP.
+    3. For standalone keys: validates remaining quota.
+    Returns: (job, remaining_runs)
+    """
+    check_api_service_permission(api_key, service)
+
+    from .jobs import next_job_number
+
+    if api_key.is_admin:
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=api_key.client_id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=service,
+            status="running",
+            progress=0,
+            title=title[:250],
+            target_suppliers=target_count,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job, -1
+
+    if api_key.client_id:
+        client = db.get(Client, api_key.client_id)
+        if not client or not client.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Аккаунт клиента заблокирован или не найден",
+            )
+
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=client.id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=service,
+            status="running",
+            progress=0,
+            title=title[:250],
+            target_suppliers=target_count,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        try:
+            reserve_job_units(db, client, job, supplier_search_count=1)
+        except BillingError as be:
+            job.status = "failed"
+            job.error = str(be)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=str(be),
+            )
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка резервирования средств: {exc}",
+            )
+
+        # Calculate remaining runs from available balance
+        price_kopeks = effective_price_kopeks(db, client, service) or 0
+        avail_kopeks = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+        remaining = int(avail_kopeks // price_kopeks) if price_kopeks > 0 else 999999
+        return job, remaining
+
+    # Standalone key (legacy fixed quota)
+    spent = getattr(api_key, f"spent_{service}", 0)
+    quota = getattr(api_key, f"quota_{service}", 0)
+    if (spent + 1) > quota:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"{service} quota exceeded (spent: {spent}, limit: {quota})",
+        )
+    return None, max(0, quota - spent - 1)
+
+
+def finalize_api_job_success(
+    db: Session,
+    api_key: ApiKey,
+    job: Optional[Job],
+    service: str,
+    *,
+    result_path: str = "",
+    evidence_path: str = "",
+    verified_count: int = 0,
+) -> None:
+    """
+    Settles reserved funds upon successful execution (OP_CHARGE),
+    updates usage counters and marks job completed.
+    """
+    if job and job.client_id:
+        charge_job_reservation(
+            db,
+            job,
+            note=f"Запрос по API ({api_key.name or api_key.key_prefix}): {billing_kind_label(service)}",
+        )
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = now_utc()
+        job.result_path = result_path
+        job.evidence_path = evidence_path
+        job.verified_count = verified_count
+    elif job:
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = now_utc()
+        job.result_path = result_path
+        job.evidence_path = evidence_path
+        job.verified_count = verified_count
+
+    # Update spent on API key
+    if service == "supplier_search":
+        api_key.spent_supplier_search += 1
+    elif service == "exact_product":
+        api_key.spent_exact_product += 1
+    elif service == "procurement_report":
+        api_key.spent_procurement_report += 1
+    api_key.last_used_at = now_utc()
+    db.commit()
+
+
+def release_api_job_reservation(
+    db: Session,
+    api_key: ApiKey,
+    job: Optional[Job],
+    service: str,
+    *,
+    error: str = "",
+    note: str = "",
+    status_val: str = "failed",
+    verified_count: int = 0,
+) -> None:
+    """
+    Safely releases reserved funds when request fails or yields 0 items (OP_RELEASE).
+    Client is NOT charged.
+    """
+    if job and job.client_id:
+        release_note = note or f"Резерв возвращён: сбой запроса API ({error[:80]})"
+        release_job_reservation(db, job, note=release_note)
+        job.status = status_val
+        job.error = error[:500] if error else ""
+        job.verified_count = verified_count
+        if status_val == "completed":
+            job.progress = 100
+            job.completed_at = now_utc()
+    elif job:
+        job.status = status_val
+        job.error = error[:500] if error else ""
+        job.verified_count = verified_count
+
+    # Standalone keys: do NOT increment spent on failure
+    api_key.last_used_at = now_utc()
+    db.commit()
+
 
 
 
@@ -659,20 +867,26 @@ async def mcp_supplier_search(
     """
     Search direct suppliers, manufacturers, and distributors matching technical specification in real time.
     Returns contact details, verified websites, phone numbers, and optional commercial offer markdown.
+    Uses two-phase reservation billing: funds are reserved first and settled only upon verified results.
+    If 0 suppliers found or error occurs, the reservation is released and money is not charged.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "supplier_search", count=1)
 
     spec_text = req.specification.strip()
     if req.city:
         spec_text = f"Регион поставки: {req.city.strip()}\n\n{spec_text}"
 
-    clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
+    job_title = f"API: Поиск поставщиков — {spec_text[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "supplier_search", job_title, target_count=req.target_count
+    )
+
     policy = req.search_policy.strip() if req.search_policy else "normal"
     if policy not in {"normal", "minprom_registry_priority", "minprom_registry_only"}:
         policy = "normal"
 
     try:
+        clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
         with supplier_search_job_context(f"mcp_{api_key.id[:8]}"):
             accepted_rows, evidence = await discover_suppliers(
                 settings=settings,
@@ -680,14 +894,10 @@ async def mcp_supplier_search(
                 target=req.target_count,
                 supplier_search_policy=policy,
             )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
-        record_api_job(
-            db, api_key,
-            mode="supplier_search",
-            title=f"API: Поиск поставщиков — {clean_context[:80].strip()}",
-            status="failed",
-            error=str(exc),
+        release_api_job_reservation(
+            db, api_key, job, "supplier_search", error=str(exc)
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -727,14 +937,30 @@ async def mcp_supplier_search(
             logger.warning("mcp_quote_request_gen_failed: %s", exc)
 
     source_title = str(evidence.get("subject") or "").strip()
-    record_api_job(
-        db, api_key,
-        mode="supplier_search",
-        title=f"API: Поиск поставщиков — {(source_title or clean_context)[:80].strip()}",
-        status="completed",
-        target_count=req.target_count,
-        verified_count=len(supplier_items),
-    )
+    if source_title and job:
+        job.title = f"API: Поиск поставщиков — {source_title[:80].strip()}"
+
+    # Billing settlement based on results:
+    if len(supplier_items) == 0:
+        # 0 suppliers found: release reservation! Do NOT charge the client.
+        release_api_job_reservation(
+            db,
+            api_key,
+            job,
+            "supplier_search",
+            note="Резерв возвращён: поставщики не найдены",
+            status_val="completed",
+            verified_count=0,
+        )
+    else:
+        # Success: charge reserved funds
+        finalize_api_job_success(
+            db,
+            api_key,
+            job,
+            "supplier_search",
+            verified_count=len(supplier_items),
+        )
 
     return McpSupplierSearchResponse(
         ok=True,
@@ -756,12 +982,16 @@ async def mcp_exact_product(
     """
     Deep technical specification analysis to uncover hidden original model, Form 2 parameters,
     and 2-4 verified equivalent analogues with compliance verification and DOCX report.
+    Uses two-phase reservation billing: funds settled on success, released on error.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "exact_product", count=1)
-
     spec_text = req.specification.strip()
     proc_title = req.procurement_title.strip()
+
+    job_title = f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "exact_product", job_title
+    )
 
     try:
         report: ExactProductReport = await analyze_exact_product(
@@ -769,14 +999,10 @@ async def mcp_exact_product(
             context=spec_text,
             procurement_title=proc_title,
         )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_exact_product_failed: %s", exc, exc_info=True)
-        record_api_job(
-            db, api_key,
-            mode="exact_product",
-            title=f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}",
-            status="failed",
-            error=str(exc),
+        release_api_job_reservation(
+            db, api_key, job, "exact_product", error=str(exc)
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -828,7 +1054,7 @@ async def mcp_exact_product(
                     for alt_s in alt.specs_breakdown
                 ],
             )
-            for alt in pos.alternative_brands
+            for alt in (getattr(pos, "alternativeBrands", None) or getattr(pos, "alternative_brands", []))
         ]
         positions_output.append(
             McpExactPositionItem(
@@ -844,13 +1070,14 @@ async def mcp_exact_product(
             )
         )
 
-    record_api_job(
-        db, api_key,
-        mode="exact_product",
-        title=f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}",
-        status="completed",
-        verified_count=len(report.positions) if (report and hasattr(report, "positions")) else 0,
+    verified_positions = len(report.positions) if (report and hasattr(report, "positions")) else 0
+    finalize_api_job_success(
+        db,
+        api_key,
+        job,
+        "exact_product",
         result_path=docx_rel_url or "",
+        verified_count=verified_positions,
     )
 
     return McpExactProductResponse(
@@ -871,32 +1098,32 @@ async def mcp_procurement_analyze(
 ):
     """
     Expert audit of procurement contracts, notice terms, national regime, guarantees, and legal pitfalls under 44-FZ and 223-FZ.
+    Uses two-phase reservation billing: funds settled on success, released on error.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "procurement_report", count=1)
-
     doc_text = req.document_text.strip()
+    job_title = f"API: Анализ документации — {doc_text[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "procurement_report", job_title
+    )
+
     try:
         gen_result = await generate_procurement_report(settings, doc_text)
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_procurement_analyze_failed: %s", exc, exc_info=True)
-        record_api_job(
-            db, api_key,
-            mode="procurement_report",
-            title=f"API: Анализ документации — {doc_text[:80].strip()}",
-            status="failed",
-            error=str(exc),
+        release_api_job_reservation(
+            db, api_key, job, "procurement_report", error=str(exc)
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Procurement report analysis error: {str(exc)}",
         )
 
-    record_api_job(
-        db, api_key,
-        mode="procurement_report",
-        title=f"API: Анализ документации — {doc_text[:80].strip()}",
-        status="completed",
+    finalize_api_job_success(
+        db,
+        api_key,
+        job,
+        "procurement_report",
     )
 
     return McpProcurementAnalyzeResponse(

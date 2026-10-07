@@ -15,6 +15,10 @@ import {
   Zap,
   TrendingUp,
   FileCheck,
+  Code2,
+  Terminal,
+  ArrowRight,
+  Cpu,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -372,6 +376,73 @@ export default async function HomePage() {
         <section id="calculator" className="py-16 sm:py-24 bg-slate-50 border-b border-slate-200">
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             <ProcurementCalculator />
+          </div>
+        </section>
+
+        {/* B2B API & INTEGRATIONS SECTION */}
+        <section className="py-16 sm:py-24 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 text-white relative overflow-hidden border-b border-slate-800">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(13,148,136,0.15),transparent_50%)] pointer-events-none" />
+          <div className="container max-w-6xl mx-auto px-4 sm:px-6 relative z-10">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8 mb-12">
+              <div className="max-w-2xl space-y-3">
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-teal-400 bg-teal-950/80 px-3 py-1 rounded-full border border-teal-700/60">
+                  <Terminal className="w-3.5 h-3.5" />
+                  B2B API & Интеграции
+                </span>
+                <h2 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
+                  Автоматизируйте закупки в 1С, ERP и корпоративных ИИ-агентах
+                </h2>
+                <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
+                  Подключите поиск поставщиков, подбор аналогов и аудит ТЗ напрямую в корпоративные контуры. Единый лицевой счет компании, безопасное двухфазное списание и открытый протокол MCP.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button asChild className="bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold px-6 h-11 text-sm shadow-lg shadow-teal-500/20">
+                  <Link href="/api-integracii">
+                    <span>Документация и примеры кода</span>
+                    <ArrowRight className="w-4 h-4 ml-2" />
+                  </Link>
+                </Button>
+                <Button asChild variant="secondary" className="border-slate-700 text-slate-200 bg-slate-800 hover:text-white hover:bg-slate-750 h-11 text-sm">
+                  <Link href="/cabinet#api">
+                    <span>Подключить в кабинете</span>
+                  </Link>
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center font-mono font-bold text-sm">
+                  1С
+                </div>
+                <h3 className="text-base font-bold text-white">Интеграция с 1С:Предприятие 8.3</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Поиск заводов-изготовителей и расчет цен прямо из документов «Заказ поставщику» или спецификаций ТЗ без переключения менеджеров в сторонние вкладки.
+                </p>
+              </div>
+
+              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <h3 className="text-base font-bold text-white">Model Context Protocol (MCP)</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Подключение к Claude Desktop, Cursor или локальным LLM-агентам снабжения. Модели вызывают инструменты TenderLex как стандартные нативные функции.
+                </p>
+              </div>
+
+              <div className="p-6 rounded-2xl bg-slate-800/60 border border-slate-700/80 hover:border-teal-500/60 transition-all space-y-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-950 border border-teal-500/40 text-teal-400 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <h3 className="text-base font-bold text-white">Двухфазный биллинг и гарантия</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Списание происходит с единого баланса личного кабинета только после успешного завершения задачи. Если поставщики не найдены или произошел сбой — резерв возвращается.
+                </p>
+              </div>
+            </div>
           </div>
         </section>
 

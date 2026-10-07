@@ -95,6 +95,12 @@ export function SiteHeader() {
             Тарифы
           </Link>
           <Link
+            href="/api-integracii"
+            className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
+          >
+            API
+          </Link>
+          <Link
             href="/baza-znaniy"
             className="text-slate-700 font-semibold hover:text-teal-700 text-sm transition-colors whitespace-nowrap"
           >
@@ -137,6 +143,7 @@ export function SiteHeader() {
             ["/podbor-tovara-i-analogov-po-tz", "Подбор товара и аналогов"],
             ["/analiz-zakupochnoi-dokumentacii", "Анализ документации"],
             ["/#pricing", "Тарифы"],
+            ["/api-integracii", "B2B API и интеграции"],
             ["/baza-znaniy", "База знаний"],
           ].map(([href, label]) => (
             <Link

@@ -17,6 +17,15 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`; current production
   concurrency is controlled by `AIPOISK_WORKER_CONCURRENCY` (set to `6` with `2` concurrent jobs per customer, and strict real-time execution without caching).
+- Production B2B API Public Launch, Two-Phase Billing & Enterprise 1C/MCP Integration (2026-10-07):
+  - Backend Two-Phase Reservation (`backend/app/mcp_api.py`): Replaced pre-billing risk with ACID two-phase reservation (`OP_RESERVE` on launch, `OP_CHARGE` on success, `OP_RELEASE` on exceptions or zero results). Customer balance is 100% protected against timeouts or unfulfilled searches.
+  - Standalone MCP Client (`site/public/scripts/tenderlex_mcp.py`): Eliminated missing npm package 404s by publishing standalone, zero-dependency Python script for Claude Desktop, Cursor, and enterprise agents with 1-click download in web cabinet.
+  - Dedicated Public Landing (`site/src/app/api-integracii/page.tsx`): High-converting SEO & GEO landing page targeting procurement queries («API закупок», «поиск поставщиков 1С», «интеграция закупок MCP») with schema.org JSON-LD (`SoftwareApplication`, `BreadcrumbList`, `FAQPage`), interactive code switcher (cURL, Python, Node.js, 1С:Предприятие 8.3 BSL).
+  - Main Page B2B API Showcase (`site/src/app/page.tsx`), Site Header & Footer navigation, dynamic sitemap registration (`sitemap.ts`).
+  - Knowledge Base Article (`site/src/data/knowledge-base.ts`: `avtomatizaciya-zakupok-cherez-api-1c`).
+  - GEO LLM Knowledge (`site/public/llms.txt`, `site/public/llms-full.txt`): Full API reference and endpoints exposed to search crawlers and AI answer engines.
+  - Nginx 301 Exact Route (`/etc/nginx/sites-enabled/tenderlex.ru.conf`): Clean redirect from `/api` to `/api-integracii` avoiding conflicts with backend reverse proxy `/api/`.
+  - Comprehensive Verification: 804 passing backend tests (including 10 MCP suite tests), clean Next.js static build (106 routes), deployed live on production server.
 - Cabinet Task Launcher & Help Workflow Reordering (2026-10-06):
   - In customer web cabinet (`cabinet-client.tsx`), reordered task launching tabs:
     1. «Анализ документации» (`procurement_report`) — set as default on load.
