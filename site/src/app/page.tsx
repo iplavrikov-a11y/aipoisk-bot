@@ -502,19 +502,20 @@ export default async function HomePage() {
             </div>
 
             {/* Deposit Packages Grid */}
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto mb-10 items-stretch">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5 max-w-7xl mx-auto mb-10 items-stretch">
               {depositPackages.slice(0, 4).map((pkg) => {
                 const isPro = pkg.badge === "Хит" || pkg.name.toLowerCase().includes("про");
                 const bonusRub = (pkg as any).bonus_rub || Math.round(((pkg as any).bonus_kopeks || 0) / 100);
                 const creditRub = (pkg as any).credit_rub || Math.round(((pkg as any).credit_kopeks || pkg.price_kopeks) / 100);
                 const payRub = Math.round(pkg.price_kopeks / 100);
                 const taskCount = pkg.units || Math.round(creditRub / 99);
+                const bonusPercent = payRub > 0 ? Math.round((bonusRub / payRub) * 100) : 0;
                 const unitPrice = Math.round(payRub / taskCount);
 
                 return (
                   <div
                     key={pkg.id}
-                    className={`relative p-6 rounded-3xl border-2 flex flex-col justify-between transition-all duration-200 ${
+                    className={`relative p-5 sm:p-6 rounded-3xl border-2 flex flex-col justify-between transition-all duration-200 ${
                       isPro
                         ? "bg-gradient-to-b from-teal-50/70 via-white to-white border-teal-600 shadow-xl shadow-teal-600/10 ring-2 ring-teal-500/25 sm:-translate-y-2 hover:sm:-translate-y-3"
                         : "bg-white border-slate-200/90 shadow-sm hover:border-teal-400/60 hover:shadow-lg hover:-translate-y-1"
@@ -528,49 +529,52 @@ export default async function HomePage() {
                     ) : null}
 
                     <div>
-                      {/* Title & Badge */}
-                      <div className="flex items-center justify-between mb-1 mt-0.5">
-                        <h3 className="text-xl font-black text-slate-900">{pkg.name}</h3>
-                        {bonusRub > 0 ? (
-                          <span className="text-[10px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
-                            +{bonusRub.toLocaleString("ru-RU")} ₽ бонус
+                      {/* Title on its own row: never truncates or collides */}
+                      <div className="mb-1">
+                        <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                          {pkg.name}
+                        </h3>
+                      </div>
+
+                      {/* Price Row with compact bonus pill: strictly 1 row without wrapping */}
+                      <div className="flex items-center justify-between gap-2 mb-3.5">
+                        <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight whitespace-nowrap">
+                          {formatRubles(pkg.price_kopeks)}
+                        </span>
+                        {bonusPercent > 0 ? (
+                          <span className="shrink-0 whitespace-nowrap text-xs font-black text-emerald-800 bg-emerald-100/90 border border-emerald-300/80 px-2 py-0.5 rounded-full shadow-2xs">
+                            +{bonusPercent}%
                           </span>
                         ) : (
-                          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                            Старт
+                          <span className="shrink-0 whitespace-nowrap text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                            Базовый
                           </span>
                         )}
                       </div>
 
-                      {/* Main Price */}
-                      <div className="mt-3 mb-3">
-                        <div className="flex items-baseline gap-1.5">
-                          <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
-                            {formatRubles(pkg.price_kopeks)}
-                          </span>
-                        </div>
-                      </div>
-
                       {/* Balance Credit Highlight Callout */}
-                      <div className={`p-3 rounded-2xl border text-xs mb-4 flex flex-col gap-0.5 transition-colors ${
+                      <div className={`p-3 rounded-2xl border text-xs mb-4 transition-colors ${
                         isPro
                           ? "bg-emerald-500/10 border-emerald-300/80 text-emerald-950"
                           : "bg-slate-50 border-slate-200/80 text-slate-700"
                       }`}>
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                          Поступает на баланс:
-                        </span>
-                        <div className="flex items-baseline justify-between mt-0.5">
-                          <strong className="text-base font-black text-teal-800">
-                            {creditRub.toLocaleString("ru-RU")} ₽
-                          </strong>
+                        <div className="flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-0.5">
+                          <span>На баланс:</span>
                           {bonusRub > 0 ? (
-                            <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-md">
-                              +{bonusRub.toLocaleString("ru-RU")} ₽ на баланс
+                            <span className="text-emerald-700 font-extrabold whitespace-nowrap">
+                              +{bonusRub.toLocaleString("ru-RU")} ₽ бонус
                             </span>
                           ) : (
-                            <span className="text-[10px] text-slate-400 font-medium">100% на счёт</span>
+                            <span className="text-slate-400 font-medium">без бонуса</span>
                           )}
+                        </div>
+                        <div className="flex items-baseline justify-between mt-0.5">
+                          <strong className="text-lg sm:text-xl font-black text-teal-800 tracking-tight">
+                            {creditRub.toLocaleString("ru-RU")} ₽
+                          </strong>
+                          <span className="text-[11px] text-slate-500 font-medium">
+                            {bonusRub > 0 ? `к оплате ${formatRubles(pkg.price_kopeks)}` : "100% на счёт"}
+                          </span>
                         </div>
                       </div>
 
