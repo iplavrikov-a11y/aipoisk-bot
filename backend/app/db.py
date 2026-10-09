@@ -129,6 +129,7 @@ def _ensure_schema() -> None:
             "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
             "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
             "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
+            "multi_item_mode": "VARCHAR(40) DEFAULT 'balanced'",
             "confirmation_kind": "VARCHAR(40) DEFAULT ''",
             "confirmation_outcome": "VARCHAR(40) DEFAULT ''",
             "confirmation_offered_at": "DATETIME NULL",

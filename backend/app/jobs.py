@@ -145,6 +145,7 @@ def create_job(
     sources: list[dict] | None = None,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     supplier_search_run_type: str = SUPPLIER_RUN_INITIAL,
+    multi_item_mode: str = "balanced",
     initial_status: str = "pending",
 ) -> Job:
     normalized_sources = _normalized_job_sources(sources or [])
@@ -159,6 +160,7 @@ def create_job(
         if registry_error:
             raise ValueError(registry_error)
     normalized_run_type = SUPPLIER_RUN_ADDITIONAL if str(supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL else SUPPLIER_RUN_INITIAL
+    normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
@@ -168,6 +170,7 @@ def create_job(
         mode=mode,
         supplier_search_policy=normalized_policy,
         supplier_search_run_type=normalized_run_type,
+        multi_item_mode=normalized_multi_item_mode,
         title=title,
         target_suppliers=target_suppliers,
         status="draft" if initial_status == "draft" else "pending",
@@ -1211,6 +1214,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     dobor_ctx = read_dobor_context(job)
     is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
     wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
+    multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     try:
         discovery_coro = discover_suppliers(
             settings,
@@ -1225,6 +1229,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             additional_prompt=dobor_ctx.get("additional_prompt", ""),
             is_extend=is_extend,
             wave_index=wave_idx,
+            multi_item_mode=multi_item_mode,
         )
     except TypeError:
         discovery_coro = discover_suppliers(

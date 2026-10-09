@@ -1642,6 +1642,7 @@ async def discover_suppliers(
     additional_prompt: str = "",
     is_extend: bool = False,
     wave_index: int = 1,
+    multi_item_mode: str = "balanced",
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1657,6 +1658,7 @@ async def discover_suppliers(
             additional_prompt=additional_prompt,
             is_extend=is_extend,
             wave_index=wave_index,
+            multi_item_mode=multi_item_mode,
         )
 
 
@@ -1674,6 +1676,7 @@ async def _discover_suppliers_impl(
     additional_prompt: str = "",
     is_extend: bool = False,
     wave_index: int = 1,
+    multi_item_mode: str = "balanced",
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -1844,14 +1847,20 @@ async def _discover_suppliers_impl(
     candidates = rerank.candidates
 
     await _emit_progress(progress_callback, 72, f"Проверяю сайты и контакты: кандидатов {len(candidates)}")
+    effective_delivery_target = (
+        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, minimum_target)) * len(profile.items))
+        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
+        else delivery_target
+    )
     accepted, reviewed, review_meta = await _review_candidates_until_target(
         settings,
         candidates,
         context,
-        delivery_target,
+        effective_delivery_target,
         profile=profile,
         registry_context=minprom_context,
         policy=policy,
+        multi_item_mode=multi_item_mode,
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
         progress_callback=progress_callback,
@@ -1899,6 +1908,7 @@ async def _discover_suppliers_impl(
                 minimum_target,
                 profile=profile,
                 policy=policy,
+                multi_item_mode=multi_item_mode,
                 limit_to_target=False,
                 excluded_domains=excluded_domains,
                 excluded_company_keys=excluded_company_keys,
@@ -1971,6 +1981,7 @@ async def _discover_suppliers_impl(
                     profile=profile,
                     registry_context=minprom_context,
                     policy=policy,
+                    multi_item_mode=multi_item_mode,
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
                     progress_callback=progress_callback,
@@ -1981,6 +1992,7 @@ async def _discover_suppliers_impl(
                     minimum_target,
                     profile=profile,
                     policy=policy,
+                    multi_item_mode=multi_item_mode,
                     limit_to_target=False,
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
@@ -3601,6 +3613,7 @@ async def _review_candidates_until_target(
     profile: ProcurementProfile | None = None,
     registry_context: MinpromRegistryContext | None = None,
     policy: str = "",
+    multi_item_mode: str = "balanced",
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -3621,19 +3634,25 @@ async def _review_candidates_until_target(
             result["_source_rank"] = index
         return result
 
+    effective_target = (
+        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, target)) * len(profile.items))
+        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
+        else target
+    )
     for batch_start in range(0, len(candidates), batch_size):
         batch = candidates[batch_start : batch_start + batch_size]
         already_accepted = _accepted_supplier_results(
             reviewed,
-            target,
+            effective_target,
             profile=profile,
             policy=policy,
+            multi_item_mode=multi_item_mode,
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
         )
         # Early stop: skip batch entirely if we already have enough
-        if len(already_accepted) >= target:
+        if len(already_accepted) >= effective_target:
             stopped_after = batch_start
             break
         review_progress = 74 + int(18 * min(batch_start, len(candidates)) / max(1, len(candidates)))
@@ -3662,9 +3681,10 @@ async def _review_candidates_until_target(
         stopped_after = batch_start + len(batch)
         accepted = _accepted_supplier_results(
             reviewed,
-            target,
+            effective_target,
             profile=profile,
             policy=policy,
+            multi_item_mode=multi_item_mode,
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
@@ -3675,7 +3695,7 @@ async def _review_candidates_until_target(
             review_progress,
             f"Проверено сайтов: {stopped_after}/{len(candidates)}, подтверждено {len(accepted)}",
         )
-        if len(accepted) >= target:
+        if len(accepted) >= effective_target:
             return accepted, reviewed, {
                 "batch_size": batch_size,
                 "reviewed_count": len(reviewed),
@@ -3686,9 +3706,10 @@ async def _review_candidates_until_target(
 
     return _accepted_supplier_results(
         reviewed,
-        target,
+        effective_target,
         profile=profile,
         policy=policy,
+        multi_item_mode=multi_item_mode,
         limit_to_target=False,
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
@@ -3711,6 +3732,7 @@ def _accepted_supplier_results(
     *,
     profile: ProcurementProfile | None = None,
     policy: str = "",
+    multi_item_mode: str = "balanced",
     limit_to_target: bool = True,
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
@@ -3758,10 +3780,18 @@ def _accepted_supplier_results(
                 return True
             return False
 
-        per_item_quota = max(1, (target + len(profile.items) - 1) // len(profile.items)) if limit_to_target else 999999
+        if multi_item_mode == "per_item":
+            # Per-item deep search: each item targets up to 40 verified suppliers
+            per_item_quota = min(40, max(1, target)) if limit_to_target else 999999
+            total_limit = min(MAX_SUPPLIER_DELIVERY_TARGET, per_item_quota * len(profile.items)) if limit_to_target else 999999
+        else:
+            # Balanced search: total target is distributed evenly across all items
+            per_item_quota = max(1, (target + len(profile.items) - 1) // len(profile.items)) if limit_to_target else 999999
+            total_limit = target
+
         item_accepted_counts: dict[str, int] = {item.id: 0 for item in profile.items}
 
-        # Phase 1: Round-robin balanced pass to give each item its fair quota
+        # Phase 1: Round-robin pass to give each item its fair quota
         any_added = True
         while any_added:
             any_added = False
@@ -3778,15 +3808,20 @@ def _accepted_supplier_results(
                             item_accepted_counts[item.id] += 1
                             any_added = True
                             break
-                if limit_to_target and len(accepted) >= target:
-                    return accepted[:target]
+                if limit_to_target and len(accepted) >= total_limit:
+                    return accepted[:total_limit]
 
     # Phase 2: Waterfall overflow - fill remaining target slots from any remaining verified suppliers
+    overflow_limit = (
+        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, target)) * len(profile.items))
+        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
+        else target
+    )
     for result in sorted_verified:
         add_result(result)
-        if limit_to_target and len(accepted) >= target:
+        if limit_to_target and len(accepted) >= overflow_limit:
             break
-    return accepted[:target] if limit_to_target else accepted
+    return accepted[:overflow_limit] if limit_to_target else accepted
 
 
 def _supplier_delivery_target(minimum_target: int) -> int:
@@ -4118,12 +4153,27 @@ async def _search_with_yandex(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             requests_count += 1
+            # Primary: Fast synchronous endpoint (returns rawData XML immediately <1s)
+            try:
+                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                if response.status_code == 429:
+                    await asyncio.sleep(2.0)
+                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                if response.status_code == 200:
+                    data = response.json()
+                    raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                    if raw_data:
+                        return _parse_yandex_xml(raw_data, query=query)
+            except Exception as sync_exc:
+                logger.debug("Yandex sync search call failed, trying async fallback: %s", sync_exc)
+
+            # Fallback: Async search operation
             response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
             if response.status_code == 429:
                 await asyncio.sleep(2.0)
                 response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
             if response.status_code != 200:
-                logger.warning("Yandex searchAsync POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
                 return []
             operation_id = str(response.json().get("id") or "")
             if not operation_id:

@@ -393,6 +393,7 @@ class Job(Base):
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
+    multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")

@@ -71,7 +71,8 @@ class YandexSearchEngine:
 
     # API endpoints
     V1_API_URL = "https://yandex.ru/search/xml"
-    V2_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
+    V2_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/search"
+    V2_ASYNC_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
     V2_OPERATION_URL = "https://operation.api.cloud.yandex.net/operations"
 
     def __init__(self, folder_id: str, api_key: str):
@@ -129,7 +130,7 @@ class YandexSearchEngine:
     async def _search_v2(
         self, query: str, max_results: int, enrich_query: bool, max_pages: int = 1
     ) -> list[YandexSearchResult]:
-        """Search using v2 async API with pagination."""
+        """Search using v2 API with pagination, preferring fast synchronous endpoint."""
         try:
             search_query = self._build_query(query) if enrich_query else query
             client = await self._get_client()
@@ -157,19 +158,32 @@ class YandexSearchEngine:
                     "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
                 }
 
-                response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                page_results: list[YandexSearchResult] = []
+                # Fast path: Synchronous endpoint (<1s)
+                try:
+                    response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                    if response.status_code == 429:
+                        await asyncio.sleep(2.0)
+                        response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                        if raw_data:
+                            page_results = self._parse_v2_xml(raw_data)
+                except Exception as sync_exc:
+                    logger.debug("exact_product yandex sync search exception: %s", sync_exc)
 
-                if response.status_code != 200:
-                    logger.warning("yandex_v2_error", status_code=response.status_code, page=page)
-                    break
+                # Slow path fallback: Async operation polling
+                if not page_results:
+                    try:
+                        async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
+                        if async_resp.status_code == 200:
+                            op_id = async_resp.json().get("id")
+                            if op_id:
+                                page_results = await self._wait_for_v2_operation(op_id, headers)
+                    except Exception as async_exc:
+                        logger.warning("exact_product yandex async fallback error: %s", async_exc)
 
-                data = response.json()
-                operation_id = data.get("id")
-
-                if not operation_id:
-                    break
-
-                page_results = await self._wait_for_v2_operation(operation_id, headers)
                 if not page_results:
                     break
 

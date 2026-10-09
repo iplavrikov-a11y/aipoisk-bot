@@ -189,6 +189,7 @@ type CustomerJob = {
   mode: JobMode;
   mode_label: string;
   supplier_search_policy?: string;
+  multi_item_mode?: string;
   status: string;
   status_label: string;
   progress: number;
@@ -880,6 +881,7 @@ export function CabinetClient() {
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [scenario, setScenario] = useState<Scenario>("procurement_report");
   const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [multiItemMode, setMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -1526,6 +1528,7 @@ export function CabinetClient() {
       const form = new FormData();
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
+      form.append("multi_item_mode", multiItemMode);
       form.append("text", acceptsText ? text : "");
       form.append("source_urls", acceptsSources ? sourceUrls : "");
       form.append("target_suppliers", "0");
@@ -2462,6 +2465,67 @@ export function CabinetClient() {
                   </div>
                 </button>
               ))}
+            </div>
+          ) : null}
+
+          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs px-0.5">
+                <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                  <span>Режим для многопозиционных спецификаций</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-normal">
+                    много товаров в ТЗ
+                  </span>
+                </span>
+                <span className="text-[11px] text-slate-400 hidden sm:inline">
+                  {multiItemMode === "balanced" ? "1 отчёт со вкладками по позициям" : "Глубокий поиск под каждую позицию"}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
+                <button
+                  type="button"
+                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
+                    multiItemMode === "balanced"
+                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
+                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
+                  }`}
+                  onClick={() => setMultiItemMode("balanced")}
+                >
+                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                    multiItemMode === "balanced" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                  }`}>
+                    {multiItemMode === "balanced" ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                  </div>
+                  <div className="min-w-0">
+                    <strong className="block font-bold text-xs leading-tight text-slate-900">⚖️ Сбалансированный поиск</strong>
+                    <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
+                      1 задача, квота 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируются вкладки по каждой позиции.
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
+                    multiItemMode === "per_item"
+                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
+                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
+                  }`}
+                  onClick={() => setMultiItemMode("per_item")}
+                >
+                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                    multiItemMode === "per_item" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                  }`}>
+                    {multiItemMode === "per_item" ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                  </div>
+                  <div className="min-w-0">
+                    <strong className="block font-bold text-xs leading-tight text-slate-900">🔍 Попозиционный глубокий поиск</strong>
+                    <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
+                      Глубокий пул до 40–50 поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов.
+                    </span>
+                  </div>
+                </button>
+              </div>
             </div>
           ) : null}
 
@@ -3716,6 +3780,17 @@ export function CabinetClient() {
                           3) Копирование текста запроса КП в 1 клик.
                         </p>
                       </div>
+                    </div>
+
+                    <div className="sm:col-span-2 p-4 bg-teal-50/50 border border-teal-200/80 rounded-2xl space-y-2">
+                      <strong className="text-teal-950 font-bold block text-xs sm:text-[13px]">
+                        📑 Многопозиционные спецификации и ТЗ:
+                      </strong>
+                      <p className="text-slate-700 leading-relaxed text-xs sm:text-[13px]">
+                        Если ваше ТЗ содержит несколько товаров разных категорий (например, ламинат, краска, керамогранит):<br />
+                        • <strong>⚖️ Сбалансированный поиск (по умолчанию)</strong> — 1 задача, квота до 70 поставщиков делится поровну между всеми позициями ТЗ. В итоговом Excel-отчете формируются сводный лист «Поставщики» и отдельные вкладки по каждой позиции спецификации.<br />
+                        • <strong>🔍 Попозиционный глубокий поиск</strong> — максимальный сбор до 40–50 поставщиков по каждой позиции с отдельным детальным анализом сайтов производителей.
+                      </p>
                     </div>
                   </div>
 

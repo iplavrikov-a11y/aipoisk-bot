@@ -1126,6 +1126,7 @@ async def customer_create_job_route(
     request: Request,
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
     supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
+    multi_item_mode: str = Form(default="balanced"),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -1137,6 +1138,7 @@ async def customer_create_job_route(
     return await create_customer_job_api(
         mode=mode,
         supplier_search_policy=supplier_search_policy,
+        multi_item_mode=multi_item_mode,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -3802,6 +3804,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
+        "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         "status": job.status,
         "status_label": status_lbl,
         "progress": job.progress,
@@ -3890,6 +3893,7 @@ async def create_customer_job_api(
     *,
     mode: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    multi_item_mode: str = "balanced",
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -3902,6 +3906,7 @@ async def create_customer_job_api(
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
+    normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:
@@ -3948,6 +3953,7 @@ async def create_customer_job_api(
                     files=job_files,
                     sources=[],
                     supplier_search_policy=normalized_policy,
+                    multi_item_mode=normalized_multi_item_mode,
                 )
                 reserve_job_units(db, client, job)
                 enqueue_job(job.id)
@@ -3965,6 +3971,7 @@ async def create_customer_job_api(
             files=payload,
             sources=sources,
             supplier_search_policy=normalized_policy,
+            multi_item_mode=normalized_multi_item_mode,
         )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         enqueue_job(job.id)
