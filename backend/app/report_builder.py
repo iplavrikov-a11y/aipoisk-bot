@@ -113,7 +113,8 @@ REGISTRY_FALLBACK_REPORT_DISCLAIMER = (
 )
 QUOTE_REQUEST_INTRO = (
     "Просим выставить счёт или направить коммерческое предложение по указанным ниже товарам. "
-    "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки."
+    "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки. "
+    "Допускается и приветствуется предоставление коммерческого предложения как на весь перечень, так и на отдельные товарные позиции (попозиционная поставка)."
 )
 
 
@@ -283,32 +284,44 @@ def _calc_supplier_row_h(cells: list[tuple[str, int]], line_h: int = 15, min_h: 
     return max(min_h, max_lines * line_h + 8)
 
 
-def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Поставщики"
+def _safe_sheet_title(name: str, index: int, existing_titles: set[str]) -> str:
+    cleaned = re.sub(r'[\\/*?:\[\]]', ' ', str(name or "")).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    if not cleaned:
+        cleaned = f"Позиция {index}"
+    title = cleaned[:26]
+    candidate = title
+    suffix = 1
+    while candidate in existing_titles or not candidate:
+        candidate = f"{title[:22]} ({suffix})"
+        suffix += 1
+    existing_titles.add(candidate)
+    return candidate
+
+
+def _populate_supplier_sheet(
+    ws,
+    rows: list[dict],
+    *,
+    brand_title: str,
+    subtitle: str,
+    summary: str,
+    is_fallback: bool,
+    is_multi_item: bool = False,
+) -> None:
     ws.views.sheetView[0].showGridLines = True
 
     # 1. Шапка документа
-    brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
     ws.append([brand_title])
     _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="047857"), align=Alignment(vertical="center"))
     ws.row_dimensions[1].height = 28
 
     # 2. Подзаголовок (ТЗ + Режим)
-    policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
-    item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
-    ws.append([clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")])
+    ws.append([subtitle])
     _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="064E3B"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
-    # 3. Сводка / KPI (без лишней плашки "как работать")
-    summary = clean_xml_compatible(_supplier_count_summary(rows, target))
-    is_fallback = _is_registry_fallback_report(rows)
-    if is_fallback:
-        summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
+    # 3. Сводка / KPI
     ws.append([summary])
     summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
     summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "064E3B")
@@ -342,7 +355,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     for row_idx, row in enumerate(rows, start=data_start_row):
         is_even = (row_idx % 2 == 0)
         base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
-        
+
         company = clean_xml_compatible(str(row.get("company_name") or "").strip())
         reg_text, reg_font, reg_fill = _registry_badge(row)
         reg_text = clean_xml_compatible(reg_text)
@@ -350,7 +363,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         site_display = clean_xml_compatible(unquote(site_raw) if site_raw else "")
         phone = clean_xml_compatible(str(row.get("phone") or "").strip())
         email = clean_xml_compatible(str(row.get("email") or "").strip())
-        comment = clean_xml_compatible(_client_supplier_comment(row))
+        comment = clean_xml_compatible(_client_supplier_comment(row, is_multi_item=is_multi_item))
 
         ws.append([company, site_display, phone, email, comment, reg_text])
 
@@ -393,7 +406,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         c5.border = thin_border
         c5.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 6: Реестр Минпромторга (последний столбец)
+        # Col 6: Реестр Минпромторга
         c6 = ws.cell(row=row_idx, column=6)
         c6.font = reg_font
         c6.fill = reg_fill
@@ -405,6 +418,76 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
     widths = [32, 35, 22, 26, 60, 26]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
+
+
+def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+
+    distinct_items: list[str] = []
+    for r in rows:
+        p_item = _clean_comment_text(r.get("procurement_item") or "")
+        if p_item and p_item not in distinct_items:
+            distinct_items.append(p_item)
+    is_multi = len(distinct_items) > 1
+
+    # If multi-item, group rows by position
+    if is_multi:
+        ordered_rows = sorted(
+            rows,
+            key=lambda r: (
+                distinct_items.index(_clean_comment_text(r.get("procurement_item") or ""))
+                if _clean_comment_text(r.get("procurement_item") or "") in distinct_items
+                else len(distinct_items),
+                -int(r.get("quality_score") or 0),
+            ),
+        )
+    else:
+        ordered_rows = rows
+
+    # 1. Main Sheet: "Поставщики"
+    ws = wb.active
+    ws.title = "Поставщики"
+    brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
+    policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
+    item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
+    subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
+    summary = clean_xml_compatible(_supplier_count_summary(ordered_rows, target))
+    is_fallback = _is_registry_fallback_report(ordered_rows)
+    if is_fallback:
+        summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
+
+    _populate_supplier_sheet(
+        ws,
+        ordered_rows,
+        brand_title=brand_title,
+        subtitle=subtitle,
+        summary=summary,
+        is_fallback=is_fallback,
+        is_multi_item=is_multi,
+    )
+
+    # 2. Extra dedicated sheets per item when multi-item
+    if is_multi:
+        existing_sheet_titles = {"Поставщики"}
+        for idx, item in enumerate(distinct_items, start=1):
+            item_rows = [r for r in ordered_rows if _clean_comment_text(r.get("procurement_item") or "") == item]
+            if not item_rows:
+                continue
+            sheet_title = _safe_sheet_title(item, idx, existing_sheet_titles)
+            ws_item = wb.create_sheet(title=sheet_title)
+            item_subtitle = clean_xml_compatible(f"Позиция ТЗ: {item} | {policy_label}")
+            item_summary = clean_xml_compatible(f"Позиция: {item}. Проверено поставщиков: {len(item_rows)}.")
+            _populate_supplier_sheet(
+                ws_item,
+                item_rows,
+                brand_title=brand_title,
+                subtitle=item_subtitle,
+                summary=item_summary,
+                is_fallback=is_fallback,
+                is_multi_item=False,
+            )
 
     _save_xlsx(wb, out)
     return out
@@ -446,11 +529,14 @@ def _is_registry_fallback_report(rows: list[dict]) -> bool:
     )
 
 
-def _client_supplier_comment(row: dict) -> str:
+def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:
     product_fit = str(row.get("product_fit") or "").strip().lower()
-    product = _clean_comment_text(row.get("product") or row.get("procurement_item") or "")
+    item_name = _clean_comment_text(row.get("procurement_item") or "")
+    product = _clean_comment_text(row.get("product") or item_name or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
+    if is_multi_item and item_name:
+        detail = f"Позиция: {item_name} | {detail}" if detail else f"Позиция: {item_name}"
     registry_note = _supplier_registry_note(row)
     if product_fit == "exact":
         if detail:
@@ -465,6 +551,8 @@ def _client_supplier_comment(row: dict) -> str:
             return _join_supplier_comment(f"Категория совпадает: {detail}. Конкретный товар не подтвержден.", registry_note)
         return _join_supplier_comment("Категория совпадает. Конкретный товар не подтвержден.", registry_note)
     if product_fit == "profile":
+        if is_multi_item and item_name:
+            return _join_supplier_comment(f"Позиция: {item_name}. Профиль компании подходит. Наличие товара уточнить.", registry_note)
         return _join_supplier_comment("Профиль компании подходит. Наличие товара уточнить.", registry_note)
     if detail:
         return _join_supplier_comment(f"Соответствие требует уточнения: {detail}.", registry_note)

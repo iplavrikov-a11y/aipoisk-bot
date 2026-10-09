@@ -16,6 +16,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
 - Durable queue worker: `tenderlex-worker.service`.
+- Multi-Item Specification Balancing, Round-Robin Quota Allocation & Multi-Tab XLSX Reports (2026-10-09):
+  - Solved item-1 supplier skew in complex multi-item specifications (analyzed 552 database jobs: 35.8% multi-item, 53.7% heavily skewed to item 1): replaced legacy single-item `break` loop with round-robin fair quota allocation (`per_item_quota = (target + K - 1) // K`) and waterfall overflow fallback in `backend/app/supplier_search.py`.
+  - Balanced search query generation: updated initial and refinement prompts (`build_supplier_queries`) to guarantee proportional coverage (>=3-5 queries per item) across disparate procurement categories.
+  - Multi-tab Excel reports (`backend/app/report_builder.py`): multi-item jobs now generate dedicated tabs for each procurement item (`Позиция 1 - ...`, `Позиция 2 - ...`) alongside the unified `Поставщики` sheet with explicit `Позиция: {item}` prefixes in client comments. Single-item jobs maintain strict 100% backward compatibility with single-sheet format.
+  - Partial supply disclaimer in RFQ documents (`QUOTE_REQUEST_INTRO`): added explicit note welcoming partial/item-by-item bids to eliminate vendor refusals when specifications combine disparate product lines.
+  - Verified with comprehensive test suite (`backend/tests/test_multi_item_suppliers.py`, 6 tests covering balance, overflow, E2E pipeline, and reports) and 811 total passing backend tests.
 - Yandex SearchAPI v2 Async Timeout Fix, 429 Rate Limit Backoff & E2E Pipelines (2026-10-09):
   - Fixed hardcoded 19.3s polling cutoff in `_poll_yandex_operation`: expanded polling window to ~58s across `supplier_search.py`, `exact_product/yandex_search.py`, and `outreach_search.py`, allowing complex multi-term B2B queries (which take 25–35s in Yandex Cloud queues) to successfully return candidate results instead of dropping to empty lists.
   - Added HTTP 429 rate limit backoff and error logging to prevent silent zero-supplier drops.

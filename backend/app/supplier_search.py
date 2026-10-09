@@ -1562,6 +1562,7 @@ async def build_supplier_queries(
 Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}
 Сформируй 18-28 поисковых запросов для поиска по регионам РФ и специализированным каналам сбыта.
 Включай в запросы минус-слова (-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы).
+Если позиций несколько, распредели запросы для добора по каждой позиции ТЗ, уделяя внимание позициям с возможным дефицитом.
 Ответ строго JSON:
 {{"queries": ["..."]}}
 
@@ -1585,7 +1586,7 @@ async def build_supplier_queries(
 - если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.{neg_line}
 - СТРОГО соблюдай функциональное и технологическое назначение товара: не подменяй предмет закупки смежными процессами, сопутствующей инфраструктурой или расходными материалами.
 Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
-Если позиций несколько, запросы должны покрывать каждую позицию.
+Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями (не менее 3-5 целевых запросов на каждую самостоятельную позицию, не концентрируй все запросы только на первой).
 Ответ строго JSON:
 {{"queries": ["..."]}}
 
@@ -3746,13 +3747,41 @@ def _accepted_supplier_results(
         return False
 
     if profile and len(profile.items) > 1:
-        for item in profile.items:
-            for result in sorted_verified:
-                if str(result.get("procurement_item_id") or "") == item.id and add_result(result):
-                    break
-            if limit_to_target and len(accepted) >= target:
-                return accepted[:target]
+        def _res_matches_item(res: dict, itm: ProcurementItem) -> bool:
+            raw_id = str(res.get("procurement_item_id") or "").strip().lower()
+            if raw_id:
+                parts = [p.strip() for p in raw_id.replace(",", " ").split() if p.strip()]
+                if itm.id.lower() in parts:
+                    return True
+            res_item = str(res.get("procurement_item") or "").strip().lower()
+            if res_item and (res_item == itm.name.lower() or itm.name.lower() in res_item or res_item in itm.name.lower()):
+                return True
+            return False
 
+        per_item_quota = max(1, (target + len(profile.items) - 1) // len(profile.items)) if limit_to_target else 999999
+        item_accepted_counts: dict[str, int] = {item.id: 0 for item in profile.items}
+
+        # Phase 1: Round-robin balanced pass to give each item its fair quota
+        any_added = True
+        while any_added:
+            any_added = False
+            for item in profile.items:
+                if item_accepted_counts[item.id] >= per_item_quota:
+                    continue
+                for result in sorted_verified:
+                    if _res_matches_item(result, item):
+                        if not result.get("procurement_item"):
+                            result["procurement_item"] = item.name
+                        if not result.get("procurement_item_id"):
+                            result["procurement_item_id"] = item.id
+                        if add_result(result):
+                            item_accepted_counts[item.id] += 1
+                            any_added = True
+                            break
+                if limit_to_target and len(accepted) >= target:
+                    return accepted[:target]
+
+    # Phase 2: Waterfall overflow - fill remaining target slots from any remaining verified suppliers
     for result in sorted_verified:
         add_result(result)
         if limit_to_target and len(accepted) >= target:
