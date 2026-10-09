@@ -15,7 +15,11 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
-- Durable queue worker: `tenderlex-worker.service`; current production
+- Durable queue worker: `tenderlex-worker.service`.
+- Yandex SearchAPI v2 Async Timeout Fix, 429 Rate Limit Backoff & E2E Pipelines (2026-10-09):
+  - Fixed hardcoded 19.3s polling cutoff in `_poll_yandex_operation`: expanded polling window to ~58s across `supplier_search.py`, `exact_product/yandex_search.py`, and `outreach_search.py`, allowing complex multi-term B2B queries (which take 25–35s in Yandex Cloud queues) to successfully return candidate results instead of dropping to empty lists.
+  - Added HTTP 429 rate limit backoff and error logging to prevent silent zero-supplier drops.
+  - End-to-end verified on live inputs: Job #844 (ultrasonic wire bonder) confirmed 9 suppliers, Job #843 (digital cinema projector) confirmed 6 suppliers. 805 backend tests passing.
 - Production Unified Wallet, Deposit Bonus Tiers, Manual Card Top-up & CI/CD Pipelines (2026-10-07):
   - Unified Wallet & Flat Function Pricing: Reworked tariffs from segregated feature packages into a single unified wallet balance (`money_balance_kopeks`) with flat pay-as-you-go task execution (Поиск поставщиков — 99 ₽, Добор — 49 ₽, Подбор товара и аналогов — 99 ₽, Анализ документации — 99 ₽, Анализ + поиск — 198 ₽).
   - Progressive Deposit Bonuses & Custom Tariff Exclusions: Increasing deposit bonuses reward larger top-ups: «Старт» (1 000 ₽ → 1 000 ₽), «Оптимальный» (3 000 ₽ → 3 500 ₽, +500 ₽), «Про» (5 000 ₽ → 6 500 ₽, +1 500 ₽, «Хит»), «Бизнес» (10 000 ₽ → 14 000 ₽, +4 000 ₽), «Корпоративный» (25 000 ₽ → 37 500 ₽, +12 500 ₽ / +50%). Clients with configured individual tariff overrides (`ClientTariffOverride`) are strictly excluded from deposit bonuses — top-ups credit strictly the exact payment 1:1 with zero bonus.
