@@ -4045,16 +4045,36 @@ async def _search_with_yandex(
     requests_count = 0
 
     async def _poll_yandex_operation(client: httpx.AsyncClient, operation_id: str) -> str:
-        poll_delays = [0.3, 0.5, 0.8, 1.2, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+        poll_delays = [
+            0.5, 0.8, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
+            2.0, 2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5,
+            2.5, 2.5, 3.0, 3.0, 3.0, 3.0, 3.0
+        ]
+        consecutive_429 = 0
         for _poll_idx in range(len(poll_delays)):
             await asyncio.sleep(poll_delays[_poll_idx])
-            operation = await client.get(f"https://operation.api.cloud.yandex.net/operations/{operation_id}", headers=headers)
-            if operation.status_code != 200:
+            try:
+                operation = await client.get(f"https://operation.api.cloud.yandex.net/operations/{operation_id}", headers=headers)
+                if operation.status_code == 429:
+                    consecutive_429 += 1
+                    backoff = min(6.0, 1.5 * consecutive_429)
+                    logger.warning("Yandex search operation polling rate limited: %s, backoff %.1fs", operation_id, backoff)
+                    await asyncio.sleep(backoff)
+                    continue
+                consecutive_429 = 0
+                if operation.status_code != 200:
+                    continue
+                data = operation.json()
+                if not data.get("done"):
+                    continue
+                if data.get("error"):
+                    logger.warning("Yandex search async operation finished with error: id=%s error=%s", operation_id, data.get("error"))
+                    return ""
+                return str((data.get("response") or {}).get("rawData") or "")
+            except Exception as poll_exc:
+                logger.debug("Yandex operation poll error: id=%s exc=%s", operation_id, poll_exc)
                 continue
-            data = operation.json()
-            if not data.get("done"):
-                continue
-            return str(data.get("response", {}).get("rawData") or "")
+        logger.warning("Yandex search async operation timed out after %d attempts: operation_id=%s", len(poll_delays), operation_id)
         return ""
 
     groups_on_page = _yandex_groups_on_page(settings)
@@ -4070,7 +4090,11 @@ async def _search_with_yandex(
             }
             requests_count += 1
             response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+            if response.status_code == 429:
+                await asyncio.sleep(2.0)
+                response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
             if response.status_code != 200:
+                logger.warning("Yandex searchAsync POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
                 return []
             operation_id = str(response.json().get("id") or "")
             if not operation_id:
@@ -4109,7 +4133,7 @@ async def _search_with_yandex(
         return all_candidates
 
     chunk_size = 4
-    async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         for start in range(0, len(search_queries), chunk_size):
             chunk = search_queries[start : start + chunk_size]
             tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]

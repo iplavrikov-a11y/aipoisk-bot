@@ -386,13 +386,13 @@ async def fetch_yandex_search_candidates(
                     break
 
                 raw_xml = ""
-                for _ in range(12):
-                    await asyncio.sleep(1.2)
+                for _ in range(25):
+                    await asyncio.sleep(1.8)
                     op_res = await client.get(f"https://operation.api.cloud.yandex.net/operations/{op_id}", headers=headers)
                     if op_res.status_code == 200:
                         op_data = op_res.json()
                         if op_data.get("done"):
-                            raw_xml = str(op_data.get("response", {}).get("rawData") or "")
+                            raw_xml = str((op_data.get("response") or {}).get("rawData") or "")
                             break
 
                 if not raw_xml:

@@ -194,7 +194,11 @@ class YandexSearchEngine:
         client = await self._get_client()
 
         # Start at 0.7s to avoid burning rate limits on operations that take ~1-2s anyway
-        poll_delays = [0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.5]
+        poll_delays = [
+            0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
+            2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5, 3.0,
+            3.0, 3.0, 3.0, 3.0
+        ]
         consecutive_429 = 0
         for attempt in range(len(poll_delays)):
             delay = poll_delays[attempt] + random.uniform(0.1, 0.35)
@@ -225,7 +229,7 @@ class YandexSearchEngine:
                     if "error" in data:
                         return []
 
-                    raw_data = data.get("response", {}).get("rawData", "")
+                    raw_data = (data.get("response") or {}).get("rawData", "")
                     if raw_data:
                         return self._parse_v2_xml(raw_data)
                     return []
