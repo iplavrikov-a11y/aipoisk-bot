@@ -53,6 +53,17 @@ type JobMode = "supplier_search" | "procurement_report" | "analysis_and_supplier
 type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 
+function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolicy {
+  if (val === "minprom_registry_priority" || val === "minprom_registry_only") {
+    return val;
+  }
+  return "normal";
+}
+
+function normalizeMultiItemMode(val?: string | null): "balanced" | "per_item" {
+  return val === "per_item" ? "per_item" : "balanced";
+}
+
 type BalanceCounter = {
   label: string;
   available: number | null;
@@ -892,8 +903,12 @@ export function CabinetClient() {
   const [findMorePrompt, setFindMorePrompt] = useState("");
   const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
   const [startSupplierSearchPolicy, setStartSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [startSupplierSearchMultiItemMode, setStartSupplierSearchMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [startSupplierSearchAlternatives, setStartSupplierSearchAlternatives] = useState<boolean>(true);
   const [startSupplierSearchPrompt, setStartSupplierSearchPrompt] = useState<string>("");
+  const [retryConfirmJob, setRetryConfirmJob] = useState<CustomerJob | null>(null);
+  const [retryPolicy, setRetryPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [retryMultiItemMode, setRetryMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1746,6 +1761,7 @@ export function CabinetClient() {
     setError("");
     setMessage("");
     const policyToSend = startSupplierSearchPolicy;
+    const multiItemToSend = startSupplierSearchMultiItemMode;
     const includeAlts = startSupplierSearchAlternatives;
     const promptToSend = startSupplierSearchPrompt.trim();
     setStartSupplierSearchConfirmJob(null);
@@ -1759,6 +1775,7 @@ export function CabinetClient() {
         },
         body: JSON.stringify({
           supplier_search_policy: policyToSend,
+          multi_item_mode: multiItemToSend,
           include_alternatives: includeAlts,
           additional_prompt: promptToSend,
         }),
@@ -1776,12 +1793,16 @@ export function CabinetClient() {
     }
   }
 
-  async function retryJob(job: CustomerJob, policy?: string) {
+  async function retryJob(job: CustomerJob, policy?: string, multiItemModeParam?: string) {
     try {
       setBusy(true);
       setError("");
       setMessage("");
-      const url = policy ? `/api/customer/jobs/${job.id}/retry?policy=${encodeURIComponent(policy)}` : `/api/customer/jobs/${job.id}/retry`;
+      const params = new URLSearchParams();
+      if (policy) params.set("policy", policy);
+      if (multiItemModeParam) params.set("multi_item_mode", multiItemModeParam);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const url = `/api/customer/jobs/${job.id}/retry${qs}`;
       const res = await fetch(url, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
@@ -1793,6 +1814,7 @@ export function CabinetClient() {
       setError(err instanceof Error ? err.message : "Ошибка перезапуска задачи");
     } finally {
       setBusy(false);
+      setRetryConfirmJob(null);
     }
   }
 
@@ -2870,7 +2892,9 @@ export function CabinetClient() {
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void retryJob(job, "normal");
+                              setRetryConfirmJob(job);
+                              setRetryPolicy("normal");
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                             }}
                             disabled={busy}
                           >
@@ -2883,7 +2907,9 @@ export function CabinetClient() {
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void retryJob(job);
+                              setRetryConfirmJob(job);
+                              setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                             }}
                             disabled={busy}
                           >
@@ -2996,6 +3022,7 @@ export function CabinetClient() {
                               markJobAsViewed(job.id);
                               setStartSupplierSearchConfirmJob(job);
                               setStartSupplierSearchPolicy("normal");
+                              setStartSupplierSearchMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                               setStartSupplierSearchAlternatives(true);
                               setStartSupplierSearchPrompt("");
                             }}
@@ -3020,7 +3047,9 @@ export function CabinetClient() {
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void retryJob(job);
+                                  setRetryConfirmJob(job);
+                                  setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                                  setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                                 }}
                                 disabled={busy}
                                 title="Продолжить поиск поставщиков"
@@ -3032,6 +3061,23 @@ export function CabinetClient() {
                           }
                           return null;
                         })()}
+                        {isCompletedWithResult && (job.mode === "supplier_search" || job.mode === "analysis_and_suppliers") ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300/80 rounded-xl text-xs font-semibold transition-all shadow-2xs cursor-pointer shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRetryConfirmJob(job);
+                              setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
+                            }}
+                            disabled={busy}
+                            title="Повторить поиск с другими параметрами (квота, реестр Минпромторга)"
+                          >
+                            <RotateCcw size={13} aria-hidden="true" />
+                            <span>Повторить</span>
+                          </button>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -3288,6 +3334,50 @@ export function CabinetClient() {
                 </div>
               ) : null}
 
+              {/* Multi-Item Mode Selection */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                  Режим для многопозиционных спецификаций:
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStartSupplierSearchMultiItemMode("balanced")}
+                    className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      startSupplierSearchMultiItemMode === "balanced"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-0.5">
+                      <span className="text-xs font-extrabold">⚖️ Сбалансированный поиск</span>
+                      <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                        {startSupplierSearchMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500 font-normal leading-snug">Единая квота распределяется по всем позициям ТЗ, формируется 1 Excel со вкладками</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStartSupplierSearchMultiItemMode("per_item")}
+                    className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      startSupplierSearchMultiItemMode === "per_item"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-0.5">
+                      <span className="text-xs font-extrabold">🔍 Попозиционный глубокий поиск</span>
+                      <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                        {startSupplierSearchMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500 font-normal leading-snug">Глубокий пул до 40–50 поставщиков под каждую позицию спецификации с отдельным анализом</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Policy Selection Cards */}
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
@@ -3401,6 +3491,207 @@ export function CabinetClient() {
                 >
                   {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Search size={15} aria-hidden="true" />}
                   <span>Запустить поиск поставщиков</span>
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {retryConfirmJob ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setRetryConfirmJob(null);
+            }
+          }}
+        >
+          <section
+            className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="retry-job-confirm-title"
+          >
+            {/* Header */}
+            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-amber-50/40 shrink-0">
+              <div className="flex items-center gap-3 min-w-0 pr-2">
+                <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <RotateCcw size={18} aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="retry-job-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                    {retryConfirmJob.mode === "exact_product"
+                      ? "Повторить подбор товара и аналогов?"
+                      : retryConfirmJob.mode === "procurement_report"
+                      ? "Повторить анализ документации?"
+                      : "Повторить поиск поставщиков?"}
+                  </h2>
+                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md">
+                    {retryConfirmJob.job_number ? `#${retryConfirmJob.job_number} · ` : ""}{retryConfirmJob.human_title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                onClick={() => setRetryConfirmJob(null)}
+                aria-label="Закрыть"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+
+            {/* Content Body */}
+            <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
+              {retryConfirmJob.mode === "supplier_search" || retryConfirmJob.mode === "analysis_and_suppliers" ? (
+                <>
+                  {/* Multi-Item Mode Choice */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <label className="font-bold text-slate-700 text-xs flex items-center gap-1.5">
+                        <span>Режим для многопозиционных спецификаций:</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-normal">
+                          много товаров в ТЗ
+                        </span>
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRetryMultiItemMode("balanced")}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          retryMultiItemMode === "balanced"
+                            ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="text-xs font-extrabold text-slate-900">⚖️ Сбалансированный поиск</span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                            {retryMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-normal leading-snug">
+                          Единая квота 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируются вкладки по каждой позиции.
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setRetryMultiItemMode("per_item")}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          retryMultiItemMode === "per_item"
+                            ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="text-xs font-extrabold text-slate-900">🔍 Попозиционный глубокий поиск</span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                            {retryMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-normal leading-snug">
+                          Глубокий пул до 40–50 поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов и контактов.
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Policy Selection Cards */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Требования к реестру Минпромторга РФ:
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {[
+                        {
+                          id: "normal",
+                          label: "Обычный поиск",
+                          desc: "Кандидаты по заданным условиям",
+                        },
+                        {
+                          id: "minprom_registry_priority",
+                          label: "Реестр в приоритете",
+                          desc: "Производители из ГИСП в приоритете",
+                        },
+                        {
+                          id: "minprom_registry_only",
+                          label: "Только реестр",
+                          desc: "Строго запись (44-ФЗ)",
+                        },
+                      ].map((opt) => {
+                        const isSelected = retryPolicy === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setRetryPolicy(opt.id as SupplierSearchPolicy)}
+                            className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                              isSelected
+                                ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between w-full mb-0.5">
+                              <span className="text-xs font-extrabold">{opt.label}</span>
+                              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${isSelected ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                                {isSelected ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-slate-500 font-normal leading-snug">{opt.desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : retryConfirmJob.mode === "exact_product" ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный подбор точного товара и аналогов</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново проверит техническое задание, нормативные требования (ГОСТ/ТУ) и сформирует готовый отчёт в формате Word (.docx).
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный анализ документации</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново проанализирует технические требования, условия контракта, риски и нормативные ограничения закупки.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions Footer */}
+            <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
+              <span className="text-xs text-slate-500 hidden sm:inline">
+                Параметры будут применены к перезапуску
+              </span>
+              <div className="flex items-center gap-2.5 shrink-0 ml-auto">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
+                  onClick={() => setRetryConfirmJob(null)}
+                  disabled={busy}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  onClick={() => void retryJob(retryConfirmJob, retryPolicy, retryMultiItemMode)}
+                  disabled={busy}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RotateCcw size={15} aria-hidden="true" />}
+                  <span>Перезапустить задачу</span>
                 </button>
               </div>
             </footer>

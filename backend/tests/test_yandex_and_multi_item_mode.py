@@ -170,3 +170,36 @@ class YandexAndMultiItemModeTests(unittest.TestCase):
                 self.assertEqual(job_per_item.multi_item_mode, "per_item")
             finally:
                 session.close()
+
+    def test_retry_job_updates_multi_item_mode_and_policy(self):
+        with TemporaryDirectory() as tmp:
+            engine = create_engine(f"sqlite:///{Path(tmp)/'test.db'}")
+            Base.metadata.create_all(engine)
+            Session = sessionmaker(bind=engine)
+            session = Session()
+            try:
+                job = create_job(
+                    session,
+                    client_id=None,
+                    mode="supplier_search",
+                    title="ТЗ Тест Режимов",
+                    target_suppliers=10,
+                    files=[],
+                    multi_item_mode="balanced",
+                    supplier_search_policy="normal",
+                )
+                self.assertEqual(job.multi_item_mode, "balanced")
+                self.assertEqual(job.supplier_search_policy, "normal")
+
+                # Simulate retry with new policy and per_item mode
+                from app.main import retry_job
+                # test admin retry endpoint directly
+                res = retry_job(job.id, policy="minprom_registry_priority", multi_item_mode="per_item", db=session)
+                self.assertTrue(res.get("success"))
+                session.refresh(job)
+                self.assertEqual(job.multi_item_mode, "per_item")
+                self.assertEqual(job.supplier_search_policy, "minprom_registry_priority")
+                self.assertEqual(job.status, "pending")
+            finally:
+                session.close()
+

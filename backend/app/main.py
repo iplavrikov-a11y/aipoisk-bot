@@ -1163,6 +1163,7 @@ def customer_job_detail_api(
 def customer_job_retry_api(
     job_id: str,
     policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
@@ -1170,6 +1171,8 @@ def customer_job_retry_api(
     if policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
+    if multi_item_mode in ("balanced", "per_item"):
+        job.multi_item_mode = multi_item_mode
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -1290,12 +1293,14 @@ async def customer_start_supplier_search_route(
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     supplier_search_policy = SUPPLIER_POLICY_NORMAL
+    multi_item_mode = "balanced"
     include_alternatives = True
     additional_prompt = ""
     try:
         body = await request.json()
         if isinstance(body, dict):
             supplier_search_policy = str(body.get("supplier_search_policy") or SUPPLIER_POLICY_NORMAL).strip()
+            multi_item_mode = str(body.get("multi_item_mode") or "balanced").strip()
             include_alternatives = bool(body.get("include_alternatives", True))
             additional_prompt = str(body.get("additional_prompt") or "").strip()
     except Exception:
@@ -1307,6 +1312,7 @@ async def customer_start_supplier_search_route(
         original_job=original_job,
         created_by_telegram_id=f"web:{context.user.id}",
         supplier_search_policy=supplier_search_policy,
+        multi_item_mode=multi_item_mode,
         include_alternatives=include_alternatives,
         additional_prompt=additional_prompt,
     )
@@ -2618,12 +2624,19 @@ def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
-def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session = Depends(db_session)) -> dict:
+def retry_job(
+    job_id: str,
+    policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if policy:
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
+    if multi_item_mode in ("balanced", "per_item"):
+        job.multi_item_mode = multi_item_mode
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -2637,6 +2650,7 @@ def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session
 def admin_rerun_job(
     job_id: str,
     policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
     parent_job = resolve_admin_job(job_id, db)
@@ -2657,6 +2671,7 @@ def admin_rerun_job(
         created_by_telegram_id="",
         mode=parent_job.mode,
         supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+        multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
         title=admin_title,
         status="pending",
         progress=0,
@@ -4542,6 +4557,7 @@ def create_supplier_search_from_exact_product(
     original_job: Job,
     created_by_telegram_id: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    multi_item_mode: str = "balanced",
     include_alternatives: bool = True,
     additional_prompt: str = "",
 ) -> Job:
@@ -4598,6 +4614,7 @@ def create_supplier_search_from_exact_product(
             sources=[],
             supplier_search_policy=normalized_policy,
             supplier_search_run_type="initial",
+            multi_item_mode=multi_item_mode,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         enqueue_job(job.id)
