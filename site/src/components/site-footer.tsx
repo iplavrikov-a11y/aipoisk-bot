@@ -33,7 +33,7 @@ export function SiteFooter() {
             <li><Link href="/poisk-proizvoditeley-po-tz" className="hover:text-teal-700 transition-colors font-medium">Поиск заводов-производителей</Link></li>
             <li><Link href="/poisk-postavshchikov-dlya-tendera" className="hover:text-teal-700 transition-colors font-medium">Подбор поставщиков под тендер</Link></li>
             <li><Link href="/postavshchiki-dlya-zaprosa-kp" className="hover:text-teal-700 transition-colors font-medium">База адресатов для запроса КП</Link></li>
-            <li><Link href="/zapros-kp-po-tz" className="hover:text-teal-700 transition-colors font-medium">Генератор Запроса КП (RFQ)</Link></li>
+            <li><Link href="/zapros-kp-po-tz" className="hover:text-teal-700 transition-colors font-medium">Генератор запроса КП</Link></li>
             <li><Link href="/analiz-rynka-44-fz" className="hover:text-teal-700 transition-colors font-medium">Анализ рынка и подготовка НМЦК</Link></li>
             <li><Link href="/reestr-minpromtorga-v-zakupkah" className="hover:text-teal-700 transition-colors font-medium">Реестр Минпромторга и нацрежим</Link></li>
           </ul>

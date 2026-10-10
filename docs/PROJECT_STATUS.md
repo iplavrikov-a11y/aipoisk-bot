@@ -1,5 +1,25 @@
 # TenderLex: Project Status
 
+10 октября (ночь 6): Тотальный аудит клиентского языка сайта, устранение англицизмов и верификация API/MCP:
+- **Устранение англицизмов и жаргона по всему сайту и личному кабинету**:
+  - `site/src/components/trust-registry-bar.tsx`: бейджи «Live Web Search» заменены на «Поиск в реальном времени», «Deep Crawling» — на «Углубленный сбор сайтов».
+  - `site/src/app/cabinet/cabinet-client.tsx`: исключены формулировки «вайб-кодинг», заменены на профессиональное «API и интеграции (CRM, 1С, ИИ-ассистенты, MCP)» и «Инструкция для быстрой разработки и ИИ-ассистентов».
+  - `site/src/app/api-integracii/page.tsx`: заменен бейдж «B2B API & MCP Protocol» на «Программный интерфейс (API) и протокол MCP».
+  - `site/src/app/postavshchiki-dlya-zaprosa-kp/page.tsx` и `site/src/app/demo-world/page.tsx`: «direct email» заменен на «прямые email отделов сбыта / корпоративные email».
+  - `site/src/app/zapros-kp-po-tz/page.tsx`, `site/src/components/site-footer.tsx`, `site/src/components/comparison-section.tsx`, `site/src/components/interactive-hero-demo.tsx`, `site/src/components/scroll-world/scroll-world-viewer.tsx`, `site/src/app/demo-design/page.tsx`: жаргонизм «RFQ» заменен на понятную закупщикам терминологию («Запрос КП», «официальный запрос коммерческих предложений»).
+  - База данных SQLite (`data/aipoisk.db`): в таблице `tariff_packages` описание пакета обновлено: «direct email» -> «прямые email».
+- **Аудит базы знаний (`site/src/data/knowledge-base.ts`)**:
+  - Статья `optimizaciya-cepochki-postavok-supply-chain-v-b2b`: убран англицизм «(Supply Chain)», тег «Supply Chain» переименован в «Цепочки поставок», «Safety Stock» переведен как «страховой запас склада», «Just-in-Time» переведен как «точно в срок».
+  - Статья `proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika`: заголовок «(Field Audit)» заменен на «выездной технический аудит».
+  - Статья `avtomatizaciya-zakupok-cherez-api-1c`: «парсинг входящих спецификаций» заменен на «разбор входящих спецификаций».
+- **Верификация B2B API и MCP-сервера (`backend/app/mcp_api.py`, `site/public/scripts/tenderlex_mcp.py`)**:
+  - Проверена вся цепочка эндпоинтов: `GET /api/v1/mcp/balance`, `POST /api/v1/mcp/suppliers/search`, `POST /api/v1/mcp/products/exact-analogs`, `POST /api/v1/mcp/procurements/analyze`, `GET /api/v1/mcp/downloads/{filename}`.
+  - В `tenderlex_mcp.py` удалены упоминания устаревшей «Формы 2» согласно правилам AGENTS.md, сохранен строгий порядок модулей (1. Поиск поставщиков, 2. Подбор товара и аналогов, 3. Анализ документации) и формат отчета по аналогам строго в Word (.docx).
+  - Набор автоматических тестов `backend/tests/test_mcp*.py` (14 тестов) пройден со 100% успехом.
+  - Все 825 тестов бэкенда пройдены успешно (100%).
+  - Все 107 страниц Next.js собраны с нулевыми ошибками typecheck.
+  - Боевой деплой на сервере успешно выполнен скриптом `./scripts/deploy_tenderlex_live.sh`.
+
 10 октября (ночь 5): Единый лист Excel со сворачиваемой иерархической структурой строк ([+] / [-]) для многопозиционных закупок:
 - **Отказ от фрагментации на множество вкладок в пользу единого структурированного листа (`backend/app/report_builder.py`)**:
   - Вместо создания десятков отдельных вкладок (`wb.create_sheet`), которые перегружали книгу при закупках на 5-35+ позиций, все позиции теперь объединены на одном удобном рабочем листе «Сводный реестр».

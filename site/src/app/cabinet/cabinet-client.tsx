@@ -2497,7 +2497,7 @@ export function CabinetClient() {
                 setShowApiModal(true);
                 loadCustomerApiKeys();
               }}
-              title="API и интеграции (CRM, ИИ-агенты, MCP, вайб-кодинг)"
+              title="API и интеграции (CRM, 1С, ИИ-ассистенты, MCP)"
             >
               <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>API</span>
@@ -6057,11 +6057,11 @@ ${webLink}`;
                 </div>
               )}
 
-              {/* Tab 3: Для ИИ и вайб-кодинга */}
+              {/* Tab 3: Для ИИ и быстрой разработки */}
               {apiModalTab === "ai_prompt" && (
                 <div className="space-y-3">
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed">
-                    <strong>Инструкция для вайб-кодинга:</strong> скопируйте текст ниже и отправьте в Cursor, Lovable, v0, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
+                    <strong>Инструкция для быстрой разработки и ИИ-ассистентов:</strong> скопируйте текст ниже и отправьте в Cursor, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
                   </div>
 
                   <div className="flex items-center justify-between">

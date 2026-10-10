@@ -170,7 +170,7 @@ export default function ApiIntegrationsPage() {
             <div className="max-w-3xl space-y-5">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-500/10 border border-teal-500/30 text-teal-300 text-xs font-bold uppercase tracking-wider">
                 <Code2 size={13} />
-                <span>B2B API & MCP Protocol</span>
+                <span>Программный интерфейс (API) и протокол MCP</span>
               </div>
 
               <h1 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight leading-tight">

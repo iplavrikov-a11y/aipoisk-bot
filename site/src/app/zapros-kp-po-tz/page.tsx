@@ -16,11 +16,11 @@ import {
 export const metadata: Metadata = {
   title: "Запрос КП по ТЗ — автоматическая подготовка запросов цен",
   description:
-    "Автоматическое составление официального запроса коммерческого предложения (RFQ) по спецификации. Структурированная таблица, объемы, ГОСТы и дедлайн.",
+    "Автоматическое составление официального запроса коммерческого предложения (КП) по спецификации. Структурированная таблица, объемы, ГОСТы и дедлайн.",
   keywords: [
     "запрос КП по ТЗ",
     "генератор запроса коммерческого предложения",
-    "составить RFQ по спецификации",
+    "составить запрос коммерческого предложения по спецификации",
     "шаблон запроса цен поставщикам",
     "TenderLex",
   ],
@@ -59,7 +59,7 @@ export default function ZaprosKpPoTzPage() {
   const schemaFaq = buildFaqJsonLd(faqItems);
   const schemaHowTo = buildHowToJsonLd({
     name: "Как составить запрос КП по ТЗ",
-    description: "Пошаговый процесс автоматического формирования RFQ.",
+    description: "Пошаговый процесс автоматического формирования запроса коммерческого предложения.",
     steps: [
       { name: "Загрузка спецификации", text: "Передайте файл или текст номенклатуры." },
       { name: "ИИ-структурирование", text: "Формирование таблицы параметров и объемов." },
@@ -83,7 +83,7 @@ export default function ZaprosKpPoTzPage() {
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
               <FileText size={14} className="text-teal-600" />
-              <span>Автоматическая генерация текста RFQ</span>
+              <span>Автоматическая генерация текста запроса КП</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">

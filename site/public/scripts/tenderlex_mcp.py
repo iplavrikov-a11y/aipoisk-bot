@@ -80,7 +80,7 @@ TOOLS_DEFINITIONS = [
         "name": "tenderlex_find_exact_and_analogs",
         "description": (
             "Глубокий анализ спецификации по 44-ФЗ и 223-ФЗ: выявление скрытой оригинальной модели производителя, "
-            "построение Формы 2 (сверка параметров 'не менее', 'не более', ГОСТ) и подбор 2–4 проверенных эквивалентных аналогов "
+            "построение таблицы конкретных показателей и характеристик под ТЗ (сверка параметров 'не менее', 'не более', ГОСТ) и подбор 2–4 проверенных эквивалентных аналогов "
             "со ссылкой на официальный DOCX отчет."
         ),
         "inputSchema": {
@@ -238,7 +238,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
             )
             positions = res.get("positions", [])
             lines = [
-                "🔬 **Отчет о подборе точного товара и аналогов (Форма 2)**",
+                "🔬 **Отчет о подборе точного товара и аналогов**",
                 f"**Резюме**: {res.get('summary', '')}",
                 "",
             ]
@@ -261,7 +261,7 @@ def handle_tool_call(name: str, arguments: dict) -> list[dict]:
 
                 specs = pos.get("specs_breakdown", [])
                 if specs:
-                    lines.append("\n**Сверка ключевых параметров (Форма 2):**")
+                    lines.append("\n**Сверка ключевых параметров под ТЗ:**")
                     for sp in specs[:6]:
                         st_icon = "✅" if sp.get("status") == "match" else "⚠️"
                         lines.append(f"- {st_icon} `{sp.get('param_name')}`: ТЗ: *{sp.get('tz_requirement')}* → Факт: *{sp.get('product_fact')}*")

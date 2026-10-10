@@ -340,7 +340,7 @@ export function InteractiveHeroDemo() {
           <div className="flex justify-between items-center">
             <span className="font-extrabold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1">
               <FileText className="w-3.5 h-3.5 text-teal-600" />
-              Сформированный Запрос КП (RFQ):
+              Сформированный запрос коммерческого предложения (КП):
             </span>
             <button
               onClick={handleCopy}
