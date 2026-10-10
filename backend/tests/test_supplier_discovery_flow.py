@@ -765,6 +765,44 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("31.09.1" in query for query in registry_queries))
         self.assertTrue(any("31.09.12.131" in query and "производитель" in query for query in supplier_queries))
 
+    async def test_build_minprom_registry_queries_prioritizes_product_names(self) -> None:
+        profile = supplier_search.ProcurementProfile(
+            summary="Видеонаблюдение и СКУД",
+            items=(
+                supplier_search.ProcurementItem(
+                    id="item-1",
+                    name="Система видеонаблюдения и видеоаналитики",
+                    category_terms=("видеонаблюдение", "камера"),
+                    included_sub_items=("IP-камера", "видеорегистратор"),
+                ),
+                supplier_search.ProcurementItem(
+                    id="item-2",
+                    name="Система контроля и управления доступом (СКУД)",
+                    category_terms=("СКУД", "контроллер"),
+                    included_sub_items=("контроллер СКУД", "считыватель"),
+                ),
+            ),
+        )
+        req = supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition")
+        settings = SimpleNamespace(has_active_ai_provider=True)
+        original_call_llm = supplier_search.call_llm
+
+        async def fake_call_llm(*args: Any, **kwargs: Any) -> str:
+            return '{"queries": ["видеоаналитика", "турникет"]}'
+
+        supplier_search.call_llm = fake_call_llm
+        try:
+            queries = await supplier_search.build_minprom_registry_queries(settings, "контекст", profile, req)
+            self.assertIn("Система видеонаблюдения и видеоаналитики", queries)
+            self.assertIn("видеонаблюдение", queries)
+            self.assertIn("IP-камера", queries)
+            self.assertIn("видеоаналитика", queries)
+            # Ensure product queries appear before any bare code queries
+            cctv_index = queries.index("Система видеонаблюдения и видеоаналитики")
+            self.assertEqual(cctv_index, 0)
+        finally:
+            supplier_search.call_llm = original_call_llm
+
     def test_minprom_comment_claims_are_removed_without_registry_entries(self) -> None:
         context = supplier_search.MinpromRegistryContext(
             requirement=supplier_search.MinpromRegistryRequirement(required=True, measure_type="prohibition"),

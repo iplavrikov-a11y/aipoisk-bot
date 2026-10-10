@@ -525,20 +525,23 @@ async def build_minprom_registry_queries(
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for Minprom registry query generation")
     code_queries = _build_minprom_registry_code_queries(profile)
-    prompt = f"""Сформируй запросы для поиска товара/производителей в реестре российской промышленной продукции Минпромторга/ГИСП.
+    prompt = f"""Сформируй запросы для поиска товара/производителей в локальной базе реестра промышленной продукции Минпромторга/ГИСП.
 
-Нужно искать номенклатуру и производителей, а не номер закупки и не площадку.
-Используй несколько опор: полное наименование товара, очищенную товарную группу, модель/марку, производителя, ИНН/ОГРН, а также ОКПД2.
-Если в профиле есть ОКПД2, добавляй запросы по полному коду и родительским уровням кода, потому что требования ПП 719 могут быть заданы на уровне вида, подгруппы, группы или подкласса.
-Если для товара в ПП 719 есть балльная система, запросы должны помогать найти запись с совокупным количеством баллов и актуальным сроком действия.
+В реестре хранятся:
+- product: точные наименования продукции, оборудования, моделей и типов.
+- manufacturer: наименования заводов-изготовителей.
+- inn: ИНН предприятий.
+
+Запросы должны содержать:
+1. Общеупотребительные технические наименования продукции (например: "камера видеонаблюдения", "видеорегистратор", "контроллер СКУД", "считыватель", "коммутатор", "кабель").
+2. Отраслевые категории и виды оборудования без лишних стоп-слов.
+3. НЕ пиши фразы вроде "реестр Минпромторга", "ПП 719", "баллы" — это локальная база самого реестра, этих слов нет в наименованиях продукции!
+
 Ответ строго JSON:
 {{"queries": ["короткий запрос 1", "короткий запрос 2"]}}
 
-Обязательные кодовые запросы, которые уже нужно учесть:
-{json.dumps(code_queries, ensure_ascii=False)}
-
-Основание требования:
-{json.dumps(_minprom_requirement_to_dict(requirement), ensure_ascii=False)}
+Опорные товарные позиции закупки:
+{json.dumps([item.name for item in profile.items], ensure_ascii=False)}
 
 Профиль закупки:
 {json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
@@ -548,16 +551,41 @@ async def build_minprom_registry_queries(
     raw = await call_llm(
         settings,
         prompt,
-        system_prompt="Ты закупочный исследователь. Формируешь запросы только для реестра Минпромторга/ГИСП.",
+        system_prompt="Ты закупочный исследователь. Формируешь товарные запросы для поиска по базе реестра Минпромторга/ГИСП.",
         tier="light",
         routing_key="minprom_registry_query_generation",
         json_mode=True,
+        temperature=0.0,
         timeout_seconds=90,
         response_validator=None if code_queries else _validate_supplier_queries_response,
     )
     parsed = parse_json_object(raw)
     ai_queries = [str(item).strip() for item in parsed.get("queries", []) if str(item).strip()]
-    return _clean_supplier_queries(code_queries + ai_queries)[:16]
+    product_queries: list[str] = []
+    for item in profile.items:
+        item_name = str(item.name or "").strip()
+        if item_name and len(item_name) >= 3 and item_name not in product_queries:
+            product_queries.append(item_name)
+        for term in item.category_terms:
+            clean_term = str(term or "").strip()
+            if clean_term and len(clean_term) >= 3 and clean_term not in product_queries:
+                product_queries.append(clean_term)
+        for alias in item.aliases:
+            clean_alias = str(alias or "").strip()
+            if clean_alias and len(clean_alias) >= 3 and clean_alias not in product_queries:
+                product_queries.append(clean_alias)
+        for sub_item in item.included_sub_items:
+            clean_sub = str(sub_item or "").strip()
+            if clean_sub and len(clean_sub) >= 3 and clean_sub not in product_queries:
+                product_queries.append(clean_sub)
+    combined: list[str] = []
+    seen: set[str] = set()
+    for q in product_queries + ai_queries + code_queries:
+        ql = q.lower().strip()
+        if ql and ql not in seen:
+            seen.add(ql)
+            combined.append(q)
+    return _clean_supplier_queries(combined)[:32]
 
 
 async def search_minprom_registry_entries(queries: list[str], *, max_results: int = 300) -> list[dict]:
@@ -566,7 +594,7 @@ async def search_minprom_registry_entries(queries: list[str], *, max_results: in
     try:
         return await asyncio.to_thread(
             _search_minprom_registry_entries_local,
-            queries[:24],
+            queries[:32],
             max_results=max_results,
         )
     except Exception as exc:
@@ -589,9 +617,9 @@ async def filter_minprom_registry_entries_for_profile(
             "product": entry.get("product", ""),
             "inn": entry.get("inn", ""),
             "registry_number": entry.get("registry_number", ""),
-            "evidence": entry.get("evidence", ""),
+            "evidence": str(entry.get("evidence", ""))[:200],
         }
-        for index, entry in enumerate(entries)
+        for index, entry in enumerate(entries[:120])
     ]
     prompt = f"""Ты эксперт по закупкам и классификации промышленной продукции (44-ФЗ, 223-ФЗ, ПП 719, ПП 616).
 Оцени кандидатов из официального реестра Минпромторга/ГИСП на соответствие предмету и спецификации закупки.
@@ -621,6 +649,7 @@ async def filter_minprom_registry_entries_for_profile(
         tier="light",
         routing_key="minprom_registry_relevance_filter",
         json_mode=True,
+        temperature=0.0,
         timeout_seconds=90,
     )
     parsed = parse_json_object(raw)
@@ -1490,8 +1519,9 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
    - Для каждой объединенной категории ОБЯЗАТЕЛЬНО заполни "included_sub_items" — точные исходные названия позиций из ТЗ, которые вошли в эту группу (например: ["Несущая направляющая", "Поперечная направляющая", "Подвесы", "Уголок пристенный"]).
 
 2. РАЗДЕЛЕНИЕ НА ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ:
-   - is_core: true — основные бюджетообразующие товары/системы (например: потолочные панели СМЛ, кассеты металлопотолка, кондиционеры, кабельная продукция, стальной прокат).
+   - is_core: true — основные бюджетообразующие товары/системы (например: потолочные панели СМЛ, кассеты металлопотолка, кондиционеры, силовой кабель при самостоятельной закупке, стальной прокат).
    - is_auxiliary: true — сопутствующие комплектующие, мелкий монтажный крепеж, метизы, расходники. Если они привязаны к основной системе, включай их в included_sub_items этой системы. Не создавай под копеечные метизы/подвесы самостоятельные изолированные категории поиска, если они идут с основной номенклатурой.
+   - Коммутационный кабель и проводка: если кабель (UTP/витая пара, сигнальный КСПВ, патч-корды, установочный провод) закупается вместе со слаботочным/сетевым оборудованием (системы видеонаблюдения, СКУД, ЛВС, сигнализация), включай его в сопутствующие монтажные материалы этой системы ("Сетевое оборудование и монтажные комплектующие"). Не создавай отдельную категорию «Кабельная продукция», если это просто монтажный кабель для подключаемых приборов.
    - cost_tier: "high" (основной бюджет, дорогой товар), "medium" (стандартный товар), "low" (сопутствующие, мелкие доборы/метизы).
 
 3. РАЗНОРОДНЫЕ ТОВАРНЫЕ ГРУППЫ:
@@ -1539,6 +1569,7 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
                 tier="primary",
                 routing_key="supplier_procurement_profile",
                 json_mode=True,
+                temperature=0.0,
                 timeout_seconds=90,
                 response_validator=_validate_procurement_profile_response,
             )
