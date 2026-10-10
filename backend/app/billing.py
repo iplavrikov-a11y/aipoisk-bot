@@ -651,6 +651,59 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
     db.commit()
 
 
+def reserve_additional_job_units(
+    db: Session,
+    client: Client,
+    job: Job,
+    additional_units: int,
+    *,
+    kind: str = KIND_SUPPLIER_SEARCH,
+) -> None:
+    if additional_units <= 0:
+        return
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
+        units_to_reserve = {kind: additional_units}
+        error = access_error_for_units(db, client, units_to_reserve)
+        if error:
+            raise BillingError(error)
+        amount = _reservable_amount_for_kind(db, client, kind, additional_units)
+        if amount > 0:
+            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
+        existing_tx = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.job_id == job.id,
+                BillingTransaction.kind == kind,
+                BillingTransaction.operation == OP_RESERVE,
+            )
+            .first()
+        )
+        if existing_tx:
+            existing_tx.units = int(existing_tx.units or 0) + additional_units
+            existing_tx.amount_kopeks = int(existing_tx.amount_kopeks or 0) + amount
+            existing_tx.reserved_after_kopeks = max(0, int(client.money_reserved_kopeks or 0))
+            existing_tx.balance_after_kopeks = max(0, int(client.money_balance_kopeks or 0))
+            existing_tx.note = f"Резерв для попозиционного поиска ({existing_tx.units} поз.)"
+        else:
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    job_id=job.id,
+                    kind=kind,
+                    operation=OP_RESERVE,
+                    units=additional_units,
+                    amount_kopeks=amount,
+                    balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                    reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                    note=f"Дополнительный резерв для попозиционного поиска ({additional_units} поз.)" if amount > 0 else f"Резерв для попозиционного поиска ({additional_units} поз.)",
+                    created_by="system",
+                )
+            )
+        db.commit()
+
+
 def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: int) -> int:
     price = effective_price_kopeks(db, client, kind)
     amount = price * max(0, int(count or 0))

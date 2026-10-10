@@ -1270,6 +1270,13 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         db.commit()
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
+    active_profile_dict = dobor_ctx.get("procurement_profile")
+    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
+        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+        items = active_profile_dict.get("items") or []
+        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
+        if filtered_items:
+            active_profile_dict = dict(active_profile_dict, items=filtered_items)
     try:
         discovery_coro = discover_suppliers(
             settings,
@@ -1279,7 +1286,7 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             excluded_suppliers=excluded_suppliers,
             supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
             preloaded_candidates=dobor_ctx.get("unreviewed_candidates"),
-            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            cached_procurement_profile=active_profile_dict,
             executed_queries=dobor_ctx.get("executed_queries"),
             additional_prompt=dobor_ctx.get("additional_prompt", ""),
             is_extend=is_extend,
@@ -1667,6 +1674,13 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
     _set_job(db, job, progress=45, message="Ищу поставщиков по ТЗ из документации")
 
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
+    active_profile_dict = dobor_ctx.get("procurement_profile")
+    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
+        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+        items = active_profile_dict.get("items") or []
+        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
+        if filtered_items:
+            active_profile_dict = dict(active_profile_dict, items=filtered_items)
 
     async def progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id)
@@ -1680,7 +1694,7 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             job.target_suppliers,
             progress_callback=progress_callback,
             supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
-            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            cached_procurement_profile=active_profile_dict,
             multi_item_mode=multi_item_mode,
         )
     except TypeError:

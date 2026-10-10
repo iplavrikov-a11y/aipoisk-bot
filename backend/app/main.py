@@ -1267,7 +1267,7 @@ def customer_decline_partial_route(
 
 
 @app.post("/api/customer/jobs/{job_id}/choose-strategy")
-def customer_choose_strategy_route(
+async def customer_choose_strategy_route(
     job_id: str,
     request: Request,
     multi_item_mode: str = Query(default="balanced"),
@@ -1275,9 +1275,22 @@ def customer_choose_strategy_route(
     db: Session = Depends(db_session),
 ) -> dict:
     require_customer_csrf(request, context)
+    selected_item_ids: list[str] | None = None
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            if isinstance(body, dict):
+                if "multi_item_mode" in body:
+                    multi_item_mode = str(body["multi_item_mode"] or multi_item_mode)
+                if "selected_item_ids" in body and isinstance(body["selected_item_ids"], list):
+                    selected_item_ids = [str(x).strip() for x in body["selected_item_ids"] if str(x).strip()]
+    except Exception:
+        pass
     return choose_customer_multi_item_strategy_api(
         job_id,
         multi_item_mode=multi_item_mode,
+        selected_item_ids=selected_item_ids,
         context=context,
         db=db,
     )
@@ -3845,11 +3858,16 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         multi_item_details = {
             "items": [
                 {
+                    "id": str(it.get("id") or f"item-{idx}"),
                     "name": str(it.get("name") or ""),
                     "quantity": str(it.get("quantity") or ""),
                     "unit": str(it.get("unit") or ""),
+                    "is_core": bool(it.get("is_core", True)),
+                    "is_auxiliary": bool(it.get("is_auxiliary", False)),
+                    "included_sub_items": list(it.get("included_sub_items") or []),
+                    "cost_tier": str(it.get("cost_tier") or "medium"),
                 }
-                for it in raw_items
+                for idx, it in enumerate(raw_items)
                 if isinstance(it, dict) and (it.get("name") or it.get("title"))
             ],
             "total_items": len(raw_items),
@@ -4284,6 +4302,7 @@ def choose_customer_multi_item_strategy_api(
     job_id: str,
     *,
     multi_item_mode: str,
+    selected_item_ids: list[str] | None = None,
     context: WebAuthContext,
     db: Session,
 ) -> dict:
@@ -4296,8 +4315,37 @@ def choose_customer_multi_item_strategy_api(
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
-    job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
-    update_dobor_context_dict(job, {"multi_item_confirmed": True})
+
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    raw_items = profile_dict.get("items") or []
+
+    final_selected_ids: list[str] | None = None
+    if normalized == "per_item":
+        if selected_item_ids:
+            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
+            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
+            if valid_ids:
+                final_selected_ids = valid_ids
+        target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
+        if target_count > 1 and job.client:
+            from .billing import reserve_additional_job_units, BillingError
+            try:
+                reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
+            except BillingError as err:
+                raise HTTPException(status_code=402, detail=str(err))
+
+        job.message = f"Выбран режим: Попозиционный глубокий ({target_count} поз.). Возобновляю поиск..."
+    else:
+        job.message = "Выбран режим: Сбалансированный. Возобновляю поиск..."
+
+    update_dobor_context_dict(
+        job,
+        {
+            "multi_item_confirmed": True,
+            "selected_item_ids": final_selected_ids,
+        },
+    )
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": customer_job_to_dict(job, db=db)}
@@ -4307,6 +4355,7 @@ def choose_admin_multi_item_strategy_api(
     job_id: str,
     *,
     multi_item_mode: str,
+    selected_item_ids: list[str] | None = None,
     db: Session,
 ) -> dict:
     job = db.get(Job, job_id)
@@ -4320,8 +4369,37 @@ def choose_admin_multi_item_strategy_api(
     job.confirmation_outcome = "accepted"
     job.status = "pending"
     job.progress = 32
-    job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
-    update_dobor_context_dict(job, {"multi_item_confirmed": True})
+
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    raw_items = profile_dict.get("items") or []
+
+    final_selected_ids: list[str] | None = None
+    if normalized == "per_item":
+        if selected_item_ids:
+            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
+            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
+            if valid_ids:
+                final_selected_ids = valid_ids
+        target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
+        if target_count > 1 and job.client:
+            from .billing import reserve_additional_job_units, BillingError
+            try:
+                reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
+            except BillingError as err:
+                raise HTTPException(status_code=402, detail=str(err))
+
+        job.message = f"Выбран режим: Попозиционный глубокий ({target_count} поз.). Возобновляю поиск..."
+    else:
+        job.message = "Выбран режим: Сбалансированный. Возобновляю поиск..."
+
+    update_dobor_context_dict(
+        job,
+        {
+            "multi_item_confirmed": True,
+            "selected_item_ids": final_selected_ids,
+        },
+    )
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": job_to_dict(job, db=db)}

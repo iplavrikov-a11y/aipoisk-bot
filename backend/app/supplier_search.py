@@ -259,6 +259,10 @@ class ProcurementItem:
     exact_terms: tuple[str, ...] = ()
     required_terms: tuple[str, ...] = ()
     excluded_terms: tuple[str, ...] = ()
+    is_core: bool = True
+    is_auxiliary: bool = False
+    included_sub_items: tuple[str, ...] = ()
+    cost_tier: str = "medium"
 
 
 @dataclass(frozen=True)
@@ -1479,13 +1483,23 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
         raise RuntimeError("AI provider is required for procurement profile extraction")
     prompt = f"""Извлеки из технического задания профиль закупки для поиска поставщиков.
 
-Нужно отделить закупаемые позиции от условий поставки, адресов, сроков, форм документов, стандартов, служебных кодов, комплектующих и расходников.
-Для поиска поставщиков важно отделить широкую товарную группу/номенклатуру от точных характеристик.
-Например, если ТЗ требует "канат стальной 31 мм ЛК-РО", товарная группа — "стальные канаты" / "канатная продукция", а "31 мм", "ЛК-РО", "ГОСТ" — точные характеристики для проверки и части запросов.
-Если ТЗ требует краску без конкретной торговой марки, ищи категорию "краски/лакокрасочные материалы", а не одну точную позицию.
-Если комплектующая или расходник закупаются как самостоятельная позиция, включи их отдельной позицией. Иначе добавь в excluded_terms.
-В okpd2_codes добавляй только коды, явно подписанные как ОКПД2/ОКПД. Не добавляй туда номера ГОСТ, РД, СП, СНиП, ФЗ, ТУ или методик.
-КРИТИЧНО: НЕ выдумывай характеристики, функции и технологии, которых нет в ТЗ (не подменяй основной технологический процесс смежными или вспомогательными операциями). Строго опирайся на текст ТЗ.
+ПРАВИЛА КЛАСТЕРИЗАЦИИ И ВЫДЕЛЕНИЯ ПОЗИЦИЙ ДЛЯ СНАБЖЕНИЯ:
+1. ОБЪЕДИНЕНИЕ В СИСТЕМЫ И ПУЛЫ ПОСТАВЩИКОВ:
+   - Если несколько позиций ТЗ относятся к одной конструктивной или инженерной системе (например: профили потолочные несущие и поперечные, подвесы, шплинты, пристенные уголки; либо кабельные лотки, консоли и крышки; либо трубы, фитинги и прокладки) — объединяй их в ЕДИНУЮ категорию для поиска поставщиков!
+   - Заводы и дистрибьюторы выпускают и поставляют системы КОМПЛЕКТНО. Не дроби единую систему на 5 отдельных пунктов (отдельно подвесы, отдельно направляющие, отдельно уголки).
+   - Для каждой объединенной категории ОБЯЗАТЕЛЬНО заполни "included_sub_items" — точные исходные названия позиций из ТЗ, которые вошли в эту группу (например: ["Несущая направляющая", "Поперечная направляющая", "Подвесы", "Уголок пристенный"]).
+
+2. РАЗДЕЛЕНИЕ НА ОСНОВНЫЕ И СОПУТСТВУЮЩИЕ:
+   - is_core: true — основные бюджетообразующие товары/системы (например: потолочные панели СМЛ, кассеты металлопотолка, кондиционеры, кабельная продукция, стальной прокат).
+   - is_auxiliary: true — сопутствующие комплектующие, мелкий монтажный крепеж, метизы, расходники. Если они привязаны к основной системе, включай их в included_sub_items этой системы. Не создавай под копеечные метизы/подвесы самостоятельные изолированные категории поиска, если они идут с основной номенклатурой.
+   - cost_tier: "high" (основной бюджет, дорогой товар), "medium" (стандартный товар), "low" (сопутствующие, мелкие доборы/метизы).
+
+3. РАЗНОРОДНЫЕ ТОВАРНЫЕ ГРУППЫ:
+   - Если в ТЗ действительно разные рынки поставщиков (например, подвесной потолок — общестроительные отделочные материалы, а алюминиевый LED-профиль — светотехника/электромонтаж), выделяй их в разные категории с is_core=true.
+
+4. СЛУЖЕБНАЯ ИНФОРМАЦИЯ:
+   - Условия поставки, адреса, сроки, ГОСТы, гарантии, сертификаты выноси в excluded_terms.
+   - В okpd2_codes добавляй только явные коды ОКПД2/ОКПД из ТЗ. Не выдумывай коды.
 
 Ответ строго JSON:
 {{
@@ -1493,13 +1507,17 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
   "items": [
     {{
       "id": "item-1",
-      "name": "основная закупаемая позиция",
+      "name": "название укрупненной товарной категории для поиска поставщиков",
+      "is_core": true,
+      "is_auxiliary": false,
+      "cost_tier": "high",
+      "included_sub_items": ["названия исходных строк ТЗ, объединенных в эту категорию"],
       "aliases": ["марки, модели, русские/английские варианты, аналоги"],
       "okpd2_codes": ["ОКПД2 коды из ТЗ/карточки, если есть"],
-      "category_terms": ["широкая товарная группа/номенклатура для поиска производителей и поставщиков"],
-      "exact_terms": ["точные размеры, ГОСТ, тип, марка, модель, артикул, если они важны"],
-      "required_terms": ["термины, которые помогают подтвердить соответствие сайта"],
-      "excluded_terms": ["что не считать самостоятельным предметом поиска"]
+      "category_terms": ["широкая товарная группа для поиска производителей и поставщиков"],
+      "exact_terms": ["точные размеры, ГОСТ, тип, марка, артикул"],
+      "required_terms": ["термины, которые помогают подтвердить соответствие сайта поставщика"],
+      "excluded_terms": ["что исключить"]
     }}
   ],
   "excluded_terms": ["общие исключения по ТЗ"]
@@ -2579,6 +2597,14 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
             continue
         item_context = f"{name} {' '.join(str(value) for value in item.values())}"
         item_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(item.get("id") or f"item-{index}")).strip("-").lower() or f"item-{index}"
+        is_core = bool(item.get("is_core", True))
+        is_auxiliary = bool(item.get("is_auxiliary", False))
+        if is_auxiliary:
+            is_core = False
+        included_sub_items = _clean_profile_terms(item.get("included_sub_items"))
+        cost_tier = str(item.get("cost_tier") or ("auxiliary" if is_auxiliary else "medium")).lower()
+        if cost_tier not in {"high", "medium", "low", "auxiliary"}:
+            cost_tier = "auxiliary" if is_auxiliary else "medium"
         items.append(
             ProcurementItem(
                 id=item_id,
@@ -2598,6 +2624,10 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 exact_terms=_clean_profile_terms(item.get("exact_terms") or item.get("strict_terms") or item.get("spec_terms")),
                 required_terms=_clean_profile_terms(item.get("required_terms") or item.get("search_terms")),
                 excluded_terms=_clean_profile_terms(item.get("excluded_terms")),
+                is_core=is_core,
+                is_auxiliary=is_auxiliary,
+                included_sub_items=included_sub_items,
+                cost_tier=cost_tier,
             )
         )
     summary = re.sub(r"\s+", " ", str(data.get("summary") or "")).strip() if isinstance(data, dict) else ""
@@ -2734,6 +2764,10 @@ def _profile_to_dict(profile: ProcurementProfile) -> dict:
                 "exact_terms": list(item.exact_terms),
                 "required_terms": list(item.required_terms),
                 "excluded_terms": list(item.excluded_terms),
+                "is_core": bool(getattr(item, "is_core", True)),
+                "is_auxiliary": bool(getattr(item, "is_auxiliary", False)),
+                "included_sub_items": list(getattr(item, "included_sub_items", ())),
+                "cost_tier": str(getattr(item, "cost_tier", "medium")),
             }
             for item in profile.items
         ],
@@ -5528,6 +5562,10 @@ def _merge_deterministic_okpd2(profile: ProcurementProfile, text: str) -> Procur
                 exact_terms=item.exact_terms,
                 required_terms=item.required_terms,
                 excluded_terms=item.excluded_terms,
+                is_core=getattr(item, "is_core", True),
+                is_auxiliary=getattr(item, "is_auxiliary", False),
+                included_sub_items=getattr(item, "included_sub_items", ()),
+                cost_tier=getattr(item, "cost_tier", "medium"),
             )
         )
     return ProcurementProfile(

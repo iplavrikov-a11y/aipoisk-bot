@@ -236,7 +236,16 @@ type CustomerJob = {
   awaiting_customer_confirmation: boolean;
   confirmation_kind?: string;
   multi_item_details?: {
-    items?: Array<{ name: string; quantity?: string; unit?: string }>;
+    items?: Array<{
+      id?: string;
+      name: string;
+      quantity?: string;
+      unit?: string;
+      is_core?: boolean;
+      is_auxiliary?: boolean;
+      included_sub_items?: string[];
+      cost_tier?: string;
+    }>;
     total_items?: number;
   } | null;
   error: string;
@@ -916,6 +925,7 @@ export function CabinetClient() {
   const [retryMultiItemMode, setRetryMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
   const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
+  const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1732,20 +1742,28 @@ export function CabinetClient() {
     }
   }
 
-  async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item") {
+  async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item", itemIds?: string[]) {
     if (!csrf) return;
     setBusy(true);
     setError("");
     setStrategyConfirmJob(null);
     try {
-      const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy?multi_item_mode=${encodeURIComponent(mode)}`, {
+      const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
         method: "POST",
         credentials: "same-origin",
-        headers: { "x-csrf-token": csrf },
+        headers: {
+          "x-csrf-token": csrf,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          multi_item_mode: mode,
+          selected_item_ids: mode === "per_item" ? itemIds : undefined,
+        }),
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
       await readJson(response);
-      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : "Попозиционный поиск"}). Поиск поставщиков продолжается.`);
+      const countLabel = mode === "per_item" && itemIds?.length ? ` (${itemIds.length} поз.)` : "";
+      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -2899,6 +2917,9 @@ export function CabinetClient() {
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
+                              const items = job.multi_item_details?.items || [];
+                              const initialIds = items.map((it, idx) => it.id || `item-${idx}`);
+                              setSelectedStrategyItemIds(initialIds);
                               setSelectedStrategyMode(job.multi_item_mode === "per_item" ? "per_item" : "balanced");
                               setStrategyConfirmJob(job);
                             }}
@@ -3545,32 +3566,118 @@ export function CabinetClient() {
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
               {/* Detected Items Card */}
               {strategyConfirmJob.multi_item_details?.items && strategyConfirmJob.multi_item_details.items.length > 0 ? (
-                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-2">
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                       <Sparkles size={14} className="text-teal-600" aria-hidden="true" />
-                      <span>Обнаружено позиций в спецификации:</span>
+                      <span>Выделено категорий снабжения:</span>
                       <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-[11px] font-extrabold">
                         {strategyConfirmJob.multi_item_details.total_items || strategyConfirmJob.multi_item_details.items.length}
                       </span>
                     </span>
-                    <span className="text-[11px] text-slate-400 hidden sm:inline">
-                      Система выделила отдельные товары
-                    </span>
-                  </div>
-                  <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
-                    {strategyConfirmJob.multi_item_details.items.map((it, idx) => (
-                      <div key={idx} className="flex items-center justify-between text-xs bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/70">
-                        <span className="font-semibold text-slate-800 truncate pr-2">
-                          {idx + 1}. {it.name}
-                        </span>
-                        {it.quantity ? (
-                          <span className="text-slate-500 font-medium shrink-0 text-[11px]">
-                            {it.quantity} {it.unit || "шт."}
-                          </span>
-                        ) : null}
+                    {selectedStrategyMode === "per_item" ? (
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allIds = strategyConfirmJob.multi_item_details?.items?.map((it, idx) => it.id || `item-${idx}`) || [];
+                            setSelectedStrategyItemIds(allIds);
+                          }}
+                          className="text-teal-700 hover:text-teal-800 font-bold hover:underline cursor-pointer"
+                        >
+                          Выбрать все
+                        </button>
+                        <span className="text-slate-300">·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const coreIds = (strategyConfirmJob.multi_item_details?.items || [])
+                              .filter(it => it.is_core !== false && !it.is_auxiliary)
+                              .map((it, idx) => it.id || `item-${idx}`);
+                            setSelectedStrategyItemIds(coreIds.length > 0 ? coreIds : (strategyConfirmJob.multi_item_details?.items?.map((it, idx) => it.id || `item-${idx}`) || []));
+                          }}
+                          className="text-teal-700 hover:text-teal-800 font-bold hover:underline cursor-pointer"
+                        >
+                          Только основные
+                        </button>
                       </div>
-                    ))}
+                    ) : (
+                      <span className="text-[11px] text-slate-400 hidden sm:inline">
+                        Кластеризовано по пулам поставщиков
+                      </span>
+                    )}
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                    {strategyConfirmJob.multi_item_details.items.map((it, idx) => {
+                      const itemId = it.id || `item-${idx}`;
+                      const isChecked = selectedStrategyItemIds.includes(itemId);
+                      const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
+                      return (
+                        <div
+                          key={itemId}
+                          onClick={() => {
+                            if (selectedStrategyMode !== "per_item") return;
+                            if (isChecked) {
+                              setSelectedStrategyItemIds(selectedStrategyItemIds.filter(id => id !== itemId));
+                            } else {
+                              setSelectedStrategyItemIds([...selectedStrategyItemIds, itemId]);
+                            }
+                          }}
+                          className={`flex flex-col text-xs bg-white p-2.5 rounded-xl border transition-all ${
+                            selectedStrategyMode === "per_item"
+                              ? isChecked
+                                ? "border-teal-400 bg-teal-50/20 shadow-2xs cursor-pointer"
+                                : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300 cursor-pointer"
+                              : "border-slate-200/70"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {selectedStrategyMode === "per_item" ? (
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    if (e.target.checked) {
+                                      setSelectedStrategyItemIds([...selectedStrategyItemIds, itemId]);
+                                    } else {
+                                      setSelectedStrategyItemIds(selectedStrategyItemIds.filter(id => id !== itemId));
+                                    }
+                                  }}
+                                  className="w-4 h-4 rounded text-teal-600 border-slate-300 focus:ring-teal-500 cursor-pointer shrink-0"
+                                />
+                              ) : null}
+                              <span className="font-bold text-slate-800 truncate">
+                                {idx + 1}. {it.name}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isAuxiliary ? (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/70">
+                                  Комплектующие
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200/70">
+                                  Основная
+                                </span>
+                              )}
+                              {it.quantity ? (
+                                <span className="text-slate-500 font-medium text-[11px]">
+                                  {it.quantity} {it.unit || "шт."}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          {it.included_sub_items && it.included_sub_items.length > 0 ? (
+                            <div className="mt-1 text-[11px] text-slate-500 pl-2 sm:pl-6 border-l-2 border-teal-200/70">
+                              <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
+                              <span>{it.included_sub_items.join(" · ")}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}
@@ -3630,11 +3737,15 @@ export function CabinetClient() {
                           🔍 Попозиционный глубокий поиск
                         </strong>
                         <span className="text-[11px] font-bold text-amber-800 bg-amber-100/70 px-2 py-0.5 rounded-full shrink-0">
-                          {strategyConfirmJob.multi_item_details?.total_items || (strategyConfirmJob.multi_item_details?.items?.length || 2)} списания
+                          {selectedStrategyItemIds.length === 0
+                            ? "Ничего не выбрано"
+                            : selectedStrategyItemIds.length === 1
+                            ? "1 позиция (1 списание)"
+                            : `${selectedStrategyItemIds.length} поз. (${selectedStrategyItemIds.length} списания)`}
                         </span>
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
-                        Независимый глубокий поиск поставщиков отдельно по каждой позиции спецификации (по каждой позиции отдельный детальный сбор пула поставщиков с проверкой сайтов). В Excel формируются детальные вкладки по позициям и единый сводный Запрос КП (.docx).
+                        Независимый глубокий поиск поставщиков отдельно по выбранным позициям спецификации (по каждой выбранной категории отдельный детальный сбор пула поставщиков). В Excel формируются детальные вкладки по позициям и единый сводный Запрос КП (.docx).
                       </p>
                     </div>
                   </button>
@@ -3668,8 +3779,8 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                  onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode)}
-                  disabled={busy}
+                  onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode, selectedStrategyItemIds)}
+                  disabled={busy || (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)}
                 >
                   {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
                   <span>Применить стратегию</span>
