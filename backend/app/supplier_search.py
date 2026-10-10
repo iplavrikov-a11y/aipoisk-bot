@@ -3838,10 +3838,8 @@ def _accepted_supplier_results(
                     continue
                 for result in sorted_verified:
                     if _res_matches_item(result, item):
-                        if not result.get("procurement_item"):
-                            result["procurement_item"] = item.name
-                        if not result.get("procurement_item_id"):
-                            result["procurement_item_id"] = item.id
+                        result["procurement_item"] = item.name
+                        result["procurement_item_id"] = item.id
                         if add_result(result):
                             item_accepted_counts[item.id] += 1
                             any_added = True
@@ -3856,6 +3854,16 @@ def _accepted_supplier_results(
         else target
     )
     for result in sorted_verified:
+        if profile and len(profile.items) > 1:
+            for item in profile.items:
+                if _res_matches_item(result, item):
+                    result["procurement_item"] = item.name
+                    result["procurement_item_id"] = item.id
+                    break
+            else:
+                if profile.items:
+                    result["procurement_item"] = profile.items[0].name
+                    result["procurement_item_id"] = profile.items[0].id
         add_result(result)
         if limit_to_target and len(accepted) >= overflow_limit:
             break

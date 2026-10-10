@@ -289,11 +289,16 @@ def _safe_sheet_title(name: str, index: int, existing_titles: set[str]) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned)
     if not cleaned:
         cleaned = f"Позиция {index}"
-    title = cleaned[:26]
+    cleaned = re.sub(r"^\d+[\.\)]\s*", "", cleaned)
+    prefix = f"{index}. "
+    max_len = 31 - len(prefix)
+    title = f"{prefix}{cleaned[:max_len].strip()}"
     candidate = title
     suffix = 1
     while candidate in existing_titles or not candidate:
-        candidate = f"{title[:22]} ({suffix})"
+        extra = f" ({suffix})"
+        max_sub = 31 - len(prefix) - len(extra)
+        candidate = f"{prefix}{cleaned[:max_sub].strip()}{extra}"
         suffix += 1
     existing_titles.add(candidate)
     return candidate
@@ -420,16 +425,95 @@ def _populate_supplier_sheet(
         ws.column_dimensions[get_column_letter(column)].width = width
 
 
-def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
+def write_supplier_xlsx(
+    path: str | Path,
+    rows: list[dict],
+    *,
+    title: str,
+    target: int,
+    subject: str = "",
+    policy: str = "",
+    profile: dict | None = None,
+) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    distinct_items: list[str] = []
-    for r in rows:
-        p_item = _clean_comment_text(r.get("procurement_item") or "")
-        if p_item and p_item not in distinct_items:
-            distinct_items.append(p_item)
+    profile_items: list[dict] = []
+    if isinstance(profile, dict) and isinstance(profile.get("items"), list):
+        profile_items = [it for it in profile["items"] if isinstance(it, dict) and (it.get("name") or it.get("title"))]
+
+    if profile_items:
+        canonical_names = [str(it.get("name") or it.get("title")).strip() for it in profile_items]
+
+        def _match_row_to_profile(r: dict) -> str:
+            raw_id = str(r.get("procurement_item_id") or "").strip().lower()
+            raw_p = _clean_comment_text(r.get("procurement_item") or "")
+            raw_p_lower = raw_p.lower()
+
+            parts = [p.strip() for p in raw_id.replace(",", " ").split() if p.strip()]
+            matched_by_id = [it for it in profile_items if str(it.get("id") or "").strip().lower() in parts]
+            if len(matched_by_id) == 1:
+                return str(matched_by_id[0].get("name") or matched_by_id[0].get("title")).strip()
+
+            q = str(r.get("search_query") or "").lower()
+            product_txt = str(r.get("product") or "").lower()
+            combined_txt = f"{raw_p_lower} {q} {product_txt}"
+
+            scores: list[tuple[int, str]] = []
+            for it in profile_items:
+                score = 0
+                it_name = str(it.get("name") or it.get("title")).strip().lower()
+                if it_name in combined_txt:
+                    score += 5
+                terms = [str(t).lower() for t in (it.get("category_terms") or []) + (it.get("aliases") or []) + (it.get("exact_terms") or [])]
+                for term in terms:
+                    if term and term in combined_txt:
+                        score += 2
+                scores.append((score, str(it.get("name") or it.get("title")).strip()))
+
+            scores.sort(key=lambda s: -s[0])
+            if scores and scores[0][0] > 0:
+                return scores[0][1]
+
+            if matched_by_id:
+                return str(matched_by_id[0].get("name") or matched_by_id[0].get("title")).strip()
+            return canonical_names[0]
+
+        for r in rows:
+            r["procurement_item"] = _match_row_to_profile(r)
+
+        distinct_items = [name for name in canonical_names if any(r.get("procurement_item") == name for r in rows)]
+        for r in rows:
+            p_item = r.get("procurement_item")
+            if p_item and p_item not in distinct_items:
+                distinct_items.append(p_item)
+    else:
+        raw_distinct: list[str] = []
+        for r in rows:
+            p_item = _clean_comment_text(r.get("procurement_item") or "")
+            if p_item and p_item not in raw_distinct:
+                raw_distinct.append(p_item)
+
+        distinct_items = []
+        cluster_map: dict[str, str] = {}
+        for item in raw_distinct:
+            matched_cluster = None
+            for existing in distinct_items:
+                if existing.lower() in item.lower() or item.lower() in existing.lower() or existing[:20].lower() == item[:20].lower():
+                    matched_cluster = existing
+                    break
+            if matched_cluster:
+                cluster_map[item] = matched_cluster
+            else:
+                distinct_items.append(item)
+                cluster_map[item] = item
+
+        for r in rows:
+            p_item = _clean_comment_text(r.get("procurement_item") or "")
+            if p_item in cluster_map:
+                r["procurement_item"] = cluster_map[p_item]
+
     is_multi = len(distinct_items) > 1
 
     # If multi-item, group rows by position

@@ -572,6 +572,37 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertNotIn("Запрос КП", wb.sheetnames)
             wb.close()
 
+    def test_supplier_xlsx_multi_item_canonical_sheets(self) -> None:
+        profile = {
+            "items": [
+                {"id": "item-1", "name": "Резинотехнические изделия (ремни и ленты)", "aliases": ["РТИ", "ленты"]},
+                {"id": "item-2", "name": "Клей и отвердитель для стыковки", "aliases": ["клей", "стыковка"]},
+            ]
+        }
+        rows = [
+            {"company_name": "ООО Лента", "product_fit": "exact", "procurement_item_id": "item-1", "procurement_item": "РТИ и ленты"},
+            {"company_name": "ООО КлейПром", "product_fit": "exact", "procurement_item_id": "item-2", "procurement_item": "Клей и отвердитель"},
+            {"company_name": "ООО Комплект", "product_fit": "exact", "procurement_item_id": "item-1, item-2", "procurement_item": "РТИ и клей"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_multi.xlsx"
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="РТИ и клей",
+                target=3,
+                profile=profile,
+            )
+
+            wb = load_workbook(path)
+            # Should have exactly: main sheet + 2 position sheets with clean prefixes
+            self.assertEqual(len(wb.sheetnames), 3)
+            self.assertEqual(wb.sheetnames[0], "Поставщики")
+            self.assertTrue(wb.sheetnames[1].startswith("1. "))
+            self.assertTrue(wb.sheetnames[2].startswith("2. "))
+            self.assertIn("Клей", wb.sheetnames[2])
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

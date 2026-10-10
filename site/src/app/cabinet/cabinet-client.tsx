@@ -279,6 +279,9 @@ type QuoteRequestModal = {
   html: string;
   filename: string;
   copied: boolean;
+  rawMarkdown?: string;
+  items?: Array<{ index: number; name: string }>;
+  selectedItemIndex?: number | null;
 };
 
 type ActiveToast = {
@@ -614,11 +617,33 @@ function escapeHtml(value: string) {
 
 function formatInlineMarkdown(value: string) {
   return escapeHtml(value)
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br />")
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/__(.*?)__/g, "<strong>$1</strong>");
 }
 
-function quoteMarkdownToHtml(markdown: string) {
+function extractQuoteTableItems(markdown: string): Array<{ index: number; name: string }> {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const tableRows: string[][] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      const compact = trimmed.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+      if (!compact) continue;
+      tableRows.push(trimmed.slice(1, -1).split("|").map((cell) => cell.trim()));
+    }
+  }
+  if (tableRows.length < 2) return [];
+  const [header, ...body] = normalizeQuoteTableRows(tableRows);
+  const nameIdx = quoteColumnIndex(header, ["наименование", "товар", "позиция", "предмет"]);
+  if (nameIdx < 0) return [];
+  return body.map((row, i) => ({
+    index: i,
+    name: quoteCell(row, nameIdx) || `Позиция ${i + 1}`,
+  })).filter((item) => Boolean(item.name));
+}
+
+function quoteMarkdownToHtml(markdown: string, selectedRowIndex?: number | null) {
   const value = String(markdown || "").trim();
   if (!value) return "<p></p>";
   const lines = value.split(/\r?\n/);
@@ -635,12 +660,16 @@ function quoteMarkdownToHtml(markdown: string) {
   const flushTable = () => {
     if (!tableRows.length) return;
     const [header, ...body] = normalizeQuoteTableRows(tableRows);
+    const filteredBody =
+      typeof selectedRowIndex === "number" && selectedRowIndex >= 0 && selectedRowIndex < body.length
+        ? [body[selectedRowIndex].map((c, i) => (i === 0 ? "1" : c))]
+        : body;
     html.push(
       `<div style="overflow-x:auto;margin:14px 0;"><table style="width:100%;border-collapse:collapse;font-size:12px;font-family:system-ui,-apple-system,sans-serif;border:1px solid #CBD5E1;background-color:#FFFFFF;">` +
       `<thead style="background-color:#F1F5F9;"><tr style="border-bottom:2px solid #CBD5E1;">` +
       header.map((cell) => `<th style="padding:9px 12px;text-align:left;font-weight:700;color:#0F172A;border:1px solid #CBD5E1;">${formatInlineMarkdown(cell)}</th>`).join("") +
       `</tr></thead><tbody>` +
-      body.map((row) => `<tr style="border-bottom:1px solid #E2E8F0;">` + row.map((cell) => `<td style="padding:9px 12px;color:#334155;border:1px solid #E2E8F0;vertical-align:top;">${formatInlineMarkdown(cell)}</td>`).join("") + `</tr>`).join("") +
+      filteredBody.map((row) => `<tr style="border-bottom:1px solid #E2E8F0;">` + row.map((cell) => `<td style="padding:9px 12px;color:#334155;border:1px solid #E2E8F0;vertical-align:top;">${formatInlineMarkdown(cell)}</td>`).join("") + `</tr>`).join("") +
       `</tbody></table></div>`
     );
     tableRows = [];
@@ -680,7 +709,11 @@ function quoteMarkdownToHtml(markdown: string) {
 }
 
 function cellsText(row: HTMLTableRowElement) {
-  return Array.from(row.querySelectorAll("th,td")).map((cell) => (cell.textContent || "").replace(/\s+/g, " ").trim());
+  return Array.from(row.querySelectorAll("th,td")).map((cell) => {
+    const clone = cell.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return (clone.textContent || "").replace(/[ \t]+/g, " ").trim();
+  });
 }
 
 function quotePlainText(value: string | null | undefined) {
@@ -1106,6 +1139,8 @@ export function CabinetClient() {
     }
   }
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  notificationsEnabledRef.current = notificationsEnabled;
   const [viewedJobIds, setViewedJobIds] = useState<string[]>([]);
   const [activeToast, setActiveToast] = useState<ActiveToast | null>(null);
   const prevJobStatusesRef = useRef<Map<string, string>>(new Map());
@@ -1236,7 +1271,7 @@ export function CabinetClient() {
 
         if (newlyFinished.length > 0) {
           const latest = newlyFinished[0];
-          if (notificationsEnabled) {
+          if (notificationsEnabledRef.current) {
             playNotificationChime();
             setActiveToast({
               id: `${latest.id}-${Date.now()}`,
@@ -1705,11 +1740,16 @@ export function CabinetClient() {
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/quote-request`, CUSTOMER_JOB_FETCH_OPTIONS);
       const payload = await readJson<{ content: string; filename: string }>(response);
+      const raw = payload.content || "";
+      const tableItems = extractQuoteTableItems(raw);
       setQuoteRequestModal({
         job,
-        html: quoteMarkdownToHtml(payload.content || ""),
+        html: quoteMarkdownToHtml(raw),
         filename: payload.filename || file.filename || "Запрос коммерческого предложения.docx",
         copied: false,
+        rawMarkdown: raw,
+        items: tableItems,
+        selectedItemIndex: null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1718,20 +1758,40 @@ export function CabinetClient() {
     }
   }
 
+  function selectQuoteRequestItem(index: number | null) {
+    if (!quoteRequestModal) return;
+    const raw = quoteRequestModal.rawMarkdown || "";
+    const nextHtml = quoteMarkdownToHtml(raw, index);
+    if (quoteEditorRef.current) {
+      quoteEditorRef.current.innerHTML = nextHtml;
+    }
+    setQuoteRequestModal({
+      ...quoteRequestModal,
+      html: nextHtml,
+      selectedItemIndex: index,
+      copied: false,
+    });
+  }
+
   async function downloadEditedQuoteRequest() {
     if (!csrf || !quoteRequestModal) return;
     const content = quoteHtmlToMarkdown(quoteEditorRef.current);
     setBusy(true);
     setError("");
     try {
+      const selectedItem =
+        typeof quoteRequestModal.selectedItemIndex === "number" && quoteRequestModal.items?.[quoteRequestModal.selectedItemIndex];
+      const targetFilename = selectedItem
+        ? `Запрос КП - ${selectedItem.name.slice(0, 50).replace(/[\\/*?:"<>|]/g, "_")}.docx`
+        : (quoteRequestModal.filename || "Запрос коммерческого предложения.docx");
       const response = await fetch(`/api/customer/jobs/${quoteRequestModal.job.id}/quote-request/docx`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
-        body: JSON.stringify({ content, filename: quoteRequestModal.filename }),
+        body: JSON.stringify({ content, filename: targetFilename }),
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
-      downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос коммерческого предложения.docx"));
+      downloadBlob(await response.blob(), filenameFromResponse(response, targetFilename));
       trackGoal("result_downloaded", { module: "supplier_search" });
       await loadSession();
       await loadJobs();
@@ -3234,6 +3294,45 @@ export function CabinetClient() {
                       <p className="whitespace-pre-wrap text-slate-700 leading-relaxed font-normal">{job.admin_comment}</p>
                     </div>
                   ) : null}
+
+                  {(!job.awaiting_customer_confirmation || job.confirmation_kind !== "multi_item_strategy") &&
+                  job.multi_item_details?.items &&
+                  job.multi_item_details.items.length > 1 ? (
+                    <div className="col-span-12 mt-2 p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/90 text-xs">
+                      <details className="group">
+                        <summary className="flex items-center justify-between cursor-pointer list-none select-none">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[11px] bg-teal-50 text-teal-800 border border-teal-200">
+                              {job.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                            </span>
+                            <span className="text-slate-600 font-medium text-[11px]">
+                              Позиций ТЗ: <strong>{job.multi_item_details.items.length}</strong>
+                            </span>
+                          </div>
+                          <span className="text-teal-700 group-open:rotate-180 transition-transform duration-200 text-[11px] font-semibold flex items-center gap-1">
+                            Показать позиции ▾
+                          </span>
+                        </summary>
+                        <div className="mt-2.5 pt-2 border-t border-slate-200 flex flex-wrap gap-1.5">
+                          {job.multi_item_details.items.map((it, idx) => (
+                            <span
+                              key={it.id || idx}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 shadow-2xs"
+                            >
+                              <span className="font-bold text-slate-400">{idx + 1}.</span>
+                              <span className="font-medium">{it.name}</span>
+                              {it.quantity ? (
+                                <span className="text-slate-400 text-[10px]">
+                                  ({it.quantity} {it.unit || "шт."})
+                                </span>
+                              ) : null}
+                            </span>
+                          ))}
+                        </div>
+                      </details>
+                    </div>
+                  ) : null}
+
                   {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
                     const stratState = getJobInlineStrategy(job);
                     const items = job.multi_item_details?.items || [];
@@ -3595,6 +3694,40 @@ export function CabinetClient() {
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
+            {quoteRequestModal.items && quoteRequestModal.items.length > 1 ? (
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0 -my-1">
+                <span className="text-xs font-bold text-slate-500 mr-1">Позиция в КП:</span>
+                <button
+                  type="button"
+                  onClick={() => selectQuoteRequestItem(null)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    quoteRequestModal.selectedItemIndex === null || quoteRequestModal.selectedItemIndex === undefined
+                      ? "bg-teal-600 text-white shadow-2xs"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900"
+                  }`}
+                >
+                  Все позиции ({quoteRequestModal.items.length})
+                </button>
+                {quoteRequestModal.items.map((item) => {
+                  const isSelected = quoteRequestModal.selectedItemIndex === item.index;
+                  return (
+                    <button
+                      key={item.index}
+                      type="button"
+                      onClick={() => selectQuoteRequestItem(item.index)}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer max-w-[280px] truncate ${
+                        isSelected
+                          ? "bg-teal-600 text-white shadow-2xs"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900"
+                      }`}
+                      title={item.name}
+                    >
+                      {item.index + 1}. {item.name}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
             <div
               ref={quoteEditorRef}
               className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[300px] shadow-inner leading-relaxed"
@@ -3648,6 +3781,19 @@ export function CabinetClient() {
               <p className="text-xs text-slate-600 leading-relaxed">С баланса спишется стоимость добора поставщиков. Уже найденные компании не попадут в новый результат.</p>
               <span className="text-[11px] font-bold text-slate-400 block mt-1">{findMoreConfirmJob.human_title}</span>
             </div>
+            {findMoreConfirmJob.multi_item_details?.items && findMoreConfirmJob.multi_item_details.items.length > 1 ? (
+              <div className="p-3 rounded-xl bg-teal-50/70 border border-teal-200 text-left text-xs text-slate-700 space-y-1 my-2">
+                <div className="flex items-center gap-1.5 font-bold text-teal-900">
+                  <span>Режим добора:</span>
+                  <span className="font-extrabold text-teal-800">
+                    {findMoreConfirmJob.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Поиск новых поставщиков будет продолжен по всем {findMoreConfirmJob.multi_item_details.items.length} позициям ТЗ без дублирования уже найденных компаний.
+                </p>
+              </div>
+            ) : null}
             <div className="text-left space-y-1 pt-1">
               <label htmlFor="dobor-prompt-input" className="block text-[11px] font-semibold text-slate-500">
                 Дополнительные критерии (опционально):

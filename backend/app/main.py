@@ -3851,10 +3851,17 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
     multi_item_details = None
-    if confirmation_kind == "multi_item_strategy":
-        dobor_ctx = read_dobor_context(job)
-        profile_dict = dobor_ctx.get("procurement_profile") or {}
-        raw_items = profile_dict.get("items") or []
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if not profile_dict and job.status in {"completed", "done", "running"}:
+        try:
+            ev = read_job_evidence_payload(job)
+            if isinstance(ev, dict):
+                profile_dict = ev.get("procurement_profile") or ev.get("supplier_search", {}).get("procurement_profile") or {}
+        except Exception:
+            pass
+    raw_items = profile_dict.get("items") or []
+    if raw_items:
         multi_item_details = {
             "items": [
                 {
@@ -3871,6 +3878,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
                 if isinstance(it, dict) and (it.get("name") or it.get("title"))
             ],
             "total_items": len(raw_items),
+            "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
         }
     status_lbl = human_status_label(job.status)
     if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
@@ -4496,6 +4504,7 @@ def create_additional_supplier_search_for_client(
                 getattr(original_job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
             ),
             supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
+            multi_item_mode=getattr(original_job, "multi_item_mode", "balanced"),
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         prior_verified_count = _cumulative_prior_verified_count(original_job)
