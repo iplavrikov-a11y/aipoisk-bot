@@ -60,9 +60,11 @@ from .jobs import (
     cleanup_expired_jobs,
     cancel_running_job,
     create_job,
+    enqueue_job,
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
 from .journey import claim_reminder, record_journey_event, reminder_candidates
@@ -1889,6 +1891,14 @@ def _bot_payment_instructions(settings) -> str:
 
 
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
+    if snapshot.confirmation_kind == "multi_item_strategy":
+        return (
+            "📋 В вашей спецификации обнаружено несколько позиций.\n\n"
+            "Выберите стратегию поиска поставщиков:\n\n"
+            "• ⚖️ Сбалансированный поиск: единый сводный отчёт, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется сводный лист и отдельные вкладки по каждой позиции (1 списание).\n\n"
+            "• 🔍 Попозиционный глубокий поиск: независимый глубокий поиск поставщиков под каждую позицию спецификации с отдельным детальным анализом сайтов (по 1 списанию за позицию).\n\n"
+            "Выберите вариант для продолжения:"
+        )
     if snapshot.confirmation_kind == "registry_fallback":
         return _registry_fallback_confirmation_text(snapshot)
     return (
@@ -1919,6 +1929,29 @@ def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
 
 
 def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
+    if confirmation_kind == "multi_item_strategy":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⚖️ Сбалансированный поиск",
+                        callback_data=f"multi_strategy:balanced:{job_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔍 Попозиционный глубокий поиск",
+                        callback_data=f"multi_strategy:per_item:{job_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить задачу",
+                        callback_data=f"cancel_job:{job_id}",
+                    ),
+                ],
+            ]
+        )
     if confirmation_kind == "registry_fallback":
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -3579,8 +3612,8 @@ async def help_button(message: Message) -> None:
         "3️⃣ Шаг 3: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
         "⚡ «📄🔎 Анализ + поиск» — совмещенный экспресс-запуск в 1 клик.\n\n"
         "📋 Многопозиционные ТЗ и спецификации:\n"
-        "• ⚖️ Сбалансированный поиск: 1 задача, квота до 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируется сводный лист и отдельные вкладки по каждой позиции.\n"
-        "• 🔍 Попозиционный глубокий поиск: детальный подбор до 40–50 поставщиков под каждую позицию спецификации (настраивается в веб-кабинете).\n\n"
+        "• ⚖️ Сбалансированный поиск: 1 запуск, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется сводный лист и отдельные вкладки по каждой позиции.\n"
+        "• 🔍 Попозиционный глубокий поиск: детальный независимый подбор поставщиков под каждую позицию спецификации с отдельным глубоким анализом сайтов.\n\n"
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
@@ -3605,8 +3638,8 @@ async def open_help_callback(callback: CallbackQuery) -> None:
         "3️⃣ Шаг 3: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
         "⚡ «📄🔎 Анализ + поиск» — совмещенный экспресс-запуск в 1 клик.\n\n"
         "📋 Многопозиционные ТЗ и спецификации:\n"
-        "• ⚖️ Сбалансированный поиск: 1 задача, квота до 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируется сводный лист и отдельные вкладки по каждой позиции.\n"
-        "• 🔍 Попозиционный глубокий поиск: детальный подбор до 40–50 поставщиков под каждую позицию спецификации (настраивается в веб-кабинете).\n\n"
+        "• ⚖️ Сбалансированный поиск: 1 запуск, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется сводный лист и отдельные вкладки по каждой позиции.\n"
+        "• 🔍 Попозиционный глубокий поиск: детальный независимый подбор поставщиков под каждую позицию спецификации с отдельным глубоким анализом сайтов.\n\n"
         "📋 Что нужно для запуска:\n"
         "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
         "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
@@ -3904,6 +3937,44 @@ async def partial_report_accept(callback: CallbackQuery) -> None:
     await callback.answer("Отчёт отправлен.")
     await callback.message.answer("Неполный отчёт отправлен. Генерация списана после успешной отправки.", reply_markup=main_menu())
     await _send_find_more_suppliers_offer(callback.message, job_id)
+
+
+@router.callback_query(F.data.startswith("multi_strategy:"))
+async def multi_strategy_choice_callback(callback: CallbackQuery) -> None:
+    parts = str(callback.data or "").split(":")
+    if len(parts) < 3:
+        return
+    mode = parts[1]
+    job_id = parts[2]
+    if not callback.message:
+        return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+            await callback.answer("Выбор стратегии уже не актуален.", show_alert=True)
+            return
+        normalized = "per_item" if mode == "per_item" else "balanced"
+        job.multi_item_mode = normalized
+        job.confirmation_kind = ""
+        job.confirmation_outcome = "accepted"
+        job.status = "pending"
+        job.progress = 32
+        job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
+        update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+        enqueue_job(job.id)
+    finally:
+        db.close()
+    await callback.answer("Стратегия сохранена!")
+    mode_name = "🔍 Попозиционный глубокий поиск" if normalized == "per_item" else "⚖️ Сбалансированный поиск"
+    try:
+        await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("result_offer_no:"))

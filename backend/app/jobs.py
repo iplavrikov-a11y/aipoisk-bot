@@ -56,9 +56,12 @@ from .result_offers import (
     publish_job_result_offer,
 )
 from .supplier_search import (
+    build_procurement_profile,
     discover_suppliers,
     extract_supplier_search_context,
     minprom_registry_preflight_error,
+    normalize_procurement_profile,
+    profile_to_dict,
     supplier_search_job_context,
 )
 from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
@@ -309,6 +312,16 @@ def read_dobor_context(job: Job) -> dict:
     if not path.exists():
         return {}
     return parse_json_dict(path.read_text(encoding="utf-8"))
+
+
+def update_dobor_context_dict(job: Job, updates: dict) -> dict:
+    ctx = read_dobor_context(job)
+    ctx.update(updates)
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / DOBOR_CONTEXT_FILENAME
+    path.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+    return ctx
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -1214,6 +1227,48 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     dobor_ctx = read_dobor_context(job)
     is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
     wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
+    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+
+    # Pre-flight specification profile analysis & multi-item decision gate
+    cached_profile_dict = dobor_ctx.get("procurement_profile")
+    profile = None
+    if cached_profile_dict:
+        try:
+            profile = normalize_procurement_profile(cached_profile_dict)
+        except Exception:
+            profile = None
+
+    if profile is None and getattr(settings, "has_active_ai_provider", False) and not is_confirmed:
+        _set_job(db, job, progress=26, message="Анализирую ТЗ и выделяю закупаемые позиции")
+        try:
+            profile = asyncio.run(build_procurement_profile(settings, context))
+            cached_profile_dict = profile_to_dict(profile)
+            dobor_ctx = update_dobor_context_dict(job, {"procurement_profile": cached_profile_dict})
+            if profile.summary and not job.title:
+                job.title = profile.summary[:200]
+                db.commit()
+        except Exception as e:
+            logger.warning("Failed to pre-extract procurement profile for job %s: %s", job.id, e)
+            profile = None
+
+    if profile is not None and len(profile.items) > 1 and not is_confirmed:
+        # Multi-item specification detected! Pause for customer choice.
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "multi_item_strategy"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.progress = 30
+        job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        db.commit()
+        db.refresh(job)
+        return
+
+    if profile is not None and len(profile.items) <= 1 and not is_confirmed:
+        # Single item: automatically proceed in balanced mode without interrupting user
+        job.multi_item_mode = "balanced"
+        dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+
     multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
     try:
         discovery_coro = discover_suppliers(
@@ -1548,32 +1603,101 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
-    _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
-    report = asyncio.run(generate_procurement_report(settings, context))
-    _check_cancelled(job.id)
-    _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
-    supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
-    _check_cancelled(job.id)
+    dobor_ctx = read_dobor_context(job)
+    is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
+    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+
+    cached_report_text = dobor_ctx.get("analysis_report_text")
+    supplier_context = str(dobor_ctx.get("supplier_context") or "")
+
+    if cached_report_text and supplier_context:
+        report = SimpleNamespace(report=cached_report_text)
+    else:
+        _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
+        report = asyncio.run(generate_procurement_report(settings, context))
+        _check_cancelled(job.id)
+        _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
+        supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
+        _check_cancelled(job.id)
+        dobor_ctx = update_dobor_context_dict(job, {
+            "analysis_report_text": report.report,
+            "supplier_context": supplier_context,
+        })
+
+    # Pre-flight specification profile analysis & multi-item decision gate
+    cached_profile_dict = dobor_ctx.get("procurement_profile")
+    profile = None
+    if cached_profile_dict:
+        try:
+            profile = normalize_procurement_profile(cached_profile_dict)
+        except Exception:
+            profile = None
+
+    if profile is None and getattr(settings, "has_active_ai_provider", False) and not is_confirmed:
+        _set_job(db, job, progress=44, message="Анализирую позиции для поиска поставщиков")
+        try:
+            profile = asyncio.run(build_procurement_profile(settings, supplier_context))
+            cached_profile_dict = profile_to_dict(profile)
+            dobor_ctx = update_dobor_context_dict(job, {"procurement_profile": cached_profile_dict})
+            if profile.summary and not job.title:
+                job.title = profile.summary[:200]
+                db.commit()
+        except Exception as e:
+            logger.warning("Failed to pre-extract procurement profile for job %s: %s", job.id, e)
+            profile = None
+
+    if profile is not None and len(profile.items) > 1 and not is_confirmed:
+        # Multi-item specification detected! Pause for customer choice.
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "multi_item_strategy"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.progress = 45
+        job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        db.commit()
+        db.refresh(job)
+        return
+
+    if profile is not None and len(profile.items) <= 1 and not is_confirmed:
+        # Single item: automatically proceed in balanced mode without interrupting user
+        job.multi_item_mode = "balanced"
+        dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+
     _set_job(db, job, progress=45, message="Ищу поставщиков по ТЗ из документации")
+
+    multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
 
     async def progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id)
         mapped_progress = 45 + int(max(0, min(100, progress)) * 0.5)
         _set_job(db, job, status="running", progress=mapped_progress, message=message)
 
+    try:
+        discovery_coro = discover_suppliers(
+            settings,
+            supplier_context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            multi_item_mode=multi_item_mode,
+        )
+    except TypeError:
+        discovery_coro = discover_suppliers(
+            settings,
+            supplier_context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        )
     with supplier_search_job_context(job.id):
         accepted, supplier_evidence = asyncio.run(
             _run_supplier_discovery_with_cancellation(
                 job.id,
-                discover_suppliers(
-                    settings,
-                    supplier_context,
-                    job.target_suppliers,
-                    progress_callback=progress_callback,
-                    supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
-                ),
+                discovery_coro,
             )
-    )
+        )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=96, message="Сохраняю анализ и поставщиков")
     fallback_rows = _registry_fallback_rows(supplier_evidence) if not accepted else []

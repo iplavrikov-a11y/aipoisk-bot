@@ -106,6 +106,8 @@ from .jobs import (
     read_supplier_exclusions,
     read_supplier_exclusions_payload,
     recover_interrupted_jobs,
+    read_dobor_context,
+    update_dobor_context_dict,
     write_dobor_context,
     write_supplier_exclusions,
 )
@@ -1262,6 +1264,23 @@ def customer_decline_partial_route(
 ) -> dict:
     require_customer_csrf(request, context)
     return decline_customer_partial_job_api(job_id, context=context, db=db)
+
+
+@app.post("/api/customer/jobs/{job_id}/choose-strategy")
+def customer_choose_strategy_route(
+    job_id: str,
+    request: Request,
+    multi_item_mode: str = Query(default="balanced"),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    return choose_customer_multi_item_strategy_api(
+        job_id,
+        multi_item_mode=multi_item_mode,
+        context=context,
+        db=db,
+    )
 
 
 @app.post("/api/customer/jobs/{job_id}/find-more-suppliers")
@@ -2637,6 +2656,7 @@ def retry_job(
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
     if multi_item_mode in ("balanced", "per_item"):
         job.multi_item_mode = multi_item_mode
+        update_dobor_context_dict(job, {"multi_item_confirmed": True})
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -2644,6 +2664,15 @@ def retry_job(
     db.commit()
     enqueue_job(job.id)
     return {"success": True, "job": job_to_dict(job)}
+
+
+@app.post("/api/jobs/{job_id}/choose-strategy", dependencies=[Depends(require_admin)])
+def choose_admin_strategy(
+    job_id: str,
+    multi_item_mode: str = Query(default="balanced"),
+    db: Session = Depends(db_session),
+) -> dict:
+    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, db=db)
 
 
 @app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
@@ -3808,6 +3837,23 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    multi_item_details = None
+    if confirmation_kind == "multi_item_strategy":
+        dobor_ctx = read_dobor_context(job)
+        profile_dict = dobor_ctx.get("procurement_profile") or {}
+        raw_items = profile_dict.get("items") or []
+        multi_item_details = {
+            "items": [
+                {
+                    "name": str(it.get("name") or ""),
+                    "quantity": str(it.get("quantity") or ""),
+                    "unit": str(it.get("unit") or ""),
+                }
+                for it in raw_items
+                if isinstance(it, dict) and (it.get("name") or it.get("title"))
+            ],
+            "total_items": len(raw_items),
+        }
     status_lbl = human_status_label(job.status)
     if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
         status_lbl = "нет в реестре"
@@ -3820,6 +3866,8 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
+        "confirmation_kind": confirmation_kind,
+        "multi_item_details": multi_item_details,
         "status": job.status,
         "status_label": status_lbl,
         "progress": job.progress,
@@ -4230,6 +4278,53 @@ def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db
         job.updated_at = now_utc()
         db.commit()
     return {"success": True, "job": customer_job_to_dict(job, db=db)}
+
+
+def choose_customer_multi_item_strategy_api(
+    job_id: str,
+    *,
+    multi_item_mode: str,
+    context: WebAuthContext,
+    db: Session,
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+        raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
+    normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    job.multi_item_mode = normalized
+    job.confirmation_kind = ""
+    job.confirmation_outcome = "accepted"
+    job.status = "pending"
+    job.progress = 32
+    job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
+    update_dobor_context_dict(job, {"multi_item_confirmed": True})
+    db.commit()
+    enqueue_job(job.id)
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
+
+
+def choose_admin_multi_item_strategy_api(
+    job_id: str,
+    *,
+    multi_item_mode: str,
+    db: Session,
+) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+        raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
+    normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    job.multi_item_mode = normalized
+    job.confirmation_kind = ""
+    job.confirmation_outcome = "accepted"
+    job.status = "pending"
+    job.progress = 32
+    job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
+    update_dobor_context_dict(job, {"multi_item_confirmed": True})
+    db.commit()
+    enqueue_job(job.id)
+    return {"success": True, "job": job_to_dict(job, db=db)}
 
 
 FIND_MORE_SUPPLIER_STATUSES = {"completed", "partial", "needs_review"}
@@ -5361,6 +5456,7 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "multi_item_mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
         "confirmation_kind": confirmation_kind,
         "confirmation_outcome": confirmation_outcome,
         "offer_delivery_outcome": offer_delivery_outcome,

@@ -254,6 +254,7 @@ type Job = {
   mode_label: string
   supplier_search_policy: string
   supplier_search_run_type: string
+  multi_item_mode?: string
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
@@ -4139,6 +4140,18 @@ function JobsView({
                     <>
                       <span className="meta-sep">·</span>
                       <span className="meta-item">{supplierRunLabel}</span>
+                    </>
+                  )}
+
+                  {(job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span
+                        className="meta-item"
+                        title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
+                      >
+                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                      </span>
                     </>
                   )}
 

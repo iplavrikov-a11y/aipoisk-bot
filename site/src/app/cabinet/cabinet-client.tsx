@@ -234,6 +234,11 @@ type CustomerJob = {
   admin_supplement_name?: string;
   admin_supplement_at?: string | null;
   awaiting_customer_confirmation: boolean;
+  confirmation_kind?: string;
+  multi_item_details?: {
+    items?: Array<{ name: string; quantity?: string; unit?: string }>;
+    total_items?: number;
+  } | null;
   error: string;
   created_at: string | null;
   completed_at?: string | null;
@@ -909,6 +914,8 @@ export function CabinetClient() {
   const [retryConfirmJob, setRetryConfirmJob] = useState<CustomerJob | null>(null);
   const [retryPolicy, setRetryPolicy] = useState<SupplierSearchPolicy>("normal");
   const [retryMultiItemMode, setRetryMultiItemMode] = useState<"balanced" | "per_item">("balanced");
+  const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
+  const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1048,6 +1055,7 @@ export function CabinetClient() {
   const acceptsSources = Boolean(selectedCopy.sourceLabel);
   const acceptsText = Boolean(selectedCopy.textLabel);
   const maxFiles = session?.limits?.max_files_per_batch || 20;
+  const targetQuota = session?.limits?.default_supplier_target || 25;
   const emailVerified = session?.user?.is_email_verified !== false;
   const supplierMultiFileWarning = scenario === "supplier_search" && selectedFiles.length > 1;
   const activeJobs = useMemo(
@@ -1715,6 +1723,29 @@ export function CabinetClient() {
         headers: { "x-csrf-token": csrf },
       });
       await readJson(response);
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item") {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setStrategyConfirmJob(null);
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy?multi_item_mode=${encodeURIComponent(mode)}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-csrf-token": csrf },
+      });
+      if (!response.ok) throw new Error(parseError(await response.text()));
+      await readJson(response);
+      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : "Попозиционный поиск"}). Поиск поставщиков продолжается.`);
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -2490,67 +2521,6 @@ export function CabinetClient() {
             </div>
           ) : null}
 
-          {scenario === "supplier_search" || scenario === "analysis_and_suppliers" ? (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs px-0.5">
-                <span className="font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span>Режим для многопозиционных спецификаций</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-normal">
-                    много товаров в ТЗ
-                  </span>
-                </span>
-                <span className="text-[11px] text-slate-400 hidden sm:inline">
-                  {multiItemMode === "balanced" ? "1 отчёт со вкладками по позициям" : "Глубокий поиск под каждую позицию"}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-1.5 bg-slate-50 border border-slate-200/90 rounded-xl">
-                <button
-                  type="button"
-                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
-                    multiItemMode === "balanced"
-                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
-                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
-                  }`}
-                  onClick={() => setMultiItemMode("balanced")}
-                >
-                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                    multiItemMode === "balanced" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
-                  }`}>
-                    {multiItemMode === "balanced" ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
-                  </div>
-                  <div className="min-w-0">
-                    <strong className="block font-bold text-xs leading-tight text-slate-900">⚖️ Сбалансированный поиск</strong>
-                    <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
-                      1 задача, квота 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируются вкладки по каждой позиции.
-                    </span>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  className={`p-2.5 rounded-lg text-left border text-xs transition-all cursor-pointer flex items-start gap-2 ${
-                    multiItemMode === "per_item"
-                      ? "bg-white border-teal-500 ring-2 ring-teal-500/20 shadow-xs font-bold text-slate-900"
-                      : "bg-white border-slate-200/90 text-slate-700 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
-                  }`}
-                  onClick={() => setMultiItemMode("per_item")}
-                >
-                  <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                    multiItemMode === "per_item" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
-                  }`}>
-                    {multiItemMode === "per_item" ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
-                  </div>
-                  <div className="min-w-0">
-                    <strong className="block font-bold text-xs leading-tight text-slate-900">🔍 Попозиционный глубокий поиск</strong>
-                    <span className="text-[10px] text-slate-500 font-normal leading-tight block mt-0.5">
-                      Глубокий пул до 40–50 поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов.
-                    </span>
-                  </div>
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           <div className="space-y-2">
             <div
               className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
@@ -2921,38 +2891,69 @@ export function CabinetClient() {
                     ) : null}
 
                     {job.awaiting_customer_confirmation ? (
-                      <>
-                        {!offer || offer.can_accept ? (
+                      job.confirmation_kind === "multi_item_strategy" ? (
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer animate-pulse"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
-                              acceptPartial(job);
+                              setSelectedStrategyMode(job.multi_item_mode === "per_item" ? "per_item" : "balanced");
+                              setStrategyConfirmJob(job);
                             }}
                             disabled={busy}
                           >
-                            <CheckCircle2 size={16} aria-hidden="true" />
-                            <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
+                            <Sliders size={15} aria-hidden="true" />
+                            <span>Выбрать стратегию</span>
                           </button>
-                        ) : null}
-                        {!offer || offer.can_decline ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
                             onClick={(e) => {
                               e.stopPropagation();
-                              markJobAsViewed(job.id);
-                              declinePartial(job);
+                              void cancelJob(job);
                             }}
                             disabled={busy}
                           >
-                            <XCircle size={16} aria-hidden="true" />
-                            <span>Отказаться</span>
+                            <XCircle size={15} aria-hidden="true" />
+                            <span>Отменить</span>
                           </button>
-                        ) : null}
-                      </>
+                        </div>
+                      ) : (
+                        <>
+                          {!offer || offer.can_accept ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                markJobAsViewed(job.id);
+                                acceptPartial(job);
+                              }}
+                              disabled={busy}
+                            >
+                              <CheckCircle2 size={16} aria-hidden="true" />
+                              <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
+                            </button>
+                          ) : null}
+                          {!offer || offer.can_decline ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                markJobAsViewed(job.id);
+                                declinePartial(job);
+                              }}
+                              disabled={busy}
+                            >
+                              <XCircle size={16} aria-hidden="true" />
+                              <span>Отказаться</span>
+                            </button>
+                          ) : null}
+                        </>
+                      )
                     ) : (
                       <>
                         {job.can_cancel ? (
@@ -3334,49 +3335,51 @@ export function CabinetClient() {
                 </div>
               ) : null}
 
-              {/* Multi-Item Mode Selection */}
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                  Режим для многопозиционных спецификаций:
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setStartSupplierSearchMultiItemMode("balanced")}
-                    className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      startSupplierSearchMultiItemMode === "balanced"
-                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
-                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full mb-0.5">
-                      <span className="text-xs font-extrabold">⚖️ Сбалансированный поиск</span>
-                      <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
-                        {startSupplierSearchMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-500 font-normal leading-snug">Единая квота распределяется по всем позициям ТЗ, формируется 1 Excel со вкладками</span>
-                  </button>
+              {/* Multi-Item Mode Selection (Only for Multi-Position Specs) */}
+              {(startSupplierSearchConfirmJob.exact_product_summary?.total_positions || 0) > 1 ? (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                    Режим для многопозиционных спецификаций:
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStartSupplierSearchMultiItemMode("balanced")}
+                      className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        startSupplierSearchMultiItemMode === "balanced"
+                          ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                          : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-0.5">
+                        <span className="text-xs font-extrabold">⚖️ Сбалансированный поиск</span>
+                        <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                          {startSupplierSearchMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 font-normal leading-snug">Единая квота поставщиков распределяется по всем позициям ТЗ, формируется 1 Excel со вкладками</span>
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setStartSupplierSearchMultiItemMode("per_item")}
-                    className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      startSupplierSearchMultiItemMode === "per_item"
-                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
-                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full mb-0.5">
-                      <span className="text-xs font-extrabold">🔍 Попозиционный глубокий поиск</span>
-                      <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
-                        {startSupplierSearchMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-500 font-normal leading-snug">Глубокий пул до 40–50 поставщиков под каждую позицию спецификации с отдельным анализом</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setStartSupplierSearchMultiItemMode("per_item")}
+                      className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        startSupplierSearchMultiItemMode === "per_item"
+                          ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                          : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-0.5">
+                        <span className="text-xs font-extrabold">🔍 Попозиционный глубокий поиск</span>
+                        <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                          {startSupplierSearchMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 font-normal leading-snug">Глубокий пул поставщиков под каждую позицию спецификации с отдельным анализом</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : null}
 
               {/* Policy Selection Cards */}
               <div className="space-y-1.5">
@@ -3498,6 +3501,185 @@ export function CabinetClient() {
         </div>
       ) : null}
 
+      {strategyConfirmJob ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setStrategyConfirmJob(null);
+            }
+          }}
+        >
+          <section
+            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="strategy-confirm-title"
+          >
+            {/* Header with Title, Procurement Name and Close Button */}
+            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+              <div className="flex items-center gap-3 min-w-0 pr-2">
+                <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Sliders size={20} aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                    Выбор стратегии поиска поставщиков
+                  </h2>
+                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
+                    {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                onClick={() => setStrategyConfirmJob(null)}
+                aria-label="Закрыть"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+
+            {/* Content Body */}
+            <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
+              {/* Detected Items Card */}
+              {strategyConfirmJob.multi_item_details?.items && strategyConfirmJob.multi_item_details.items.length > 0 ? (
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-teal-600" aria-hidden="true" />
+                      <span>Обнаружено позиций в спецификации:</span>
+                      <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-[11px] font-extrabold">
+                        {strategyConfirmJob.multi_item_details.total_items || strategyConfirmJob.multi_item_details.items.length}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 hidden sm:inline">
+                      Система выделила отдельные товары
+                    </span>
+                  </div>
+                  <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                    {strategyConfirmJob.multi_item_details.items.map((it, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-xs bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                        <span className="font-semibold text-slate-800 truncate pr-2">
+                          {idx + 1}. {it.name}
+                        </span>
+                        {it.quantity ? (
+                          <span className="text-slate-500 font-medium shrink-0 text-[11px]">
+                            {it.quantity} {it.unit || "шт."}
+                          </span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Mode Selection Cards */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  Выберите стратегию поиска:
+                </label>
+                <div className="grid grid-cols-1 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStrategyMode("balanced")}
+                    className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-3 ${
+                      selectedStrategyMode === "balanced"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                      selectedStrategyMode === "balanced" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                    }`}>
+                      {selectedStrategyMode === "balanced" ? <span className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
+                          ⚖️ Сбалансированный поиск
+                        </strong>
+                        <span className="text-[11px] font-bold text-teal-700 bg-teal-100/70 px-2 py-0.5 rounded-full shrink-0">
+                          1 списание
+                        </span>
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
+                        Единый консолидированный отчёт. Целевая квота поставщиков распределяется между всеми позициями ТЗ. В итоговом Excel формируются сводный лист и отдельные вкладки по каждой позиции. Формируется единый официальный Запрос КП (.docx) со всеми позициями.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStrategyMode("per_item")}
+                    className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-3 ${
+                      selectedStrategyMode === "per_item"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                      selectedStrategyMode === "per_item" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                    }`}>
+                      {selectedStrategyMode === "per_item" ? <span className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
+                          🔍 Попозиционный глубокий поиск
+                        </strong>
+                        <span className="text-[11px] font-bold text-amber-800 bg-amber-100/70 px-2 py-0.5 rounded-full shrink-0">
+                          {strategyConfirmJob.multi_item_details?.total_items || (strategyConfirmJob.multi_item_details?.items?.length || 2)} списания
+                        </span>
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
+                        Независимый глубокий поиск поставщиков отдельно по каждой позиции спецификации (по каждой позиции отдельный детальный сбор пула поставщиков с проверкой сайтов). В Excel формируются детальные вкладки по позициям и единый сводный Запрос КП (.docx).
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions Footer */}
+            <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
+              <button
+                type="button"
+                className="px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-800 hover:bg-rose-50 transition-all cursor-pointer"
+                onClick={() => {
+                  const jobToCancel = strategyConfirmJob;
+                  setStrategyConfirmJob(null);
+                  void cancelJob(jobToCancel);
+                }}
+                disabled={busy}
+              >
+                Отменить задачу
+              </button>
+              <div className="flex items-center gap-2.5 shrink-0 ml-auto">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
+                  onClick={() => setStrategyConfirmJob(null)}
+                  disabled={busy}
+                >
+                  Позже
+                </button>
+                <button
+                  type="button"
+                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode)}
+                  disabled={busy}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
+                  <span>Применить стратегию</span>
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {retryConfirmJob ? (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
@@ -3573,7 +3755,7 @@ export function CabinetClient() {
                           </span>
                         </div>
                         <span className="text-[11px] text-slate-500 font-normal leading-snug">
-                          Единая квота 70 поставщиков распределяется между всеми позициями ТЗ. В Excel формируются вкладки по каждой позиции.
+                          Единая квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируются вкладки по каждой позиции.
                         </span>
                       </button>
 
@@ -3593,7 +3775,7 @@ export function CabinetClient() {
                           </span>
                         </div>
                         <span className="text-[11px] text-slate-500 font-normal leading-snug">
-                          Глубокий пул до 40–50 поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов и контактов.
+                          Глубокий пул поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов и контактов.
                         </span>
                       </button>
                     </div>
@@ -4079,8 +4261,8 @@ export function CabinetClient() {
                       </strong>
                       <p className="text-slate-700 leading-relaxed text-xs sm:text-[13px]">
                         Если ваше ТЗ содержит несколько товаров разных категорий (например, ламинат, краска, керамогранит):<br />
-                        • <strong>⚖️ Сбалансированный поиск (по умолчанию)</strong> — 1 задача, квота до 70 поставщиков делится поровну между всеми позициями ТЗ. В итоговом Excel-отчете формируются сводный лист «Поставщики» и отдельные вкладки по каждой позиции спецификации.<br />
-                        • <strong>🔍 Попозиционный глубокий поиск</strong> — максимальный сбор до 40–50 поставщиков по каждой позиции с отдельным детальным анализом сайтов производителей.
+                        • <strong>⚖️ Сбалансированный поиск</strong> — единая квота поставщиков распределяется между всеми позициями ТЗ в рамках 1 задачи. В итоговом Excel-отчете формируются сводный лист «Поставщики» и отдельные вкладки по каждой позиции спецификации, а также единый официальный Запрос КП (.docx).<br />
+                        • <strong>🔍 Попозиционный глубокий поиск</strong> — независимый глубокий поиск по каждой позиции с отдельным детальным анализом сайтов производителей и списанием по числу позиций.
                       </p>
                     </div>
                   </div>

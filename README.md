@@ -15,7 +15,13 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
-- Durable queue worker: `tenderlex-worker.service`.
+- Dynamic Multi-Item Specification Detection & Dynamic Quota Strategy Selection (2026-10-10):
+  - Intake form UX improvement: eliminated premature mode selection («Сбалансированный» vs «Попозиционный») at launch before specification documents are parsed.
+  - Intelligent specification decision gate: single-item specifications run immediately with zero interruptions; multi-item specifications pause in `awaiting_customer_confirmation` (`confirmation_kind="multi_item_strategy"`), displaying the detected positions list and offering a clear choice between Balanced (1 task unit, dynamic quota shared across items) and Per-item (deep search per item, N task units).
+  - Re-profiling caching: procurement profile is cached in `dobor_context`, consuming zero additional AI calls when resuming after strategy selection.
+  - Dynamic quotas: removed hardcoded counts ("70", "40–50") from all customer modals, help texts, and Telegram bot copy in favor of dynamic system settings (`default_supplier_target`).
+  - Web cabinet & Admin panel: added strategy confirmation modal with item tags, action buttons on job cards, and admin job badges.
+  - Verified with 816 passing backend tests and live server deployment.
 - Multi-Item Specification Balancing, Round-Robin Quota Allocation & Multi-Tab XLSX Reports (2026-10-09):
   - Solved item-1 supplier skew in complex multi-item specifications (analyzed 552 database jobs: 35.8% multi-item, 53.7% heavily skewed to item 1): replaced legacy single-item `break` loop with round-robin fair quota allocation (`per_item_quota = (target + K - 1) // K`) and waterfall overflow fallback in `backend/app/supplier_search.py`.
   - Balanced search query generation: updated initial and refinement prompts (`build_supplier_queries`) to guarantee proportional coverage (>=3-5 queries per item) across disparate procurement categories.

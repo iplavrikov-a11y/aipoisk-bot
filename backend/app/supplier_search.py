@@ -2741,6 +2741,10 @@ def _profile_to_dict(profile: ProcurementProfile) -> dict:
     }
 
 
+profile_to_dict = _profile_to_dict
+normalize_procurement_profile = _normalize_procurement_profile
+
+
 def _validate_procurement_profile_response(raw: str) -> None:
     profile = _normalize_procurement_profile(parse_json_object(raw))
     if not profile.items:
