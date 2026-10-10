@@ -602,7 +602,54 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertFalse(ws.sheet_properties.outlinePr.summaryBelow)
             self.assertTrue(ws.sheet_properties.outlinePr.showOutlineSymbols)
             self.assertIn("Позиция 1: Резинотехнические изделия", str(ws.cell(row=6, column=1).value))
+            self.assertIn("▼", str(ws.cell(row=6, column=1).value))
+            self.assertIn("нажмите [-] слева для сворачивания", str(ws.cell(row=6, column=1).value))
             self.assertEqual(ws.row_dimensions[7].outlineLevel, 1)
+            self.assertFalse(ws.row_dimensions[7].hidden)
+            self.assertIn("💡 Как управлять", str(ws.cell(row=3, column=1).value))
+            wb.close()
+
+    def test_supplier_xlsx_multi_item_adaptive_collapse_for_many_items(self) -> None:
+        profile = {
+            "items": [
+                {"id": f"item-{i}", "name": f"Позиция {i}", "aliases": []}
+                for i in range(1, 6)
+            ]
+        }
+        rows = [
+            {"company_name": f"ООО Поставщик {i}", "product_fit": "exact", "procurement_item_id": f"item-{i}", "procurement_item": f"Позиция {i}"}
+            for i in range(1, 5)
+        ]
+        # item-5 has 0 suppliers
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_large.xlsx"
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="Многопозиционная закупка",
+                target=5,
+                profile=profile,
+            )
+
+            wb = load_workbook(path)
+            ws = wb["Сводный реестр"]
+            # With > 4 items, initial state must be collapsed (hidden=True)
+            self.assertIn("💡 Как смотреть", str(ws.cell(row=3, column=1).value))
+            # Header of position 1 must show ▶ and [+] action tip
+            self.assertIn("▶ Позиция 1: Позиция 1 (найдено поставщиков: 1 · нажмите [+] слева для раскрытия)", str(ws.cell(row=6, column=1).value))
+            # Data row 7 must be grouped and hidden
+            self.assertEqual(ws.row_dimensions[7].outlineLevel, 1)
+            self.assertTrue(ws.row_dimensions[7].hidden)
+            # Find item-5 header and notice row
+            # Rows:
+            # 6: Header item-1, 7: Data item-1
+            # 8: Header item-2, 9: Data item-2
+            # 10: Header item-3, 11: Data item-3
+            # 12: Header item-4, 13: Data item-4
+            # 14: Header item-5, 15: Notice row item-5
+            self.assertIn("▷ Позиция 5: Позиция 5 (поставщиков не найдено)", str(ws.cell(row=14, column=1).value))
+            self.assertEqual(ws.row_dimensions[15].outlineLevel, 1)
+            self.assertTrue(ws.row_dimensions[15].hidden)
             wb.close()
 
     def test_write_quote_request_docx_multiline_table_integrity(self) -> None:

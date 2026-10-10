@@ -374,7 +374,12 @@ def _populate_supplier_sheet(
     summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
     summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "064E3B")
     _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
-    ws.row_dimensions[3].height = 36 if is_fallback else 24
+    if is_fallback:
+        ws.row_dimensions[3].height = 54
+    elif is_multi_item:
+        ws.row_dimensions[3].height = 48
+    else:
+        ws.row_dimensions[3].height = 24
 
     # 4. Разделитель
     ws.append([None] * len(SUPPLIER_HEADERS))
@@ -464,11 +469,18 @@ def _populate_supplier_sheet(
     if is_multi_item and sections:
         ws.sheet_properties.outlinePr.summaryBelow = False
         ws.sheet_properties.outlinePr.showOutlineSymbols = True
+        should_collapse = len(sections) > 4
         current_row = header_row + 1
         for sec_idx, (sec_name, sec_rows) in enumerate(sections, start=1):
             sec_header_row = current_row
             ws.append([None] * len(SUPPLIER_HEADERS))
-            _style_category_header_row(ws, sec_header_row, f"Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)})")
+            if sec_rows:
+                icon = "▶" if should_collapse else "▼"
+                action_tip = "нажмите [+] слева для раскрытия" if should_collapse else "нажмите [-] слева для сворачивания"
+                sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+            else:
+                sec_title = f"▷ Позиция {sec_idx}: {sec_name} (поставщиков не найдено)"
+            _style_category_header_row(ws, sec_header_row, sec_title)
             current_row += 1
 
             if sec_rows:
@@ -476,9 +488,10 @@ def _populate_supplier_sheet(
                 for r_idx, r_data in enumerate(sec_rows):
                     _render_row(current_row, r_data, is_even=(r_idx % 2 == 0))
                     ws.row_dimensions[current_row].outlineLevel = 1
+                    ws.row_dimensions[current_row].hidden = should_collapse
                     current_row += 1
                 group_end = current_row - 1
-                ws.row_dimensions.group(group_start, group_end, outline_level=1, hidden=False)
+                ws.row_dimensions.group(group_start, group_end, outline_level=1, hidden=should_collapse)
             else:
                 notice = (
                     "В реестре Минпромторга/ГИСП подтверждённых записей для данной номенклатурной группы не обнаружено."
@@ -488,7 +501,8 @@ def _populate_supplier_sheet(
                 ws.append([None] * len(SUPPLIER_HEADERS))
                 _style_empty_category_notice_row(ws, current_row, notice)
                 ws.row_dimensions[current_row].outlineLevel = 1
-                ws.row_dimensions.group(current_row, current_row, outline_level=1, hidden=False)
+                ws.row_dimensions[current_row].hidden = should_collapse
+                ws.row_dimensions.group(current_row, current_row, outline_level=1, hidden=should_collapse)
                 current_row += 1
     else:
         data_start_row = header_row + 1
@@ -647,8 +661,14 @@ def write_supplier_xlsx(
         ws.title = "Сводный реестр"
         subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
         breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sections, 1))
+        control_guide = (
+            "💡 Как смотреть: нажимайте значки [+] слева от номеров строк или кнопку [2] в верхнем левом углу над таблицей, чтобы раскрыть всё."
+            if len(item_sections) > 4
+            else "💡 Как управлять: нажимайте значки [-] / [+] слева от номеров строк или кнопки [1] (свернуть всё) / [2] (развернуть всё) в верхнем левом углу над таблицей."
+        )
         summary_text = (
             f"Сводный реестр по всем позициям ТЗ со структурой группировки (+ / -). Всего проверено уникальных компаний: {len(rows)}.\n"
+            f"{control_guide}\n"
             f"Позиции ТЗ: {breakdown_text}"
         )
         if unmatched_item_names:
