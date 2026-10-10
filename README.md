@@ -15,6 +15,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
+- Supply-Chain Category Clustering, Selective Category Picking & Crash-Test on 50 Complex Procurements (2026-10-10):
+  - Supply-chain market clustering: AI profile builder (`build_procurement_profile`) groups items by vendor capability pools instead of blind per-line item splitting. Auxiliary items (fasteners, hangers, cables, brackets, consumables) are absorbed into core systems (`included_sub_items`) to prevent wasteful supplier searches for minor hardware.
+  - Core vs Auxiliary classification: positions are classified with `is_core`, `is_auxiliary`, `cost_tier`, and full sub-item transparency.
+  - Web Cabinet category picker: interactive modal allows users to select exact categories with checkboxes («Выбрать все», «Только основные»), displaying dynamic cost calculation in real time.
+  - Dynamic incremental billing reservation: `reserve_additional_job_units` safely increments existing reservations under the `uq_billing_transaction_job_kind_operation` unique constraint.
+  - Comprehensive crash-test on 50 independent complex specifications across 10 industries (`scripts/crash_test_50_complex_procurements.py`): scored 9.92 / 10.0 with 100% pass rate, 0% fastener leakage, and 100% sub-item disclosure.
 - Dynamic Multi-Item Specification Detection & Dynamic Quota Strategy Selection (2026-10-10):
   - Intake form UX improvement: eliminated premature mode selection («Сбалансированный» vs «Попозиционный») at launch before specification documents are parsed.
   - Intelligent specification decision gate: single-item specifications run immediately with zero interruptions; multi-item specifications pause in `awaiting_customer_confirmation` (`confirmation_kind="multi_item_strategy"`), displaying the detected positions list and offering a clear choice between Balanced (1 task unit, dynamic quota shared across items) and Per-item (deep search per item, N task units).
