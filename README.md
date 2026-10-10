@@ -15,6 +15,15 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
 - Telegram polling worker: `tenderlex-bot.service`.
+- Usability of Multi-Item Excel Reports: Adaptive Row-Group Collapsing & Clear On-Sheet Guidance (2026-10-11):
+  - Adaptive initial outline state (`backend/app/report_builder.py`): $\le 4$ items open expanded (`hidden=False`) for instant visibility of contacts; $> 4$ items (5–35+ positions/estimates) open collapsed (`hidden=True`) to prevent 500+ row overload.
+  - Interactive on-sheet guidance: cell A3 provides clear instructions on operating outline buttons `[+]` / `[-]` or levels `[1]` / `[2]`. Category banner rows include intuitive symbols and action hints (`▼` / `▶` / `▷` + `нажмите [-] слева для сворачивания` / `нажмите [+] слева для раскрытия`).
+  - Unit tests: verified with `test_supplier_xlsx_multi_item_adaptive_collapse_for_many_items`, 826 backend tests passing, clean site build, and production deployment.
+- Unified Single-Sheet Excel with Collapsible Row Outline Grouping & Client Copy Alignment (2026-10-10):
+  - Replaced fragmented multi-tab Excel reports with a unified single sheet `Сводный реестр` featuring native Excel row grouping (`outlineLevel = 1`).
+  - Synchronized all customer-facing copy in web cabinet, modal dialogues, and Telegram bot from "отдельные вкладки" to "сворачиваемая структура (+ / -) на едином листе".
+- Client-Facing Language Audit & Anglicism Removal Across Web & API Documentation (2026-10-10):
+  - Replaced technical jargon and English borrowings across landing page, web cabinet, knowledge base articles, and MCP API client with professional procurement terminology.
 - Supply-Chain Category Clustering, Selective Category Picking & Crash-Test on 50 Complex Procurements (2026-10-10):
   - Supply-chain market clustering: AI profile builder (`build_procurement_profile`) groups items by vendor capability pools instead of blind per-line item splitting. Auxiliary items (fasteners, hangers, cables, brackets, consumables) are absorbed into core systems (`included_sub_items`) to prevent wasteful supplier searches for minor hardware.
   - Core vs Auxiliary classification: positions are classified with `is_core`, `is_auxiliary`, `cost_tier`, and full sub-item transparency.
