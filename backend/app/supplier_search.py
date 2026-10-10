@@ -4206,18 +4206,22 @@ async def _search_with_yandex(
                 logger.debug("Yandex sync search call failed, trying async fallback: %s", sync_exc)
 
             # Fallback: Async search operation
-            response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-            if response.status_code == 429:
-                await asyncio.sleep(2.0)
+            try:
                 response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-            if response.status_code != 200:
-                logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                if response.status_code == 429:
+                    await asyncio.sleep(2.0)
+                    response = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+                if response.status_code != 200:
+                    logger.warning("Yandex search POST failed: status=%s query=%s error=%s", response.status_code, query[:80], response.text[:200])
+                    return []
+                operation_id = str(response.json().get("id") or "")
+                if not operation_id:
+                    return []
+                raw_data = await _poll_yandex_operation(client, operation_id)
+                return _parse_yandex_xml(raw_data, query=query) if raw_data else []
+            except Exception as async_exc:
+                logger.warning("Yandex async search call failed for query=%s: %s", query[:80], async_exc)
                 return []
-            operation_id = str(response.json().get("id") or "")
-            if not operation_id:
-                return []
-            raw_data = await _poll_yandex_operation(client, operation_id)
-            return _parse_yandex_xml(raw_data, query=query) if raw_data else []
 
     headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
     candidates: list[Candidate] = []
@@ -4228,25 +4232,28 @@ async def _search_with_yandex(
     async def search_one(client: httpx.AsyncClient, query: str) -> list[Candidate]:
         all_candidates: list[Candidate] = []
         seen_domains: set[str] = set()
-        for page in range(max_pages):
-            page_candidates = await search_one_page(client, query, page)
-            if not page_candidates:
-                break
-            new_added = 0
-            for c in page_candidates:
-                cand_domain = c.domain or base_domain(c.url)
-                if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
-                    for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
-                        ent_key = entity.lower().strip()
-                        if ent_key not in seen_mined_entities:
-                            seen_mined_entities.add(ent_key)
-                            mined_company_names.append(entity)
-                if c.domain not in seen_domains:
-                    seen_domains.add(c.domain)
-                    all_candidates.append(c)
-                    new_added += 1
-            if new_added == 0 or len(all_candidates) >= groups_on_page:
-                break
+        try:
+            for page in range(max_pages):
+                page_candidates = await search_one_page(client, query, page)
+                if not page_candidates:
+                    break
+                new_added = 0
+                for c in page_candidates:
+                    cand_domain = c.domain or base_domain(c.url)
+                    if is_blocked(cand_domain) or cand_domain in BLOCKED_DOMAINS or cand_domain in EXTRA_AGGREGATOR_DOMAINS:
+                        for entity in extract_supplier_entities_from_aggregator_snippet(c.title, c.snippet):
+                            ent_key = entity.lower().strip()
+                            if ent_key not in seen_mined_entities:
+                                seen_mined_entities.add(ent_key)
+                                mined_company_names.append(entity)
+                    if c.domain not in seen_domains:
+                        seen_domains.add(c.domain)
+                        all_candidates.append(c)
+                        new_added += 1
+                if new_added == 0 or len(all_candidates) >= groups_on_page:
+                    break
+        except Exception as exc:
+            logger.warning("Search query execution failed: query=%s error=%s", query[:80], exc)
         return all_candidates
 
     chunk_size = 4
@@ -4255,7 +4262,12 @@ async def _search_with_yandex(
             chunk = search_queries[start : start + chunk_size]
             tasks = [asyncio.create_task(search_one(client, query)) for query in chunk]
             for task in asyncio.as_completed(tasks):
-                for candidate in await task:
+                try:
+                    task_candidates = await task
+                except Exception as t_exc:
+                    logger.warning("Task in chunk failed: %s", t_exc)
+                    continue
+                for candidate in task_candidates:
                     if candidate.domain in seen:
                         continue
                     seen.add(candidate.domain)
