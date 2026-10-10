@@ -350,19 +350,19 @@ export default function ApiIntegrationsPage() {
 
                   <ul className="space-y-2 text-xs text-slate-600 pt-2 border-t border-slate-200">
                     <li className="flex items-start gap-1.5">
-                      <CheckCircle2 size={14} className="text-sky-600 shrink-0 mt-0.5" />
+                      <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
                       <span>Проверка кабальных условий и завышенных штрафов</span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <CheckCircle2 size={14} className="text-sky-600 shrink-0 mt-0.5" />
+                      <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
                       <span>Аудит требований национального режима (ПП РФ № 1875)</span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <CheckCircle2 size={14} className="text-sky-600 shrink-0 mt-0.5" />
+                      <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
                       <span>Оценка условий обеспечения и возврата гарантий</span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <CheckCircle2 size={14} className="text-sky-600 shrink-0 mt-0.5" />
+                      <CheckCircle2 size={14} className="text-teal-600 shrink-0 mt-0.5" />
                       <span>Структурированный Markdown-отчет с рекомендациями</span>
                     </li>
                   </ul>

@@ -21,6 +21,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileSpreadsheet,
   FileText,
   Gift,
   HelpCircle,
@@ -62,6 +63,24 @@ function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolic
 
 function normalizeMultiItemMode(val?: string | null): "balanced" | "per_item" {
   return val === "per_item" ? "per_item" : "balanced";
+}
+
+function declensionCategory(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return "категорий";
+  if (mod10 === 1) return "категория";
+  if (mod10 >= 2 && mod10 <= 4) return "категории";
+  return "категорий";
+}
+
+function declensionTasks(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return "задач";
+  if (mod10 === 1) return "задача";
+  if (mod10 >= 2 && mod10 <= 4) return "задачи";
+  return "задач";
 }
 
 type BalanceCounter = {
@@ -926,6 +945,46 @@ export function CabinetClient() {
   const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
   const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
   const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
+  const [inlineStrategies, setInlineStrategies] = useState<Record<string, {
+    mode: "balanced" | "per_item";
+    selectedItemIds: string[];
+    isExpanded: boolean;
+    showAllCategories: boolean;
+  }>>({});
+
+  function getJobInlineStrategy(job: CustomerJob) {
+    if (inlineStrategies[job.id]) {
+      return inlineStrategies[job.id];
+    }
+    const items = job.multi_item_details?.items || [];
+    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+    return {
+      mode: job.multi_item_mode === "per_item" ? ("per_item" as const) : ("balanced" as const),
+      selectedItemIds: allIds,
+      isExpanded: true,
+      showAllCategories: false,
+    };
+  }
+
+  function updateJobInlineStrategy(jobId: string, partial: Partial<{
+    mode: "balanced" | "per_item";
+    selectedItemIds: string[];
+    isExpanded: boolean;
+    showAllCategories: boolean;
+  }>) {
+    setInlineStrategies((prev) => {
+      const existing = prev[jobId] || {
+        mode: "balanced",
+        selectedItemIds: [],
+        isExpanded: true,
+        showAllCategories: false,
+      };
+      return {
+        ...prev,
+        [jobId]: { ...existing, ...partial },
+      };
+    });
+  }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -2032,24 +2091,42 @@ export function CabinetClient() {
               <div className="space-y-2.5 pt-2 border-t border-slate-200/60">
                 <label className="flex items-start gap-2.5 text-xs text-slate-700 font-medium leading-snug cursor-pointer select-none">
                   <input
-                    className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500 shrink-0"
+                    className="sr-only"
                     type="checkbox"
                     checked={termsAccepted}
                     onChange={(event) => setTermsAccepted(event.target.checked)}
                     required
                   />
+                  <div
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 mt-0.5 ${
+                      termsAccepted
+                        ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                        : "bg-white border-slate-300 hover:border-emerald-500"
+                    }`}
+                  >
+                    {termsAccepted ? <Check size={11} strokeWidth={3.5} className="text-white" /> : null}
+                  </div>
                   <span>
                     Я принимаю <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/terms" target="_blank" rel="noreferrer">публичную оферту</a>.
                   </span>
                 </label>
                 <label className="flex items-start gap-2.5 text-xs text-slate-700 font-medium leading-snug cursor-pointer select-none">
                   <input
-                    className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500 shrink-0"
+                    className="sr-only"
                     type="checkbox"
                     checked={personalDataConsent}
                     onChange={(event) => setPersonalDataConsent(event.target.checked)}
                     required
                   />
+                  <div
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 mt-0.5 ${
+                      personalDataConsent
+                        ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                        : "bg-white border-slate-300 hover:border-emerald-500"
+                    }`}
+                  >
+                    {personalDataConsent ? <Check size={11} strokeWidth={3.5} className="text-white" /> : null}
+                  </div>
                   <span>
                     Даю согласие на <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/personal-data" target="_blank" rel="noreferrer">обработку персональных данных</a> и ознакомлен с <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/privacy" target="_blank" rel="noreferrer">политикой</a>.
                   </span>
@@ -2877,7 +2954,7 @@ export function CabinetClient() {
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -2886,13 +2963,13 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} aria-hidden="true" />
                             <span>Найти обычным поиском</span>
                           </button>
                         ) : (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -2901,7 +2978,7 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <RotateCcw size={15} aria-hidden="true" />
+                            <RotateCcw size={14} className="text-amber-700" aria-hidden="true" />
                             <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
                           </button>
                         )}
@@ -2910,43 +2987,44 @@ export function CabinetClient() {
 
                     {job.awaiting_customer_confirmation ? (
                       job.confirmation_kind === "multi_item_strategy" ? (
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer animate-pulse"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              markJobAsViewed(job.id);
-                              const items = job.multi_item_details?.items || [];
-                              const initialIds = items.map((it, idx) => it.id || `item-${idx}`);
-                              setSelectedStrategyItemIds(initialIds);
-                              setSelectedStrategyMode(job.multi_item_mode === "per_item" ? "per_item" : "balanced");
-                              setStrategyConfirmJob(job);
-                            }}
-                            disabled={busy}
-                          >
-                            <Sliders size={15} aria-hidden="true" />
-                            <span>Выбрать стратегию</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void cancelJob(job);
-                            }}
-                            disabled={busy}
-                          >
-                            <XCircle size={15} aria-hidden="true" />
-                            <span>Отменить</span>
-                          </button>
-                        </div>
+                        (() => {
+                          const stratState = getJobInlineStrategy(job);
+                          const items = job.multi_item_details?.items || [];
+                          return (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateJobInlineStrategy(job.id, { isExpanded: !stratState.isExpanded });
+                                }}
+                              >
+                                <Sliders size={14} aria-hidden="true" />
+                                <span>{stratState.isExpanded ? "Свернуть" : `Выбрать стратегию (${items.length} поз.)`}</span>
+                                {stratState.isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void cancelJob(job);
+                                }}
+                                disabled={busy}
+                              >
+                                <XCircle size={14} className="text-rose-600" aria-hidden="true" />
+                                <span>Отменить</span>
+                              </button>
+                            </div>
+                          );
+                        })()
                       ) : (
                         <>
                           {!offer || offer.can_accept ? (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 markJobAsViewed(job.id);
@@ -2954,14 +3032,14 @@ export function CabinetClient() {
                               }}
                               disabled={busy}
                             >
-                              <CheckCircle2 size={16} aria-hidden="true" />
+                              <CheckCircle2 size={15} aria-hidden="true" />
                               <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
                             </button>
                           ) : null}
                           {!offer || offer.can_decline ? (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 markJobAsViewed(job.id);
@@ -2969,7 +3047,7 @@ export function CabinetClient() {
                               }}
                               disabled={busy}
                             >
-                              <XCircle size={16} aria-hidden="true" />
+                              <XCircle size={15} className="text-rose-600" aria-hidden="true" />
                               <span>Отказаться</span>
                             </button>
                           ) : null}
@@ -2980,31 +3058,32 @@ export function CabinetClient() {
                         {job.can_cancel ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               void cancelJob(job);
                             }}
                             disabled={busy}
                           >
-                            <XCircle size={16} aria-hidden="true" />
+                            <XCircle size={14} className="text-rose-600" aria-hidden="true" />
                             <span>Отменить</span>
                           </button>
                         ) : null}
                         {job.result_files?.length ? (
                           job.result_files.map((file) => {
                             const isQuoteRequest = file.kind === "quote_request";
+                            const isSuppliers = file.kind === "suppliers_excel" || file.kind === "suppliers" || file.filename?.endsWith(".xlsx") || (file.label && file.label.toLowerCase().includes("поставщик"));
                             const isAdminSupplement = file.kind === "admin_supplement" || file.is_admin_supplement;
                             return (
                               <button
                                 key={`${job.id}-${file.kind}`}
                                 type="button"
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all shadow-2xs cursor-pointer shrink-0 border ${
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors shadow-xs cursor-pointer shrink-0 border ${
                                   isAdminSupplement
-                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-extrabold shadow-emerald-600/20"
+                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-bold shadow-emerald-600/20"
                                     : isUnviewed
-                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse shadow-teal-600/30 font-extrabold"
-                                    : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300 font-bold"
+                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse font-bold"
+                                    : "bg-white hover:bg-slate-50 text-slate-800 border-slate-200/90 hover:border-slate-300 font-semibold"
                                 }`}
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -3014,7 +3093,17 @@ export function CabinetClient() {
                                 }}
                                 disabled={busy}
                               >
-                                {isQuoteRequest ? <Eye size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
+                                {isAdminSupplement ? (
+                                  <Download size={14} aria-hidden="true" />
+                                ) : isUnviewed ? (
+                                  isQuoteRequest ? <Eye size={14} aria-hidden="true" /> : <Download size={14} aria-hidden="true" />
+                                ) : isQuoteRequest ? (
+                                  <FileText size={14} className="text-blue-600" aria-hidden="true" />
+                                ) : isSuppliers ? (
+                                  <FileSpreadsheet size={14} className="text-emerald-600" aria-hidden="true" />
+                                ) : (
+                                  <FileText size={14} className="text-indigo-600" aria-hidden="true" />
+                                )}
                                 <span>{file.label || "Скачать"}</span>
                               </button>
                             );
@@ -3023,7 +3112,7 @@ export function CabinetClient() {
                         {job.can_find_more_suppliers ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50/50 text-teal-800 border border-slate-200/90 hover:border-teal-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
@@ -3031,14 +3120,14 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} className="text-teal-600" aria-hidden="true" />
                             <span>Найти ещё</span>
                           </button>
                         ) : null}
                         {job.can_start_supplier_search || (job.mode === "exact_product" && isCompletedWithResult) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
@@ -3051,7 +3140,7 @@ export function CabinetClient() {
                             disabled={busy}
                             title="Найти поставщиков по подобранным товарам и аналогам"
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} aria-hidden="true" />
                             <span>Найти поставщиков</span>
                           </button>
                         ) : null}
@@ -3066,7 +3155,7 @@ export function CabinetClient() {
                             return (
                               <button
                                 type="button"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-md text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setRetryConfirmJob(job);
@@ -3076,7 +3165,7 @@ export function CabinetClient() {
                                 disabled={busy}
                                 title="Продолжить поиск поставщиков"
                               >
-                                <RotateCcw size={15} aria-hidden="true" />
+                                <RotateCcw size={14} aria-hidden="true" />
                                 <span>Продолжить поиск</span>
                               </button>
                             );
@@ -3086,7 +3175,7 @@ export function CabinetClient() {
                         {isCompletedWithResult && (job.mode === "supplier_search" || job.mode === "analysis_and_suppliers") ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300/80 rounded-xl text-xs font-semibold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-md text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               setRetryConfirmJob(job);
@@ -3104,7 +3193,7 @@ export function CabinetClient() {
                     )}
                   </div>
                   {job.admin_comment ? (
-                    <div className="col-span-12 mt-2 p-3 rounded-xl bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
+                    <div className="col-span-12 mt-2 p-3 rounded-md bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
                       <div className="flex items-center gap-1.5 font-bold text-teal-900 mb-1">
                         <Sparkles size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
                         <span>Комментарий специалистов TenderLex:</span>
@@ -3112,6 +3201,272 @@ export function CabinetClient() {
                       <p className="whitespace-pre-wrap text-slate-700 leading-relaxed font-normal">{job.admin_comment}</p>
                     </div>
                   ) : null}
+                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
+                    const stratState = getJobInlineStrategy(job);
+                    const items = job.multi_item_details?.items || [];
+                    const visibleItems = items.length <= 6 || stratState.showAllCategories
+                      ? items
+                      : items.slice(0, 6);
+
+                    return (
+                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-3">
+                        {/* Information Header */}
+                        <div className="bg-teal-50/70 border border-teal-200/80 rounded-lg p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          <div className="flex items-start sm:items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-md bg-teal-600 text-white flex items-center justify-center shrink-0 mt-0.5 sm:mt-0 shadow-2xs">
+                              <Sliders size={14} />
+                            </div>
+                            <div>
+                              <div className="text-xs font-extrabold text-slate-900 flex items-center gap-2 flex-wrap">
+                                <span>В спецификации выделено {items.length} {declensionCategory(items.length)}</span>
+                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded-xs">
+                                  Кластеризовано по пулам поставщиков
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                                Сопутствующий крепеж и расходники поглощены основными системами. Выберите способ поиска поставщиков:
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Mode Switcher Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                          <div
+                            onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
+                            className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                              stratState.mode === "balanced"
+                                ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
+                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                            }`}
+                          >
+                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                              stratState.mode === "balanced" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
+                            }`}>
+                              {stratState.mode === "balanced" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
+                            </div>
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <strong className="text-xs font-extrabold text-slate-900">
+                                  ⚖️ Сбалансированный поиск
+                                </strong>
+                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
+                                  1 задача (99 ₽)
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
+                                Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем позициям. 1 сводный файл Excel и 1 общий Запрос КП (.docx).
+                              </p>
+                            </div>
+                          </div>
+
+                          <div
+                            onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item" })}
+                            className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                              stratState.mode === "per_item"
+                                ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
+                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                            }`}
+                          >
+                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                              stratState.mode === "per_item" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
+                            }`}>
+                              {stratState.mode === "per_item" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
+                            </div>
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <strong className="text-xs font-extrabold text-slate-900">
+                                  🔍 Попозиционный поиск
+                                </strong>
+                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
+                                  {stratState.selectedItemIds.length} поз. ({stratState.selectedItemIds.length * 99} ₽)
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
+                                Глубокий независимый сбор по каждой выбранной категории в отдельные вкладки. Позволяет выбрать точные позиции галочками ниже.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Categories Selection */}
+                        <div className="space-y-2 pt-1">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                              <span>Категории ТЗ ({items.length}):</span>
+                              <span className="text-[11px] font-normal text-slate-500">
+                                {stratState.mode === "per_item"
+                                  ? "отметьте галочками нужные категории для поиска"
+                                  : "включены все позиции ТЗ в консолидированный пул"}
+                              </span>
+                            </div>
+
+                            {stratState.mode === "per_item" ? (
+                              <div className="flex items-center gap-1.5 text-[11px]">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+                                    updateJobInlineStrategy(job.id, { selectedItemIds: allIds });
+                                  }}
+                                  className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
+                                >
+                                  Выбрать все ({items.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const coreIds = items
+                                      .filter(it => it.is_core || (!it.is_auxiliary && it.cost_tier !== "auxiliary"))
+                                      .map((it, idx) => it.id || `item-${idx}`);
+                                    updateJobInlineStrategy(job.id, { selectedItemIds: coreIds.length ? coreIds : items.map((it, idx) => it.id || `item-${idx}`) });
+                                  }}
+                                  className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-md font-bold cursor-pointer"
+                                >
+                                  Только основные
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateJobInlineStrategy(job.id, { selectedItemIds: [] })}
+                                  className="px-2 py-1 text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
+                                >
+                                  Снять все
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {/* Categories Grid */}
+                          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                            items.length > 6 && stratState.showAllCategories ? "max-h-72 overflow-y-auto pr-1 category-scroll-container" : ""
+                          }`}>
+                            {visibleItems.map((it, idx) => {
+                              const itemId = it.id || `item-${idx}`;
+                              const isChecked = stratState.selectedItemIds.includes(itemId);
+                              const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
+
+                              return (
+                                <div
+                                  key={itemId}
+                                  onClick={() => {
+                                    if (stratState.mode !== "per_item") return;
+                                    const newIds = isChecked
+                                      ? stratState.selectedItemIds.filter(id => id !== itemId)
+                                      : [...stratState.selectedItemIds, itemId];
+                                    updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
+                                  }}
+                                  className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all ${
+                                    stratState.mode === "per_item"
+                                      ? isChecked
+                                        ? "border-teal-400 bg-teal-50/20 shadow-2xs cursor-pointer"
+                                        : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300 cursor-pointer"
+                                      : "border-slate-200/80"
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      {stratState.mode === "per_item" ? (
+                                        <div
+                                          className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                            isChecked
+                                              ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                              : "bg-white border-slate-300 hover:border-emerald-500"
+                                          }`}
+                                        >
+                                          {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                        </div>
+                                      ) : null}
+                                      <span className="font-bold text-slate-800 truncate">
+                                        {idx + 1}. {it.name}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {isAuxiliary ? (
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
+                                          Комплектующие
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
+                                          Основная
+                                        </span>
+                                      )}
+                                      {it.quantity ? (
+                                        <span className="text-slate-500 font-medium text-[11px]">
+                                          {it.quantity} {it.unit || "шт."}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  {it.included_sub_items && it.included_sub_items.length > 0 ? (
+                                    <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
+                                      <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
+                                      <span>{it.included_sub_items.join(" · ")}</span>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* If more than 6 items, show toggle button */}
+                          {items.length > 6 ? (
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
+                              className="w-full py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              {stratState.showAllCategories ? (
+                                <>
+                                  <ChevronUp size={14} />
+                                  <span>Свернуть список категорий (показаны все {items.length})</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown size={14} />
+                                  <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} (всего {items.length})</span>
+                                </>
+                              )}
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {/* Action Footer */}
+                        <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="text-xs text-slate-600">
+                            {stratState.mode === "per_item" ? (
+                              <div>
+                                Выбрано категорий: <strong className="text-slate-900">{stratState.selectedItemIds.length}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{stratState.selectedItemIds.length} {declensionTasks(stratState.selectedItemIds.length)} ({stratState.selectedItemIds.length * 99} ₽)</strong>
+                              </div>
+                            ) : (
+                              <div>
+                                Режим: <strong className="text-slate-900">Сбалансированный поиск</strong> · К списанию: <strong className="text-teal-700">1 задача (99 ₽)</strong>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void cancelJob(job)}
+                              className="px-3 py-2 bg-white hover:bg-rose-50 text-rose-700 border border-slate-200 hover:border-rose-300 rounded-md text-xs font-semibold shadow-xs cursor-pointer"
+                              disabled={busy}
+                            >
+                              Отменить задачу
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void chooseStrategy(job, stratState.mode, stratState.selectedItemIds)}
+                              className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                              disabled={busy || (stratState.mode === "per_item" && stratState.selectedItemIds.length === 0)}
+                            >
+                              <CheckCircle2 size={15} />
+                              <span>Запустить поиск ({stratState.mode === "per_item" ? `${stratState.selectedItemIds.length} ${declensionTasks(stratState.selectedItemIds.length)}` : "1 списание"})</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })() : null}
                 </article>
               );
             })
@@ -3634,19 +3989,15 @@ export function CabinetClient() {
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
                               {selectedStrategyMode === "per_item" ? (
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={(e) => {
-                                    e.stopPropagation();
-                                    if (e.target.checked) {
-                                      setSelectedStrategyItemIds([...selectedStrategyItemIds, itemId]);
-                                    } else {
-                                      setSelectedStrategyItemIds(selectedStrategyItemIds.filter(id => id !== itemId));
-                                    }
-                                  }}
-                                  className="w-4 h-4 rounded text-teal-600 border-slate-300 focus:ring-teal-500 cursor-pointer shrink-0"
-                                />
+                                <div
+                                  className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                    isChecked
+                                      ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                      : "bg-white border-slate-300 hover:border-emerald-500"
+                                  }`}
+                                >
+                                  {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                </div>
                               ) : null}
                               <span className="font-bold text-slate-800 truncate">
                                 {idx + 1}. {it.name}
