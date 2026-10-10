@@ -241,6 +241,41 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(wb.sheetnames, ["Поставщики"])
             wb.close()
 
+    def test_write_supplier_xlsx_multi_item_discloses_unmatched_items(self) -> None:
+        rows = [
+            {
+                "company_name": "ООО СтанкоМаш",
+                "site": "https://stankomash.ru",
+                "phone": "+7 495 111 22 33",
+                "email": "sales@stankomash.ru",
+                "product_fit": "exact",
+                "product": "Установка плазменной резки с ЧПУ",
+                "procurement_item": "Установка плазменной резки",
+            },
+        ]
+        profile = {
+            "items": [
+                {"id": "item-1", "name": "Установка плазменной резки"},
+                {"id": "item-2", "name": "Винтовой компрессор высокого давления"},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            xlsx_path = Path(tmp) / "suppliers.xlsx"
+            write_supplier_xlsx(
+                xlsx_path,
+                rows,
+                title="Комплексная закупка",
+                policy="minprom_registry_only",
+                profile=profile,
+            )
+
+            wb = load_workbook(xlsx_path)
+            ws_main = wb["Сводный реестр"]
+            summary_cell = ws_main["A3"].value
+            self.assertIn("Позиции без подтверждённых записей в реестре Минпромторга", summary_cell)
+            self.assertIn("Винтовой компрессор высокого давления", summary_cell)
+            wb.close()
+
     def test_quote_request_intro_includes_partial_supply_disclaimer(self) -> None:
         self.assertIn("попозиционная поставка", QUOTE_REQUEST_INTRO.lower())
 

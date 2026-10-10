@@ -524,6 +524,7 @@ def write_supplier_xlsx(
     is_multi = len(profile_items) > 1
 
     item_sheets_data: list[tuple[str, list[dict]]] = []
+    unmatched_item_names: list[str] = []
     if is_multi:
         item_specs = _build_item_specs(profile_items)
         for idx, spec in enumerate(item_specs, start=1):
@@ -532,6 +533,8 @@ def write_supplier_xlsx(
             matched_rows = [r for r in rows if spec["id"] in _match_supplier_to_item_ids(r, item_specs)]
             if matched_rows:
                 item_sheets_data.append((it_name, matched_rows))
+            else:
+                unmatched_item_names.append(it_name)
     elif not profile_items:
         raw_distinct: list[str] = []
         for r in rows:
@@ -571,10 +574,17 @@ def write_supplier_xlsx(
         ws.title = "Сводный реестр"
         subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
         breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sheets_data, 1))
-        summary = clean_xml_compatible(
+        summary_text = (
             f"Сводный реестр по всем позициям ТЗ. Всего проверено уникальных компаний: {len(rows)}.\n"
             f"Позиции ТЗ: {breakdown_text}"
         )
+        if unmatched_item_names:
+            unmatched_text = " · ".join(unmatched_item_names)
+            if policy == "minprom_registry_only":
+                summary_text += f"\nПозиции без подтверждённых записей в реестре Минпромторга: {unmatched_text}."
+            else:
+                summary_text += f"\nПозиции без найденных поставщиков: {unmatched_text}."
+        summary = clean_xml_compatible(summary_text)
     else:
         ws.title = "Поставщики"
         subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
