@@ -2599,7 +2599,7 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.answer("Задача не найдена.", show_alert=True)
             return
-        if job.status not in {"pending", "running"}:
+        if job.status not in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}:
             await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
             await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
             return

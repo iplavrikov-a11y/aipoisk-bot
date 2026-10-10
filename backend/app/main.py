@@ -3899,7 +3899,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
-        "can_cancel": job.status in {"pending", "running"},
+        "can_cancel": job.status in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "can_start_supplier_search": job_can_start_supplier_search(job),
         "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
@@ -4188,7 +4188,8 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
 
 def cancel_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
-    if job.status not in {"pending", "running"}:
+    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}
+    if job.status not in cancellable_statuses:
         raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена клиентом")
     job.status = "cancelled"
