@@ -1068,6 +1068,7 @@ export function CabinetClient() {
     });
   }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
+  const [quoteItemSearch, setQuoteItemSearch] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
@@ -1775,6 +1776,7 @@ export function CabinetClient() {
       const raw = payload.content || "";
       const tableItems = extractQuoteTableItems(raw);
       const allIndexes = tableItems.map((it) => it.index);
+      setQuoteItemSearch("");
       setQuoteRequestModal({
         job,
         html: quoteMarkdownToHtml(raw, allIndexes),
@@ -1791,13 +1793,8 @@ export function CabinetClient() {
     }
   }
 
-  function toggleQuoteRequestItem(index: number) {
+  function applyQuoteRequestItemIndexes(safeIndexes: number[]) {
     if (!quoteRequestModal) return;
-    const current = quoteRequestModal.selectedItemIndexes;
-    const nextIndexes = current.includes(index)
-      ? current.filter((i) => i !== index)
-      : [...current, index].sort((a, b) => a - b);
-    const safeIndexes = nextIndexes.length > 0 ? nextIndexes : [index];
     const raw = quoteRequestModal.rawMarkdown || "";
     const nextHtml = quoteMarkdownToHtml(raw, safeIndexes);
     if (quoteEditorRef.current) {
@@ -1811,21 +1808,45 @@ export function CabinetClient() {
     });
   }
 
+  function toggleQuoteRequestItem(index: number) {
+    if (!quoteRequestModal) return;
+    const current = quoteRequestModal.selectedItemIndexes;
+    const nextIndexes = current.includes(index)
+      ? current.filter((i) => i !== index)
+      : [...current, index].sort((a, b) => a - b);
+    const safeIndexes = nextIndexes.length > 0 ? nextIndexes : [index];
+    applyQuoteRequestItemIndexes(safeIndexes);
+  }
+
   function toggleAllQuoteRequestItems(selectAll: boolean) {
     if (!quoteRequestModal) return;
     const items = quoteRequestModal.items || [];
     const safeIndexes = selectAll ? items.map((it) => it.index) : (items.length > 0 ? [items[0].index] : []);
-    const raw = quoteRequestModal.rawMarkdown || "";
-    const nextHtml = quoteMarkdownToHtml(raw, safeIndexes);
-    if (quoteEditorRef.current) {
-      quoteEditorRef.current.innerHTML = nextHtml;
-    }
-    setQuoteRequestModal({
-      ...quoteRequestModal,
-      html: nextHtml,
-      selectedItemIndexes: safeIndexes,
-      copied: false,
-    });
+    applyQuoteRequestItemIndexes(safeIndexes);
+  }
+
+  function selectFirstNQuoteRequestItems(count: number) {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const safeIndexes = items.slice(0, count).map((it) => it.index);
+    applyQuoteRequestItemIndexes(safeIndexes.length > 0 ? safeIndexes : (items.length > 0 ? [items[0].index] : []));
+  }
+
+  function invertQuoteRequestItems() {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const current = new Set(quoteRequestModal.selectedItemIndexes);
+    const inverted = items.filter((it) => !current.has(it.index)).map((it) => it.index);
+    applyQuoteRequestItemIndexes(inverted.length > 0 ? inverted : items.map((it) => it.index));
+  }
+
+  function selectMatchingQuoteRequestItems(matchingIndexes: number[]) {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const current = new Set(quoteRequestModal.selectedItemIndexes);
+    matchingIndexes.forEach((idx) => current.add(idx));
+    const next = items.filter((it) => current.has(it.index)).map((it) => it.index);
+    applyQuoteRequestItemIndexes(next.length > 0 ? next : (items.length > 0 ? [items[0].index] : []));
   }
 
   async function downloadEditedQuoteRequest() {
@@ -3741,75 +3762,162 @@ export function CabinetClient() {
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setQuoteRequestModal(null);
+            if (event.target === event.currentTarget) {
+              setQuoteRequestModal(null);
+              setQuoteItemSearch("");
+            }
           }}
         >
-          <section className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-6 max-h-[90vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
-            <header className="flex items-center justify-between pb-4 border-b border-slate-200 shrink-0">
+          <section className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-5 max-h-[92vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
+            <header className="flex items-center justify-between pb-3.5 border-b border-slate-200 shrink-0">
               <div>
                 <h2 id="quote-request-title" className="text-lg font-extrabold text-slate-900">Запрос коммерческого предложения</h2>
                 <span className="text-xs text-slate-500 font-medium">{quoteRequestModal.job.human_title}</span>
               </div>
-              <button type="button" className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer" onClick={() => setQuoteRequestModal(null)} disabled={busy} aria-label="Закрыть">
+              <button
+                type="button"
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer"
+                onClick={() => {
+                  setQuoteRequestModal(null);
+                  setQuoteItemSearch("");
+                }}
+                disabled={busy}
+                aria-label="Закрыть"
+              >
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
-            {quoteRequestModal.items && quoteRequestModal.items.length > 1 ? (
-              <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/90 space-y-2 shrink-0">
-                <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
-                  <span className="font-bold text-slate-700">
-                    Позиции для запроса КП ({quoteRequestModal.selectedItemIndexes.length} из {quoteRequestModal.items.length}):
-                  </span>
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => toggleAllQuoteRequestItems(true)}
-                      className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
-                    >
-                      Выбрать все
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => toggleAllQuoteRequestItems(false)}
-                      className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
-                    >
-                      Сброс
-                    </button>
+            {quoteRequestModal.items && quoteRequestModal.items.length > 1 ? (() => {
+              const query = quoteItemSearch.trim().toLowerCase();
+              const filteredItems = query
+                ? quoteRequestModal.items.filter(
+                    (it) =>
+                      it.name.toLowerCase().includes(query) ||
+                      String(it.index + 1).includes(query)
+                  )
+                : quoteRequestModal.items;
+              const matchingIndexes = filteredItems.map((it) => it.index);
+              return (
+                <div className="bg-slate-50 p-3 sm:p-3.5 rounded-2xl border border-slate-200/90 space-y-2.5 shrink-0">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800">
+                        Позиции для запроса КП:
+                      </span>
+                      <span className="px-2 py-0.5 bg-teal-100 text-teal-800 font-bold rounded-full text-[11px]">
+                        {quoteRequestModal.selectedItemIndexes.length} из {quoteRequestModal.items.length}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => toggleAllQuoteRequestItems(true)}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Выбрать все
+                      </button>
+                      {quoteRequestModal.items.length >= 10 && (
+                        <button
+                          type="button"
+                          onClick={() => selectFirstNQuoteRequestItems(10)}
+                          className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                        >
+                          Первые 10
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => invertQuoteRequestItems()}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Инвертировать
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleAllQuoteRequestItems(false)}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Сброс
+                      </button>
+                    </div>
+                  </div>
+
+                  {quoteRequestModal.items.length > 4 && (
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={quoteItemSearch}
+                          onChange={(e) => setQuoteItemSearch(e.target.value)}
+                          placeholder="Поиск по названию или номеру позиции..."
+                          className="w-full pl-8 pr-7 py-1 text-xs bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-slate-800 placeholder-slate-400"
+                        />
+                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                        {quoteItemSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setQuoteItemSearch("")}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                            aria-label="Очистить поиск"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                      {quoteItemSearch && (
+                        <button
+                          type="button"
+                          onClick={() => selectMatchingQuoteRequestItems(matchingIndexes)}
+                          disabled={matchingIndexes.length === 0}
+                          className="px-2.5 py-1 text-[11px] font-semibold bg-teal-50 text-teal-800 hover:bg-teal-100 disabled:opacity-50 border border-teal-200 rounded-lg shrink-0 cursor-pointer"
+                        >
+                          Выбрать найденные ({matchingIndexes.length})
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-1.5 max-h-[130px] overflow-y-auto pr-1">
+                    {filteredItems.length === 0 ? (
+                      <div className="text-xs text-slate-400 py-2 text-center w-full">
+                        Ничего не найдено по запросу «{quoteItemSearch}»
+                      </div>
+                    ) : (
+                      filteredItems.map((item) => {
+                        const isSelected = quoteRequestModal.selectedItemIndexes.includes(item.index);
+                        return (
+                          <button
+                            key={item.index}
+                            type="button"
+                            title={item.name}
+                            onClick={() => toggleQuoteRequestItem(item.index)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer text-left max-w-full ${
+                              isSelected
+                                ? "bg-teal-50 border-teal-300 text-teal-900 font-bold shadow-2xs"
+                                : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                            }`}
+                          >
+                            <span
+                              className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] shrink-0 border ${
+                                isSelected ? "bg-teal-600 border-teal-600 text-white" : "border-slate-300 bg-white"
+                              }`}
+                            >
+                              {isSelected ? "✓" : ""}
+                            </span>
+                            <span className="truncate max-w-[260px]">
+                              {item.index + 1}. {item.name}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-[110px] overflow-y-auto pr-1">
-                  {quoteRequestModal.items.map((item) => {
-                    const isSelected = quoteRequestModal.selectedItemIndexes.includes(item.index);
-                    return (
-                      <button
-                        key={item.index}
-                        type="button"
-                        onClick={() => toggleQuoteRequestItem(item.index)}
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer text-left max-w-full ${
-                          isSelected
-                            ? "bg-teal-50 border-teal-300 text-teal-900 font-bold shadow-2xs"
-                            : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
-                        }`}
-                      >
-                        <span
-                          className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] shrink-0 border ${
-                            isSelected ? "bg-teal-600 border-teal-600 text-white" : "border-slate-300 bg-white"
-                          }`}
-                        >
-                          {isSelected ? "✓" : ""}
-                        </span>
-                        <span className="truncate max-w-[260px]">
-                          {item.index + 1}. {item.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
+              );
+            })() : null}
             <div
               ref={quoteEditorRef}
-              className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[300px] shadow-inner leading-relaxed"
+              className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[220px] max-h-[46vh] shadow-inner leading-relaxed"
               contentEditable
               suppressContentEditableWarning
               onPaste={(event) => {
@@ -3824,8 +3932,16 @@ export function CabinetClient() {
               }}
               aria-label="Текст запроса коммерческого предложения"
             />
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 shrink-0">
-              <button type="button" className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer" onClick={() => setQuoteRequestModal(null)} disabled={busy}>
+            <div className="flex items-center justify-end gap-3 pt-3.5 border-t border-slate-200 shrink-0">
+              <button
+                type="button"
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                onClick={() => {
+                  setQuoteRequestModal(null);
+                  setQuoteItemSearch("");
+                }}
+                disabled={busy}
+              >
                 Закрыть
               </button>
               <button type="button" className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer" onClick={() => void copyQuoteRequestText()} disabled={busy}>

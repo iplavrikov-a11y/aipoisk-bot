@@ -419,6 +419,41 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
             supplier_search.collect_pages = original_collect
             supplier_search.candidate_domain_resolves_fast = original_dns
 
+    def test_accepted_supplier_results_per_item_respects_custom_client_target_without_cap(self) -> None:
+        profile = ProcurementProfile(
+            summary="Строительные материалы и оборудование",
+            items=[
+                ProcurementItem(id="item-1", name="Металлические профили"),
+                ProcurementItem(id="item-2", name="Пиломатериалы"),
+                ProcurementItem(id="item-3", name="Изоляционные материалы"),
+                ProcurementItem(id="item-4", name="Сухие смеси"),
+            ],
+        )
+        reviewed = []
+        for item_idx in range(1, 5):
+            for i in range(75):
+                reviewed.append({
+                    "site": f"https://supplier-cat{item_idx}-{i}.ru",
+                    "company_name": f"Поставщик {item_idx} #{i}",
+                    "evidence_status": "verified",
+                    "quality_score": 85,
+                    "procurement_item_id": f"item-{item_idx}",
+                    "procurement_item": profile.items[item_idx - 1].name,
+                    "product_fit": "exact",
+                })
+
+        accepted = _accepted_supplier_results(
+            reviewed,
+            target=70,
+            profile=profile,
+            multi_item_mode="per_item",
+            limit_to_target=True,
+        )
+        self.assertEqual(len(accepted), 280)
+        for item_idx in range(1, 5):
+            item_count = sum(1 for r in accepted if r.get("procurement_item_id") == f"item-{item_idx}")
+            self.assertEqual(item_count, 70)
+
 
 if __name__ == "__main__":
     unittest.main()

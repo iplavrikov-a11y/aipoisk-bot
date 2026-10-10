@@ -1563,6 +1563,7 @@ async def build_supplier_queries(
     wave_index: int = 1,
     executed_queries: set[str] | list[str] | None = None,
     additional_prompt: str = "",
+    multi_item_mode: str = "balanced",
 ) -> list[str]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search query generation")
@@ -1593,7 +1594,26 @@ async def build_supplier_queries(
         system_prompt = "Ты закупочный исследователь. Формируешь только поисковые запросы."
         universal_negatives = build_universal_negative_keywords(context)
         neg_line = f"\n- СТРОГО исключай слова: {', '.join(universal_negatives[:8])}" if universal_negatives else ""
-        prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
+        if profile and len(profile.items) > 1 and multi_item_mode == "per_item":
+            item_list_md = "\n".join(f"- {it.name}" for it in profile.items)
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для ПОПОЗИЦИОННОГО глубокого поиска поставщиков.
+В закупке выделены следующие независимые позиции:
+{item_list_md}
+
+КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов (производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ).
+Не смешивай разные позиции в один запрос!
+Всего сформируй от {8 * len(profile.items)} до {12 * len(profile.items)} запросов с равномерным охватом всех позиций.{neg_line}
+Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
+Ответ строго JSON:
+{{"queries": ["..."]}}
+
+Профиль закупки:
+{json.dumps(_profile_to_dict(profile), ensure_ascii=False)}
+
+Фрагмент ТЗ для контекста:
+{context[:6000]}"""
+        else:
+            prompt = f"""На основе профиля закупки сформируй поисковые запросы для поиска поставщиков.
 
 Нужно искать не только точную строку из ТЗ, а компании, которые производят или поставляют нужную товарную группу/номенклатуру и могут дать КП по характеристикам ТЗ.
 Сформируй 18-28 коротких запросов для поиска российских заводов, производителей, официальных дилеров, дистрибьюторов и B2B-поставщиков.
@@ -1635,7 +1655,8 @@ async def build_supplier_queries(
                 revised = await _revise_supplier_queries_with_ai(settings, context, profile, queries, target)
                 if revised:
                     queries = revised
-            return queries[:28]
+            max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            return queries[:max_queries]
         except Exception as exc:
             last_error = exc
             if attempt == 1:
@@ -1715,6 +1736,16 @@ async def _discover_suppliers_impl(
         profile = await build_procurement_profile(settings, context)
     await _emit_progress(progress_callback, 36, f"Определил закупаемые позиции: {len(profile.items)}")
     
+    item_count = len(profile.items) if (profile and len(profile.items) > 1) else 1
+    is_per_item = profile is not None and item_count > 1 and multi_item_mode == "per_item"
+
+    if is_per_item:
+        effective_minimum_target = minimum_target * item_count
+        effective_delivery_target = delivery_target * item_count
+    else:
+        effective_minimum_target = minimum_target
+        effective_delivery_target = delivery_target
+
     policy = normalize_supplier_search_policy(supplier_search_policy)
     await _emit_progress(progress_callback, 39, "Проверяю требования к реестру Минпромторга")
     if policy == SUPPLIER_POLICY_NORMAL:
@@ -1801,7 +1832,7 @@ async def _discover_suppliers_impl(
     minprom_supplier_queries: list[str] = []
 
     # If we have enough preloaded candidates, we skip / minimize search query calls
-    if len(preloaded_objs) >= delivery_target * 4:
+    if len(preloaded_objs) >= effective_delivery_target * 4:
         candidates = preloaded_objs
         search_meta = {
             "provider_order": ["preloaded_pool"],
@@ -1825,6 +1856,7 @@ async def _discover_suppliers_impl(
                     wave_index=wave_index,
                     executed_queries=executed_queries,
                     additional_prompt=additional_prompt,
+                    multi_item_mode=multi_item_mode,
                 )
             except TypeError:
                 general_queries = await build_supplier_queries(
@@ -1843,33 +1875,28 @@ async def _discover_suppliers_impl(
         await _emit_progress(
             progress_callback,
             50,
-            f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {minimum_target}, целевой результат {delivery_target}",
+            f"Ищу сайты поставщиков: запросов {len(queries)}, минимум {effective_minimum_target}, целевой результат {effective_delivery_target}",
         )
         is_registry_only = policy == SUPPLIER_POLICY_MINPROM_ONLY
         discovered, search_meta = await discover_candidates(
             settings,
             queries,
-            max_results=max(len(queries) * 4, 60) if is_registry_only else max(delivery_target * 4, 160),
+            max_results=max(len(queries) * 4, 60) if is_registry_only else max(effective_delivery_target * 4, 160 * item_count),
             excluded_domains=excluded_domains,
-            primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(delivery_target),
-            fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(delivery_target),
+            primary_candidate_floor=0 if is_registry_only else _primary_candidate_floor(effective_delivery_target),
+            fallback_candidate_limit=0 if is_registry_only else _fallback_candidate_limit(effective_delivery_target),
         )
         preloaded_domains = {p.domain for p in preloaded_objs}
         candidates = preloaded_objs + [c for c in discovered if c.domain not in preloaded_domains]
 
     await _emit_progress(progress_callback, 60, f"Найдено кандидатов: {len(candidates)}. Отсекаю нерелевантные сайты")
-    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(delivery_target * 5, 60)]
+    candidates = _exclude_candidates(_rank_candidates(candidates, context), excluded_domains)[: max(effective_delivery_target * 5, 60 * item_count)]
     initial_candidate_pool = list(candidates)
     await _emit_progress(progress_callback, 66, "Отбираю подходящие компании")
-    rerank = await ai_rerank_candidates(settings, profile, candidates, delivery_target, registry_context=minprom_context)
+    rerank = await ai_rerank_candidates(settings, profile, candidates, effective_delivery_target, registry_context=minprom_context)
     candidates = rerank.candidates
 
     await _emit_progress(progress_callback, 72, f"Проверяю сайты и контакты: кандидатов {len(candidates)}")
-    effective_delivery_target = (
-        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, minimum_target)) * len(profile.items))
-        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
-        else delivery_target
-    )
     accepted, reviewed, review_meta = await _review_candidates_until_target(
         settings,
         candidates,
@@ -1889,7 +1916,7 @@ async def _discover_suppliers_impl(
         # The client minimum is the completion guarantee. Extra verified rows come
         # from the first reviewed pool; do not spend another recovery pass solely
         # to chase the optional surplus.
-        if len(accepted) >= minimum_target:
+        if len(accepted) >= effective_minimum_target:
             break
         accepted_before_recovery = len(accepted)
 
@@ -1900,7 +1927,7 @@ async def _discover_suppliers_impl(
             c for c in initial_candidate_pool
             if c.domain and base_domain(c.domain) not in reviewed_domains and not is_blocked(c.domain)
         ]
-        needed_gap = max(1, minimum_target - len(accepted))
+        needed_gap = max(1, effective_minimum_target - len(accepted))
         if unreviewed_from_pool:
             fast_candidates = unreviewed_from_pool[: max(needed_gap * 3, 20)]
             await _emit_progress(
@@ -1916,6 +1943,7 @@ async def _discover_suppliers_impl(
                 profile=profile,
                 registry_context=minprom_context,
                 policy=policy,
+                multi_item_mode=multi_item_mode,
                 excluded_domains=excluded_domains,
                 excluded_company_keys=excluded_company_keys,
                 progress_callback=progress_callback,
@@ -1923,7 +1951,7 @@ async def _discover_suppliers_impl(
             reviewed.extend(fp_reviewed)
             accepted = _accepted_supplier_results(
                 reviewed,
-                minimum_target,
+                effective_minimum_target,
                 profile=profile,
                 policy=policy,
                 multi_item_mode=multi_item_mode,
@@ -2007,7 +2035,7 @@ async def _discover_suppliers_impl(
                 reviewed.extend(recovery_reviewed)
                 accepted = _accepted_supplier_results(
                     reviewed,
-                    minimum_target,
+                    effective_minimum_target,
                     profile=profile,
                     policy=policy,
                     multi_item_mode=multi_item_mode,
@@ -2047,7 +2075,7 @@ async def _discover_suppliers_impl(
             settings,
             accepted,
             minprom_context,
-            limit=delivery_target,
+            limit=effective_delivery_target,
         )
 
     # Enrich general accepted suppliers with missing region/director
@@ -2070,9 +2098,9 @@ async def _discover_suppliers_impl(
             "supplier_candidate_verifier",
         ],
         "acceptance_policy": "Supplier rows are accepted only after AI verifier returns action=accept with verified evidence.",
-        "target": minimum_target,
-        "minimum_target": minimum_target,
-        "delivery_target": delivery_target,
+        "target": effective_minimum_target,
+        "minimum_target": effective_minimum_target,
+        "delivery_target": effective_delivery_target,
         "delivery_policy": "minimum_plus_verified_relevant_first_pass",
         "supplier_search_policy": policy,
         "registry_unavailable_no_charge": bool(registry_unavailable),
@@ -3241,7 +3269,9 @@ async def ai_rerank_candidates(
         raise RuntimeError("AI provider is required for supplier candidate reranking")
     if not candidates:
         return CandidateRerank([], {"status": "empty", "input_count": 0, "kept_count": 0})
-    limit = max(30, min(90, target * 18))
+    item_count = len(profile.items) if profile and profile.items else 1
+    max_payload = min(240, max(90, 60 * item_count))
+    limit = max(30, min(max_payload, target * 18))
     payload_candidates = [
         {
             "id": str(index),
@@ -3672,11 +3702,7 @@ async def _review_candidates_until_target(
             result["_source_rank"] = index
         return result
 
-    effective_target = (
-        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, target)) * len(profile.items))
-        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
-        else target
-    )
+    effective_target = target
     for batch_start in range(0, len(candidates), batch_size):
         batch = candidates[batch_start : batch_start + batch_size]
         already_accepted = _accepted_supplier_results(
@@ -3819,9 +3845,16 @@ def _accepted_supplier_results(
             return False
 
         if multi_item_mode == "per_item":
-            # Per-item deep search: each item targets up to 40 verified suppliers
-            per_item_quota = min(40, max(1, target)) if limit_to_target else 999999
-            total_limit = min(MAX_SUPPLIER_DELIVERY_TARGET, per_item_quota * len(profile.items)) if limit_to_target else 999999
+            # Per-item deep search: each item gets its full target (e.g. 50, 70, or client custom target)
+            item_n = len(profile.items)
+            if target > 100 and item_n > 1:
+                # target is already effective total (e.g. delivery_target * item_count)
+                per_item_quota = max(1, target // item_n) if limit_to_target else 999999
+                total_limit = target if limit_to_target else 999999
+            else:
+                # target is per-item target
+                per_item_quota = max(1, target) if limit_to_target else 999999
+                total_limit = per_item_quota * item_n if limit_to_target else 999999
         else:
             # Balanced search: total target is distributed evenly across all items
             per_item_quota = max(1, (target + len(profile.items) - 1) // len(profile.items)) if limit_to_target else 999999
@@ -3848,11 +3881,7 @@ def _accepted_supplier_results(
                     return accepted[:total_limit]
 
     # Phase 2: Waterfall overflow - fill remaining target slots from any remaining verified suppliers
-    overflow_limit = (
-        min(MAX_SUPPLIER_DELIVERY_TARGET, min(40, max(1, target)) * len(profile.items))
-        if (profile and len(profile.items) > 1 and multi_item_mode == "per_item")
-        else target
-    )
+    overflow_limit = total_limit if (profile and len(profile.items) > 1) else target
     for result in sorted_verified:
         if profile and len(profile.items) > 1:
             for item in profile.items:
