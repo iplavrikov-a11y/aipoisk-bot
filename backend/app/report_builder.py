@@ -304,6 +304,48 @@ def _safe_sheet_title(name: str, index: int, existing_titles: set[str]) -> str:
     return candidate
 
 
+def _style_category_header_row(ws, row_idx: int, title_text: str) -> None:
+    cat_font = Font(name="Calibri", size=11, bold=True, color="064E3B")
+    cat_fill = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
+    cat_border = Border(
+        left=Side(style="medium", color="059669"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="059669"),
+        bottom=Side(style="thin", color="059669"),
+    )
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(SUPPLIER_HEADERS))
+    for col in range(1, len(SUPPLIER_HEADERS) + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.fill = cat_fill
+        c.border = cat_border
+    c1 = ws.cell(row=row_idx, column=1)
+    c1.value = clean_xml_compatible(title_text)
+    c1.font = cat_font
+    c1.alignment = Alignment(vertical="center", horizontal="left", indent=1)
+    ws.row_dimensions[row_idx].height = 26
+
+
+def _style_empty_category_notice_row(ws, row_idx: int, notice_text: str) -> None:
+    notice_font = Font(name="Calibri", size=10, italic=True, color="64748B")
+    notice_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    notice_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(SUPPLIER_HEADERS))
+    for col in range(1, len(SUPPLIER_HEADERS) + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.fill = notice_fill
+        c.border = notice_border
+    c1 = ws.cell(row=row_idx, column=1)
+    c1.value = clean_xml_compatible(notice_text)
+    c1.font = notice_font
+    c1.alignment = Alignment(vertical="center", horizontal="left", indent=2)
+    ws.row_dimensions[row_idx].height = 22
+
+
 def _populate_supplier_sheet(
     ws,
     rows: list[dict],
@@ -313,6 +355,7 @@ def _populate_supplier_sheet(
     summary: str,
     is_fallback: bool,
     is_multi_item: bool = False,
+    sections: list[tuple[str, list[dict]]] | None = None,
 ) -> None:
     ws.views.sheetView[0].showGridLines = True
 
@@ -356,9 +399,7 @@ def _populate_supplier_sheet(
         bottom=Side(style="thin", color="CBD5E1"),
     )
 
-    data_start_row = header_row + 1
-    for row_idx, row in enumerate(rows, start=data_start_row):
-        is_even = (row_idx % 2 == 0)
+    def _render_row(row_idx: int, row: dict, is_even: bool) -> None:
         base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
 
         company = clean_xml_compatible(str(row.get("company_name") or "").strip())
@@ -419,6 +460,40 @@ def _populate_supplier_sheet(
         c6.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
         ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 60)], min_h=24)
+
+    if is_multi_item and sections:
+        ws.sheet_properties.outlinePr.summaryBelow = False
+        ws.sheet_properties.outlinePr.showOutlineSymbols = True
+        current_row = header_row + 1
+        for sec_idx, (sec_name, sec_rows) in enumerate(sections, start=1):
+            sec_header_row = current_row
+            ws.append([None] * len(SUPPLIER_HEADERS))
+            _style_category_header_row(ws, sec_header_row, f"Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)})")
+            current_row += 1
+
+            if sec_rows:
+                group_start = current_row
+                for r_idx, r_data in enumerate(sec_rows):
+                    _render_row(current_row, r_data, is_even=(r_idx % 2 == 0))
+                    ws.row_dimensions[current_row].outlineLevel = 1
+                    current_row += 1
+                group_end = current_row - 1
+                ws.row_dimensions.group(group_start, group_end, outline_level=1, hidden=False)
+            else:
+                notice = (
+                    "В реестре Минпромторга/ГИСП подтверждённых записей для данной номенклатурной группы не обнаружено."
+                    if is_fallback or any(r.get("supplier_search_policy") == "minprom_registry_only" for r in rows)
+                    else "Подходящих поставщиков для данной позиции в базе не найдено."
+                )
+                ws.append([None] * len(SUPPLIER_HEADERS))
+                _style_empty_category_notice_row(ws, current_row, notice)
+                ws.row_dimensions[current_row].outlineLevel = 1
+                ws.row_dimensions.group(current_row, current_row, outline_level=1, hidden=False)
+                current_row += 1
+    else:
+        data_start_row = header_row + 1
+        for row_idx, row in enumerate(rows, start=data_start_row):
+            _render_row(row_idx, row, is_even=(row_idx % 2 == 0))
 
     widths = [32, 35, 22, 26, 60, 26]
     for column, width in enumerate(widths, start=1):
@@ -523,7 +598,7 @@ def write_supplier_xlsx(
 
     is_multi = len(profile_items) > 1
 
-    item_sheets_data: list[tuple[str, list[dict]]] = []
+    item_sections: list[tuple[str, list[dict]]] = []
     unmatched_item_names: list[str] = []
     if is_multi:
         item_specs = _build_item_specs(profile_items)
@@ -531,9 +606,8 @@ def write_supplier_xlsx(
             it = spec["item"]
             it_name = str(it.get("name") or it.get("title")).strip()
             matched_rows = [r for r in rows if spec["id"] in _match_supplier_to_item_ids(r, item_specs)]
-            if matched_rows:
-                item_sheets_data.append((it_name, matched_rows))
-            else:
+            item_sections.append((it_name, matched_rows))
+            if not matched_rows:
                 unmatched_item_names.append(it_name)
     elif not profile_items:
         raw_distinct: list[str] = []
@@ -560,22 +634,21 @@ def write_supplier_xlsx(
             is_multi = True
             for item in distinct_items:
                 matched_rows = [r for r in rows if cluster_map.get(_clean_comment_text(r.get("procurement_item") or "")) == item]
-                if matched_rows:
-                    item_sheets_data.append((item, matched_rows))
+                item_sections.append((item, matched_rows))
 
-    # 1. Main Sheet
+    # Single unified sheet with collapsible row outline structure (+ / -)
     ws = wb.active
     brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
     policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
     item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
     is_fallback = _is_registry_fallback_report(rows)
 
-    if is_multi and item_sheets_data:
+    if is_multi and item_sections:
         ws.title = "Сводный реестр"
         subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
-        breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sheets_data, 1))
+        breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sections, 1))
         summary_text = (
-            f"Сводный реестр по всем позициям ТЗ. Всего проверено уникальных компаний: {len(rows)}.\n"
+            f"Сводный реестр по всем позициям ТЗ со структурой группировки (+ / -). Всего проверено уникальных компаний: {len(rows)}.\n"
             f"Позиции ТЗ: {breakdown_text}"
         )
         if unmatched_item_names:
@@ -601,25 +674,8 @@ def write_supplier_xlsx(
         summary=summary,
         is_fallback=is_fallback,
         is_multi_item=is_multi,
+        sections=item_sections if is_multi else None,
     )
-
-    # 2. Extra dedicated sheets per item when multi-item
-    if is_multi and item_sheets_data:
-        existing_sheet_titles = {ws.title}
-        for idx, (item_name, item_rows) in enumerate(item_sheets_data, start=1):
-            sheet_title = _safe_sheet_title(item_name, idx, existing_sheet_titles)
-            ws_item = wb.create_sheet(title=sheet_title)
-            item_subtitle = clean_xml_compatible(f"Позиция ТЗ: {item_name} | {policy_label}")
-            item_summary = clean_xml_compatible(f"Позиция: {item_name}. Проверено поставщиков: {len(item_rows)}.")
-            _populate_supplier_sheet(
-                ws_item,
-                item_rows,
-                brand_title=brand_title,
-                subtitle=item_subtitle,
-                summary=item_summary,
-                is_fallback=is_fallback,
-                is_multi_item=False,
-            )
 
     _save_xlsx(wb, out)
     return out

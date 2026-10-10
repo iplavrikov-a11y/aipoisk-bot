@@ -595,12 +595,14 @@ class ReportBuilderTests(unittest.TestCase):
             )
 
             wb = load_workbook(path)
-            # Should have exactly: main sheet + 2 position sheets with clean prefixes
-            self.assertEqual(len(wb.sheetnames), 3)
+            # Unified single sheet with collapsible row outline structure
+            self.assertEqual(len(wb.sheetnames), 1)
             self.assertEqual(wb.sheetnames[0], "Сводный реестр")
-            self.assertTrue(wb.sheetnames[1].startswith("1. "))
-            self.assertTrue(wb.sheetnames[2].startswith("2. "))
-            self.assertIn("Клей", wb.sheetnames[2])
+            ws = wb["Сводный реестр"]
+            self.assertFalse(ws.sheet_properties.outlinePr.summaryBelow)
+            self.assertTrue(ws.sheet_properties.outlinePr.showOutlineSymbols)
+            self.assertIn("Позиция 1: Резинотехнические изделия", str(ws.cell(row=6, column=1).value))
+            self.assertEqual(ws.row_dimensions[7].outlineLevel, 1)
             wb.close()
 
     def test_write_quote_request_docx_multiline_table_integrity(self) -> None:

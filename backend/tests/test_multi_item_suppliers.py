@@ -186,21 +186,23 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
 
             wb = load_workbook(xlsx_path)
             sheet_names = wb.sheetnames
-            # Main sheet plus 2 dedicated item sheets
-            self.assertEqual(len(sheet_names), 3)
+            # Unified single sheet with collapsible row outline structure
+            self.assertEqual(len(sheet_names), 1)
             self.assertEqual(sheet_names[0], "Сводный реестр")
-            self.assertIn("Установка плазменной резки", sheet_names[1])
-            self.assertIn("Винтовой компрессор", sheet_names[2])
 
-            # Check comments on main sheet contain item prefix
             ws_main = wb["Сводный реестр"]
-            comment_row1 = ws_main["E6"].value
-            self.assertIn("Позиция: Установка плазменной резки", comment_row1)
+            self.assertFalse(ws_main.sheet_properties.outlinePr.summaryBelow)
+            self.assertTrue(ws_main.sheet_properties.outlinePr.showOutlineSymbols)
 
-            # Check dedicated item sheet has only its rows
-            ws_item1 = wb[sheet_names[1]]
-            item1_company = ws_item1["A6"].value
-            self.assertEqual(item1_company, "ООО СтанкоМаш")
+            # Category 1 header and supplier row
+            self.assertIn("Позиция 1: Установка плазменной резки", str(ws_main["A6"].value))
+            self.assertEqual(ws_main["A7"].value, "ООО СтанкоМаш")
+            self.assertEqual(ws_main.row_dimensions[7].outlineLevel, 1)
+
+            # Category 2 header and supplier row
+            self.assertIn("Позиция 2: Винтовой компрессор", str(ws_main["A8"].value))
+            self.assertEqual(ws_main["A9"].value, "ООО ПневмоСнаб")
+            self.assertEqual(ws_main.row_dimensions[9].outlineLevel, 1)
             wb.close()
 
     def test_write_supplier_xlsx_single_item_strictly_single_sheet(self) -> None:
@@ -430,14 +432,14 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
                 xlsx_path = Path(tmp) / "report.xlsx"
                 write_supplier_xlsx(xlsx_path, accepted, title="Лазер и компрессор", target=4)
                 wb = load_workbook(xlsx_path)
-                self.assertEqual(len(wb.sheetnames), 3)
+                self.assertEqual(len(wb.sheetnames), 1)
                 self.assertEqual(wb.sheetnames[0], "Сводный реестр")
-                self.assertIn("Установка лазерной резки", wb.sheetnames[1])
-                self.assertIn("Винтовой компрессор", wb.sheetnames[2])
 
-                # Check main sheet comments have item prefix
                 ws_main = wb["Сводный реестр"]
-                self.assertIn("Позиция: Установка лазерной резки", str(ws_main["E6"].value))
+                self.assertFalse(ws_main.sheet_properties.outlinePr.summaryBelow)
+                self.assertTrue(ws_main.sheet_properties.outlinePr.showOutlineSymbols)
+                self.assertIn("Позиция 1: Установка лазерной резки", str(ws_main["A6"].value))
+                self.assertEqual(ws_main.row_dimensions[7].outlineLevel, 1)
                 wb.close()
 
                 # 3. RFQ docx check
