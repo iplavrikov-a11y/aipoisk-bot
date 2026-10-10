@@ -597,7 +597,7 @@ class ReportBuilderTests(unittest.TestCase):
             wb = load_workbook(path)
             # Should have exactly: main sheet + 2 position sheets with clean prefixes
             self.assertEqual(len(wb.sheetnames), 3)
-            self.assertEqual(wb.sheetnames[0], "Поставщики")
+            self.assertEqual(wb.sheetnames[0], "Сводный реестр")
             self.assertTrue(wb.sheetnames[1].startswith("1. "))
             self.assertTrue(wb.sheetnames[2].startswith("2. "))
             self.assertIn("Клей", wb.sheetnames[2])

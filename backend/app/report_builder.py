@@ -425,14 +425,92 @@ def _populate_supplier_sheet(
         ws.column_dimensions[get_column_letter(column)].width = width
 
 
+def _build_item_specs(profile_items: list[dict]) -> list[dict]:
+    stop_words = {
+        "для", "или", "под", "над", "при", "без", "все", "из", "на", "по", "со", "от", "до",
+        "комплект", "пакет", "штук", "поставка", "изделия", "оборудование", "услуги", "монтаж",
+        "работы", "товар", "товары", "гост", "ту"
+    }
+    item_specs = []
+    all_word_occurrences: dict[str, int] = {}
+
+    for idx, it in enumerate(profile_items, start=1):
+        it_id = str(it.get("id") or f"item-{idx}").strip().lower()
+        name = str(it.get("name") or it.get("title") or "").strip()
+        phrases: set[str] = set()
+        words: set[str] = set()
+
+        def add_phrase(s: str) -> None:
+            s_clean = s.strip().lower()
+            if len(s_clean) >= 3 and s_clean not in stop_words:
+                phrases.add(s_clean)
+                for w in re.findall(r"[a-zA-Zа-яА-Я0-9_-]{3,}", s_clean):
+                    if w not in stop_words and len(w) >= 3 and not w.isdigit():
+                        words.add(w)
+
+        add_phrase(name)
+        for field in ["aliases", "category_terms", "exact_terms", "required_terms", "included_sub_items"]:
+            for val in (it.get(field) or []):
+                add_phrase(str(val))
+
+        for w in words:
+            all_word_occurrences[w] = all_word_occurrences.get(w, 0) + 1
+
+        item_specs.append({
+            "item": it,
+            "id": it_id,
+            "name": name,
+            "phrases": phrases,
+            "words": words,
+        })
+
+    shared_words = {w for w, count in all_word_occurrences.items() if count > 1}
+    for spec in item_specs:
+        spec["distinctive_words"] = spec["words"] - shared_words
+
+    return item_specs
+
+
+def _match_supplier_to_item_ids(r: dict, item_specs: list[dict]) -> set[str]:
+    raw_id = str(r.get("procurement_item_id") or "").strip().lower()
+    raw_id_parts = set(raw_id.replace(",", " ").split())
+
+    text = f"{r.get('procurement_item', '')} {r.get('product', '')} {r.get('search_query', '')} {r.get('comment', '')}".lower()
+
+    scores: list[tuple[int, str]] = []
+    for spec in item_specs:
+        score = 0
+        if spec["id"] and spec["id"] in raw_id_parts:
+            score += 15
+        for phrase in spec["phrases"]:
+            if len(phrase) >= 4 and phrase in text:
+                score += 5
+        for word in spec["distinctive_words"]:
+            if len(word) >= 3 and word in text:
+                score += 3
+        scores.append((score, spec["id"]))
+
+    max_score = max(s[0] for s in scores) if scores else 0
+    matched = set()
+    if max_score > 0:
+        threshold = max(3, int(max_score * 0.4))
+        for score, it_id in scores:
+            if score >= threshold:
+                matched.add(it_id)
+
+    if not matched and item_specs:
+        matched.add(item_specs[0]["id"])
+    return matched
+
+
 def write_supplier_xlsx(
     path: str | Path,
     rows: list[dict],
     *,
     title: str,
-    target: int,
+    target: int = 10,
     subject: str = "",
-    policy: str = "",
+    policy: str = "normal",
     profile: dict | None = None,
 ) -> Path:
     out = Path(path)
@@ -443,52 +521,18 @@ def write_supplier_xlsx(
     if isinstance(profile, dict) and isinstance(profile.get("items"), list):
         profile_items = [it for it in profile["items"] if isinstance(it, dict) and (it.get("name") or it.get("title"))]
 
-    if profile_items:
-        canonical_names = [str(it.get("name") or it.get("title")).strip() for it in profile_items]
+    is_multi = len(profile_items) > 1
 
-        def _match_row_to_profile(r: dict) -> str:
-            raw_id = str(r.get("procurement_item_id") or "").strip().lower()
-            raw_p = _clean_comment_text(r.get("procurement_item") or "")
-            raw_p_lower = raw_p.lower()
-
-            parts = [p.strip() for p in raw_id.replace(",", " ").split() if p.strip()]
-            matched_by_id = [it for it in profile_items if str(it.get("id") or "").strip().lower() in parts]
-            if len(matched_by_id) == 1:
-                return str(matched_by_id[0].get("name") or matched_by_id[0].get("title")).strip()
-
-            q = str(r.get("search_query") or "").lower()
-            product_txt = str(r.get("product") or "").lower()
-            combined_txt = f"{raw_p_lower} {q} {product_txt}"
-
-            scores: list[tuple[int, str]] = []
-            for it in profile_items:
-                score = 0
-                it_name = str(it.get("name") or it.get("title")).strip().lower()
-                if it_name in combined_txt:
-                    score += 5
-                terms = [str(t).lower() for t in (it.get("category_terms") or []) + (it.get("aliases") or []) + (it.get("exact_terms") or [])]
-                for term in terms:
-                    if term and term in combined_txt:
-                        score += 2
-                scores.append((score, str(it.get("name") or it.get("title")).strip()))
-
-            scores.sort(key=lambda s: -s[0])
-            if scores and scores[0][0] > 0:
-                return scores[0][1]
-
-            if matched_by_id:
-                return str(matched_by_id[0].get("name") or matched_by_id[0].get("title")).strip()
-            return canonical_names[0]
-
-        for r in rows:
-            r["procurement_item"] = _match_row_to_profile(r)
-
-        distinct_items = [name for name in canonical_names if any(r.get("procurement_item") == name for r in rows)]
-        for r in rows:
-            p_item = r.get("procurement_item")
-            if p_item and p_item not in distinct_items:
-                distinct_items.append(p_item)
-    else:
+    item_sheets_data: list[tuple[str, list[dict]]] = []
+    if is_multi:
+        item_specs = _build_item_specs(profile_items)
+        for idx, spec in enumerate(item_specs, start=1):
+            it = spec["item"]
+            it_name = str(it.get("name") or it.get("title")).strip()
+            matched_rows = [r for r in rows if spec["id"] in _match_supplier_to_item_ids(r, item_specs)]
+            if matched_rows:
+                item_sheets_data.append((it_name, matched_rows))
+    elif not profile_items:
         raw_distinct: list[str] = []
         for r in rows:
             p_item = _clean_comment_text(r.get("procurement_item") or "")
@@ -509,42 +553,39 @@ def write_supplier_xlsx(
                 distinct_items.append(item)
                 cluster_map[item] = item
 
-        for r in rows:
-            p_item = _clean_comment_text(r.get("procurement_item") or "")
-            if p_item in cluster_map:
-                r["procurement_item"] = cluster_map[p_item]
+        if len(distinct_items) > 1:
+            is_multi = True
+            for item in distinct_items:
+                matched_rows = [r for r in rows if cluster_map.get(_clean_comment_text(r.get("procurement_item") or "")) == item]
+                if matched_rows:
+                    item_sheets_data.append((item, matched_rows))
 
-    is_multi = len(distinct_items) > 1
-
-    # If multi-item, group rows by position
-    if is_multi:
-        ordered_rows = sorted(
-            rows,
-            key=lambda r: (
-                distinct_items.index(_clean_comment_text(r.get("procurement_item") or ""))
-                if _clean_comment_text(r.get("procurement_item") or "") in distinct_items
-                else len(distinct_items),
-                -int(r.get("quality_score") or 0),
-            ),
-        )
-    else:
-        ordered_rows = rows
-
-    # 1. Main Sheet: "Поставщики"
+    # 1. Main Sheet
     ws = wb.active
-    ws.title = "Поставщики"
     brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
     policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
     item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
-    subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
-    summary = clean_xml_compatible(_supplier_count_summary(ordered_rows, target))
-    is_fallback = _is_registry_fallback_report(ordered_rows)
+    is_fallback = _is_registry_fallback_report(rows)
+
+    if is_multi and item_sheets_data:
+        ws.title = "Сводный реестр"
+        subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
+        breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sheets_data, 1))
+        summary = clean_xml_compatible(
+            f"Сводный реестр по всем позициям ТЗ. Всего проверено уникальных компаний: {len(rows)}.\n"
+            f"Позиции ТЗ: {breakdown_text}"
+        )
+    else:
+        ws.title = "Поставщики"
+        subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
+        summary = clean_xml_compatible(_supplier_count_summary(rows, target))
+
     if is_fallback:
         summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
 
     _populate_supplier_sheet(
         ws,
-        ordered_rows,
+        rows,
         brand_title=brand_title,
         subtitle=subtitle,
         summary=summary,
@@ -553,16 +594,13 @@ def write_supplier_xlsx(
     )
 
     # 2. Extra dedicated sheets per item when multi-item
-    if is_multi:
-        existing_sheet_titles = {"Поставщики"}
-        for idx, item in enumerate(distinct_items, start=1):
-            item_rows = [r for r in ordered_rows if _clean_comment_text(r.get("procurement_item") or "") == item]
-            if not item_rows:
-                continue
-            sheet_title = _safe_sheet_title(item, idx, existing_sheet_titles)
+    if is_multi and item_sheets_data:
+        existing_sheet_titles = {ws.title}
+        for idx, (item_name, item_rows) in enumerate(item_sheets_data, start=1):
+            sheet_title = _safe_sheet_title(item_name, idx, existing_sheet_titles)
             ws_item = wb.create_sheet(title=sheet_title)
-            item_subtitle = clean_xml_compatible(f"Позиция ТЗ: {item} | {policy_label}")
-            item_summary = clean_xml_compatible(f"Позиция: {item}. Проверено поставщиков: {len(item_rows)}.")
+            item_subtitle = clean_xml_compatible(f"Позиция ТЗ: {item_name} | {policy_label}")
+            item_summary = clean_xml_compatible(f"Позиция: {item_name}. Проверено поставщиков: {len(item_rows)}.")
             _populate_supplier_sheet(
                 ws_item,
                 item_rows,

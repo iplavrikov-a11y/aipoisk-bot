@@ -188,12 +188,12 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
             sheet_names = wb.sheetnames
             # Main sheet plus 2 dedicated item sheets
             self.assertEqual(len(sheet_names), 3)
-            self.assertEqual(sheet_names[0], "Поставщики")
+            self.assertEqual(sheet_names[0], "Сводный реестр")
             self.assertIn("Установка плазменной резки", sheet_names[1])
             self.assertIn("Винтовой компрессор", sheet_names[2])
 
             # Check comments on main sheet contain item prefix
-            ws_main = wb["Поставщики"]
+            ws_main = wb["Сводный реестр"]
             comment_row1 = ws_main["E6"].value
             self.assertIn("Позиция: Установка плазменной резки", comment_row1)
 
@@ -396,12 +396,12 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
                 write_supplier_xlsx(xlsx_path, accepted, title="Лазер и компрессор", target=4)
                 wb = load_workbook(xlsx_path)
                 self.assertEqual(len(wb.sheetnames), 3)
-                self.assertEqual(wb.sheetnames[0], "Поставщики")
+                self.assertEqual(wb.sheetnames[0], "Сводный реестр")
                 self.assertIn("Установка лазерной резки", wb.sheetnames[1])
                 self.assertIn("Винтовой компрессор", wb.sheetnames[2])
 
                 # Check main sheet comments have item prefix
-                ws_main = wb["Поставщики"]
+                ws_main = wb["Сводный реестр"]
                 self.assertIn("Позиция: Установка лазерной резки", str(ws_main["E6"].value))
                 wb.close()
 
