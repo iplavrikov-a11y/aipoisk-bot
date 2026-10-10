@@ -19,6 +19,7 @@ Admin/internal domain: `https://admin.tenderlex.ru`
   - Excel cell character limit protection: capped cell A3 summary breakdown to top 20 items + explicit continuation counter, strictly preventing 32,767 OpenXML corruption in Microsoft Excel.
   - AI prompt & normalization guardrails (`backend/app/supplier_search.py`): Rule 6 clusters large specifications and estimates into 25–35 market pools; `MAX_PROFILE_ITEMS = 50` caps profile size and absorbs overflow into sub-items.
   - Customer guidance banners: added helpful intake advice in web cabinet launcher, task cards, strategy modal, and Telegram bot recommending file splitting for mixed-trade specifications or balanced search.
+  - Strict Rule 14 compliance: zero hardcoded product names, synonyms, or regex heuristics; semantic understanding and clustering performed strictly by AI.
   - Verified with 828 passing backend tests, Next.js build, and live production deployment.
 - Usability of Multi-Item Excel Reports: Adaptive Row-Group Collapsing & Clear On-Sheet Guidance (2026-10-11):
   - Adaptive initial outline state (`backend/app/report_builder.py`): $\le 4$ items open expanded (`hidden=False`) for instant visibility of contacts; $> 4$ items (5–35+ positions/estimates) open collapsed (`hidden=True`) to prevent 500+ row overload.
