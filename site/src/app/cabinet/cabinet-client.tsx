@@ -90,6 +90,7 @@ type BalanceCounter = {
   spent: number;
   granted: number;
   low: boolean;
+  unlimited?: boolean;
   price_kopeks?: number;
   price_rub?: number;
 };
@@ -950,7 +951,17 @@ export function CabinetClient() {
     selectedItemIds: string[];
     isExpanded: boolean;
     showAllCategories: boolean;
+    categoriesCollapsed: boolean;
+    previewCategories: boolean;
   }>>({});
+
+  function getClientEffectiveTaskPrice(): number | null {
+    const eff = session?.balance?.effective_prices?.supplier_search?.price_rub;
+    if (typeof eff === "number" && eff > 0) return eff;
+    const s = session?.balance?.supplier_search?.price_rub;
+    if (typeof s === "number" && s > 0) return s;
+    return null;
+  }
 
   function getJobInlineStrategy(job: CustomerJob) {
     if (inlineStrategies[job.id]) {
@@ -963,6 +974,8 @@ export function CabinetClient() {
       selectedItemIds: allIds,
       isExpanded: true,
       showAllCategories: false,
+      categoriesCollapsed: false,
+      previewCategories: false,
     };
   }
 
@@ -971,6 +984,8 @@ export function CabinetClient() {
     selectedItemIds: string[];
     isExpanded: boolean;
     showAllCategories: boolean;
+    categoriesCollapsed: boolean;
+    previewCategories: boolean;
   }>) {
     setInlineStrategies((prev) => {
       const existing = prev[jobId] || {
@@ -978,6 +993,8 @@ export function CabinetClient() {
         selectedItemIds: [],
         isExpanded: true,
         showAllCategories: false,
+        categoriesCollapsed: false,
+        previewCategories: false,
       };
       return {
         ...prev,
@@ -2419,13 +2436,27 @@ export function CabinetClient() {
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
         {showTariffs ? (() => {
+          const supplierPriceKopeks =
+            session?.balance?.effective_prices?.supplier_search?.price_kopeks ??
+            (session?.tariff_groups?.supplier_search?.[0]?.price_kopeks ?? 9900);
+          const supplierIsOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override";
+
           const extraPriceKopeks =
             session?.balance?.effective_prices?.supplier_search_extra?.price_kopeks ??
             (session?.tariff_groups?.supplier_search_extra?.[0]?.price_kopeks ?? 4900);
           const extraIsOverride = session?.balance?.effective_prices?.supplier_search_extra?.source === "client_override";
-          const supplierOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override" ? session.balance.effective_prices.supplier_search : null;
-          const reportOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override" ? session.balance.effective_prices.procurement_report : null;
-          const exactOverride = session?.balance?.effective_prices?.exact_product?.source === "client_override" ? session.balance.effective_prices.exact_product : null;
+
+          const exactPriceKopeks =
+            session?.balance?.effective_prices?.exact_product?.price_kopeks ??
+            (session?.tariff_groups?.exact_product?.[0]?.price_kopeks ?? 9900);
+          const exactIsOverride = session?.balance?.effective_prices?.exact_product?.source === "client_override";
+
+          const reportPriceKopeks =
+            session?.balance?.effective_prices?.procurement_report?.price_kopeks ??
+            (session?.tariff_groups?.procurement_report?.[0]?.price_kopeks ?? 9900);
+          const reportIsOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override";
+
+          const comboPriceKopeks = supplierPriceKopeks + reportPriceKopeks;
           const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
 
           return (
@@ -2440,10 +2471,10 @@ export function CabinetClient() {
                     <span className="text-[10px] text-slate-400">без подписок и скрытых условий</span>
                   </div>
                   <div className="space-y-1 mt-1">
-                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                    <div className={`px-2 py-1 ${supplierIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
                       <span className="truncate mr-2 font-semibold text-slate-700">1. Поиск поставщиков</span>
                       <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {supplierOverride ? formatRubles(supplierOverride.price_kopeks) : "99 ₽"}
+                        {formatRubles(supplierPriceKopeks)}
                       </b>
                     </div>
                     <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
@@ -2454,21 +2485,23 @@ export function CabinetClient() {
                         {formatRubles(extraPriceKopeks)}
                       </b>
                     </div>
-                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                    <div className={`px-2 py-1 ${exactIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
                       <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
                       <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {exactOverride ? formatRubles(exactOverride.price_kopeks) : "99 ₽"}
+                        {formatRubles(exactPriceKopeks)}
                       </b>
                     </div>
-                    <div className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                    <div className={`px-2 py-1 ${reportIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
                       <span className="truncate mr-2 font-semibold text-slate-700">3. Анализ документации</span>
                       <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
-                        {reportOverride ? formatRubles(reportOverride.price_kopeks) : "99 ₽"}
+                        {formatRubles(reportPriceKopeks)}
                       </b>
                     </div>
                     <div className="px-2 py-1 bg-slate-100/90 border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
                       <span className="truncate mr-2 font-semibold text-slate-600">4. Анализ + поиск (комбо)</span>
-                      <b className="font-extrabold text-slate-800 shrink-0 whitespace-nowrap">198 ₽</b>
+                      <b className="font-extrabold text-slate-800 shrink-0 whitespace-nowrap">
+                        {formatRubles(comboPriceKopeks)}
+                      </b>
                     </div>
                   </div>
                 </div>
@@ -3204,112 +3237,150 @@ export function CabinetClient() {
                   {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
                     const stratState = getJobInlineStrategy(job);
                     const items = job.multi_item_details?.items || [];
+                    const clientPrice = getClientEffectiveTaskPrice();
+                    const hasPackageRuns = Boolean(
+                      session?.balance?.supplier_search?.unlimited ||
+                      ((session?.balance?.supplier_search?.available ?? 0) > 0)
+                    );
+                    const selectedCount = stratState.selectedItemIds.length;
+                    const priceLabel = (tasksCount: number) => {
+                      if (clientPrice && !hasPackageRuns) {
+                        return ` (${tasksCount * clientPrice} ₽)`;
+                      }
+                      return "";
+                    };
+
                     const visibleItems = items.length <= 6 || stratState.showAllCategories
                       ? items
                       : items.slice(0, 6);
 
                     return (
-                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-3">
-                        {/* Information Header */}
-                        <div className="bg-teal-50/70 border border-teal-200/80 rounded-lg p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                          <div className="flex items-start sm:items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-md bg-teal-600 text-white flex items-center justify-center shrink-0 mt-0.5 sm:mt-0 shadow-2xs">
-                              <Sliders size={14} />
-                            </div>
-                            <div>
-                              <div className="text-xs font-extrabold text-slate-900 flex items-center gap-2 flex-wrap">
-                                <span>В спецификации выделено {items.length} {declensionCategory(items.length)}</span>
-                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded-xs">
-                                  Кластеризовано по пулам поставщиков
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                                Сопутствующий крепеж и расходники поглощены основными системами. Выберите способ поиска поставщиков:
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Mode Switcher Cards */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                          <div
-                            onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
-                            className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
-                              stratState.mode === "balanced"
-                                ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
-                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                            }`}
-                          >
-                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                              stratState.mode === "balanced" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
-                            }`}>
-                              {stratState.mode === "balanced" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
-                            </div>
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <strong className="text-xs font-extrabold text-slate-900">
-                                  ⚖️ Сбалансированный поиск
-                                </strong>
-                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
-                                  1 задача (99 ₽)
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
-                                Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем позициям. 1 сводный файл Excel и 1 общий Запрос КП (.docx).
-                              </p>
-                            </div>
-                          </div>
-
-                          <div
-                            onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item" })}
-                            className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
-                              stratState.mode === "per_item"
-                                ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
-                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                            }`}
-                          >
-                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                              stratState.mode === "per_item" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
-                            }`}>
-                              {stratState.mode === "per_item" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
-                            </div>
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <strong className="text-xs font-extrabold text-slate-900">
-                                  🔍 Попозиционный поиск
-                                </strong>
-                                <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
-                                  {stratState.selectedItemIds.length} поз. ({stratState.selectedItemIds.length * 99} ₽)
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
-                                Глубокий независимый сбор по каждой выбранной категории в отдельные вкладки. Позволяет выбрать точные позиции галочками ниже.
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Categories Selection */}
-                        <div className="space-y-2 pt-1">
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                              <span>Категории ТЗ ({items.length}):</span>
-                              <span className="text-[11px] font-normal text-slate-500">
-                                {stratState.mode === "per_item"
-                                  ? "отметьте галочками нужные категории для поиска"
-                                  : "включены все позиции ТЗ в консолидированный пул"}
+                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-2.5">
+                        {/* Top Control Bar: Segmented Switcher & Primary CTA */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
+                          {/* Segmented Mode Switcher */}
+                          <div className="inline-flex items-center rounded-md border border-slate-200 bg-white p-0.5 shadow-2xs">
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
+                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                stratState.mode === "balanced"
+                                  ? "bg-teal-600 text-white shadow-2xs"
+                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span>⚖️ Сбалансированный поиск</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                                stratState.mode === "balanced" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                              }`}>
+                                1 задача{priceLabel(1)}
                               </span>
-                            </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item", categoriesCollapsed: false })}
+                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                stratState.mode === "per_item"
+                                  ? "bg-teal-600 text-white shadow-2xs"
+                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span>🔍 Попозиционный поиск</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                                stratState.mode === "per_item" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                              }`}>
+                                {stratState.mode === "per_item" ? `${selectedCount} поз.` : `${items.length} поз.`}
+                              </span>
+                            </button>
+                          </div>
 
-                            {stratState.mode === "per_item" ? (
-                              <div className="flex items-center gap-1.5 text-[11px]">
+                          {/* Quick Launch CTA right in the control bar */}
+                          <div className="flex items-center gap-2">
+                            {stratState.mode === "balanced" ? (
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "balanced")}
+                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить поиск (1 задача{priceLabel(1)})</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
+                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy || selectedCount === 0}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Quiet Subtitle / Description */}
+                        {stratState.mode === "balanced" ? (
+                          <div className="flex items-center justify-between text-xs text-slate-600 px-1 flex-wrap gap-2">
+                            <p className="leading-snug">
+                              Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем {items.length} {declensionCategory(items.length)} ТЗ без доплат (1 задача).
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { previewCategories: !stratState.previewCategories })}
+                              className="text-teal-700 hover:text-teal-900 font-semibold text-[11px] underline cursor-pointer shrink-0"
+                            >
+                              {stratState.previewCategories ? "Скрыть список категорий ▴" : `Посмотреть позиции ТЗ (${items.length}) ▾`}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-slate-600 px-1 leading-snug">
+                            Глубокий независимый сбор по каждой выбранной позиции в отдельные вкладки отчёта (по 1 задаче за категорию).
+                          </div>
+                        )}
+
+                        {/* Balanced Mode Optional Preview of Items (read-only, no checkboxes) */}
+                        {stratState.mode === "balanced" && stratState.previewCategories ? (
+                          <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
+                            <div className="text-[11px] font-bold text-slate-700">
+                              Включены в консолидированный поиск ({items.length}):
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {items.map((it, idx) => (
+                                <span
+                                  key={it.id || idx}
+                                  className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-800"
+                                >
+                                  <span className="font-bold text-slate-500">{idx + 1}.</span>
+                                  <span>{it.name}</span>
+                                  {it.quantity ? <span className="text-slate-400 text-[10px]">({it.quantity} {it.unit || "шт."})</span> : null}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* PER-ITEM MODE: Categories Selection Accordion (ONLY RENDERS IN PER_ITEM MODE!) */}
+                        {stratState.mode === "per_item" ? (
+                          <div className="bg-white rounded-lg border border-slate-200/90 p-3 sm:p-3.5 space-y-2.5">
+                            {/* Categories Selection Toolbar */}
+                            <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
+                              <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                                <span>Категории ТЗ ({items.length}):</span>
+                                <span className="text-[11px] font-normal text-slate-500">
+                                  отметьте зелеными галочками нужные для поиска
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2 text-[11px]">
                                 <button
                                   type="button"
                                   onClick={() => {
                                     const allIds = items.map((it, idx) => it.id || `item-${idx}`);
                                     updateJobInlineStrategy(job.id, { selectedItemIds: allIds });
                                   }}
-                                  className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
+                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
                                 >
                                   Выбрать все ({items.length})
                                 </button>
@@ -3332,138 +3403,126 @@ export function CabinetClient() {
                                 >
                                   Снять все
                                 </button>
-                              </div>
-                            ) : null}
-                          </div>
-
-                          {/* Categories Grid */}
-                          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
-                            items.length > 6 && stratState.showAllCategories ? "max-h-72 overflow-y-auto pr-1 category-scroll-container" : ""
-                          }`}>
-                            {visibleItems.map((it, idx) => {
-                              const itemId = it.id || `item-${idx}`;
-                              const isChecked = stratState.selectedItemIds.includes(itemId);
-                              const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
-
-                              return (
-                                <div
-                                  key={itemId}
-                                  onClick={() => {
-                                    if (stratState.mode !== "per_item") return;
-                                    const newIds = isChecked
-                                      ? stratState.selectedItemIds.filter(id => id !== itemId)
-                                      : [...stratState.selectedItemIds, itemId];
-                                    updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
-                                  }}
-                                  className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all ${
-                                    stratState.mode === "per_item"
-                                      ? isChecked
-                                        ? "border-teal-400 bg-teal-50/20 shadow-2xs cursor-pointer"
-                                        : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300 cursor-pointer"
-                                      : "border-slate-200/80"
-                                  }`}
+                                <div className="h-3.5 w-px bg-slate-200" />
+                                <button
+                                  type="button"
+                                  onClick={() => updateJobInlineStrategy(job.id, { categoriesCollapsed: !stratState.categoriesCollapsed })}
+                                  className="px-2 py-1 text-teal-700 hover:text-teal-900 font-bold flex items-center gap-1 cursor-pointer"
                                 >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      {stratState.mode === "per_item" ? (
-                                        <div
-                                          className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
-                                            isChecked
-                                              ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
-                                              : "bg-white border-slate-300 hover:border-emerald-500"
-                                          }`}
-                                        >
-                                          {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                  <span>{stratState.categoriesCollapsed ? "Развернуть список" : "Свернуть список"}</span>
+                                  {stratState.categoriesCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Categories Grid (collapsible) */}
+                            {!stratState.categoriesCollapsed ? (
+                              <>
+                                <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                                  items.length > 6 && stratState.showAllCategories ? "max-h-64 overflow-y-auto pr-1 category-scroll-container" : ""
+                                }`}>
+                                  {visibleItems.map((it, idx) => {
+                                    const itemId = it.id || `item-${idx}`;
+                                    const isChecked = stratState.selectedItemIds.includes(itemId);
+                                    const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
+
+                                    return (
+                                      <div
+                                        key={itemId}
+                                        onClick={() => {
+                                          const newIds = isChecked
+                                            ? stratState.selectedItemIds.filter(id => id !== itemId)
+                                            : [...stratState.selectedItemIds, itemId];
+                                          updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
+                                        }}
+                                        className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all cursor-pointer ${
+                                          isChecked
+                                            ? "border-teal-400 bg-teal-50/20 shadow-2xs"
+                                            : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300"
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <div
+                                              className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                                isChecked
+                                                  ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                                  : "bg-white border-slate-300 hover:border-emerald-500"
+                                              }`}
+                                            >
+                                              {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                            </div>
+                                            <span className="font-bold text-slate-800 truncate">
+                                              {idx + 1}. {it.name}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            {isAuxiliary ? (
+                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
+                                                Комплектующие
+                                              </span>
+                                            ) : (
+                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
+                                                Основная
+                                              </span>
+                                            )}
+                                            {it.quantity ? (
+                                              <span className="text-slate-500 font-medium text-[11px]">
+                                                {it.quantity} {it.unit || "шт."}
+                                              </span>
+                                            ) : null}
+                                          </div>
                                         </div>
-                                      ) : null}
-                                      <span className="font-bold text-slate-800 truncate">
-                                        {idx + 1}. {it.name}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-1.5 shrink-0">
-                                      {isAuxiliary ? (
-                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
-                                          Комплектующие
-                                        </span>
-                                      ) : (
-                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
-                                          Основная
-                                        </span>
-                                      )}
-                                      {it.quantity ? (
-                                        <span className="text-slate-500 font-medium text-[11px]">
-                                          {it.quantity} {it.unit || "шт."}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                  {it.included_sub_items && it.included_sub_items.length > 0 ? (
-                                    <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
-                                      <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
-                                      <span>{it.included_sub_items.join(" · ")}</span>
-                                    </div>
-                                  ) : null}
+                                        {it.included_sub_items && it.included_sub_items.length > 0 ? (
+                                          <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
+                                            <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
+                                            <span>{it.included_sub_items.join(" · ")}</span>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })}
-                          </div>
 
-                          {/* If more than 6 items, show toggle button */}
-                          {items.length > 6 ? (
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
-                              className="w-full py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                            >
-                              {stratState.showAllCategories ? (
-                                <>
-                                  <ChevronUp size={14} />
-                                  <span>Свернуть список категорий (показаны все {items.length})</span>
-                                </>
-                              ) : (
-                                <>
-                                  <ChevronDown size={14} />
-                                  <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} (всего {items.length})</span>
-                                </>
-                              )}
-                            </button>
-                          ) : null}
-                        </div>
+                                {items.length > 6 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
+                                    className="w-full py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    {stratState.showAllCategories ? (
+                                      <>
+                                        <ChevronUp size={14} />
+                                        <span>Свернуть список категорий (показаны все {items.length})</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ChevronDown size={14} />
+                                        <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} с прокруткой (всего {items.length})</span>
+                                      </>
+                                    )}
+                                  </button>
+                                ) : null}
+                              </>
+                            ) : null}
 
-                        {/* Action Footer */}
-                        <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <div className="text-xs text-slate-600">
-                            {stratState.mode === "per_item" ? (
+                            {/* Summary Bar */}
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
                               <div>
-                                Выбрано категорий: <strong className="text-slate-900">{stratState.selectedItemIds.length}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{stratState.selectedItemIds.length} {declensionTasks(stratState.selectedItemIds.length)} ({stratState.selectedItemIds.length * 99} ₽)</strong>
+                                Выбрано категорий: <strong className="text-slate-900">{selectedCount}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)}</strong>
                               </div>
-                            ) : (
-                              <div>
-                                Режим: <strong className="text-slate-900">Сбалансированный поиск</strong> · К списанию: <strong className="text-teal-700">1 задача (99 ₽)</strong>
-                              </div>
-                            )}
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
+                                className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy || selectedCount === 0}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
+                              </button>
+                            </div>
                           </div>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void cancelJob(job)}
-                              className="px-3 py-2 bg-white hover:bg-rose-50 text-rose-700 border border-slate-200 hover:border-rose-300 rounded-md text-xs font-semibold shadow-xs cursor-pointer"
-                              disabled={busy}
-                            >
-                              Отменить задачу
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void chooseStrategy(job, stratState.mode, stratState.selectedItemIds)}
-                              className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                              disabled={busy || (stratState.mode === "per_item" && stratState.selectedItemIds.length === 0)}
-                            >
-                              <CheckCircle2 size={15} />
-                              <span>Запустить поиск ({stratState.mode === "per_item" ? `${stratState.selectedItemIds.length} ${declensionTasks(stratState.selectedItemIds.length)}` : "1 списание"})</span>
-                            </button>
-                          </div>
-                        </div>
+                        ) : null}
                       </div>
                     );
                   })() : null}
@@ -5969,7 +6028,7 @@ ${webLink}`;
                     <div>
                       <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
                       <span className="text-[10px] text-slate-500">
-                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач по 99 ₽`}
+                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач`}
                       </span>
                     </div>
                     <div className="text-lg sm:text-xl font-black text-emerald-700">

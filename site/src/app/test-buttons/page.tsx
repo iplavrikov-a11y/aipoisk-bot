@@ -149,6 +149,8 @@ export default function TestButtonsPage() {
   const [conceptS4Expanded, setConceptS4Expanded] = useState(true);
   const [conceptS4Mode, setConceptS4Mode] = useState<"balanced" | "per_item">("per_item");
   const [conceptS4ShowAll, setConceptS4ShowAll] = useState(false);
+  const [conceptS4PreviewCategories, setConceptS4PreviewCategories] = useState(false);
+  const [conceptS4CategoriesCollapsed, setConceptS4CategoriesCollapsed] = useState(false);
   const [conceptS4Items, setConceptS4Items] = useState([
     { id: "1", name: "Потолочная панель СМЛ 600x600", core: true, checked: true, qty: "2 400 м²" },
     { id: "2", name: "Профили направляющие Т24/29", core: true, checked: true, qty: "1 850 м.п." },
@@ -1761,86 +1763,133 @@ export default function TestButtonsPage() {
                       </div>
                     </div>
 
-                    {/* Mode Switcher Cards */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                      <div
-                        onClick={() => setConceptS4Mode("balanced")}
-                        className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
-                          conceptS4Mode === "balanced"
-                            ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
-                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                        }`}
-                      >
-                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                          conceptS4Mode === "balanced" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
-                        }`}>
-                          {conceptS4Mode === "balanced" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <strong className="text-xs font-extrabold text-slate-900">
-                              ⚖️ Сбалансированный поиск
-                            </strong>
-                            <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
-                              1 задача (99 ₽)
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
-                            Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем позициям. 1 сводный файл Excel и 1 общий Запрос КП (.docx).
-                          </p>
-                        </div>
+                    {/* Top Control Bar: Segmented Switcher & Primary CTA */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
+                      {/* Segmented Mode Switcher */}
+                      <div className="inline-flex items-center rounded-md border border-slate-200 bg-white p-0.5 shadow-2xs">
+                        <button
+                          type="button"
+                          onClick={() => setConceptS4Mode("balanced")}
+                          className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                            conceptS4Mode === "balanced"
+                              ? "bg-teal-600 text-white shadow-2xs"
+                              : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                          }`}
+                        >
+                          <span>⚖️ Сбалансированный поиск</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                            conceptS4Mode === "balanced" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                          }`}>
+                            1 задача
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConceptS4Mode("per_item");
+                            setConceptS4CategoriesCollapsed(false);
+                          }}
+                          className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                            conceptS4Mode === "per_item"
+                              ? "bg-teal-600 text-white shadow-2xs"
+                              : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                          }`}
+                        >
+                          <span>🔍 Попозиционный поиск</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                            conceptS4Mode === "per_item" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                          }`}>
+                            {conceptS4Items.filter((i) => i.checked).length} поз.
+                          </span>
+                        </button>
                       </div>
 
-                      <div
-                        onClick={() => setConceptS4Mode("per_item")}
-                        className={`p-3 rounded-lg border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
-                          conceptS4Mode === "per_item"
-                            ? "bg-teal-50/70 border-teal-500 ring-1 ring-teal-500/30 text-slate-900 shadow-2xs"
-                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
-                        }`}
-                      >
-                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                          conceptS4Mode === "per_item" ? "border-teal-600 bg-white" : "border-slate-300 bg-white"
-                        }`}>
-                          {conceptS4Mode === "per_item" ? <span className="w-2 h-2 rounded-full bg-teal-600" /> : null}
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <strong className="text-xs font-extrabold text-slate-900">
-                              🔍 Попозиционный поиск
-                            </strong>
-                            <span className="text-[10px] font-bold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-xs shrink-0">
-                              {conceptS4Items.filter((i) => i.checked).length} поз. ({conceptS4Items.filter((i) => i.checked).length * 99} ₽)
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 leading-relaxed font-normal">
-                            Глубокий независимый сбор по каждой выбранной категории в отдельные вкладки. Позволяет выбрать точные позиции галочками ниже.
-                          </p>
-                        </div>
+                      {/* Quick Launch CTA right in the control bar */}
+                      <div className="flex items-center gap-2">
+                        {conceptS4Mode === "balanced" ? (
+                          <button
+                            type="button"
+                            onClick={() => triggerAction("Запущен сбалансированный поиск (1 задача)")}
+                            className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                          >
+                            <CheckCircle2 size={14} />
+                            <span>Запустить поиск (1 задача)</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => triggerAction(`Запущен попозиционный поиск (${conceptS4Items.filter((i) => i.checked).length} задач)`)}
+                            className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                            disabled={conceptS4Items.filter((i) => i.checked).length === 0}
+                          >
+                            <CheckCircle2 size={14} />
+                            <span>Запустить ({conceptS4Items.filter((i) => i.checked).length} {conceptS4Items.filter((i) => i.checked).length === 1 ? "задача" : conceptS4Items.filter((i) => i.checked).length < 5 ? "задачи" : "задач"})</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                    {/* Categories Selection Bar */}
-                    <div className="space-y-2 pt-1">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                          <span>Категории ТЗ ({conceptS4Items.length}):</span>
-                          <span className="text-[11px] font-normal text-slate-500">
-                            {conceptS4Mode === "per_item"
-                              ? "отметьте нужные категории зелеными галочками"
-                              : "включены все позиции ТЗ в консолидированный пул"}
-                          </span>
-                        </div>
+                    {/* Quiet Subtitle / Description */}
+                    {conceptS4Mode === "balanced" ? (
+                      <div className="flex items-center justify-between text-xs text-slate-600 px-1 flex-wrap gap-2">
+                        <p className="leading-snug">
+                          Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем {conceptS4Items.length} позициям ТЗ без доплат (1 задача).
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setConceptS4PreviewCategories(!conceptS4PreviewCategories)}
+                          className="text-teal-700 hover:text-teal-900 font-semibold text-[11px] underline cursor-pointer shrink-0"
+                        >
+                          {conceptS4PreviewCategories ? "Скрыть список категорий ▴" : `Посмотреть позиции ТЗ (${conceptS4Items.length}) ▾`}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-600 px-1 leading-snug">
+                        Глубокий независимый сбор по каждой выбранной позиции в отдельные вкладки отчёта (по 1 задаче за категорию).
+                      </div>
+                    )}
 
-                        {conceptS4Mode === "per_item" ? (
-                          <div className="flex items-center gap-1.5 text-[11px]">
+                    {/* Balanced Mode Optional Preview of Items (read-only, no checkboxes) */}
+                    {conceptS4Mode === "balanced" && conceptS4PreviewCategories ? (
+                      <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
+                        <div className="text-[11px] font-bold text-slate-700">
+                          Включены в консолидированный поиск ({conceptS4Items.length}):
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {conceptS4Items.map((it, idx) => (
+                            <span
+                              key={it.id || idx}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-800"
+                            >
+                              <span className="font-bold text-slate-500">{idx + 1}.</span>
+                              <span>{it.name}</span>
+                              {it.qty ? <span className="text-slate-400 text-[10px]">({it.qty})</span> : null}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* PER-ITEM MODE: Categories Selection Accordion (ONLY RENDERS IN PER_ITEM MODE!) */}
+                    {conceptS4Mode === "per_item" ? (
+                      <div className="bg-white rounded-lg border border-slate-200/90 p-3 sm:p-3.5 space-y-2.5">
+                        {/* Categories Selection Toolbar */}
+                        <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
+                          <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                            <span>Категории ТЗ ({conceptS4Items.length}):</span>
+                            <span className="text-[11px] font-normal text-slate-500">
+                              отметьте зелеными галочками нужные для поиска
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2 text-[11px]">
                             <button
                               type="button"
                               onClick={() => {
                                 const allChecked = conceptS4Items.map((it) => ({ ...it, checked: true }));
                                 setConceptS4Items(allChecked);
                               }}
-                              className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
+                              className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
                             >
                               Выбрать все ({conceptS4Items.length})
                             </button>
@@ -1864,130 +1913,119 @@ export default function TestButtonsPage() {
                             >
                               Снять все
                             </button>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      {/* Categories Grid with Scrollbar */}
-                      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
-                        conceptS4Items.length > 6 && conceptS4ShowAll ? "max-h-72 overflow-y-auto pr-1 category-scroll-container" : ""
-                      }`}>
-                        {(conceptS4Items.length <= 6 || conceptS4ShowAll ? conceptS4Items : conceptS4Items.slice(0, 6)).map((item, idx) => {
-                          const isChecked = item.checked;
-                          return (
-                            <div
-                              key={item.id}
-                              onClick={() => {
-                                if (conceptS4Mode !== "per_item") return;
-                                const updated = [...conceptS4Items];
-                                const targetIdx = conceptS4Items.findIndex((it) => it.id === item.id);
-                                if (targetIdx !== -1) {
-                                  updated[targetIdx].checked = !updated[targetIdx].checked;
-                                  setConceptS4Items(updated);
-                                }
-                              }}
-                              className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all ${
-                                conceptS4Mode === "per_item"
-                                  ? isChecked
-                                    ? "border-teal-400 bg-teal-50/20 shadow-2xs cursor-pointer"
-                                    : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300 cursor-pointer"
-                                  : "border-slate-200/80"
-                              }`}
+                            <div className="h-3.5 w-px bg-slate-200" />
+                            <button
+                              type="button"
+                              onClick={() => setConceptS4CategoriesCollapsed(!conceptS4CategoriesCollapsed)}
+                              className="px-2 py-1 text-teal-700 hover:text-teal-900 font-bold flex items-center gap-1 cursor-pointer"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  {conceptS4Mode === "per_item" ? (
-                                    <div
-                                      className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
-                                        isChecked
-                                          ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
-                                          : "bg-white border-slate-300 hover:border-emerald-500"
-                                      }`}
-                                    >
-                                      {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                              <span>{conceptS4CategoriesCollapsed ? "Развернуть список" : "Свернуть список"}</span>
+                              {conceptS4CategoriesCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Categories Grid (collapsible) */}
+                        {!conceptS4CategoriesCollapsed ? (
+                          <>
+                            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                              conceptS4Items.length > 6 && conceptS4ShowAll ? "max-h-64 overflow-y-auto pr-1 category-scroll-container" : ""
+                            }`}>
+                              {(conceptS4Items.length <= 6 || conceptS4ShowAll ? conceptS4Items : conceptS4Items.slice(0, 6)).map((item, idx) => {
+                                const isChecked = item.checked;
+                                return (
+                                  <div
+                                    key={item.id}
+                                    onClick={() => {
+                                      const updated = [...conceptS4Items];
+                                      const targetIdx = conceptS4Items.findIndex((it) => it.id === item.id);
+                                      if (targetIdx !== -1) {
+                                        updated[targetIdx].checked = !updated[targetIdx].checked;
+                                        setConceptS4Items(updated);
+                                      }
+                                    }}
+                                    className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all cursor-pointer ${
+                                      isChecked
+                                        ? "border-teal-400 bg-teal-50/20 shadow-2xs"
+                                        : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300"
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <div
+                                          className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                            isChecked
+                                              ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                              : "bg-white border-slate-300 hover:border-emerald-500"
+                                          }`}
+                                        >
+                                          {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                        </div>
+                                        <span className="font-bold text-slate-800 truncate">
+                                          {idx + 1}. {item.name}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {item.core ? (
+                                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
+                                            Основная
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
+                                            Комплектующие
+                                          </span>
+                                        )}
+                                        {item.qty ? (
+                                          <span className="text-slate-500 font-medium text-[11px]">
+                                            {item.qty}
+                                          </span>
+                                        ) : null}
+                                      </div>
                                     </div>
-                                  ) : null}
-                                  <span className="font-bold text-slate-800 truncate">
-                                    {idx + 1}. {item.name}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  {item.core ? (
-                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
-                                      Основная
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
-                                      Комплектующие
-                                    </span>
-                                  )}
-                                  {item.qty ? (
-                                    <span className="text-slate-500 font-medium text-[11px]">
-                                      {item.qty}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        })}
-                      </div>
 
-                      {/* If more than 6 items, show toggle button */}
-                      {conceptS4Items.length > 6 ? (
-                        <button
-                          type="button"
-                          onClick={() => setConceptS4ShowAll(!conceptS4ShowAll)}
-                          className="w-full py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          {conceptS4ShowAll ? (
-                            <>
-                              <ChevronUp size={14} />
-                              <span>Свернуть список категорий (показаны все {conceptS4Items.length})</span>
-                            </>
-                          ) : (
-                            <>
-                              <ChevronDown size={14} />
-                              <span>Показать ещё {conceptS4Items.length - 6} категорий с прокруткой (всего {conceptS4Items.length})</span>
-                            </>
-                          )}
-                        </button>
-                      ) : null}
-                    </div>
+                            {conceptS4Items.length > 6 ? (
+                              <button
+                                type="button"
+                                onClick={() => setConceptS4ShowAll(!conceptS4ShowAll)}
+                                className="w-full py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                {conceptS4ShowAll ? (
+                                  <>
+                                    <ChevronUp size={14} />
+                                    <span>Свернуть список категорий (показаны все {conceptS4Items.length})</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ChevronDown size={14} />
+                                    <span>Показать ещё {conceptS4Items.length - 6} категорий с прокруткой (всего {conceptS4Items.length})</span>
+                                  </>
+                                )}
+                              </button>
+                            ) : null}
+                          </>
+                        ) : null}
 
-                    {/* Action Footer */}
-                    <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="text-xs text-slate-600">
-                        {conceptS4Mode === "per_item" ? (
+                        {/* Summary Bar */}
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
                           <div>
-                            Выбрано категорий: <strong className="text-slate-900">{conceptS4Items.filter((i) => i.checked).length}</strong> из {conceptS4Items.length} · К списанию: <strong className="text-teal-700">{conceptS4Items.filter((i) => i.checked).length} задач ({conceptS4Items.filter((i) => i.checked).length * 99} ₽)</strong>
+                            Выбрано категорий: <strong className="text-slate-900">{conceptS4Items.filter((i) => i.checked).length}</strong> из {conceptS4Items.length} · К списанию: <strong className="text-teal-700">{conceptS4Items.filter((i) => i.checked).length} {conceptS4Items.filter((i) => i.checked).length === 1 ? "задача" : conceptS4Items.filter((i) => i.checked).length < 5 ? "задачи" : "задач"}</strong>
                           </div>
-                        ) : (
-                          <div>
-                            Режим: <strong className="text-slate-900">Сбалансированный поиск</strong> · К списанию: <strong className="text-teal-700">1 задача (99 ₽)</strong>
-                          </div>
-                        )}
+                          <button
+                            type="button"
+                            onClick={() => triggerAction(`Запущен попозиционный поиск (${conceptS4Items.filter((i) => i.checked).length} задач)`)}
+                            className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                            disabled={conceptS4Items.filter((i) => i.checked).length === 0}
+                          >
+                            <CheckCircle2 size={14} />
+                            <span>Запустить ({conceptS4Items.filter((i) => i.checked).length} {conceptS4Items.filter((i) => i.checked).length === 1 ? "задача" : conceptS4Items.filter((i) => i.checked).length < 5 ? "задачи" : "задач"})</span>
+                          </button>
+                        </div>
                       </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => triggerAction("Задача отменена")}
-                          className="px-3 py-2 bg-white hover:bg-rose-50 text-rose-700 border border-slate-200 hover:border-rose-300 rounded-md text-xs font-semibold shadow-xs cursor-pointer"
-                        >
-                          Отменить задачу
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => triggerAction(`Запущен ${conceptS4Mode === "per_item" ? "попозиционный" : "сбалансированный"} поиск`)}
-                          className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                          disabled={conceptS4Mode === "per_item" && conceptS4Items.filter((i) => i.checked).length === 0}
-                        >
-                          <CheckCircle2 size={15} />
-                          <span>Запустить поиск ({conceptS4Mode === "per_item" ? `${conceptS4Items.filter((i) => i.checked).length} задач` : "1 списание"})</span>
-                        </button>
-                      </div>
-                    </div>
+                    ) : null}
                   </div>
                 )}
               </div>
