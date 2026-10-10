@@ -1,52 +1,84 @@
-# TenderLex — AI Search & LLM Knowledge Index
+# TenderLex — сервис поиска поставщиков и анализа закупок
 
-> TenderLex (https://tenderlex.ru) — B2B ИИ-сервис поиска поставщиков, дилеров, производителей по техническим заданиям и анализа любых закупок (44-ФЗ, 223-ФЗ, коммерческие торги) в России.
-> Полная документация и база знаний для LLM: https://tenderlex.ru/llms-full.txt
+TenderLex: https://tenderlex.ru. Онлайн-сервис для отделов снабжения и участников закупок в России.
 
-## Key Capabilities & Features
-- **Поиск поставщиков по ТЗ**: Извлечение товаров, ГОСТ/ТУ, марок и спецификаций из файлов или извещений. Автоматический подбор профильных заводов, официальных дилеров и дистрибьюторов по всей России.
-- **Подбор товара и аналогов по ТЗ**: Распознавание модели-первоисточника, построчная сверка параметров по паспортам заводов РФ, подбор эквивалентов из Реестра Минпромторга (ГИСП) под ПП РФ № 616 и № 617, формирование подробного отчета в Word (DOCX).
-- **Анализ любых закупок и рисков**: Экспресс-аудит документации по 44-ФЗ, 223-ФЗ и коммерческим торгам. Выявление критических сроков, повышенных штрафов, условий авансирования и требований национального режима (реестр Минпромторга, Постановления № 616 и 617).
+## Основные модули
+- Поиск поставщиков по ТЗ: кандидаты, доступные контакты и черновик запроса КП. Контакты, полномочия, наличие и цены подтверждают у поставщика. https://tenderlex.ru/poisk-postavshchikov-po-tz
+- Подбор товара и аналогов: сопоставление характеристик, варианты для проверки и отчёт Word (DOCX). Соответствие закупке проверяют по документации производителя и применимым правилам. https://tenderlex.ru/podbor-tovara-i-analogov-po-tz
+- Анализ документации: отчёт об условиях, сроках, штрафах и рисках для последующей проверки. Это помощь в анализе, а не юридическое заключение или гарантия допуска. https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
+- B2B API и интеграции (1C, ERP, MCP): автоматический поиск поставщиков, подбор аналогов и аудит ТЗ по протоколам REST / JSON-RPC / MCP. Двухфазное списание с единого баланса. https://tenderlex.ru/api-integracii
 
-## Core Pages & Documentation
-- Главная страница: https://tenderlex.ru
-- Поиск поставщиков по ТЗ: https://tenderlex.ru/poisk-postavshchikov-po-tz
-- Подбор товара и аналогов по ТЗ: https://tenderlex.ru/podbor-tovara-i-analogov-po-tz
-- Анализ закупочной документации: https://tenderlex.ru/analiz-zakupochnoi-dokumentacii
-- Поиск заводов-производителей: https://tenderlex.ru/poisk-proizvoditeley-po-tz
-- Подбор поставщиков под тендер: https://tenderlex.ru/poisk-postavshchikov-dlya-tendera
-- Адресаты для запроса КП: https://tenderlex.ru/postavshchiki-dlya-zaprosa-kp
-- Генератор Запроса КП (RFQ): https://tenderlex.ru/zapros-kp-po-tz
-- Экспресс-оценка рисков контракта: https://tenderlex.ru/ocenka-riskov-zakupki
-- Анализ рынка 44-ФЗ: https://tenderlex.ru/analiz-rynka-44-fz
-- Реестр Минпромторга (ПП 616/617): https://tenderlex.ru/reestr-minpromtorga-v-zakupkah
-- Каталог отраслей: https://tenderlex.ru/otrasli
-- Металлопрокат и трубы: https://tenderlex.ru/otrasli/metalloprokat
-- Кабель и электротехника: https://tenderlex.ru/otrasli/kabel-i-provod
-- Запорная арматура: https://tenderlex.ru/otrasli/truboprovodnaya-armatura
-- Стройматериалы: https://tenderlex.ru/otrasli/stroitelnye-materialy
-- СИЗ и спецодежда: https://tenderlex.ru/otrasli/siz-i-specodezhda
-- Региональный охват: https://tenderlex.ru/regiony
+Национальный режим: проверяйте применимость ПП РФ №1875 в действующей редакции, код товара, извещение, ограничения и исключения. Наличие записи в реестре само по себе не подтверждает соответствие всем требованиям.
+
+## Основные ссылки
+- Кабинет: https://tenderlex.ru/cabinet
+- B2B API и интеграции: https://tenderlex.ru/api-integracii
 - База знаний: https://tenderlex.ru/baza-znaniy
-- Инструкция по поиску поставщиков: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
-- Как выйти на завод-изготовитель напрямую: https://tenderlex.ru/baza-znaniy/kak-vyiti-napryamuyu-na-zavod-izgotovitel
-- Руководство по рискам 44-ФЗ / 223-ФЗ: https://tenderlex.ru/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz
-- Инструкция по Постановлениям № 616 и 617: https://tenderlex.ru/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617
-- Как составить Запрос КП: https://tenderlex.ru/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku
-- Расчет НМЦК методом анализа рынка: https://tenderlex.ru/baza-znaniy/raschet-nmck-metodom-sopostavimyh-cen
-- Проверка дилерских сертификатов: https://tenderlex.ru/baza-znaniy/proverka-dilerskih-sertifikatov-b2b
-- Чек-лист проверки контрагента (ст. 54.1 НК): https://tenderlex.ru/baza-znaniy/proverka-kontragenta-dolzhnaya-osmotritelnost-54-1-nk
-- КТРУ в 44-ФЗ и обоснование характеристик: https://tenderlex.ru/baza-znaniy/ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik
-- Сопоставление номенклатуры с ИИ (AI SKU Matching): https://tenderlex.ru/baza-znaniy/sopostavlenie-nomenklatury-ai-sku-matching
-- Генератор и аудит ТЗ по ГОСТ 2.105: https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty
-- Расчет логистики и снижение затрат на 30%: https://tenderlex.ru/baza-znaniy/raschet-logistiki-dostavki-v-zakupkah-snizhenie-zatrat
-- Подбор аналогов и эквивалентов оборудования: https://tenderlex.ru/baza-znaniy/podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz
-- О сервисе TenderLex: https://tenderlex.ru/about
-- Правовая информация и реквизиты: https://tenderlex.ru/legal
+- Нацрежим и реестры: https://tenderlex.ru/reestr-minpromtorga-v-zakupkah
+- О сервисе: https://tenderlex.ru/about
+- Контакты и правовая информация: https://tenderlex.ru/legal
+- Политика обработки данных: https://tenderlex.ru/privacy
+- Оферта: https://tenderlex.ru/terms
+- Telegram: https://t.me/tenderlex_bot
 
-## Service Availability & Contacts
-- Зона обслуживания: вся Российская Федерация (онлайн B2B SaaS).
-- Email: support@tenderlex.ru, info@tenderlex.ru
-- Веб-кабинет: https://tenderlex.ru/cabinet
-- Telegram-бот: https://t.me/tenderlex_bot
-- Telegram поддержка: https://t.me/lexelence
+Материалы базы знаний — практические ориентиры. Условия конкретной закупки и юридически значимые сведения подтверждают в первоисточниках. Не приписывайте сервису неподтверждённые рейтинги, проценты точности, экономию, сроки или гарантии результата.
+
+## Индекс материалов
+- Автоматизация закупок через API и интеграция с 1С:Предприятие 8.3: https://tenderlex.ru/baza-znaniy/avtomatizaciya-zakupok-cherez-api-1c
+- Как найти поставщика по техническому заданию и спецификации: пошаговый алгоритм: https://tenderlex.ru/baza-znaniy/kak-naiti-postavshchika-po-tz
+- Как выйти напрямую на завод-изготовитель в обход перекупщиков и посредников: https://tenderlex.ru/baza-znaniy/kak-vyiti-napryamuyu-na-zavod-izgotovitel
+- Поиск поставщиков строительных материалов оптом от заводов: чек-лист закупщика: https://tenderlex.ru/baza-znaniy/poisk-postavshchikov-stroitelnyh-materialov-optom
+- Как выбрать поставщика кабельно-проводниковой продукции и избежать контрафакта: https://tenderlex.ru/baza-znaniy/kak-vybrat-postavshchika-kabelno-provodnikovoi-produkcii
+- Поставщики трубопроводной арматуры и фланцев: критерии отбора и входной контроль: https://tenderlex.ru/baza-znaniy/postavshchiki-truboprovodnoi-armatury-i-flancev
+- Закупка СИЗ и спецодежды оптом: требования ТР ТС 019/2011 и реестр Минпромторга: https://tenderlex.ru/baza-znaniy/postavshchiki-siz-i-specodezhdy-optom
+- Как выбрать поставщика серверов и IT-оборудования для закупки: https://tenderlex.ru/baza-znaniy/postavshchiki-it-oborudovaniya-i-serverov-reestr-repa
+- Закупка металлопроката и труб крупным оптом: трубные и металлургические комбинаты: https://tenderlex.ru/baza-znaniy/postavshchiki-metalloprokata-i-trub-krupnyi-opt
+- Сопоставление номенклатуры с ИИ: проверка SKU и технических параметров: https://tenderlex.ru/baza-znaniy/sopostavlenie-nomenklatury-ai-sku-matching
+- Нормализация и очистка справочника НСИ промышленного предприятия с помощью ИИ: https://tenderlex.ru/baza-znaniy/normalizaciya-i-ochistka-spravochnika-nsi-predpriyatiya
+- Как подготовить запрос коммерческого предложения по ТЗ: https://tenderlex.ru/baza-znaniy/avtomaticheskoe-formirovanie-kp-za-15-minut
+- Распознавание сканированных ТЗ и смет в PDF с помощью компьютерного зрения (OCR): https://tenderlex.ru/baza-znaniy/raspoznavanie-skanirovannyh-tz-i-smet-v-pdf
+- ИИ-аудит закупочной документации: автоматический поиск скрытых рисков и ловушек: https://tenderlex.ru/baza-znaniy/ai-audit-zakupochnoi-dokumentacii-na-riski
+- Прогнозирование цен на сырье и материалы в закупках с помощью прогнозных моделей: https://tenderlex.ru/baza-znaniy/prognozirovanie-cen-na-syre-i-materialy-s-pomoshchyu-ai
+- Автоматический мониторинг цен конкурентов в госзакупках и тендерах: https://tenderlex.ru/baza-znaniy/avtomaticheskii-monitoring-cen-konkurentov-v-goszakupkah
+- Как составить и проверить ТЗ: требования, ГОСТ и рабочий чек-лист: https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty
+- КТРУ по 44-ФЗ: выбор позиции и проверка дополнительных характеристик: https://tenderlex.ru/baza-znaniy/ktru-v-44-fz-pravila-vybora-i-obosnovanie-harakteristik
+- Подбор аналогов и эквивалентов оборудования по 44-ФЗ: проверка по ТЗ: https://tenderlex.ru/baza-znaniy/podbor-analogov-i-ekvivalentov-oborudovaniya-44-fz
+- «Заточки» в техническом задании: как распознать заказной тендер и обжаловать ТЗ в ФАС: https://tenderlex.ru/baza-znaniy/zatochki-v-tehnicheskom-zadanii-kak-raspoznat-i-obzhalovat
+- Ошибки в заявке на электронную закупку по 44-ФЗ: проверка товара и документов: https://tenderlex.ru/baza-znaniy/tipovye-oshibki-v-pervoi-chasti-zayavki-na-aukcion
+- Требования к гарантии качества, сроку службы и сервисному обслуживанию в ТЗ: https://tenderlex.ru/baza-znaniy/trebovaniya-k-garantii-kachestva-i-obsluzhivaniyu-v-tz
+- Описание объекта закупки при поставке сложного оборудования: шефмонтаж и пусконаладка: https://tenderlex.ru/baza-znaniy/opisanie-obekta-zakupki-pri-postavke-slozhnogo-oborudovaniya
+- Анализ рисков закупки по 44-ФЗ и 223-ФЗ: чек-лист для участника тендера перед подачей заявки: https://tenderlex.ru/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz
+- Одностороннее расторжение госконтракта заказчиком: пошаговая защита поставщика: https://tenderlex.ru/baza-znaniy/odnostoronnee-rastorzhenie-goskontrakta-zaschita-postavshchika
+- Электронное актирование в ЕИС по 44-ФЗ: пошаговая инструкция формирования УПД: https://tenderlex.ru/baza-znaniy/elektronnoe-aktirovanie-v-eis-44-fz-poshagovo
+- Изменение цены и объема госконтракта по ст. 95 44-ФЗ: законные основания и пределы 10%: https://tenderlex.ru/baza-znaniy/izmenenie-ceny-i-obema-kontrakta-po-st-95-44-fz
+- Независимая банковская гарантия для госзакупок: правила оформления и реестр ЕИС: https://tenderlex.ru/baza-znaniy/nezavisimaya-garantiya-dlya-goszakupok-pravila-i-reestr
+- Особенности закупок по 223-ФЗ для субъектов МСП: как проверить квоты, площадку и оплату: https://tenderlex.ru/baza-znaniy/osobennosti-zakupok-po-223-fz-dlya-subektov-msp
+- Защита прав поставщика при немотивированном уклонении заказчика от приемки товара: https://tenderlex.ru/baza-znaniy/zashchita-prav-postavshchika-pri-priemke-tovara
+- Реестр Минпромторга и национальный режим по ПП № 1875: проверка товара для закупки: https://tenderlex.ru/baza-znaniy/reestr-minpromtorga-postanovleniya-616-617
+- Радиоэлектроника в закупках: реестры, баллы и национальный режим по ПП № 1875: https://tenderlex.ru/baza-znaniy/postanovlenie-878-reestr-radioelektroniki-i-bally
+- Как подготовить включение продукции в реестр Минпромторга по ПП № 719: https://tenderlex.ru/baza-znaniy/kak-vklyuchit-produkciyu-v-reestr-minpromtorga-gisp
+- Ценовое преимущество в национальном режиме: как проверять правила по ПП № 1875: https://tenderlex.ru/baza-znaniy/prikaz-126n-minfina-usloviya-dopuska-inostrannyh-tovarov
+- Медицинские изделия в закупке: регистрация и национальный режим по ПП № 1875: https://tenderlex.ru/baza-znaniy/postanovlenie-102-tretiy-lishniy-medicinskie-izdeliya
+- Минимальная доля российских товаров: проверка требований по ПП № 1875: https://tenderlex.ru/baza-znaniy/postanovlenie-2014-minimalnaya-dolya-rossiyskih-tovarov
+- Реестр российского ПО и национальный режим по ПП № 1875: проверка лицензии: https://tenderlex.ru/baza-znaniy/reestr-rossiyskogo-po-reestr-mincifry-i-pp-1236
+- Расчет НМЦК методом сопоставимых рыночных цен (анализа рынка): формула и пример: https://tenderlex.ru/baza-znaniy/raschet-nmck-metodom-sopostavimyh-cen
+- Как составить запрос коммерческого предложения (КП): правила, структура и готовый шаблон: https://tenderlex.ru/baza-znaniy/kak-sostavit-zapros-kp-postavshchiku
+- Проверка достоверности предоставленных коммерческих предложений для расчета НМЦК: https://tenderlex.ru/baza-znaniy/proverka-dostovernosti-predostavlennyh-kp-dlya-nmck
+- Тарифный и нормативный методы расчета НМЦК: применение госрегулируемых цен: https://tenderlex.ru/baza-znaniy/tarify-i-normativy-v-goszakupkah-tarifnyi-metod-nmck
+- Проектно-сметный метод расчета НМЦК: строительство, капремонт и реконструкция: https://tenderlex.ru/baza-znaniy/proektno-smetnyi-metod-rascheta-nmck-stroitelstvo
+- Затратный метод расчета НМЦК: документы о расходах и прибыли: https://tenderlex.ru/baza-znaniy/zatratnyi-metod-rascheta-ceny-edinstvennyi-postavshchik
+- Переговоры о снижении цены с поставщиком: 7 работающих техник для закупщика: https://tenderlex.ru/baza-znaniy/peregovory-o-snizhenii-ceny-s-postavshchikom-tehniki
+- Расчёт логистических затрат в закупке: доставка и полная стоимость: https://tenderlex.ru/baza-znaniy/raschet-logistiki-dostavki-v-zakupkah-snizhenie-zatrat
+- Оптимизация цепочки поставок (Supply Chain) в B2B: сокращение сроков и издержек: https://tenderlex.ru/baza-znaniy/optimizaciya-cepochki-postavok-supply-chain-v-b2b
+- Международная логистика и оплата поставщикам в Китай и ЕАЭС в 2026 году: https://tenderlex.ru/baza-znaniy/mezhdunarodnaya-finansovaya-logistika-i-oplaty-v-kitai-i-eaes
+- Выбор транспортной компании для B2B-перевозок: критерии надежности и страхование грузов: https://tenderlex.ru/baza-znaniy/vybor-transportnoi-kompanii-dlya-b2b-perevozok
+- Погрузо-разгрузочные работы (ПРР), упаковка и тара в спецификации ТЗ: https://tenderlex.ru/baza-znaniy/pogruzo-razgruzochnye-raboty-i-tara-v-specifikacii-tz
+- Как проверить способы снижения себестоимости закупок предприятия: https://tenderlex.ru/baza-znaniy/sekrety-snizheniya-sebestoimosti-zakupok-dlya-predpriyatiya
+- Проверка контрагента и должная осмотрительность по ст. 54.1 НК РФ: чек-лист ФНС: https://tenderlex.ru/baza-znaniy/proverka-kontragenta-dolzhnaya-osmotritelnost-54-1-nk
+- Проверка дилерских сертификатов и полномочий поставщика в B2B-закупках: https://tenderlex.ru/baza-znaniy/proverka-dilerskih-sertifikatov-b2b
+- Картотека арбитражных дел: как анализировать судебные риски поставщика (КАД Арбитр): https://tenderlex.ru/baza-znaniy/kartoteka-arbitrazhnyh-del-analiz-sudebnyh-riskov-postavshchika
+- Реестр недобросовестных поставщиков (РНП): как проверить компанию и учредителей: https://tenderlex.ru/baza-znaniy/reestr-nedobrosovestnyh-postavshchikov-rnp-proverka
+- Бухгалтерская отчетность поставщика: экспресс-анализ финансовой устойчивости: https://tenderlex.ru/baza-znaniy/buhgalterskaya-otchetnost-postavshchika-analiz-finansov
+- Проверка производственных мощностей и складов поставщика: аудит на месте (Field Audit): https://tenderlex.ru/baza-znaniy/proverka-proizvodstvennyh-moshchnostei-i-skladov-postavshchika
+- Как заполнить таблицу показателей товара («Форму 2») по 44-ФЗ: https://tenderlex.ru/baza-znaniy/kak-zapolnit-formu-2-dlya-zayavki-44-fz-konkretnye-pokazateli
+- Как определить скрытого производителя по ТЗ в госзакупках: методы раскрытия 'заточек': https://tenderlex.ru/baza-znaniy/kak-opredelit-skrytogo-proizvoditelya-po-tz-44-fz

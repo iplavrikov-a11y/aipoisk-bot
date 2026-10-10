@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
+import { trackGoal } from "@/lib/analytics";
 import {
   ArrowRight,
   Bell,
@@ -16,12 +17,16 @@ import {
   Clock3,
   Compass,
   Copy,
+  CreditCard,
   Download,
   Eye,
+  EyeOff,
+  FileSpreadsheet,
   FileText,
   Gift,
   HelpCircle,
   History,
+  Key,
   Layers,
   Loader2,
   LogOut,
@@ -29,14 +34,17 @@ import {
   MessageCircle,
   Paperclip,
   Pencil,
+  PlusCircle,
   Receipt,
   RotateCcw,
   Search,
+  Send,
   ShieldAlert,
   Sliders,
   Sparkles,
   Upload,
   User,
+  Wallet,
   X,
   XCircle,
   type LucideIcon,
@@ -46,6 +54,35 @@ type JobMode = "supplier_search" | "procurement_report" | "analysis_and_supplier
 type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 
+function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolicy {
+  if (val === "minprom_registry_priority" || val === "minprom_registry_only") {
+    return val;
+  }
+  return "normal";
+}
+
+function normalizeMultiItemMode(val?: string | null): "balanced" | "per_item" {
+  return val === "per_item" ? "per_item" : "balanced";
+}
+
+function declensionCategory(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return "категорий";
+  if (mod10 === 1) return "категория";
+  if (mod10 >= 2 && mod10 <= 4) return "категории";
+  return "категорий";
+}
+
+function declensionTasks(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return "задач";
+  if (mod10 === 1) return "задача";
+  if (mod10 >= 2 && mod10 <= 4) return "задачи";
+  return "задач";
+}
+
 type BalanceCounter = {
   label: string;
   available: number | null;
@@ -53,6 +90,7 @@ type BalanceCounter = {
   spent: number;
   granted: number;
   low: boolean;
+  unlimited?: boolean;
   price_kopeks?: number;
   price_rub?: number;
 };
@@ -65,6 +103,52 @@ type Tariff = {
   price_kopeks: number;
   description: string;
 };
+
+type DepositPackage = {
+  id: string;
+  kind?: string;
+  name: string;
+  price_kopeks: number;
+  bonus_kopeks: number;
+  total_kopeks: number;
+  credit_kopeks?: number;
+  price_rub: number;
+  bonus_rub: number;
+  total_rub: number;
+  credit_rub?: number;
+  bonus_percent?: number;
+  badge?: string;
+  description?: string;
+  approx_tasks?: number;
+};
+
+const DEFAULT_DEPOSIT_PACKAGES: DepositPackage[] = [
+  { id: "dep-1000", name: "Старт", price_kopeks: 100000, bonus_kopeks: 0, total_kopeks: 100000, price_rub: 1000, bonus_rub: 0, total_rub: 1000, bonus_percent: 0, badge: "", approx_tasks: 10 },
+  { id: "dep-3000", name: "Оптимальный", price_kopeks: 300000, bonus_kopeks: 50000, total_kopeks: 350000, price_rub: 3000, bonus_rub: 500, total_rub: 3500, bonus_percent: 17, badge: "+500 ₽", approx_tasks: 35 },
+  { id: "dep-5000", name: "Про", price_kopeks: 500000, bonus_kopeks: 150000, total_kopeks: 650000, price_rub: 5000, bonus_rub: 1500, total_rub: 6500, bonus_percent: 30, badge: "Хит (+1 500 ₽)", approx_tasks: 65 },
+  { id: "dep-10000", name: "Бизнес", price_kopeks: 1000000, bonus_kopeks: 400000, total_kopeks: 1400000, price_rub: 10000, bonus_rub: 4000, total_rub: 14000, bonus_percent: 40, badge: "+4 000 ₽", approx_tasks: 140 },
+  { id: "dep-25000", name: "Корпоративный", price_kopeks: 2500000, bonus_kopeks: 1250000, total_kopeks: 3750000, price_rub: 25000, bonus_rub: 12500, total_rub: 37500, bonus_percent: 50, badge: "+12 500 ₽", approx_tasks: 375 },
+];
+
+function calculateDepositBonus(amountRub: number): { bonusRub: number; totalRub: number; percent: number } {
+  const safeRub = Math.max(0, Math.floor(amountRub || 0));
+  if (safeRub < 1000) return { bonusRub: 0, totalRub: safeRub, percent: 0 };
+  if (safeRub < 3000) return { bonusRub: 0, totalRub: safeRub, percent: 0 };
+  if (safeRub < 5000) {
+    const bonus = Math.round(safeRub * 0.1667);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 17 };
+  }
+  if (safeRub < 10000) {
+    const bonus = Math.round(safeRub * 0.30);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 30 };
+  }
+  if (safeRub < 25000) {
+    const bonus = Math.round(safeRub * 0.40);
+    return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 40 };
+  }
+  const bonus = Math.round(safeRub * 0.50);
+  return { bonusRub: bonus, totalRub: safeRub + bonus, percent: 50 };
+}
 
 type SessionPayload = {
   authenticated: boolean;
@@ -87,14 +171,19 @@ type SessionPayload = {
       reserved_rub: number;
       available_rub: number;
     };
+    has_custom_tariffs?: boolean;
     effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>;
   };
+  has_custom_tariffs?: boolean;
   limits?: {
     max_upload_mb: number;
     max_files_per_batch: number;
     default_supplier_target: number;
   };
+  deposit_packages?: DepositPackage[];
+  function_prices?: Record<string, { price_rub: number; price_kopeks: number }>;
   tariff_groups?: {
+    deposit?: DepositPackage[];
     supplier_search: Tariff[];
     exact_product?: Tariff[];
     procurement_report: Tariff[];
@@ -131,6 +220,7 @@ type CustomerJob = {
   mode: JobMode;
   mode_label: string;
   supplier_search_policy?: string;
+  multi_item_mode?: string;
   status: string;
   status_label: string;
   progress: number;
@@ -164,6 +254,20 @@ type CustomerJob = {
   admin_supplement_name?: string;
   admin_supplement_at?: string | null;
   awaiting_customer_confirmation: boolean;
+  confirmation_kind?: string;
+  multi_item_details?: {
+    items?: Array<{
+      id?: string;
+      name: string;
+      quantity?: string;
+      unit?: string;
+      is_core?: boolean;
+      is_auxiliary?: boolean;
+      included_sub_items?: string[];
+      cost_tier?: string;
+    }>;
+    total_items?: number;
+  } | null;
   error: string;
   created_at: string | null;
   completed_at?: string | null;
@@ -175,6 +279,9 @@ type QuoteRequestModal = {
   html: string;
   filename: string;
   copied: boolean;
+  rawMarkdown?: string;
+  items?: Array<{ index: number; name: string }>;
+  selectedItemIndexes: number[];
 };
 
 type ActiveToast = {
@@ -215,28 +322,28 @@ const NOTIFICATION_FEATURE_START_TS = new Date("2026-08-21T13:30:00Z").getTime()
 
 const scenarioOptions: Array<{ id: Scenario; label: string; description: string; icon: LucideIcon }> = [
   {
-    id: "supplier_search",
-    label: "Поиск поставщиков",
-    description: "техническое задание файлом, текстом или архивом",
-    icon: Search,
-  },
-  {
-    id: "exact_product",
-    label: "Подбор товара и аналогов",
-    description: "выявление конкретной модели по ТЗ, таблица характеристик и аналоги",
-    icon: CheckCircle2,
-  },
-  {
     id: "procurement_report",
     label: "Анализ документации",
     description: "номер, ссылка или документы закупки",
     icon: FileText,
   },
   {
+    id: "supplier_search",
+    label: "Поиск поставщиков",
+    description: "техническое задание файлом, текстом или архивом",
+    icon: Search,
+  },
+  {
     id: "analysis_and_suppliers",
     label: "Анализ + поиск",
     description: "анализ закупки и поставщики",
     icon: Receipt,
+  },
+  {
+    id: "exact_product",
+    label: "Подбор товара и аналогов",
+    description: "выявление конкретной модели по ТЗ, таблица характеристик и аналоги",
+    icon: CheckCircle2,
   },
 ];
 
@@ -260,7 +367,7 @@ const modeCopy: Record<Scenario, {
     uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, TXT, ZIP)",
     multipleFiles: true,
     textLabel: "Или вставьте характеристики объекта закупки текстом",
-    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. ИИ определит скрытого производителя, сверит параметры и подберет 2–4 аналога.",
+    textPlaceholder: "Например: характеристики оборудования, требования к материалу, мощности, размерам, ГОСТ и др. Сервис сопоставит параметры и предложит варианты для проверки по документации производителя.",
     hint: "ИИ выявит производителя, сверит соответствие параметров ТЗ, проверит реестр Минпромторга (ГИСП) и сформирует готовую таблицу характеристик и аналогов.",
     submit: "Запустить подбор",
   },
@@ -510,14 +617,40 @@ function escapeHtml(value: string) {
 
 function formatInlineMarkdown(value: string) {
   return escapeHtml(value)
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br />")
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/__(.*?)__/g, "<strong>$1</strong>");
 }
 
-function quoteMarkdownToHtml(markdown: string) {
+function extractQuoteTableItems(markdown: string): Array<{ index: number; name: string }> {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const tableRows: string[][] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("|")) {
+      let combined = trimmed;
+      while (!combined.endsWith("|") && i + 1 < lines.length && lines[i + 1].trim()) {
+        i++;
+        combined += " <br> " + lines[i].trim();
+      }
+      const compact = combined.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+      if (!compact) continue;
+      tableRows.push(combined.slice(1, -1).split("|").map((cell) => cell.trim()));
+    }
+  }
+  if (tableRows.length < 2) return [];
+  const [header, ...body] = normalizeQuoteTableRows(tableRows);
+  const nameIdx = quoteColumnIndex(header, ["наименование", "товар", "позиция", "предмет"]);
+  if (nameIdx < 0) return [];
+  return body.map((row, i) => ({
+    index: i,
+    name: quoteCell(row, nameIdx) || `Позиция ${i + 1}`,
+  })).filter((item) => Boolean(item.name));
+}
+
+function quoteMarkdownToHtml(markdown: string, selectedRowIndexes?: number[] | null) {
   const value = String(markdown || "").trim();
   if (!value) return "<p></p>";
-  if (/^\s*</.test(value)) return value;
   const lines = value.split(/\r?\n/);
   const html: string[] = [];
   let tableRows: string[][] = [];
@@ -532,24 +665,36 @@ function quoteMarkdownToHtml(markdown: string) {
   const flushTable = () => {
     if (!tableRows.length) return;
     const [header, ...body] = normalizeQuoteTableRows(tableRows);
+    let filteredBody = body;
+    if (Array.isArray(selectedRowIndexes) && selectedRowIndexes.length > 0) {
+      const allowed = new Set(selectedRowIndexes);
+      filteredBody = body
+        .filter((_, idx) => allowed.has(idx))
+        .map((row, newIdx) => row.map((cell, cellIdx) => (cellIdx === 0 ? String(newIdx + 1) : cell)));
+    }
     html.push(
       `<div style="overflow-x:auto;margin:14px 0;"><table style="width:100%;border-collapse:collapse;font-size:12px;font-family:system-ui,-apple-system,sans-serif;border:1px solid #CBD5E1;background-color:#FFFFFF;">` +
       `<thead style="background-color:#F1F5F9;"><tr style="border-bottom:2px solid #CBD5E1;">` +
       header.map((cell) => `<th style="padding:9px 12px;text-align:left;font-weight:700;color:#0F172A;border:1px solid #CBD5E1;">${formatInlineMarkdown(cell)}</th>`).join("") +
       `</tr></thead><tbody>` +
-      body.map((row) => `<tr style="border-bottom:1px solid #E2E8F0;">` + row.map((cell) => `<td style="padding:9px 12px;color:#334155;border:1px solid #E2E8F0;vertical-align:top;">${formatInlineMarkdown(cell)}</td>`).join("") + `</tr>`).join("") +
+      filteredBody.map((row) => `<tr style="border-bottom:1px solid #E2E8F0;">` + row.map((cell) => `<td style="padding:9px 12px;color:#334155;border:1px solid #E2E8F0;vertical-align:top;">${formatInlineMarkdown(cell)}</td>`).join("") + `</tr>`).join("") +
       `</tbody></table></div>`
     );
     tableRows = [];
   };
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("|")) {
       flushList();
-      const compact = trimmed.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+      let combined = trimmed;
+      while (!combined.endsWith("|") && i + 1 < lines.length && lines[i + 1].trim()) {
+        i++;
+        combined += " <br> " + lines[i].trim();
+      }
+      const compact = combined.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
       if (!compact) continue;
-      tableRows.push(trimmed.slice(1, -1).split("|").map((cell) => cell.trim()));
+      tableRows.push(combined.slice(1, -1).split("|").map((cell) => cell.trim()));
       continue;
     }
     flushTable();
@@ -577,7 +722,30 @@ function quoteMarkdownToHtml(markdown: string) {
 }
 
 function cellsText(row: HTMLTableRowElement) {
-  return Array.from(row.querySelectorAll("th,td")).map((cell) => (cell.textContent || "").replace(/\s+/g, " ").trim());
+  return Array.from(row.querySelectorAll("th,td")).map((cell) => {
+    const clone = cell.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return (clone.textContent || "").replace(/[ \t]+/g, " ").trim();
+  });
+}
+
+function cellsForMarkdownTable(row: HTMLTableRowElement) {
+  return Array.from(row.querySelectorAll("th,td")).map((cell) => {
+    const clone = cell.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("br").forEach((br) => br.replaceWith(" <br> "));
+    clone.querySelectorAll("p, div, li").forEach((el) => {
+      if (el !== clone.firstElementChild) {
+        el.before(" <br> ");
+      }
+    });
+    const raw = clone.textContent || "";
+    return raw
+      .replace(/[\r\n]+/g, " <br> ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\|/g, "/")
+      .replace(/(?:\s*<br>\s*)+/gi, "<br>")
+      .trim();
+  });
 }
 
 function quotePlainText(value: string | null | undefined) {
@@ -659,7 +827,7 @@ function quoteHtmlToMarkdown(root: HTMLElement | null) {
     if (tableEl) {
       const rows = normalizeQuoteTableRows(
         Array.from(tableEl.querySelectorAll("tr"))
-          .map((row) => cellsText(row as HTMLTableRowElement))
+          .map((row) => cellsForMarkdownTable(row as HTMLTableRowElement))
           .filter((row) => row.some(Boolean)),
       );
       if (rows.length) {
@@ -817,12 +985,13 @@ export function CabinetClient() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
-  const [termsAccepted, setTermsAccepted] = useState(true);
-  const [personalDataConsent, setPersonalDataConsent] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [personalDataConsent, setPersonalDataConsent] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
   const [emailEditOpen, setEmailEditOpen] = useState(false);
-  const [scenario, setScenario] = useState<Scenario>("supplier_search");
+  const [scenario, setScenario] = useState<Scenario>("procurement_report");
   const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [multiItemMode, setMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -833,12 +1002,80 @@ export function CabinetClient() {
   const [findMorePrompt, setFindMorePrompt] = useState("");
   const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
   const [startSupplierSearchPolicy, setStartSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [startSupplierSearchMultiItemMode, setStartSupplierSearchMultiItemMode] = useState<"balanced" | "per_item">("balanced");
   const [startSupplierSearchAlternatives, setStartSupplierSearchAlternatives] = useState<boolean>(true);
   const [startSupplierSearchPrompt, setStartSupplierSearchPrompt] = useState<string>("");
+  const [retryConfirmJob, setRetryConfirmJob] = useState<CustomerJob | null>(null);
+  const [retryPolicy, setRetryPolicy] = useState<SupplierSearchPolicy>("normal");
+  const [retryMultiItemMode, setRetryMultiItemMode] = useState<"balanced" | "per_item">("balanced");
+  const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
+  const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
+  const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
+  const [inlineStrategies, setInlineStrategies] = useState<Record<string, {
+    mode: "balanced" | "per_item";
+    selectedItemIds: string[];
+    isExpanded: boolean;
+    showAllCategories: boolean;
+    categoriesCollapsed: boolean;
+    previewCategories: boolean;
+  }>>({});
+
+  function getClientEffectiveTaskPrice(): number | null {
+    const eff = session?.balance?.effective_prices?.supplier_search?.price_rub;
+    if (typeof eff === "number" && eff > 0) return eff;
+    const s = session?.balance?.supplier_search?.price_rub;
+    if (typeof s === "number" && s > 0) return s;
+    return null;
+  }
+
+  function getJobInlineStrategy(job: CustomerJob) {
+    if (inlineStrategies[job.id]) {
+      return inlineStrategies[job.id];
+    }
+    const items = job.multi_item_details?.items || [];
+    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+    return {
+      mode: job.multi_item_mode === "per_item" ? ("per_item" as const) : ("balanced" as const),
+      selectedItemIds: allIds,
+      isExpanded: true,
+      showAllCategories: false,
+      categoriesCollapsed: false,
+      previewCategories: false,
+    };
+  }
+
+  function updateJobInlineStrategy(jobId: string, partial: Partial<{
+    mode: "balanced" | "per_item";
+    selectedItemIds: string[];
+    isExpanded: boolean;
+    showAllCategories: boolean;
+    categoriesCollapsed: boolean;
+    previewCategories: boolean;
+  }>) {
+    setInlineStrategies((prev) => {
+      const existing = prev[jobId] || {
+        mode: "balanced",
+        selectedItemIds: [],
+        isExpanded: true,
+        showAllCategories: false,
+        categoriesCollapsed: false,
+        previewCategories: false,
+      };
+      return {
+        ...prev,
+        [jobId]: { ...existing, ...partial },
+      };
+    });
+  }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
+  const [quoteItemSearch, setQuoteItemSearch] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
+  const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
+  const [topUpCopied, setTopUpCopied] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showReferralModal, setShowReferralModal] = useState(false);
@@ -850,7 +1087,93 @@ export function CabinetClient() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
+  const [showApiModal, setShowApiModal] = useState(false);
+  const [showChatNoticeModal, setShowChatNoticeModal] = useState(false);
+  const [apiModalTab, setApiModalTab] = useState<"key" | "methods" | "ai_prompt" | "mcp">("key");
+  const [apiKeys, setApiKeys] = useState<Array<{
+    id: string;
+    key_prefix: string;
+    raw_key?: string | null;
+    name: string;
+    created_at: string | null;
+    is_active: boolean;
+    last_used_at: string | null;
+    total_spent: number;
+  }>>([]);
+  const [revealedKeyIds, setRevealedKeyIds] = useState<Record<string, boolean>>({});
+  const [loadingApiKeys, setLoadingApiKeys] = useState(false);
+  const [generatingApiKey, setGeneratingApiKey] = useState(false);
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+  const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
+  const [apiCopiedField, setApiCopiedField] = useState<string | null>(null);
+
+  async function loadCustomerApiKeys() {
+    setLoadingApiKeys(true);
+    try {
+      const res = await fetch("/api/customer/api-keys", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setApiKeys(data.keys || []);
+      }
+    } catch (err) {
+      console.error("loadCustomerApiKeys failed:", err);
+    } finally {
+      setLoadingApiKeys(false);
+    }
+  }
+
+  async function createCustomerApiKey() {
+    if (!csrf) return;
+    setGeneratingApiKey(true);
+    try {
+      const res = await fetch("/api/customer/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNewlyGeneratedKey(data.raw_key);
+        await loadCustomerApiKeys();
+      }
+    } catch (err) {
+      console.error("createCustomerApiKey failed:", err);
+    } finally {
+      setGeneratingApiKey(false);
+    }
+  }
+
+  async function revokeCustomerApiKey(keyId: string) {
+    if (!csrf) return;
+    setRevokingKeyId(keyId);
+    try {
+      const res = await fetch(`/api/customer/api-keys/${keyId}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        setNewlyGeneratedKey(null);
+        await loadCustomerApiKeys();
+      }
+    } catch (err) {
+      console.error("revokeCustomerApiKey failed:", err);
+    } finally {
+      setRevokingKeyId(null);
+    }
+  }
+
+  function copyApiText(text: string, fieldId: string) {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        setApiCopiedField(fieldId);
+        setTimeout(() => setApiCopiedField(null), 2500);
+      });
+    }
+  }
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  notificationsEnabledRef.current = notificationsEnabled;
   const [viewedJobIds, setViewedJobIds] = useState<string[]>([]);
   const [activeToast, setActiveToast] = useState<ActiveToast | null>(null);
   const prevJobStatusesRef = useRef<Map<string, string>>(new Map());
@@ -886,6 +1209,7 @@ export function CabinetClient() {
   const acceptsSources = Boolean(selectedCopy.sourceLabel);
   const acceptsText = Boolean(selectedCopy.textLabel);
   const maxFiles = session?.limits?.max_files_per_batch || 20;
+  const targetQuota = session?.limits?.default_supplier_target || 25;
   const emailVerified = session?.user?.is_email_verified !== false;
   const supplierMultiFileWarning = scenario === "supplier_search" && selectedFiles.length > 1;
   const activeJobs = useMemo(
@@ -905,6 +1229,7 @@ export function CabinetClient() {
     }
     const payload = await readJson<SessionPayload>(response);
     setSession(payload.authenticated ? payload : null);
+    return payload;
   }
 
   const HISTORY_PAGE_SIZE = 12;
@@ -957,7 +1282,8 @@ export function CabinetClient() {
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
-      const incomingItems = Array.isArray(payload) ? payload : payload.items;
+      const rawItems = Array.isArray(payload) ? payload : (payload?.items || (payload as { jobs?: CustomerJob[] })?.jobs || []);
+      const incomingItems: CustomerJob[] = Array.isArray(rawItems) ? rawItems : [];
 
       if (!hasInitializedJobsRef.current) {
         const map = new Map<string, string>();
@@ -978,7 +1304,7 @@ export function CabinetClient() {
 
         if (newlyFinished.length > 0) {
           const latest = newlyFinished[0];
-          if (notificationsEnabled) {
+          if (notificationsEnabledRef.current) {
             playNotificationChime();
             setActiveToast({
               id: `${latest.id}-${Date.now()}`,
@@ -995,13 +1321,15 @@ export function CabinetClient() {
         setJobsTotal(payload.length);
         return;
       }
-      const nextPageCount = Math.max(1, Math.ceil(payload.total / payload.limit));
-      setJobsTotal(payload.total);
+      const total = typeof payload?.total === "number" ? payload.total : incomingItems.length;
+      const limit = typeof payload?.limit === "number" && payload.limit > 0 ? payload.limit : 15;
+      const nextPageCount = Math.max(1, Math.ceil(total / limit));
+      setJobsTotal(total);
       if (page > nextPageCount) {
         setJobsPage(nextPageCount);
         return;
       }
-      setJobs(payload.items);
+      setJobs(incomingItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1047,11 +1375,19 @@ export function CabinetClient() {
   }
 
   useEffect(() => {
-    loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    const authEvent = window.location.hash.slice(1);
+    if (authEvent === "registration_success" || authEvent === "login_success") {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    loadSession().then((payload) => {
+      if (payload?.authenticated && (authEvent === "registration_success" || authEvent === "login_success")) trackGoal(authEvent);
+    }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const params = new URLSearchParams(window.location.search);
     const scenarioParam = params.get("scenario") || params.get("mode");
-    if (scenarioParam && (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "doc_analysis")) {
-      setScenario(scenarioParam as Scenario);
+    if (scenarioParam === "doc_analysis") {
+      setScenario("procurement_report");
+    } else if (scenarioParam === "exact_product" || scenarioParam === "supplier_search" || scenarioParam === "procurement_report" || scenarioParam === "analysis_and_suppliers") {
+      setScenario(scenarioParam);
     }
     const textParam = params.get("text") || params.get("q");
     if (textParam) {
@@ -1097,7 +1433,8 @@ export function CabinetClient() {
           }
           return res.json();
         })
-        .then(() => {
+        .then((payload: { is_new?: boolean; success?: boolean }) => {
+          if (payload.success) trackGoal(payload.is_new ? "registration_success" : "login_success");
           return loadSession();
         })
         .catch((err) => {
@@ -1250,6 +1587,7 @@ export function CabinetClient() {
       });
       const payload = await readJson<SessionPayload>(response);
       setSession(payload);
+      if (payload.authenticated) trackGoal(authMode === "register" ? "registration_success" : "login_success");
       setPassword("");
       setWebsite("");
       setMessage(authMode === "register" ? (payload.message || "Кабинет создан. Подтвердите email, чтобы запускать задачи.") : "");
@@ -1320,6 +1658,7 @@ export function CabinetClient() {
         setSession((current) => (current ? { ...current, user: payload.user } : current));
       }
       setMessage("Email подтверждён. Теперь можно запускать задачи.");
+      trackGoal("email_verified");
       await loadSession();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1366,6 +1705,7 @@ export function CabinetClient() {
       const form = new FormData();
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
+      form.append("multi_item_mode", multiItemMode);
       form.append("text", acceptsText ? text : "");
       form.append("source_urls", acceptsSources ? sourceUrls : "");
       form.append("target_suppliers", "0");
@@ -1377,6 +1717,7 @@ export function CabinetClient() {
         body: form,
       });
       const payload = await readJson<{ batch: boolean; count: number }>(response);
+      trackGoal("task_started", { module: selectedMode });
       setText("");
       setSourceUrls("");
       clearSelectedFiles();
@@ -1398,6 +1739,7 @@ export function CabinetClient() {
       const response = await fetch(`/api/customer/jobs/${job.id}/download`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, `${job.human_title || "result"}.zip`));
+      trackGoal("result_downloaded", { module: job.mode });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1414,6 +1756,7 @@ export function CabinetClient() {
       const response = await fetch(`/api/customer/jobs/${job.id}/download/${encodeURIComponent(file.kind)}`, CUSTOMER_JOB_FETCH_OPTIONS);
       if (!response.ok) throw new Error(parseError(await response.text()));
       downloadBlob(await response.blob(), filenameFromResponse(response, file.filename || `${job.human_title || "result"}`));
+      trackGoal("result_downloaded", { module: job.mode });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1430,11 +1773,18 @@ export function CabinetClient() {
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/quote-request`, CUSTOMER_JOB_FETCH_OPTIONS);
       const payload = await readJson<{ content: string; filename: string }>(response);
+      const raw = payload.content || "";
+      const tableItems = extractQuoteTableItems(raw);
+      const allIndexes = tableItems.map((it) => it.index);
+      setQuoteItemSearch("");
       setQuoteRequestModal({
         job,
-        html: quoteMarkdownToHtml(payload.content || ""),
+        html: quoteMarkdownToHtml(raw, allIndexes),
         filename: payload.filename || file.filename || "Запрос коммерческого предложения.docx",
         copied: false,
+        rawMarkdown: raw,
+        items: tableItems,
+        selectedItemIndexes: allIndexes,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1443,20 +1793,85 @@ export function CabinetClient() {
     }
   }
 
+  function applyQuoteRequestItemIndexes(safeIndexes: number[]) {
+    if (!quoteRequestModal) return;
+    const raw = quoteRequestModal.rawMarkdown || "";
+    const nextHtml = quoteMarkdownToHtml(raw, safeIndexes);
+    if (quoteEditorRef.current) {
+      quoteEditorRef.current.innerHTML = nextHtml;
+    }
+    setQuoteRequestModal({
+      ...quoteRequestModal,
+      html: nextHtml,
+      selectedItemIndexes: safeIndexes,
+      copied: false,
+    });
+  }
+
+  function toggleQuoteRequestItem(index: number) {
+    if (!quoteRequestModal) return;
+    const current = quoteRequestModal.selectedItemIndexes;
+    const nextIndexes = current.includes(index)
+      ? current.filter((i) => i !== index)
+      : [...current, index].sort((a, b) => a - b);
+    const safeIndexes = nextIndexes.length > 0 ? nextIndexes : [index];
+    applyQuoteRequestItemIndexes(safeIndexes);
+  }
+
+  function toggleAllQuoteRequestItems(selectAll: boolean) {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const safeIndexes = selectAll ? items.map((it) => it.index) : (items.length > 0 ? [items[0].index] : []);
+    applyQuoteRequestItemIndexes(safeIndexes);
+  }
+
+  function selectFirstNQuoteRequestItems(count: number) {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const safeIndexes = items.slice(0, count).map((it) => it.index);
+    applyQuoteRequestItemIndexes(safeIndexes.length > 0 ? safeIndexes : (items.length > 0 ? [items[0].index] : []));
+  }
+
+  function invertQuoteRequestItems() {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const current = new Set(quoteRequestModal.selectedItemIndexes);
+    const inverted = items.filter((it) => !current.has(it.index)).map((it) => it.index);
+    applyQuoteRequestItemIndexes(inverted.length > 0 ? inverted : items.map((it) => it.index));
+  }
+
+  function selectMatchingQuoteRequestItems(matchingIndexes: number[]) {
+    if (!quoteRequestModal) return;
+    const items = quoteRequestModal.items || [];
+    const current = new Set(quoteRequestModal.selectedItemIndexes);
+    matchingIndexes.forEach((idx) => current.add(idx));
+    const next = items.filter((it) => current.has(it.index)).map((it) => it.index);
+    applyQuoteRequestItemIndexes(next.length > 0 ? next : (items.length > 0 ? [items[0].index] : []));
+  }
+
   async function downloadEditedQuoteRequest() {
     if (!csrf || !quoteRequestModal) return;
     const content = quoteHtmlToMarkdown(quoteEditorRef.current);
     setBusy(true);
     setError("");
     try {
+      const items = quoteRequestModal.items || [];
+      const selected = quoteRequestModal.selectedItemIndexes;
+      let targetFilename = quoteRequestModal.filename || "Запрос коммерческого предложения.docx";
+      if (selected.length === 1 && items[selected[0]]) {
+        targetFilename = `Запрос КП - ${items[selected[0]].name.slice(0, 50).replace(/[\\/*?:"<>|]/g, "_")}.docx`;
+      } else if (selected.length < items.length) {
+        targetFilename = `Запрос КП - ${selected.length} поз.docx`;
+      }
       const response = await fetch(`/api/customer/jobs/${quoteRequestModal.job.id}/quote-request/docx`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
-        body: JSON.stringify({ content, filename: quoteRequestModal.filename }),
+        body: JSON.stringify({ content, filename: targetFilename }),
       });
       if (!response.ok) throw new Error(parseError(await response.text()));
-      downloadBlob(await response.blob(), filenameFromResponse(response, quoteRequestModal.filename || "Запрос коммерческого предложения.docx"));
+      downloadBlob(await response.blob(), filenameFromResponse(response, targetFilename));
+      trackGoal("result_downloaded", { module: "supplier_search" });
       await loadSession();
       await loadJobs();
     } catch (err) {
@@ -1542,6 +1957,37 @@ export function CabinetClient() {
     }
   }
 
+  async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item", itemIds?: string[]) {
+    if (!csrf) return;
+    setBusy(true);
+    setError("");
+    setStrategyConfirmJob(null);
+    try {
+      const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "x-csrf-token": csrf,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          multi_item_mode: mode,
+          selected_item_ids: mode === "per_item" ? itemIds : undefined,
+        }),
+      });
+      if (!response.ok) throw new Error(parseError(await response.text()));
+      await readJson(response);
+      const countLabel = mode === "per_item" && itemIds?.length ? ` (${itemIds.length} поз.)` : "";
+      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function findMoreSuppliers(job: CustomerJob) {
     if (!csrf) return;
     setBusy(true);
@@ -1561,6 +2007,7 @@ export function CabinetClient() {
         body: JSON.stringify({ additional_prompt: promptToSend }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      trackGoal("task_started", { module: "supplier_search" });
       setMessage(payload.message || "Запущен дополнительный поиск поставщиков.");
       setJobsPage(1);
       await loadSession();
@@ -1578,6 +2025,7 @@ export function CabinetClient() {
     setError("");
     setMessage("");
     const policyToSend = startSupplierSearchPolicy;
+    const multiItemToSend = startSupplierSearchMultiItemMode;
     const includeAlts = startSupplierSearchAlternatives;
     const promptToSend = startSupplierSearchPrompt.trim();
     setStartSupplierSearchConfirmJob(null);
@@ -1591,11 +2039,13 @@ export function CabinetClient() {
         },
         body: JSON.stringify({
           supplier_search_policy: policyToSend,
+          multi_item_mode: multiItemToSend,
           include_alternatives: includeAlts,
           additional_prompt: promptToSend,
         }),
       });
       const payload = await readJson<{ message?: string; job?: CustomerJob }>(response);
+      trackGoal("task_started", { module: "supplier_search" });
       setMessage(payload.message || "Поиск поставщиков успешно запущен на основе подобранных товаров и аналогов.");
       setJobsPage(1);
       await loadSession();
@@ -1607,12 +2057,16 @@ export function CabinetClient() {
     }
   }
 
-  async function retryJob(job: CustomerJob, policy?: string) {
+  async function retryJob(job: CustomerJob, policy?: string, multiItemModeParam?: string) {
     try {
       setBusy(true);
       setError("");
       setMessage("");
-      const url = policy ? `/api/customer/jobs/${job.id}/retry?policy=${encodeURIComponent(policy)}` : `/api/customer/jobs/${job.id}/retry`;
+      const params = new URLSearchParams();
+      if (policy) params.set("policy", policy);
+      if (multiItemModeParam) params.set("multi_item_mode", multiItemModeParam);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const url = `/api/customer/jobs/${job.id}/retry${qs}`;
       const res = await fetch(url, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
@@ -1624,6 +2078,7 @@ export function CabinetClient() {
       setError(err instanceof Error ? err.message : "Ошибка перезапуска задачи");
     } finally {
       setBusy(false);
+      setRetryConfirmJob(null);
     }
   }
 
@@ -1792,24 +2247,42 @@ export function CabinetClient() {
               <div className="space-y-2.5 pt-2 border-t border-slate-200/60">
                 <label className="flex items-start gap-2.5 text-xs text-slate-700 font-medium leading-snug cursor-pointer select-none">
                   <input
-                    className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500 shrink-0"
+                    className="sr-only"
                     type="checkbox"
                     checked={termsAccepted}
                     onChange={(event) => setTermsAccepted(event.target.checked)}
                     required
                   />
+                  <div
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 mt-0.5 ${
+                      termsAccepted
+                        ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                        : "bg-white border-slate-300 hover:border-emerald-500"
+                    }`}
+                  >
+                    {termsAccepted ? <Check size={11} strokeWidth={3.5} className="text-white" /> : null}
+                  </div>
                   <span>
                     Я принимаю <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/terms" target="_blank" rel="noreferrer">публичную оферту</a>.
                   </span>
                 </label>
                 <label className="flex items-start gap-2.5 text-xs text-slate-700 font-medium leading-snug cursor-pointer select-none">
                   <input
-                    className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500 shrink-0"
+                    className="sr-only"
                     type="checkbox"
                     checked={personalDataConsent}
                     onChange={(event) => setPersonalDataConsent(event.target.checked)}
                     required
                   />
+                  <div
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 mt-0.5 ${
+                      personalDataConsent
+                        ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                        : "bg-white border-slate-300 hover:border-emerald-500"
+                    }`}
+                  >
+                    {personalDataConsent ? <Check size={11} strokeWidth={3.5} className="text-white" /> : null}
+                  </div>
                   <span>
                     Даю согласие на <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/personal-data" target="_blank" rel="noreferrer">обработку персональных данных</a> и ознакомлен с <a className="text-teal-700 underline font-semibold hover:text-teal-900" href="/privacy" target="_blank" rel="noreferrer">политикой</a>.
                   </span>
@@ -1950,62 +2423,48 @@ export function CabinetClient() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* Balance Badge */}
-            <div className="flex items-center gap-2 bg-gradient-to-r from-teal-700 to-teal-800 text-white px-2.5 py-1.5 rounded-lg shadow-2xs shrink-0">
-              <Receipt size={15} className="text-teal-200" aria-hidden="true" />
-              <div className="flex items-center gap-1.5">
+            {/* Balance Button (Click to Top-Up) */}
+            <button
+              type="button"
+              onClick={() => {
+                const pkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+                const defPkg = pkgs.find((p) => p.price_rub === 5000) || pkgs[2] || pkgs[0];
+                setSelectedTopUpPackage(defPkg);
+                setCustomTopUpRub(defPkg?.price_rub || 5000);
+                setShowTopUpModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 h-[30px] bg-gradient-to-r from-teal-700 to-teal-800 hover:from-teal-600 hover:to-teal-700 text-white px-2.5 rounded-lg shadow-2xs shrink-0 text-xs transition-all cursor-pointer border border-teal-600/50 group"
+              title="Баланс аккаунта. Нажмите, чтобы пополнить"
+            >
+              <Receipt size={14} className="text-teal-200 group-hover:scale-105 transition-transform shrink-0" aria-hidden="true" />
+              <div className="flex items-center gap-1.5 leading-none">
                 <span className="text-[9px] font-semibold text-teal-100 uppercase tracking-wider">Баланс</span>
-                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap">
+                <strong className="text-xs sm:text-sm font-extrabold whitespace-nowrap leading-none">
                   {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
                 </strong>
               </div>
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-teal-600 group-hover:bg-emerald-500 text-white text-[10px] font-black shrink-0 transition-colors ml-0.5" title="Пополнить">
+                +
+              </span>
               {session?.user?.is_trial ? (
-                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1">
+                <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300 shrink-0 ml-1 leading-none">
                   пробный доступ
                 </span>
               ) : null}
-            </div>
+            </button>
 
             <button
               type="button"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => setShowTariffs((v) => !v)}
             >
               <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>{showTariffs ? "Скрыть тарифы ▲" : "Тарифы и цены ▼"}</span>
+              <span>{showTariffs ? "Тарифы ▲" : "Тарифы ▼"}</span>
             </button>
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0"
-              onClick={() => {
-                if (typeof (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat === "function") {
-                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat!();
-                }
-                window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
-              }}
-            >
-              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
-              <span>Чат сайта</span>
-            </button>
-
-            {session?.contacts?.telegram_url ? (
-              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={session.contacts.telegram_url} target="_blank" rel="noreferrer">
-                <MessageCircle size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
-                <span>Telegram</span>
-              </a>
-            ) : null}
-
-            {session?.contacts?.email ? (
-              <a className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-colors shrink-0" href={`mailto:${session.contacts.email}`}>
-                <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
-                <span>Email</span>
-              </a>
-            ) : null}
-
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowHistoryModal(true);
                 loadHistoryTransactions(1);
@@ -2018,7 +2477,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
                 setShowReferralModal(true);
               }}
@@ -2030,13 +2489,60 @@ export function CabinetClient() {
                 +1 000 ₽
               </span>
             </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowApiModal(true);
+                loadCustomerApiKeys();
+              }}
+              title="API и интеграции (CRM, 1С, ИИ-ассистенты, MCP)"
+            >
+              <Key size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>API</span>
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              onClick={() => {
+                setShowChatNoticeModal(true);
+              }}
+              title="Онлайн-чат поддержки"
+            >
+              <MessageCircle size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
+              <span>Чат</span>
+            </button>
+
+            {session?.contacts?.telegram_url ? (
+              <a
+                className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+                href={session.contacts.telegram_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Написать в Telegram"
+              >
+                <Send size={13} className="text-sky-500 shrink-0" aria-hidden="true" />
+                <span>Telegram</span>
+              </a>
+            ) : null}
+
+            <a
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
+              href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
+              title="Написать на электронную почту"
+            >
+              <Mail size={13} className="text-slate-600 shrink-0" aria-hidden="true" />
+              <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
+            </a>
           </div>
 
           {/* Right-aligned items: Function Guide and Notification Bell */}
           <div className="flex items-center gap-1.5 shrink-0 ml-auto">
             <button
               type="button"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] rounded-lg text-xs font-bold leading-none transition-all border cursor-pointer shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200 shadow-2xs"
               onClick={() => {
                 setHelpModalTab("workflow");
                 setShowHelpModal(true);
@@ -2049,7 +2555,7 @@ export function CabinetClient() {
 
             <button
               type="button"
-              className={`inline-flex items-center justify-center p-2 rounded-lg transition-all border cursor-pointer shrink-0 ${
+              className={`inline-flex items-center justify-center w-[30px] h-[30px] rounded-lg transition-all border cursor-pointer shrink-0 ${
                 notificationsEnabled
                   ? "bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200/80 shadow-2xs"
                   : "bg-slate-100 hover:bg-slate-200 text-slate-400 border-slate-200"
@@ -2069,72 +2575,128 @@ export function CabinetClient() {
 
         {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
         {showTariffs ? (() => {
+          const supplierPriceKopeks =
+            session?.balance?.effective_prices?.supplier_search?.price_kopeks ??
+            (session?.tariff_groups?.supplier_search?.[0]?.price_kopeks ?? 9900);
+          const supplierIsOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override";
+
           const extraPriceKopeks =
             session?.balance?.effective_prices?.supplier_search_extra?.price_kopeks ??
             (session?.tariff_groups?.supplier_search_extra?.[0]?.price_kopeks ?? 4900);
           const extraIsOverride = session?.balance?.effective_prices?.supplier_search_extra?.source === "client_override";
-          const supplierOverride = session?.balance?.effective_prices?.supplier_search?.source === "client_override" ? session.balance.effective_prices.supplier_search : null;
-          const reportOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override" ? session.balance.effective_prices.procurement_report : null;
+
+          const exactPriceKopeks =
+            session?.balance?.effective_prices?.exact_product?.price_kopeks ??
+            (session?.tariff_groups?.exact_product?.[0]?.price_kopeks ?? 9900);
+          const exactIsOverride = session?.balance?.effective_prices?.exact_product?.source === "client_override";
+
+          const reportPriceKopeks =
+            session?.balance?.effective_prices?.procurement_report?.price_kopeks ??
+            (session?.tariff_groups?.procurement_report?.[0]?.price_kopeks ?? 9900);
+          const reportIsOverride = session?.balance?.effective_prices?.procurement_report?.source === "client_override";
+
+          const comboPriceKopeks = supplierPriceKopeks + reportPriceKopeks;
+          const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
 
           return (
-            <div className="grid md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 transition-all">
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Подбор товара и аналогов</span>
-                <div className="space-y-1 mt-0.5">
-                  {(session?.tariff_groups?.exact_product && session.tariff_groups.exact_product.length > 0
-                    ? session.tariff_groups.exact_product
-                    : [{ id: 'exact-1', name: '1 подбор товара и аналогов', price_kopeks: 9900 }]
-                  ).slice(0, 3).map((tariff: any) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariff.name}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Поиск поставщиков</span>
-                <div className="space-y-1 mt-0.5">
-                  {supplierOverride ? (
-                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 поиск поставщиков (индивидуально)</span>
-                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(supplierOverride.price_kopeks)}</b>
-                    </div>
-                  ) : null}
-                  {(session?.tariff_groups?.supplier_search || []).slice(0, 3).map((tariff) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                  <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
-                    <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
-                      {extraIsOverride ? '1 добор поставщиков (индивидуально)' : '1 добор поставщиков (по тому же ТЗ)'}
+            <div className="pt-2.5 border-t border-slate-100 transition-all space-y-2.5">
+              <div className="grid md:grid-cols-2 gap-2.5">
+                {/* Column 1: Списание за операции по прайсу */}
+                <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
+                  <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      Списание за задачи с баланса
                     </span>
-                    <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap text-xs`}>
-                      {formatRubles(extraPriceKopeks)}
-                    </b>
+                    <span className="text-[10px] text-slate-400">без подписок и скрытых условий</span>
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    <div className={`px-2 py-1 ${supplierIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                      <span className="truncate mr-2 font-semibold text-slate-700">1. Поиск поставщиков</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {formatRubles(supplierPriceKopeks)}
+                      </b>
+                    </div>
+                    <div className={`px-2 py-1 ${extraIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-teal-50/50 border-teal-200/70 text-teal-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                      <span className={`truncate mr-2 font-semibold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} text-xs`}>
+                        ↳ Добор поставщиков (по тому же ТЗ)
+                      </span>
+                      <b className={`font-extrabold ${extraIsOverride ? 'text-amber-900' : 'text-teal-900'} shrink-0 whitespace-nowrap`}>
+                        {formatRubles(extraPriceKopeks)}
+                      </b>
+                    </div>
+                    <div className={`px-2 py-1 ${exactIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                      <span className="truncate mr-2 font-semibold text-slate-700">2. Подбор товара и аналогов</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {formatRubles(exactPriceKopeks)}
+                      </b>
+                    </div>
+                    <div className={`px-2 py-1 ${reportIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-white border-slate-200/80 text-slate-800'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                      <span className="truncate mr-2 font-semibold text-slate-700">3. Анализ документации</span>
+                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap">
+                        {formatRubles(reportPriceKopeks)}
+                      </b>
+                    </div>
+                    <div className="px-2 py-1 bg-slate-100/90 border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
+                      <span className="truncate mr-2 font-semibold text-slate-600">4. Анализ + поиск (комбо)</span>
+                      <b className="font-extrabold text-slate-800 shrink-0 whitespace-nowrap">
+                        {formatRubles(comboPriceKopeks)}
+                      </b>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Column 2: Бонусы при пополнении баланса */}
+                <div className="space-y-1 bg-gradient-to-br from-emerald-50/60 to-teal-50/40 p-2.5 rounded-xl border border-emerald-200/80">
+                  <div className="flex items-center justify-between pb-1 border-b border-emerald-200/60">
+                    <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                      Бонусы при пополнении баланса
+                    </span>
+                    <span className="text-[10px] font-bold text-emerald-700">до +50% к платежу</span>
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    {depositPkgs.map((pkg) => (
+                      <div
+                        key={pkg.id}
+                        className="px-2 py-1 bg-white/90 border border-emerald-200/70 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs"
+                      >
+                        <div className="flex items-center gap-1.5 truncate mr-2">
+                          <span className="font-bold text-slate-900">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
+                          <span className="text-slate-400">→</span>
+                          <span className="font-extrabold text-emerald-700">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {pkg.bonus_rub > 0 ? (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
+                              +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-medium">Старт</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              <div className="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Анализ закупки</span>
-                <div className="space-y-1 mt-0.5">
-                  {reportOverride ? (
-                    <div className="px-2 py-1 bg-amber-50/80 border border-amber-200 rounded-md flex items-center justify-between text-xs font-medium text-amber-950 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-amber-900 text-xs">1 анализ закупки (индивидуально)</span>
-                      <b className="font-extrabold text-amber-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(reportOverride.price_kopeks)}</b>
-                    </div>
-                  ) : null}
-                  {(session?.tariff_groups?.procurement_report || []).slice(0, 3).map((tariff) => (
-                    <div key={tariff.id} className="px-2 py-1 bg-white border border-slate-200/80 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs">
-                      <span className="truncate mr-2 font-semibold text-slate-700 text-xs">{tariffDisplayName(tariff)}</span>
-                      <b className="font-extrabold text-slate-900 shrink-0 whitespace-nowrap text-xs">{formatRubles(tariff.price_kopeks)}</b>
-                    </div>
-                  ))}
-                </div>
+              {/* Action Banner inside Tariffs */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg border border-slate-200/70 text-xs">
+                <span className="text-slate-600 text-[11px]">
+                  Средства на балансе не сгорают, расходуются только по факту выполненных задач.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
+                    setSelectedTopUpPackage(defPkg);
+                    setCustomTopUpRub(defPkg?.price_rub || 5000);
+                    setShowTopUpModal(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ml-auto"
+                >
+                  <PlusCircle size={13} />
+                  <span>Пополнить баланс с бонусом</span>
+                </button>
               </div>
             </div>
           );
@@ -2163,6 +2725,14 @@ export function CabinetClient() {
                       : "bg-white border-slate-200/90 text-slate-700 hover:text-teal-800 hover:border-teal-300 hover:bg-teal-50/20 shadow-2xs"
                   }`}
                   role="tab"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectScenario(item.id);
+                    }
+                  }}
                   aria-selected={isSelected}
                 >
                   <div className="flex items-center gap-1.5 truncate">
@@ -2280,6 +2850,13 @@ export function CabinetClient() {
                   ))}
                 </ul>
               </div>
+            ) : null}
+
+            {selectedFiles.length ? (
+              <p className="text-[11px] text-slate-500 leading-normal flex items-center gap-1.5 px-1">
+                <span>💡</span>
+                <span>Совет: если спецификация крупная и объединяет разные рынки (электрика, отделка, сантехника), эффективнее загружать разделы отдельными файлами для максимальной глубины подбора.</span>
+              </p>
             ) : null}
 
             {acceptsSources ? (
@@ -2413,10 +2990,10 @@ export function CabinetClient() {
               className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all cursor-pointer shadow-2xs"
             >
               <option value="">Все типы</option>
-              <option value="supplier_search">Поиск поставщиков</option>
-              <option value="exact_product">Подбор товара и аналогов</option>
               <option value="procurement_report">Анализ документации</option>
+              <option value="supplier_search">Поиск поставщиков</option>
               <option value="analysis_and_suppliers">Анализ + поиск</option>
+              <option value="exact_product">Подбор товара и аналогов</option>
             </select>
           </div>
 
@@ -2556,27 +3133,31 @@ export function CabinetClient() {
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void retryJob(job, "normal");
+                              setRetryConfirmJob(job);
+                              setRetryPolicy("normal");
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                             }}
                             disabled={busy}
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} aria-hidden="true" />
                             <span>Найти обычным поиском</span>
                           </button>
                         ) : (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
-                              void retryJob(job);
+                              setRetryConfirmJob(job);
+                              setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                             }}
                             disabled={busy}
                           >
-                            <RotateCcw size={15} aria-hidden="true" />
+                            <RotateCcw size={14} className="text-amber-700" aria-hidden="true" />
                             <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
                           </button>
                         )}
@@ -2584,68 +3165,104 @@ export function CabinetClient() {
                     ) : null}
 
                     {job.awaiting_customer_confirmation ? (
-                      <>
-                        {!offer || offer.can_accept ? (
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              markJobAsViewed(job.id);
-                              acceptPartial(job);
-                            }}
-                            disabled={busy}
-                          >
-                            <CheckCircle2 size={16} aria-hidden="true" />
-                            <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
-                          </button>
-                        ) : null}
-                        {!offer || offer.can_decline ? (
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              markJobAsViewed(job.id);
-                              declinePartial(job);
-                            }}
-                            disabled={busy}
-                          >
-                            <XCircle size={16} aria-hidden="true" />
-                            <span>Отказаться</span>
-                          </button>
-                        ) : null}
-                      </>
+                      job.confirmation_kind === "multi_item_strategy" ? (
+                        (() => {
+                          const stratState = getJobInlineStrategy(job);
+                          const items = job.multi_item_details?.items || [];
+                          return (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateJobInlineStrategy(job.id, { isExpanded: !stratState.isExpanded });
+                                }}
+                              >
+                                <Sliders size={14} aria-hidden="true" />
+                                <span>{stratState.isExpanded ? "Свернуть" : `Выбрать стратегию (${items.length} поз.)`}</span>
+                                {stratState.isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void cancelJob(job);
+                                }}
+                                disabled={busy}
+                              >
+                                <XCircle size={14} className="text-rose-600" aria-hidden="true" />
+                                <span>Отменить</span>
+                              </button>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <>
+                          {!offer || offer.can_accept ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                markJobAsViewed(job.id);
+                                acceptPartial(job);
+                              }}
+                              disabled={busy}
+                            >
+                              <CheckCircle2 size={15} aria-hidden="true" />
+                              <span>{offer?.kind === "registry_fallback" ? "Получить без реестра" : "Получить и списать"}</span>
+                            </button>
+                          ) : null}
+                          {!offer || offer.can_decline ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                markJobAsViewed(job.id);
+                                declinePartial(job);
+                              }}
+                              disabled={busy}
+                            >
+                              <XCircle size={15} className="text-rose-600" aria-hidden="true" />
+                              <span>Отказаться</span>
+                            </button>
+                          ) : null}
+                        </>
+                      )
                     ) : (
                       <>
                         {job.can_cancel ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               void cancelJob(job);
                             }}
                             disabled={busy}
                           >
-                            <XCircle size={16} aria-hidden="true" />
+                            <XCircle size={14} className="text-rose-600" aria-hidden="true" />
                             <span>Отменить</span>
                           </button>
                         ) : null}
                         {job.result_files?.length ? (
                           job.result_files.map((file) => {
                             const isQuoteRequest = file.kind === "quote_request";
+                            const isSuppliers = file.kind === "suppliers_excel" || file.kind === "suppliers" || file.filename?.endsWith(".xlsx") || (file.label && file.label.toLowerCase().includes("поставщик"));
                             const isAdminSupplement = file.kind === "admin_supplement" || file.is_admin_supplement;
                             return (
                               <button
                                 key={`${job.id}-${file.kind}`}
                                 type="button"
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all shadow-2xs cursor-pointer shrink-0 border ${
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors shadow-xs cursor-pointer shrink-0 border ${
                                   isAdminSupplement
-                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-extrabold shadow-emerald-600/20"
+                                    ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 font-bold shadow-emerald-600/20"
                                     : isUnviewed
-                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse shadow-teal-600/30 font-extrabold"
-                                    : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300 font-bold"
+                                    ? "bg-teal-600 hover:bg-teal-700 text-white border-teal-600 ring-2 ring-teal-400/80 animate-pulse font-bold"
+                                    : "bg-white hover:bg-slate-50 text-slate-800 border-slate-200/90 hover:border-slate-300 font-semibold"
                                 }`}
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -2655,7 +3272,17 @@ export function CabinetClient() {
                                 }}
                                 disabled={busy}
                               >
-                                {isQuoteRequest ? <Eye size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
+                                {isAdminSupplement ? (
+                                  <Download size={14} aria-hidden="true" />
+                                ) : isUnviewed ? (
+                                  isQuoteRequest ? <Eye size={14} aria-hidden="true" /> : <Download size={14} aria-hidden="true" />
+                                ) : isQuoteRequest ? (
+                                  <FileText size={14} className="text-blue-600" aria-hidden="true" />
+                                ) : isSuppliers ? (
+                                  <FileSpreadsheet size={14} className="text-emerald-600" aria-hidden="true" />
+                                ) : (
+                                  <FileText size={14} className="text-indigo-600" aria-hidden="true" />
+                                )}
                                 <span>{file.label || "Скачать"}</span>
                               </button>
                             );
@@ -2664,7 +3291,7 @@ export function CabinetClient() {
                         {job.can_find_more_suppliers ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50/50 text-teal-800 border border-slate-200/90 hover:border-teal-300 rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
@@ -2672,26 +3299,27 @@ export function CabinetClient() {
                             }}
                             disabled={busy}
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} className="text-teal-600" aria-hidden="true" />
                             <span>Найти ещё</span>
                           </button>
                         ) : null}
                         {job.can_start_supplier_search || (job.mode === "exact_product" && isCompletedWithResult) ? (
                           <button
                             type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-md text-xs font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               markJobAsViewed(job.id);
                               setStartSupplierSearchConfirmJob(job);
                               setStartSupplierSearchPolicy("normal");
+                              setStartSupplierSearchMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                               setStartSupplierSearchAlternatives(true);
                               setStartSupplierSearchPrompt("");
                             }}
                             disabled={busy}
                             title="Найти поставщиков по подобранным товарам и аналогам"
                           >
-                            <Search size={15} aria-hidden="true" />
+                            <Search size={14} aria-hidden="true" />
                             <span>Найти поставщиков</span>
                           </button>
                         ) : null}
@@ -2706,26 +3334,45 @@ export function CabinetClient() {
                             return (
                               <button
                                 type="button"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-md text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void retryJob(job);
+                                  setRetryConfirmJob(job);
+                                  setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                                  setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
                                 }}
                                 disabled={busy}
                                 title="Продолжить поиск поставщиков"
                               >
-                                <RotateCcw size={15} aria-hidden="true" />
+                                <RotateCcw size={14} aria-hidden="true" />
                                 <span>Продолжить поиск</span>
                               </button>
                             );
                           }
                           return null;
                         })()}
+                        {isCompletedWithResult && (job.mode === "supplier_search" || job.mode === "analysis_and_suppliers") ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 hover:border-slate-300 rounded-md text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRetryConfirmJob(job);
+                              setRetryPolicy(normalizeSupplierSearchPolicy(job.supplier_search_policy));
+                              setRetryMultiItemMode(normalizeMultiItemMode(job.multi_item_mode));
+                            }}
+                            disabled={busy}
+                            title="Повторить поиск с другими параметрами (квота, реестр Минпромторга)"
+                          >
+                            <RotateCcw size={13} aria-hidden="true" />
+                            <span>Повторить</span>
+                          </button>
+                        ) : null}
                       </>
                     )}
                   </div>
                   {job.admin_comment ? (
-                    <div className="col-span-12 mt-2 p-3 rounded-xl bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
+                    <div className="col-span-12 mt-2 p-3 rounded-md bg-teal-50/90 border border-teal-200 text-slate-800 text-xs">
                       <div className="flex items-center gap-1.5 font-bold text-teal-900 mb-1">
                         <Sparkles size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
                         <span>Комментарий специалистов TenderLex:</span>
@@ -2733,6 +3380,356 @@ export function CabinetClient() {
                       <p className="whitespace-pre-wrap text-slate-700 leading-relaxed font-normal">{job.admin_comment}</p>
                     </div>
                   ) : null}
+
+                  {(!job.awaiting_customer_confirmation || job.confirmation_kind !== "multi_item_strategy") &&
+                  job.multi_item_details?.items &&
+                  job.multi_item_details.items.length > 1 ? (
+                    <div className="col-span-12 mt-2 p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/90 text-xs">
+                      <details className="group">
+                        <summary className="flex items-center justify-between cursor-pointer list-none select-none">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[11px] bg-teal-50 text-teal-800 border border-teal-200">
+                              {job.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                            </span>
+                            <span className="text-slate-600 font-medium text-[11px]">
+                              Позиций ТЗ: <strong>{job.multi_item_details.items.length}</strong>
+                            </span>
+                          </div>
+                          <span className="text-teal-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer">
+                            <span className="group-open:hidden">Показать позиции</span>
+                            <span className="hidden group-open:inline">Скрыть позиции</span>
+                            <ChevronDown size={13} className="group-open:rotate-180 transition-transform duration-200" aria-hidden="true" />
+                          </span>
+                        </summary>
+                        <div className="mt-2.5 pt-2 border-t border-slate-200 flex flex-wrap gap-1.5">
+                          {job.multi_item_details.items.map((it, idx) => (
+                            <span
+                              key={it.id || idx}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 shadow-2xs"
+                            >
+                              <span className="font-bold text-slate-400">{idx + 1}.</span>
+                              <span className="font-medium">{it.name}</span>
+                              {it.quantity ? (
+                                <span className="text-slate-400 text-[10px]">
+                                  ({it.quantity} {it.unit || "шт."})
+                                </span>
+                              ) : null}
+                            </span>
+                          ))}
+                        </div>
+                      </details>
+                    </div>
+                  ) : null}
+
+                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
+                    const stratState = getJobInlineStrategy(job);
+                    const items = job.multi_item_details?.items || [];
+                    const clientPrice = getClientEffectiveTaskPrice();
+                    const hasPackageRuns = Boolean(
+                      session?.balance?.supplier_search?.unlimited ||
+                      ((session?.balance?.supplier_search?.available ?? 0) > 0)
+                    );
+                    const selectedCount = stratState.selectedItemIds.length;
+                    const priceLabel = (tasksCount: number) => {
+                      if (clientPrice && !hasPackageRuns) {
+                        return ` (${tasksCount * clientPrice} ₽)`;
+                      }
+                      return "";
+                    };
+
+                    const visibleItems = items.length <= 6 || stratState.showAllCategories
+                      ? items
+                      : items.slice(0, 6);
+
+                    return (
+                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-2.5">
+                        {items.length >= 10 ? (
+                          <div className="p-2.5 sm:p-3 rounded-lg bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
+                            <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                            <div className="space-y-1">
+                              <div className="font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
+                                <span>Крупная спецификация ({items.length} {declensionCategory(items.length)}): как получить максимум?</span>
+                              </div>
+                              <p className="text-amber-900/90 text-[11px] sm:text-xs">
+                                Поставщики работают по специализированным рынкам (электрика, вентиляция, металлопрокат, отделка). Если закупка разнородная, <strong>рекомендуется разделять ТЗ на отдельные файлы по направлениям</strong> и запускать независимыми задачами — так вы получите максимальный отклик от профильных заводов по каждому разделу.
+                              </p>
+                              <p className="text-amber-800/90 text-[11px]">
+                                Либо выберите <strong>«⚖️ Сбалансированный поиск»</strong> (1 задача), чтобы сервис автоматически распределил квоту и сформировал единый сводный реестр по ключевым системам.
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* Top Control Bar: Segmented Switcher & Primary CTA */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
+                          {/* Segmented Mode Switcher */}
+                          <div className="inline-flex items-center rounded-md border border-slate-200 bg-white p-0.5 shadow-2xs">
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
+                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                stratState.mode === "balanced"
+                                  ? "bg-teal-600 text-white shadow-2xs"
+                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span>⚖️ Сбалансированный поиск</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                                stratState.mode === "balanced" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                              }`}>
+                                1 задача{priceLabel(1)}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item", categoriesCollapsed: false })}
+                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                                stratState.mode === "per_item"
+                                  ? "bg-teal-600 text-white shadow-2xs"
+                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span>🔍 Попозиционный поиск</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
+                                stratState.mode === "per_item" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
+                              }`}>
+                                {stratState.mode === "per_item" ? `${selectedCount} поз.` : `${items.length} поз.`}
+                              </span>
+                            </button>
+                          </div>
+
+                          {/* Quick Launch CTA right in the control bar */}
+                          <div className="flex items-center gap-2">
+                            {stratState.mode === "balanced" ? (
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "balanced")}
+                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить поиск (1 задача{priceLabel(1)})</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
+                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy || selectedCount === 0}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Quiet Subtitle / Description */}
+                        {stratState.mode === "balanced" ? (
+                          <div className="flex items-center justify-between text-xs text-slate-600 px-1 flex-wrap gap-2">
+                            <p className="leading-snug">
+                              Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем {items.length} {declensionCategory(items.length)} ТЗ со сворачиваемой структурой (+ / -) на одном листе (1 задача).
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => updateJobInlineStrategy(job.id, { previewCategories: !stratState.previewCategories })}
+                              className="text-teal-700 hover:text-teal-900 font-semibold text-[11px] underline cursor-pointer shrink-0"
+                            >
+                              {stratState.previewCategories ? "Скрыть список категорий ▴" : `Посмотреть позиции ТЗ (${items.length}) ▾`}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-slate-600 px-1 leading-snug">
+                            Глубокий независимый сбор по каждой выбранной позиции со сворачиваемой структурой (+ / -) в едином Excel-отчёте (по 1 задаче за категорию).
+                          </div>
+                        )}
+
+                        {/* Balanced Mode Optional Preview of Items (read-only, no checkboxes) */}
+                        {stratState.mode === "balanced" && stratState.previewCategories ? (
+                          <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
+                            <div className="text-[11px] font-bold text-slate-700">
+                              Включены в консолидированный поиск ({items.length}):
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {items.map((it, idx) => (
+                                <span
+                                  key={it.id || idx}
+                                  className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-800"
+                                >
+                                  <span className="font-bold text-slate-500">{idx + 1}.</span>
+                                  <span>{it.name}</span>
+                                  {it.quantity ? <span className="text-slate-400 text-[10px]">({it.quantity} {it.unit || "шт."})</span> : null}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* PER-ITEM MODE: Categories Selection Accordion (ONLY RENDERS IN PER_ITEM MODE!) */}
+                        {stratState.mode === "per_item" ? (
+                          <div className="bg-white rounded-lg border border-slate-200/90 p-3 sm:p-3.5 space-y-2.5">
+                            {/* Categories Selection Toolbar */}
+                            <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
+                              <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                                <span>Категории ТЗ ({items.length}):</span>
+                                <span className="text-[11px] font-normal text-slate-500">
+                                  отметьте зелеными галочками нужные для поиска
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2 text-[11px]">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+                                    updateJobInlineStrategy(job.id, { selectedItemIds: allIds });
+                                  }}
+                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
+                                >
+                                  Выбрать все ({items.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const coreIds = items
+                                      .filter(it => it.is_core || (!it.is_auxiliary && it.cost_tier !== "auxiliary"))
+                                      .map((it, idx) => it.id || `item-${idx}`);
+                                    updateJobInlineStrategy(job.id, { selectedItemIds: coreIds.length ? coreIds : items.map((it, idx) => it.id || `item-${idx}`) });
+                                  }}
+                                  className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-md font-bold cursor-pointer"
+                                >
+                                  Только основные
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateJobInlineStrategy(job.id, { selectedItemIds: [] })}
+                                  className="px-2 py-1 text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
+                                >
+                                  Снять все
+                                </button>
+                                <div className="h-3.5 w-px bg-slate-200" />
+                                <button
+                                  type="button"
+                                  onClick={() => updateJobInlineStrategy(job.id, { categoriesCollapsed: !stratState.categoriesCollapsed })}
+                                  className="px-2 py-1 text-teal-700 hover:text-teal-900 font-bold flex items-center gap-1 cursor-pointer"
+                                >
+                                  <span>{stratState.categoriesCollapsed ? "Развернуть список" : "Свернуть список"}</span>
+                                  {stratState.categoriesCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Categories Grid (collapsible) */}
+                            {!stratState.categoriesCollapsed ? (
+                              <>
+                                <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                                  items.length > 6 && stratState.showAllCategories ? "max-h-64 overflow-y-auto pr-1 category-scroll-container" : ""
+                                }`}>
+                                  {visibleItems.map((it, idx) => {
+                                    const itemId = it.id || `item-${idx}`;
+                                    const isChecked = stratState.selectedItemIds.includes(itemId);
+                                    const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
+
+                                    return (
+                                      <div
+                                        key={itemId}
+                                        onClick={() => {
+                                          const newIds = isChecked
+                                            ? stratState.selectedItemIds.filter(id => id !== itemId)
+                                            : [...stratState.selectedItemIds, itemId];
+                                          updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
+                                        }}
+                                        className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all cursor-pointer ${
+                                          isChecked
+                                            ? "border-teal-400 bg-teal-50/20 shadow-2xs"
+                                            : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300"
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <div
+                                              className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                                isChecked
+                                                  ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                                  : "bg-white border-slate-300 hover:border-emerald-500"
+                                              }`}
+                                            >
+                                              {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                            </div>
+                                            <span className="font-bold text-slate-800 truncate">
+                                              {idx + 1}. {it.name}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            {isAuxiliary ? (
+                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
+                                                Комплектующие
+                                              </span>
+                                            ) : (
+                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
+                                                Основная
+                                              </span>
+                                            )}
+                                            {it.quantity ? (
+                                              <span className="text-slate-500 font-medium text-[11px]">
+                                                {it.quantity} {it.unit || "шт."}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                        {it.included_sub_items && it.included_sub_items.length > 0 ? (
+                                          <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
+                                            <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
+                                            <span>{it.included_sub_items.join(" · ")}</span>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                {items.length > 6 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
+                                    className="w-full py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    {stratState.showAllCategories ? (
+                                      <>
+                                        <ChevronUp size={14} />
+                                        <span>Свернуть список категорий (показаны все {items.length})</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ChevronDown size={14} />
+                                        <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} с прокруткой (всего {items.length})</span>
+                                      </>
+                                    )}
+                                  </button>
+                                ) : null}
+                              </>
+                            ) : null}
+
+                            {/* Summary Bar */}
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
+                              <div>
+                                Выбрано категорий: <strong className="text-slate-900">{selectedCount}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)}</strong>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
+                                className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+                                disabled={busy || selectedCount === 0}
+                              >
+                                <CheckCircle2 size={14} />
+                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })() : null}
                 </article>
               );
             })
@@ -2789,24 +3786,168 @@ export function CabinetClient() {
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setQuoteRequestModal(null);
+            if (event.target === event.currentTarget) {
+              setQuoteRequestModal(null);
+              setQuoteItemSearch("");
+            }
           }}
         >
-          <section className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-6 max-h-[90vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
-            <header className="flex items-center justify-between pb-4 border-b border-slate-200 shrink-0">
+          <section className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-2xl border border-slate-200 space-y-5 max-h-[92vh] flex flex-col font-sans" role="dialog" aria-modal="true" aria-labelledby="quote-request-title">
+            <header className="flex items-center justify-between pb-3.5 border-b border-slate-200 shrink-0">
               <div>
                 <h2 id="quote-request-title" className="text-lg font-extrabold text-slate-900">Запрос коммерческого предложения</h2>
                 <span className="text-xs text-slate-500 font-medium">{quoteRequestModal.job.human_title}</span>
               </div>
-              <button type="button" className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer" onClick={() => setQuoteRequestModal(null)} disabled={busy} aria-label="Закрыть">
+              <button
+                type="button"
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors shrink-0 cursor-pointer"
+                onClick={() => {
+                  setQuoteRequestModal(null);
+                  setQuoteItemSearch("");
+                }}
+                disabled={busy}
+                aria-label="Закрыть"
+              >
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
+            {quoteRequestModal.items && quoteRequestModal.items.length > 1 ? (() => {
+              const query = quoteItemSearch.trim().toLowerCase();
+              const filteredItems = query
+                ? quoteRequestModal.items.filter(
+                    (it) =>
+                      it.name.toLowerCase().includes(query) ||
+                      String(it.index + 1).includes(query)
+                  )
+                : quoteRequestModal.items;
+              const matchingIndexes = filteredItems.map((it) => it.index);
+              return (
+                <div className="bg-slate-50 p-3 sm:p-3.5 rounded-2xl border border-slate-200/90 space-y-2.5 shrink-0">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800">
+                        Позиции для запроса КП:
+                      </span>
+                      <span className="px-2 py-0.5 bg-teal-100 text-teal-800 font-bold rounded-full text-[11px]">
+                        {quoteRequestModal.selectedItemIndexes.length} из {quoteRequestModal.items.length}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => toggleAllQuoteRequestItems(true)}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Выбрать все
+                      </button>
+                      {quoteRequestModal.items.length >= 10 && (
+                        <button
+                          type="button"
+                          onClick={() => selectFirstNQuoteRequestItems(10)}
+                          className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                        >
+                          Первые 10
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => invertQuoteRequestItems()}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Инвертировать
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleAllQuoteRequestItems(false)}
+                        className="px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer shadow-2xs"
+                      >
+                        Сброс
+                      </button>
+                    </div>
+                  </div>
+
+                  {quoteRequestModal.items.length > 4 && (
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={quoteItemSearch}
+                          onChange={(e) => setQuoteItemSearch(e.target.value)}
+                          placeholder="Поиск по названию или номеру позиции..."
+                          className="w-full pl-8 pr-7 py-1 text-xs bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-slate-800 placeholder-slate-400"
+                        />
+                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                        {quoteItemSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setQuoteItemSearch("")}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                            aria-label="Очистить поиск"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                      {quoteItemSearch && (
+                        <button
+                          type="button"
+                          onClick={() => selectMatchingQuoteRequestItems(matchingIndexes)}
+                          disabled={matchingIndexes.length === 0}
+                          className="px-2.5 py-1 text-[11px] font-semibold bg-teal-50 text-teal-800 hover:bg-teal-100 disabled:opacity-50 border border-teal-200 rounded-lg shrink-0 cursor-pointer"
+                        >
+                          Выбрать найденные ({matchingIndexes.length})
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-1.5 max-h-[130px] overflow-y-auto pr-1">
+                    {filteredItems.length === 0 ? (
+                      <div className="text-xs text-slate-400 py-2 text-center w-full">
+                        Ничего не найдено по запросу «{quoteItemSearch}»
+                      </div>
+                    ) : (
+                      filteredItems.map((item) => {
+                        const isSelected = quoteRequestModal.selectedItemIndexes.includes(item.index);
+                        return (
+                          <button
+                            key={item.index}
+                            type="button"
+                            title={item.name}
+                            onClick={() => toggleQuoteRequestItem(item.index)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer text-left max-w-full ${
+                              isSelected
+                                ? "bg-teal-50 border-teal-300 text-teal-900 font-bold shadow-2xs"
+                                : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                            }`}
+                          >
+                            <span
+                              className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] shrink-0 border ${
+                                isSelected ? "bg-teal-600 border-teal-600 text-white" : "border-slate-300 bg-white"
+                              }`}
+                            >
+                              {isSelected ? "✓" : ""}
+                            </span>
+                            <span className="truncate max-w-[260px]">
+                              {item.index + 1}. {item.name}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })() : null}
             <div
               ref={quoteEditorRef}
-              className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[300px] shadow-inner leading-relaxed"
+              className="flex-1 overflow-y-auto p-5 bg-white border border-slate-200 rounded-2xl font-sans text-xs text-slate-900 space-y-4 min-h-[220px] max-h-[46vh] shadow-inner leading-relaxed"
               contentEditable
               suppressContentEditableWarning
+              onPaste={(event) => {
+                event.preventDefault();
+                document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+              }}
               dangerouslySetInnerHTML={{ __html: quoteRequestModal.html }}
               onInput={() => {
                 if (quoteRequestModal.copied) {
@@ -2815,8 +3956,16 @@ export function CabinetClient() {
               }}
               aria-label="Текст запроса коммерческого предложения"
             />
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 shrink-0">
-              <button type="button" className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer" onClick={() => setQuoteRequestModal(null)} disabled={busy}>
+            <div className="flex items-center justify-end gap-3 pt-3.5 border-t border-slate-200 shrink-0">
+              <button
+                type="button"
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                onClick={() => {
+                  setQuoteRequestModal(null);
+                  setQuoteItemSearch("");
+                }}
+                disabled={busy}
+              >
                 Закрыть
               </button>
               <button type="button" className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer" onClick={() => void copyQuoteRequestText()} disabled={busy}>
@@ -2851,6 +4000,19 @@ export function CabinetClient() {
               <p className="text-xs text-slate-600 leading-relaxed">С баланса спишется стоимость добора поставщиков. Уже найденные компании не попадут в новый результат.</p>
               <span className="text-[11px] font-bold text-slate-400 block mt-1">{findMoreConfirmJob.human_title}</span>
             </div>
+            {findMoreConfirmJob.multi_item_details?.items && findMoreConfirmJob.multi_item_details.items.length > 1 ? (
+              <div className="p-3 rounded-xl bg-teal-50/70 border border-teal-200 text-left text-xs text-slate-700 space-y-1 my-2">
+                <div className="flex items-center gap-1.5 font-bold text-teal-900">
+                  <span>Режим добора:</span>
+                  <span className="font-extrabold text-teal-800">
+                    {findMoreConfirmJob.multi_item_mode === "per_item" ? "🔍 Попозиционный поиск" : "⚖️ Сбалансированный поиск"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Поиск новых поставщиков будет продолжен по всем {findMoreConfirmJob.multi_item_details.items.length} позициям ТЗ без дублирования уже найденных компаний.
+                </p>
+              </div>
+            ) : null}
             <div className="text-left space-y-1 pt-1">
               <label htmlFor="dobor-prompt-input" className="block text-[11px] font-semibold text-slate-500">
                 Дополнительные критерии (опционально):
@@ -2973,6 +4135,52 @@ export function CabinetClient() {
                 </div>
               ) : null}
 
+              {/* Multi-Item Mode Selection (Only for Multi-Position Specs) */}
+              {(startSupplierSearchConfirmJob.exact_product_summary?.total_positions || 0) > 1 ? (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                    Режим для многопозиционных спецификаций:
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStartSupplierSearchMultiItemMode("balanced")}
+                      className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        startSupplierSearchMultiItemMode === "balanced"
+                          ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                          : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-0.5">
+                        <span className="text-xs font-extrabold">⚖️ Сбалансированный поиск</span>
+                        <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                          {startSupplierSearchMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 font-normal leading-snug">Единая квота поставщиков распределяется по всем позициям ТЗ, формируется единый Excel со сворачиваемой структурой (+ / -)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setStartSupplierSearchMultiItemMode("per_item")}
+                      className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        startSupplierSearchMultiItemMode === "per_item"
+                          ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                          : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-0.5">
+                        <span className="text-xs font-extrabold">🔍 Попозиционный глубокий поиск</span>
+                        <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${startSupplierSearchMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                          {startSupplierSearchMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 font-normal leading-snug">Глубокий пул поставщиков под каждую позицию спецификации с отдельным анализом</span>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               {/* Policy Selection Cards */}
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
@@ -2983,12 +4191,12 @@ export function CabinetClient() {
                     {
                       id: "normal",
                       label: "Обычный поиск",
-                      desc: "Все дилеры и склады РФ",
+                      desc: "Кандидаты по заданным условиям",
                     },
                     {
                       id: "minprom_registry_priority",
                       label: "Реестр в приоритете",
-                      desc: "Приоритет ГИСП (617/878)",
+                      desc: "Производители из ГИСП в приоритете",
                     },
                     {
                       id: "minprom_registry_only",
@@ -3093,6 +4301,486 @@ export function CabinetClient() {
         </div>
       ) : null}
 
+      {strategyConfirmJob ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setStrategyConfirmJob(null);
+            }
+          }}
+        >
+          <section
+            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="strategy-confirm-title"
+          >
+            {/* Header with Title, Procurement Name and Close Button */}
+            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+              <div className="flex items-center gap-3 min-w-0 pr-2">
+                <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Sliders size={20} aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                    Выбор стратегии поиска поставщиков
+                  </h2>
+                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
+                    {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                onClick={() => setStrategyConfirmJob(null)}
+                aria-label="Закрыть"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+
+            {/* Content Body */}
+            <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
+              {(strategyConfirmJob.multi_item_details?.items?.length || 0) >= 10 ? (
+                <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
+                  <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                  <div className="space-y-1">
+                    <div className="font-bold text-amber-950">
+                      Крупная спецификация ({strategyConfirmJob.multi_item_details?.total_items || strategyConfirmJob.multi_item_details?.items?.length} позиций)
+                    </div>
+                    <p className="text-amber-900/90 text-[11px] sm:text-xs">
+                      Поставщики специализируются по рынкам сбыта (электрика, вентиляция, металл, отделка). Для максимального отклика рекомендуется <strong>разбивать ТЗ на отдельные файлы по направлениям</strong>. Либо выберите «⚖️ Сбалансированный поиск» (1 задача) для сводного реестра по ключевым системам.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Detected Items Card */}
+              {strategyConfirmJob.multi_item_details?.items && strategyConfirmJob.multi_item_details.items.length > 0 ? (
+                <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-teal-600" aria-hidden="true" />
+                      <span>Выделено категорий снабжения:</span>
+                      <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-[11px] font-extrabold">
+                        {strategyConfirmJob.multi_item_details.total_items || strategyConfirmJob.multi_item_details.items.length}
+                      </span>
+                    </span>
+                    {selectedStrategyMode === "per_item" ? (
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allIds = strategyConfirmJob.multi_item_details?.items?.map((it, idx) => it.id || `item-${idx}`) || [];
+                            setSelectedStrategyItemIds(allIds);
+                          }}
+                          className="text-teal-700 hover:text-teal-800 font-bold hover:underline cursor-pointer"
+                        >
+                          Выбрать все
+                        </button>
+                        <span className="text-slate-300">·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const coreIds = (strategyConfirmJob.multi_item_details?.items || [])
+                              .filter(it => it.is_core !== false && !it.is_auxiliary)
+                              .map((it, idx) => it.id || `item-${idx}`);
+                            setSelectedStrategyItemIds(coreIds.length > 0 ? coreIds : (strategyConfirmJob.multi_item_details?.items?.map((it, idx) => it.id || `item-${idx}`) || []));
+                          }}
+                          className="text-teal-700 hover:text-teal-800 font-bold hover:underline cursor-pointer"
+                        >
+                          Только основные
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-slate-400 hidden sm:inline">
+                        Кластеризовано по пулам поставщиков
+                      </span>
+                    )}
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                    {strategyConfirmJob.multi_item_details.items.map((it, idx) => {
+                      const itemId = it.id || `item-${idx}`;
+                      const isChecked = selectedStrategyItemIds.includes(itemId);
+                      const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
+                      return (
+                        <div
+                          key={itemId}
+                          onClick={() => {
+                            if (selectedStrategyMode !== "per_item") return;
+                            if (isChecked) {
+                              setSelectedStrategyItemIds(selectedStrategyItemIds.filter(id => id !== itemId));
+                            } else {
+                              setSelectedStrategyItemIds([...selectedStrategyItemIds, itemId]);
+                            }
+                          }}
+                          className={`flex flex-col text-xs bg-white p-2.5 rounded-xl border transition-all ${
+                            selectedStrategyMode === "per_item"
+                              ? isChecked
+                                ? "border-teal-400 bg-teal-50/20 shadow-2xs cursor-pointer"
+                                : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300 cursor-pointer"
+                              : "border-slate-200/70"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {selectedStrategyMode === "per_item" ? (
+                                <div
+                                  className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
+                                    isChecked
+                                      ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
+                                      : "bg-white border-slate-300 hover:border-emerald-500"
+                                  }`}
+                                >
+                                  {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
+                                </div>
+                              ) : null}
+                              <span className="font-bold text-slate-800 truncate">
+                                {idx + 1}. {it.name}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isAuxiliary ? (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/70">
+                                  Комплектующие
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200/70">
+                                  Основная
+                                </span>
+                              )}
+                              {it.quantity ? (
+                                <span className="text-slate-500 font-medium text-[11px]">
+                                  {it.quantity} {it.unit || "шт."}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          {it.included_sub_items && it.included_sub_items.length > 0 ? (
+                            <div className="mt-1 text-[11px] text-slate-500 pl-2 sm:pl-6 border-l-2 border-teal-200/70">
+                              <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
+                              <span>{it.included_sub_items.join(" · ")}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Mode Selection Cards */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  Выберите стратегию поиска:
+                </label>
+                <div className="grid grid-cols-1 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStrategyMode("balanced")}
+                    className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-3 ${
+                      selectedStrategyMode === "balanced"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                      selectedStrategyMode === "balanced" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                    }`}>
+                      {selectedStrategyMode === "balanced" ? <span className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
+                          ⚖️ Сбалансированный поиск
+                        </strong>
+                        <span className="text-[11px] font-bold text-teal-700 bg-teal-100/70 px-2 py-0.5 rounded-full shrink-0">
+                          1 списание
+                        </span>
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
+                        Единый консолидированный отчёт. Целевая квота поставщиков распределяется между всеми позициями ТЗ. В итоговом Excel формируется единый лист «Сводный реестр» со сворачиваемой структурой строк (+ / -) по каждой позиции. Формируется единый официальный Запрос КП (.docx) со всеми позициями.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStrategyMode("per_item")}
+                    className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-3 ${
+                      selectedStrategyMode === "per_item"
+                        ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                      selectedStrategyMode === "per_item" ? "border-teal-600 bg-teal-600 text-white" : "border-slate-300 bg-white"
+                    }`}>
+                      {selectedStrategyMode === "per_item" ? <span className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-xs sm:text-sm font-extrabold text-slate-900">
+                          🔍 Попозиционный глубокий поиск
+                        </strong>
+                        <span className="text-[11px] font-bold text-amber-800 bg-amber-100/70 px-2 py-0.5 rounded-full shrink-0">
+                          {selectedStrategyItemIds.length === 0
+                            ? "Ничего не выбрано"
+                            : selectedStrategyItemIds.length === 1
+                            ? "1 позиция (1 списание)"
+                            : `${selectedStrategyItemIds.length} поз. (${selectedStrategyItemIds.length} списания)`}
+                        </span>
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-600 font-normal leading-relaxed">
+                        Независимый глубокий поиск поставщиков отдельно по выбранным позициям спецификации (по каждой выбранной категории отдельный детальный сбор пула поставщиков). В итоговом Excel формируется единый лист «Сводный реестр» со сворачиваемой структурой строк (+ / -) по позициям и единый сводный Запрос КП (.docx).
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions Footer */}
+            <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
+              <button
+                type="button"
+                className="px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-800 hover:bg-rose-50 transition-all cursor-pointer"
+                onClick={() => {
+                  const jobToCancel = strategyConfirmJob;
+                  setStrategyConfirmJob(null);
+                  void cancelJob(jobToCancel);
+                }}
+                disabled={busy}
+              >
+                Отменить задачу
+              </button>
+              <div className="flex items-center gap-2.5 shrink-0 ml-auto">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
+                  onClick={() => setStrategyConfirmJob(null)}
+                  disabled={busy}
+                >
+                  Позже
+                </button>
+                <button
+                  type="button"
+                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode, selectedStrategyItemIds)}
+                  disabled={busy || (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
+                  <span>Применить стратегию</span>
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {retryConfirmJob ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setRetryConfirmJob(null);
+            }
+          }}
+        >
+          <section
+            className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="retry-job-confirm-title"
+          >
+            {/* Header */}
+            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-amber-50/40 shrink-0">
+              <div className="flex items-center gap-3 min-w-0 pr-2">
+                <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <RotateCcw size={18} aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="retry-job-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                    {retryConfirmJob.mode === "exact_product"
+                      ? "Повторить подбор товара и аналогов?"
+                      : retryConfirmJob.mode === "procurement_report"
+                      ? "Повторить анализ документации?"
+                      : "Повторить поиск поставщиков?"}
+                  </h2>
+                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md">
+                    {retryConfirmJob.job_number ? `#${retryConfirmJob.job_number} · ` : ""}{retryConfirmJob.human_title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                onClick={() => setRetryConfirmJob(null)}
+                aria-label="Закрыть"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+
+            {/* Content Body */}
+            <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
+              {retryConfirmJob.mode === "supplier_search" || retryConfirmJob.mode === "analysis_and_suppliers" ? (
+                <>
+                  {/* Multi-Item Mode Choice */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <label className="font-bold text-slate-700 text-xs flex items-center gap-1.5">
+                        <span>Режим для многопозиционных спецификаций:</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-normal">
+                          много товаров в ТЗ
+                        </span>
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRetryMultiItemMode("balanced")}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          retryMultiItemMode === "balanced"
+                            ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="text-xs font-extrabold text-slate-900">⚖️ Сбалансированный поиск</span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "balanced" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                            {retryMultiItemMode === "balanced" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-normal leading-snug">
+                          Единая квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется единый лист со сворачиваемой структурой строк (+ / -) по каждой позиции.
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setRetryMultiItemMode("per_item")}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          retryMultiItemMode === "per_item"
+                            ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                            : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="text-xs font-extrabold text-slate-900">🔍 Попозиционный глубокий поиск</span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${retryMultiItemMode === "per_item" ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                            {retryMultiItemMode === "per_item" ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-normal leading-snug">
+                          Глубокий пул поставщиков по каждой позиции спецификации с отдельным детальным анализом сайтов и контактов.
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Policy Selection Cards */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Требования к реестру Минпромторга РФ:
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {[
+                        {
+                          id: "normal",
+                          label: "Обычный поиск",
+                          desc: "Кандидаты по заданным условиям",
+                        },
+                        {
+                          id: "minprom_registry_priority",
+                          label: "Реестр в приоритете",
+                          desc: "Производители из ГИСП в приоритете",
+                        },
+                        {
+                          id: "minprom_registry_only",
+                          label: "Только реестр",
+                          desc: "Строго запись (44-ФЗ)",
+                        },
+                      ].map((opt) => {
+                        const isSelected = retryPolicy === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setRetryPolicy(opt.id as SupplierSearchPolicy)}
+                            className={`p-2.5 sm:p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                              isSelected
+                                ? "bg-teal-50/70 border-teal-500 ring-2 ring-teal-500/20 text-slate-900 shadow-2xs font-bold"
+                                : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 text-slate-700"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between w-full mb-0.5">
+                              <span className="text-xs font-extrabold">{opt.label}</span>
+                              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${isSelected ? "border-teal-600 bg-teal-600" : "border-slate-300 bg-white"}`}>
+                                {isSelected ? <span className="w-1 h-1 rounded-full bg-white" /> : null}
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-slate-500 font-normal leading-snug">{opt.desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : retryConfirmJob.mode === "exact_product" ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный подбор точного товара и аналогов</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново проверит техническое задание, нормативные требования (ГОСТ/ТУ) и сформирует готовый отчёт в формате Word (.docx).
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <Sparkles size={16} className="text-teal-600 shrink-0" aria-hidden="true" />
+                    <span>Повторный анализ документации</span>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed font-normal">
+                    Система заново проанализирует технические требования, условия контракта, риски и нормативные ограничения закупки.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions Footer */}
+            <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
+              <span className="text-xs text-slate-500 hidden sm:inline">
+                Параметры будут применены к перезапуску
+              </span>
+              <div className="flex items-center gap-2.5 shrink-0 ml-auto">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
+                  onClick={() => setRetryConfirmJob(null)}
+                  disabled={busy}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  onClick={() => void retryJob(retryConfirmJob, retryPolicy, retryMultiItemMode)}
+                  disabled={busy}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RotateCcw size={15} aria-hidden="true" />}
+                  <span>Перезапустить задачу</span>
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {/* Floating Bottom-Center Task Notification Toast (Minimalist Light Pill) */}
       {activeToast ? (
         <div
@@ -3183,15 +4871,15 @@ export function CabinetClient() {
               </button>
               <button
                 type="button"
-                onClick={() => setHelpModalTab("exact_product")}
+                onClick={() => setHelpModalTab("procurement_report")}
                 className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "exact_product"
+                  helpModalTab === "procurement_report"
                     ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
                 }`}
               >
-                <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
-                <span className="truncate">Подбор товара</span>
+                <FileText size={14} className={helpModalTab === "procurement_report" ? "text-teal-600" : "text-slate-400"} />
+                <span className="truncate">Анализ закупки</span>
               </button>
               <button
                 type="button"
@@ -3207,20 +4895,8 @@ export function CabinetClient() {
               </button>
               <button
                 type="button"
-                onClick={() => setHelpModalTab("procurement_report")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
-                  helpModalTab === "procurement_report"
-                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
-                }`}
-              >
-                <FileText size={14} className={helpModalTab === "procurement_report" ? "text-teal-600" : "text-slate-400"} />
-                <span className="truncate">Анализ закупки</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => setHelpModalTab("analysis_and_suppliers")}
-                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer col-span-2 sm:col-span-1 ${
+                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
                   helpModalTab === "analysis_and_suppliers"
                     ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
                     : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
@@ -3228,6 +4904,18 @@ export function CabinetClient() {
               >
                 <Receipt size={14} className={helpModalTab === "analysis_and_suppliers" ? "text-teal-700" : "text-slate-400"} />
                 <span className="truncate">Анализ + поиск</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setHelpModalTab("exact_product")}
+                className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer col-span-2 sm:col-span-1 ${
+                  helpModalTab === "exact_product"
+                    ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                }`}
+              >
+                <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
+                <span className="truncate">Подбор товара</span>
               </button>
             </div>
 
@@ -3241,7 +4929,7 @@ export function CabinetClient() {
                         Рекомендуемый пошаговый порядок работы
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        3 последовательных шага для победы в закупке: от аудита до прямых КП
+                        3 шага подготовки: документация, поставщики, товар и аналоги
                       </p>
                     </div>
                   </div>
@@ -3263,11 +4951,11 @@ export function CabinetClient() {
                           Анализ документации
                         </strong>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Экспресс-аудит проекта контракта: проверка сроков, штрафов, обеспечения заявки и ограничений нацрежима (ПП 616/617/878).
+                          Проверка проекта контракта: сроки, штрафы, обеспечение заявки и условия национального режима по действующей редакции ПП РФ № 1875.
                         </p>
                       </div>
                       <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Безопасность сделки</span>
+                        <span className="text-[11px] text-slate-500 font-medium">Условия для проверки</span>
                         <button
                           type="button"
                           onClick={() => {
@@ -3282,44 +4970,11 @@ export function CabinetClient() {
                     </div>
 
                     {/* Step 2 */}
-                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-emerald-400 transition-all shadow-2xs">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            2
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                            Подбор аналогов
-                          </span>
-                        </div>
-                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
-                          Подбор товара и аналогов
-                        </strong>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Определение заложенной модели по ТЗ, характеристики для заявки без риска отклонения и 2–4 эквивалента РФ для снижения себестоимости.
-                        </p>
-                      </div>
-                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Допуск заявки</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            selectScenario("exact_product");
-                            setShowHelpModal(false);
-                          }}
-                          className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Выбрать →
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Step 3 */}
                     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-teal-400 transition-all shadow-2xs">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="w-6 h-6 rounded-full bg-teal-100 text-teal-900 font-extrabold text-xs flex items-center justify-center shrink-0">
-                            3
+                            2
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
                             Запрос КП
@@ -3329,11 +4984,11 @@ export function CabinetClient() {
                           Поиск поставщиков
                         </strong>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Сбор базы прямых заводов РФ и официальных дилеров с телефонами и email для запроса КП и точного расчета цены заявки.
+                          Поиск кандидатов и опубликованных контактов для запроса КП. Наличие товара, цену и полномочия поставщика нужно подтвердить.
                         </p>
                       </div>
                       <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 font-medium">Минимальная цена</span>
+                        <span className="text-[11px] text-slate-500 font-medium">Запрос цен</span>
                         <button
                           type="button"
                           onClick={() => {
@@ -3341,6 +4996,39 @@ export function CabinetClient() {
                             setShowHelpModal(false);
                           }}
                           className="px-2.5 py-1 bg-teal-50 hover:bg-teal-600 hover:text-white text-teal-800 border border-teal-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Выбрать →
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 flex flex-col justify-between space-y-3 hover:border-emerald-400 transition-all shadow-2xs">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-900 font-extrabold text-xs flex items-center justify-center shrink-0">
+                            3
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            Подбор аналогов
+                          </span>
+                        </div>
+                        <strong className="text-xs sm:text-[13px] font-bold text-slate-900 block">
+                          Подбор товара и аналогов
+                        </strong>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Определение заложенной модели по ТЗ, характеристики для проверки заявки и варианты российских аналогов для сравнения стоимости.
+                        </p>
+                      </div>
+                      <div className="pt-2.5 border-t border-slate-200/80 flex items-center justify-between">
+                        <span className="text-[11px] text-slate-500 font-medium">Проверка характеристик</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            selectScenario("exact_product");
+                            setShowHelpModal(false);
+                          }}
+                          className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
                         >
                           Выбрать →
                         </button>
@@ -3358,7 +5046,7 @@ export function CabinetClient() {
                         <strong className="text-slate-900 text-xs sm:text-[13px]">Анализ + поиск в 1 клик</strong>
                       </div>
                       <p className="text-xs text-slate-600">
-                        Совмещает Шаг 1 и Шаг 3: сразу выполняет аудит рисков и формирует базу профильных поставщиков под ТЗ.
+                        Совмещает Шаг 1 и Шаг 2: сразу выполняет аудит рисков и формирует базу профильных поставщиков под ТЗ.
                       </p>
                     </div>
                     <button
@@ -3375,20 +5063,20 @@ export function CabinetClient() {
                 </div>
               ) : null}
 
-              {helpModalTab === "exact_product" ? (
+              {helpModalTab === "procurement_report" ? (
                 <div className="space-y-4">
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          ИИ детально анализирует технические характеристики ТЗ, определяет конкретную заводскую марку и производителя, составляет таблицу конкретных показателей без неопределенных формулировок («не менее/не более») и подбирает 2–4 российских эквивалента.
+                          Автоматизированный разбор условий закупки по 44-ФЗ и 223-ФЗ: сроки, штрафы, лицензии и обеспечение. Выводы нужно сверять с документами и применимыми нормами; отчет не заменяет юридическое заключение.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Когда заказчик не указал бренд в ТЗ или требуется снизить себестоимость заявки с помощью российского аналога из реестра Минпромторга (ГИСП).
+                          Перед подачей заявки для проверки условий и оценки рисков. Отчет не гарантирует допуск, исполнение контракта или отсутствие оснований для РНП.
                         </p>
                       </div>
                     </div>
@@ -3397,15 +5085,15 @@ export function CabinetClient() {
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Файл ТЗ, спецификацию или таблицу характеристик (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент описания объекта закупки текстом.
+                          19-значный номер извещения ЕИС, прямую ссылку на zakupki.gov.ru или архив с файлами проекта контракта и ТЗ.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Официальный отчет Word (DOCX) с расшифровкой модели по ТЗ.<br />
-                          2) Готовая таблица конкретных показателей для 1-й части заявки.<br />
-                          3) 2–4 аналога РФ с попараметрическим сравнением и номерами ГИСП.
+                          1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
+                          2) Чек-лист ключевых требований и факторов риска.<br />
+                          3) Вопросы и условия для самостоятельной проверки участия и исполнения.
                         </p>
                       </div>
                     </div>
@@ -3413,17 +5101,17 @@ export function CabinetClient() {
 
                   <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
                     <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: после расшифровки модели перейдите к «Поиску поставщиков» для запроса КП.
+                      💡 Совет: сопоставьте отчет с исходными документами. Решение об участии принимает участник закупки.
                     </span>
                     <button
                       type="button"
                       onClick={() => {
-                        selectScenario("exact_product");
+                        selectScenario("procurement_report");
                         setShowHelpModal(false);
                       }}
-                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
-                      <span>Выбрать «Подбор товара»</span>
+                      <span>Выбрать «Анализ документации»</span>
                       <ArrowRight size={14} />
                     </button>
                   </div>
@@ -3437,15 +5125,15 @@ export function CabinetClient() {
                       <div>
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Поиск прямых заводов-производителей, официальных дилеров и оптовых дистрибьюторов по всей России. ИИ извлекает прямые телефоны, email отделов продаж, сайты и реквизиты (ИНН).
+                          Поиск производителей, дилеров и дистрибьюторов по заданным условиям. Опубликованные контакты и сведения о компании нужно подтвердить; статус официального дилера не гарантируется.
                         </p>
                       </div>
                       <div className="pt-2 border-t border-slate-200/80">
                         <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">⚙️ Фильтрация по Минпромторгу:</strong>
                         <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
                           • <strong>Обычный</strong> — поиск по всем поставщикам РФ.<br />
-                          • <strong>Только реестр (ГИСП)</strong> — строгий фильтр под ПП 616.<br />
-                          • <strong>Реестр в приоритете</strong> — заводы из ГИСП в начале под ПП 617/878.
+                          • <strong>Только реестр (ГИСП)</strong> — отбор компаний из реестра; применимость записи проверяется для конкретного товара и закупки.<br />
+                          • <strong>Реестр в приоритете</strong> — производители из ГИСП первыми. Соответствие требованиям ПП РФ № 1875 нужно подтвердить отдельно.
                         </p>
                       </div>
                     </div>
@@ -3466,6 +5154,17 @@ export function CabinetClient() {
                         </p>
                       </div>
                     </div>
+
+                    <div className="sm:col-span-2 p-4 bg-teal-50/50 border border-teal-200/80 rounded-2xl space-y-2">
+                      <strong className="text-teal-950 font-bold block text-xs sm:text-[13px]">
+                        📑 Многопозиционные спецификации и ТЗ:
+                      </strong>
+                      <p className="text-slate-700 leading-relaxed text-xs sm:text-[13px]">
+                        Если ваше ТЗ содержит несколько товаров разных категорий (например, ламинат, краска, керамогранит):<br />
+                        • <strong>⚖️ Сбалансированный поиск</strong> — единая квота поставщиков распределяется между всеми позициями ТЗ в рамках 1 задачи. В итоговом Excel-отчете формируется единый лист «Сводный реестр» со сворачиваемой иерархической структурой строк (+ / -) по каждой позиции спецификации, а также единый официальный Запрос КП (.docx).<br />
+                        • <strong>🔍 Попозиционный глубокий поиск</strong> — независимый глубокий поиск по каждой позиции с отдельным детальным анализом сайтов производителей и списанием по числу позиций.
+                      </p>
+                    </div>
                   </div>
 
                   <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
@@ -3481,61 +5180,6 @@ export function CabinetClient() {
                       className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
                       <span>Выбрать «Поиск поставщиков»</span>
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {helpModalTab === "procurement_report" ? (
-                <div className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Юридический и технический аудит условий закупки по 44-ФЗ и 223-ФЗ. Экспресс-проверка проекта контракта на кабальные штрафы, нереальные сроки поставки, требования лицензий, обеспечение заявки и контракта.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          Перед подачей заявки для оценки целесообразности участия и защиты от непредвиденных убытков или включения в РНП.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
-                      <div>
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          19-значный номер извещения ЕИС, прямую ссылку на zakupki.gov.ru или архив с файлами проекта контракта и ТЗ.
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-slate-200/80">
-                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
-                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
-                          1) Аналитический отчет Word (DOCX) в фирменном стиле.<br />
-                          2) Чек-лист ключевых требований и факторов риска.<br />
-                          3) Рекомендации по безопасному участию и исполнению.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
-                    <span className="text-xs text-slate-500 font-medium">
-                      💡 Совет: если закупка признана безопасной, перейдите к «Подбору товара» для первой части заявки.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        selectScenario("procurement_report");
-                        setShowHelpModal(false);
-                      }}
-                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                    >
-                      <span>Выбрать «Анализ документации»</span>
                       <ArrowRight size={14} />
                     </button>
                   </div>
@@ -3591,6 +5235,61 @@ export function CabinetClient() {
                       className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
                       <span>Выбрать «Анализ + поиск»</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "exact_product" ? (
+                <div className="space-y-4">
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">🎯 Назначение функции:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          ИИ детально анализирует технические характеристики ТЗ, предлагает возможную модель и производителя, составляет таблицу параметров и российских аналогов. Соответствие требованиям ТЗ нужно подтвердить по документации производителя.
+                        </p>
+                      </div>
+                      <div className="pt-2 border-t border-slate-200/80">
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">💡 Когда применять:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          Когда заказчик не указал бренд в ТЗ или требуется снизить себестоимость заявки с помощью российского аналога из реестра Минпромторга (ГИСП).
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3">
+                      <div>
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📥 Что загружать:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          Файл ТЗ, спецификацию или таблицу характеристик (.pdf, .docx, .xlsx, .zip), либо вставьте фрагмент описания объекта закупки текстом.
+                        </p>
+                      </div>
+                      <div className="pt-2 border-t border-slate-200/80">
+                        <strong className="text-slate-900 font-bold block text-xs sm:text-[13px]">📤 Что на выходе:</strong>
+                        <p className="text-slate-600 leading-relaxed text-xs sm:text-[13px] mt-1">
+                          1) Рабочий отчет Word (DOCX) с кандидатами и сопоставлением характеристик ТЗ.<br />
+                          2) Готовая таблица конкретных показателей для 1-й части заявки.<br />
+                          3) Варианты аналогов РФ с попараметрическим сравнением и доступными сведениями реестра ГИСП.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
+                    <span className="text-xs text-slate-500 font-medium">
+                      💡 Совет: после расшифровки модели перейдите к «Поиску поставщиков» для запроса КП.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("exact_product");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>Выбрать «Подбор товара»</span>
                       <ArrowRight size={14} />
                     </button>
                   </div>
@@ -3981,6 +5680,825 @@ ${webLink}`;
           </div>
         );
       })() : null}
+
+      {/* API & MCP Integration Modal */}
+      {showApiModal ? (() => {
+        const activeKey = apiKeys.find((k) => k.is_active) || null;
+        const currentApiKey = newlyGeneratedKey || activeKey?.raw_key || activeKey?.key_prefix || "";
+        const effectiveKeyPlaceholder = currentApiKey || "<ВАШ_API_КЛЮЧ>";
+        const balanceRub = (session?.balance?.money?.available_kopeks || 0) / 100.0;
+
+        const aiPromptText = `Интегрируй API сервиса TenderLex в нашу систему / CRM.
+Базовый URL: https://tenderlex.ru/api/v1/mcp
+Авторизация: Header "Authorization: Bearer ${effectiveKeyPlaceholder}"
+
+Требуемые функции:
+1. Поиск прямых поставщиков и заводов по ТЗ / закупке:
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/suppliers/search
+   - Тело JSON:
+     {
+       "specification": "<текст технического задания или номер закупки ЕИС>",
+       "city": "<город или регион поставки, например: Москва>",
+       "target_count": 5
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "total_found": 5,
+       "suppliers": [
+         {
+           "company_name": "ООО Завод...",
+           "inn": "7701234567",
+           "status": "производитель",
+           "product": "кабель ВВГнг...",
+           "site": "https://...",
+           "email": "sales@...",
+           "phone": "+7 (495)..."
+         }
+       ]
+     }
+
+2. Подбор точной модели товара и аналогов (ГОСТ, реестр Минпромторга):
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/products/exact-analogs
+   - Тело JSON:
+     {
+       "specification": "<текст ТЗ>",
+       "procurement_title": "<название закупки>"
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "positions": [...],
+       "docx_download_url": "https://tenderlex.ru/api/v1/mcp/downloads/exact_product_....docx"
+     }
+
+3. Анализ документации и рисков закупки:
+   - Метод: POST https://tenderlex.ru/api/v1/mcp/procurements/analyze
+   - Тело JSON:
+     {
+       "document_text": "<текст проекта контракта или извещения>"
+     }
+   - Ответ JSON:
+     {
+       "ok": true,
+       "report_markdown": "<подробный аудит рисков>"
+     }
+
+4. Проверка остатка баланса:
+   - Метод: GET https://tenderlex.ru/api/v1/mcp/balance
+
+Правила списания:
+- Оплата списывается за каждый выполненный запрос с баланса аккаунта.
+- При нехватке средств на балансе выведи пользователю уведомление: "Баланс в TenderLex исчерпан. Пополните счёт в личном кабинете tenderlex.ru".`;
+
+        const mcpConfigText = JSON.stringify(
+          {
+            mcpServers: {
+              tenderlex: {
+                command: "python3",
+                args: [
+                  "tenderlex_mcp.py",
+                  "--api-key",
+                  effectiveKeyPlaceholder,
+                ],
+              },
+            },
+          },
+          null,
+          2
+        );
+
+        const curlExampleText = `curl -X POST https://tenderlex.ru/api/v1/mcp/suppliers/search \\
+  -H "Authorization: Bearer ${effectiveKeyPlaceholder}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "specification": "Кабель ВВГнг-LS 3х2.5 ГОСТ 31996-2012",
+    "city": "Москва",
+    "target_count": 5
+  }'`;
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setShowApiModal(false);
+            }}
+          >
+            <section
+              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-2xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans max-h-[90vh] overflow-y-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="api-modal-title"
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700 shrink-0">
+                    <Key size={18} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 id="api-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                      API и интеграции TenderLex
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Программный доступ к поиску поставщиков, подбору товара и анализу документации
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowApiModal(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                  aria-label="Закрыть"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Tabs Navigation */}
+              <div className="bg-slate-100 p-1.5 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-1 text-xs shrink-0 font-bold">
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("key")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "key"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Key size={13} className={apiModalTab === "key" ? "text-teal-700" : "text-slate-400"} />
+                  <span>Ключ и баланс</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("methods")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "methods"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Layers size={13} className={apiModalTab === "methods" ? "text-teal-700" : "text-slate-400"} />
+                  <span>Методы API</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("ai_prompt")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "ai_prompt"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Sparkles size={13} className={apiModalTab === "ai_prompt" ? "text-amber-600" : "text-slate-400"} />
+                  <span>Для ИИ</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setApiModalTab("mcp")}
+                  className={`py-2 px-2.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    apiModalTab === "mcp"
+                      ? "bg-white text-teal-950 shadow-2xs border border-slate-200"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Compass size={13} className={apiModalTab === "mcp" ? "text-teal-700" : "text-slate-400"} />
+                  <span>MCP (Claude)</span>
+                </button>
+              </div>
+
+              {/* Tab 1: Ключ и баланс */}
+              {apiModalTab === "key" && (
+                <div className="space-y-4">
+                  {/* Balance Callout */}
+                  <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl p-3.5">
+                    <div className="text-xs font-semibold text-teal-800">Баланс аккаунта</div>
+                    <div className="text-lg sm:text-xl font-black text-teal-950 mt-0.5">
+                      {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}
+                    </div>
+                    <div className="text-[11px] text-teal-700/90 mt-0.5">
+                      Списание происходит с вашего общего баланса по тарифам аккаунта.
+                    </div>
+                  </div>
+
+                  {/* Newly Generated Key Alert */}
+                  {newlyGeneratedKey && (
+                    <div className="bg-emerald-50 border-2 border-emerald-300 rounded-xl p-3.5 space-y-2 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-emerald-950 font-extrabold text-xs">
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                        <span>Ключ успешно создан и готов к работе:</span>
+                      </div>
+                      <div className="flex items-center gap-2 bg-white border border-emerald-200 rounded-lg p-2">
+                        <code className="text-xs font-mono font-bold text-slate-800 break-all select-all flex-1">
+                          {newlyGeneratedKey}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => copyApiText(newlyGeneratedKey, "new_key")}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors cursor-pointer shrink-0 flex items-center gap-1"
+                        >
+                          {apiCopiedField === "new_key" ? <Check size={13} /> : <Copy size={13} />}
+                          <span>{apiCopiedField === "new_key" ? "Скопировано" : "Копировать"}</span>
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-emerald-800">
+                        Ключ сохранён и автоматически подставлен во все примеры запросов и инструкций на соседних вкладках.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Existing Key Management */}
+                  {loadingApiKeys ? (
+                    <div className="py-8 flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <Loader2 size={24} className="animate-spin text-teal-600" />
+                      <span className="text-xs">Загрузка ключей доступа...</span>
+                    </div>
+                  ) : apiKeys.length > 0 ? (
+                    <div className="space-y-3">
+                      <div className="text-xs font-bold text-slate-700">Ваш активный ключ доступа:</div>
+                      {apiKeys.map((k) => {
+                        const fullKey = k.raw_key || k.key_prefix;
+                        const isRevealed = revealedKeyIds[k.id];
+                        return (
+                          <div key={k.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-bold text-xs text-slate-800 bg-white px-2.5 py-1 rounded border border-slate-200 select-all max-w-[260px] sm:max-w-xs truncate">
+                                  {isRevealed ? fullKey : `${k.key_prefix}••••••••••••`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setRevealedKeyIds((prev) => ({ ...prev, [k.id]: !prev[k.id] }))}
+                                  className="p-1 text-slate-500 hover:text-slate-700 rounded transition-colors cursor-pointer"
+                                  title={isRevealed ? "Скрыть" : "Показать полный ключ"}
+                                  aria-label={isRevealed ? "Скрыть" : "Показать полный ключ"}
+                                >
+                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                  Активен
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => copyApiText(fullKey, `full_${k.id}`)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  {apiCopiedField === `full_${k.id}` ? <Check size={12} /> : <Copy size={12} />}
+                                  <span>{apiCopiedField === `full_${k.id}` ? "Скопировано" : "Копировать ключ"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => revokeCustomerApiKey(k.id)}
+                                  disabled={revokingKeyId === k.id}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  {revokingKeyId === k.id ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
+                                  <span>Отозвать</span>
+                                </button>
+                              </div>
+                            </div>
+                            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3">
+                              <span>Создан: {k.created_at ? new Date(k.created_at).toLocaleDateString("ru-RU") : "—"}</span>
+                              <span>Всего вызовов: <strong>{k.total_spent || 0}</strong></span>
+                              {k.last_used_at && <span>Последний вызов: {new Date(k.last_used_at).toLocaleDateString("ru-RU")}</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={createCustomerApiKey}
+                          disabled={generatingApiKey}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          {generatingApiKey ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
+                          <span>Сгенерировать дополнительный ключ</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-6 text-center space-y-3">
+                      <div className="w-10 h-10 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center mx-auto">
+                        <Key size={20} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="font-extrabold text-sm text-slate-900">У вас пока нет API-ключа</div>
+                        <p className="text-xs text-slate-500 max-w-md mx-auto">
+                          Создайте ключ в 1 клик, чтобы подключить TenderLex к вашей CRM, боту, скрипту или ИИ-агенту.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={createCustomerApiKey}
+                        disabled={generatingApiKey}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+                      >
+                        {generatingApiKey ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                        <span>Создать API-ключ</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Policy and Safety notice */}
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1 leading-relaxed">
+                    <ul className="list-disc list-inside space-y-0.5 text-slate-500">
+                      <li>Списание происходит только за выполненные запросы.</li>
+                      <li>При нулевом балансе запросы автоматически приостанавливаются — задолженность не образуется.</li>
+                      <li>Ключ можно отозвать в любой момент.</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Методы API */}
+              {apiModalTab === "methods" && (
+                <div className="space-y-3.5 text-xs text-slate-700">
+                  <div className="bg-slate-900 text-slate-100 p-3 rounded-xl font-mono text-[11px] space-y-1">
+                    <div className="text-slate-400"># Базовый адрес API и авторизация:</div>
+                    <div><span className="text-teal-400">BASE_URL:</span> https://tenderlex.ru/api/v1/mcp</div>
+                    <div className="break-all"><span className="text-teal-400">HEADER:</span> Authorization: Bearer {effectiveKeyPlaceholder}</div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 text-[11px]">
+                          POST /suppliers/search
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Поиск поставщиков</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Поиск проверенных поставщиков и заводов по тексту ТЗ или номеру закупки. Возвращает ИНН, сайт, телефон, email, статус производителя.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                          POST /products/exact-analogs
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Подбор товара и аналогов</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Определение скрытой модели, эквивалентов по ГОСТ, реестр Минпромторга и прямая ссылка на скачивание отчёта в DOCX.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 text-[11px]">
+                          POST /procurements/analyze
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Анализ документации и рисков</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Выявление скрытых ловушек контракта, штрафов, неоднозначных требований и условий приёмки по 44-ФЗ и 223-ФЗ.
+                      </p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl p-3 space-y-1.5 bg-white">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 text-[11px]">
+                          GET /balance
+                        </span>
+                        <span className="text-slate-500 text-[11px] font-semibold">Проверка баланса</span>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">
+                        Проверка текущего рублёвого остатка и статуса авторизации.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* cURL snippet */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-800">Пример запроса (cURL):</span>
+                      <button
+                        type="button"
+                        onClick={() => copyApiText(curlExampleText, "curl")}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                      >
+                        {apiCopiedField === "curl" ? <Check size={12} /> : <Copy size={12} />}
+                        <span>{apiCopiedField === "curl" ? "Скопировано!" : "Скопировать cURL"}</span>
+                      </button>
+                    </div>
+                    <pre className="bg-slate-900 text-teal-300 p-3 rounded-xl font-mono text-[10.5px] overflow-x-auto leading-relaxed">
+                      {curlExampleText}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 3: Для ИИ и быстрой разработки */}
+              {apiModalTab === "ai_prompt" && (
+                <div className="space-y-3">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed">
+                    <strong>Инструкция для быстрой разработки и ИИ-ассистентов:</strong> скопируйте текст ниже и отправьте в Cursor, ChatGPT, Claude или вашему программисту. Агент сразу поймёт структуру API и корректно встроит TenderLex в вашу систему или CRM.
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Готовая задача для нейросети:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyApiText(aiPromptText, "ai_prompt")}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-extrabold transition-colors cursor-pointer shadow-2xs"
+                    >
+                      {apiCopiedField === "ai_prompt" ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{apiCopiedField === "ai_prompt" ? "Скопировано в буфер!" : "Скопировать задачу для ИИ"}</span>
+                    </button>
+                  </div>
+
+                  <div className="text-[11px] font-mono text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 leading-relaxed whitespace-pre-wrap select-all max-h-60 overflow-y-auto">
+                    {aiPromptText}
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 4: MCP (Claude Desktop) */}
+              {apiModalTab === "mcp" && (
+                <div className="space-y-3">
+                  <div className="bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-900 leading-relaxed space-y-2">
+                    <div>
+                      <strong>Прямое подключение к Claude Desktop по протоколу MCP:</strong> позволяет Claude напрямую искать поставщиков, подбирать аналоги и анализировать документацию TenderLex из чата.
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <a
+                        href="/scripts/tenderlex_mcp.py"
+                        download="tenderlex_mcp.py"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <Download size={13} />
+                        <span>Скачать tenderlex_mcp.py</span>
+                      </a>
+                      <span className="text-[11px] text-teal-800">
+                        (Автономный Python-скрипт, без сторонних библиотек)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Конфиг для claude_desktop_config.json:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyApiText(mcpConfigText, "mcp_cfg")}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer"
+                    >
+                      {apiCopiedField === "mcp_cfg" ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{apiCopiedField === "mcp_cfg" ? "Скопировано!" : "Скопировать JSON"}</span>
+                    </button>
+                  </div>
+
+                  <pre className="bg-slate-900 text-emerald-300 p-3 rounded-xl font-mono text-[11px] overflow-x-auto leading-relaxed select-all">
+                    {mcpConfigText}
+                  </pre>
+
+                  <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
+                    <div className="font-bold text-slate-700">Быстрый запуск за 2 шага:</div>
+                    <div className="text-[11px] text-slate-600 space-y-0.5">
+                      <div>1. Сохраните скачанный <code>tenderlex_mcp.py</code> в удобную папку.</div>
+                      <div>2. В конфиге укажите полный путь к скрипту и добавьте блок в:</div>
+                    </div>
+                    <div className="font-mono text-[10px] text-slate-500 pt-0.5">
+                      • Windows: %APPDATA%\Claude\claude_desktop_config.json<br />
+                      • macOS: ~/Library/Application Support/Claude/claude_desktop_config.json
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Footer */}
+              <div className="flex justify-end pt-2 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowApiModal(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </section>
+          </div>
+        );
+      })() : null}
+
+      {/* Support Chat Notice Modal */}
+      {showChatNoticeModal ? (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          onClick={() => setShowChatNoticeModal(false)}
+        >
+          <section
+            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150 p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-teal-800 font-extrabold text-sm sm:text-base">
+                <MessageCircle size={18} className="text-teal-600" />
+                <span>Чат поддержки</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowChatNoticeModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                title="Закрыть"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+              <p>
+                Чат поддержки в личном кабинете пока находится в разработке.
+              </p>
+              <p>
+                Пожалуйста, свяжитесь с нами напрямую через Telegram или электронную почту:
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {session?.contacts?.telegram_url ? (
+                  <a
+                    href={session.contacts.telegram_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl font-bold transition-all text-xs"
+                  >
+                    <Send size={14} className="text-sky-500" />
+                    <span>Telegram</span>
+                  </a>
+                ) : null}
+
+                <a
+                  href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-bold transition-all text-xs"
+                >
+                  <Mail size={14} className="text-slate-600" />
+                  <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
+                </a>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowChatNoticeModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                Понятно
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {/* Top-Up Balance Modal */}
+      {showTopUpModal ? (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowTopUpModal(false);
+          }}
+        >
+          <section
+            className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-xl w-full shadow-2xl border border-slate-200 space-y-4 flex flex-col font-sans my-auto max-h-[95vh] overflow-y-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="topup-modal-title"
+          >
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
+                  <Wallet size={20} aria-hidden="true" />
+                </div>
+                <div>
+                  <h2 id="topup-modal-title" className="text-base sm:text-lg font-extrabold text-slate-900 leading-tight">
+                    Пополнение баланса
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Единый баланс на все 3 модуля. Чем больше сумма — тем выше бонус на счёт.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
+                onClick={() => setShowTopUpModal(false)}
+                aria-label="Закрыть окно"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Quick Packages Grid */}
+            <div className="space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                Выберите пакет с бонусом:
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                  const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                  return (
+                    <button
+                      key={pkg.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTopUpPackage(pkg);
+                        setCustomTopUpRub(pkg.price_rub);
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                          : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                      }`}
+                    >
+                      {pkg.badge ? (
+                        <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                          {pkg.badge}
+                        </span>
+                      ) : null}
+                      <div>
+                        <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                        <div className="text-sm font-black text-slate-900 mt-0.5">
+                          {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                        </div>
+                      </div>
+                      <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                        <div className="text-emerald-700 font-bold">
+                          На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                        </div>
+                        {pkg.bonus_rub > 0 ? (
+                          <div className="text-[10px] text-emerald-600 font-medium">
+                            +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Custom Amount Input */}
+            <div className="space-y-1.5 pt-1">
+              <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                Или введите другую сумму:
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    id="custom-topup-input"
+                    type="number"
+                    min={500}
+                    step={500}
+                    value={customTopUpRub || ""}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10) || 0;
+                      setCustomTopUpRub(val);
+                      const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                      setSelectedTopUpPackage(match || null);
+                    }}
+                    placeholder="5000"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                    ₽
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Calculation Card */}
+            {(() => {
+              const hasCustomPrices = Boolean(
+                session?.balance?.has_custom_tariffs ||
+                (session?.balance?.effective_prices &&
+                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
+              );
+              const calc = hasCustomPrices
+                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
+                : calculateDepositBonus(customTopUpRub);
+              const approxTasks = Math.floor(calc.totalRub / 99);
+              return (
+                <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                    <span>Сумма к оплате:</span>
+                    <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                  </div>
+                  {calc.bonusRub > 0 ? (
+                    <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
+                      <span>Бонус сервиса ({calc.percent}%):</span>
+                      <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
+                    </div>
+                  ) : hasCustomPrices ? (
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                      <span>Тариф:</span>
+                      <span className="font-medium text-slate-600">индивидуальные цены, без бонуса</span>
+                    </div>
+                  ) : null}
+                  <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
+                      <span className="text-[10px] text-slate-500">
+                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач`}
+                      </span>
+                    </div>
+                    <div className="text-lg sm:text-xl font-black text-emerald-700">
+                      {calc.totalRub.toLocaleString("ru-RU")} ₽
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* How to Pay Instructions */}
+            <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                <CreditCard size={14} className="text-teal-700" />
+                <span>Инструкция по оплате переводом:</span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                1. Переведите выбранную сумму на банковскую карту или счет владельца сервиса.
+              </p>
+              <p className="text-[11px] text-slate-600">
+                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс (обычно 5–15 минут).
+              </p>
+              <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-slate-500">Ваш email аккаунта:</span>
+                <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+              </div>
+            </div>
+
+            {/* Contact Action Buttons */}
+            {(() => {
+              const hasCustomPrices = Boolean(
+                session?.balance?.has_custom_tariffs ||
+                (session?.balance?.effective_prices &&
+                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
+              );
+              const calc = hasCustomPrices
+                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
+                : calculateDepositBonus(customTopUpRub);
+              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+              const tgMsg = encodeURIComponent(
+                hasCustomPrices
+                  ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (индивидуальный тариф). Мой email в сервисе: ${session?.user?.email || ""}`
+                  : `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+              );
+              const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
+
+              return (
+                <div className="space-y-2 pt-1">
+                  <a
+                    href={tgUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  >
+                    <Send size={15} />
+                    <span>
+                      {calc.bonusRub > 0
+                        ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
+                        : `Написать в Telegram для зачисления`}
+                    </span>
+                  </a>
+
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
+                        navigator.clipboard.writeText(copyText).then(() => {
+                          setTopUpCopied(true);
+                          setTimeout(() => setTopUpCopied(false), 2500);
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                    >
+                      <Copy size={13} />
+                      <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                    </button>
+
+                    <a
+                      href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
+                      className="text-xs text-slate-500 hover:text-slate-700 underline"
+                    >
+                      Написать на email
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

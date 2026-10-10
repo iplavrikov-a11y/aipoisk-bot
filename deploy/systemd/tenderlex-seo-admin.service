@@ -1,0 +1,22 @@
+[Unit]
+Description=TenderLex read-only admin SEO snapshot refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/projects/tenderlex
+Environment=PYTHONPATH=/root/projects/tenderlex/backend
+ExecStart=/root/projects/tenderlex/backend/.venv/bin/python /root/projects/tenderlex/scripts/refresh_seo_snapshot.py
+TimeoutStartSec=8min
+UMask=0077
+Nice=15
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/root/projects/tenderlex/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -1,0 +1,67 @@
+{
+  "checks": [
+    {
+      "check": "authenticated_desktop_no_manual_workflow",
+      "passed": true
+    },
+    {
+      "check": "mobile_390_no_page_overflow",
+      "passed": true
+    },
+    {
+      "check": "pane_dashboard",
+      "passed": true
+    },
+    {
+      "check": "pane_clients",
+      "passed": true
+    },
+    {
+      "check": "pane_jobs",
+      "passed": true
+    },
+    {
+      "check": "pane_outreach",
+      "passed": true
+    },
+    {
+      "check": "pane_billing",
+      "passed": true
+    },
+    {
+      "check": "pane_settings",
+      "passed": true
+    },
+    {
+      "check": "pane_ai",
+      "passed": true
+    },
+    {
+      "check": "pane_mcp",
+      "passed": true
+    },
+    {
+      "check": "pane_seo",
+      "passed": true
+    },
+    {
+      "check": "no_business_mutations_or_JS_errors",
+      "passed": true
+    },
+    {
+      "check": "real_login_without_reload",
+      "passed": true
+    }
+  ],
+  "api_no_store": true,
+  "updated_at": "2026-10-03T22:23:09.892001+00:00",
+  "browser_api_failures": [],
+  "public_responses_unchanged": {
+    "https://tenderlex.ru/": true,
+    "https://tenderlex.ru/robots.txt": true,
+    "https://tenderlex.ru/sitemap.xml": true,
+    "http://127.0.0.1:8088/api/public/site": true
+  },
+  "site_pid": "2627901",
+  "recorded_at_utc": "2026-10-03T23:37:42.196155+00:00"
+}

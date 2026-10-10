@@ -548,6 +548,7 @@ async def _post_llm_request(
     *,
     json_mode: bool,
     timeout_seconds: float,
+    temperature: float | None = None,
     attempt_budget: _RequestAttemptBudget | None = None,
     request_metadata: dict[str, Any] | None = None,
     deadline_monotonic: float | None = None,
@@ -564,7 +565,7 @@ async def _post_llm_request(
     payload: dict[str, Any] = {
         "model": selection.model,
         "messages": safe_messages,
-        "temperature": 0.2,
+        "temperature": 0.2 if temperature is None else max(0.0, float(temperature)),
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -690,6 +691,7 @@ async def call_llm(
     override: str | None = None,
     json_mode: bool = False,
     timeout_seconds: float = 90.0,
+    temperature: float | None = None,
     metadata: dict[str, Any] | None = None,
     response_validator: Callable[[str], None] | None = None,
     total_timeout_seconds: float | None = None,
@@ -738,6 +740,7 @@ async def call_llm(
                     messages,
                     json_mode=json_mode,
                     timeout_seconds=selection_timeout,
+                    temperature=temperature,
                     attempt_budget=request_budget,
                     request_metadata=request_metadata,
                     deadline_monotonic=deadline,

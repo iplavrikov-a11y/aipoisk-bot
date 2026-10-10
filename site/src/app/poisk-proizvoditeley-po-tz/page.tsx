@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Building2, CheckCircle2, FileText, Send, Sparkles, Factory } from "lucide-react";
@@ -15,7 +16,7 @@ import {
 export const metadata: Metadata = {
   title: "Поиск заводов-производителей по ТЗ — база изготовителей РФ",
   description:
-    "Прямой выход на российские заводы и официальных дилеров по спецификации закупки. Извлечение direct email, контактов отделов сбыта без посредников.",
+    "Прямой выход на российские заводы и официальных дилеров по спецификации закупки. Извлечение прямых корпоративных email, контактов отделов сбыта без посредников.",
   keywords: [
     "поиск производителей по ТЗ",
     "база заводов изготовителей",
@@ -105,15 +106,15 @@ export default function PoiskProizvoditeleyPage() {
               >
                 <span>Найти заводы</span>
               </a>
-              <a
-                href="https://t.me/tenderlex_bot"
+              <PublicSiteLink
+                channel="bot"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
               >
                 <Send size={16} className="text-teal-600" />
                 <span>Запустить в Telegram</span>
-              </a>
+              </PublicSiteLink>
             </div>
           </div>
         </section>
@@ -139,7 +140,7 @@ export default function PoiskProizvoditeleyPage() {
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
                 <h3 className="text-lg font-black text-slate-900">Единый запрос цен</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Автоматическая генерация официального письма RFQ с таблицей позиций и дедлайном.
+                  Автоматическая генерация официального письма-запроса КП с таблицей позиций и сроком ответа.
                 </p>
               </div>
             </div>

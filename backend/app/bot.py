@@ -5,6 +5,7 @@ import time
 import json
 import re
 import asyncio
+import urllib.parse
 
 import logging
 import shutil
@@ -59,9 +60,11 @@ from .jobs import (
     cleanup_expired_jobs,
     cancel_running_job,
     create_job,
+    enqueue_job,
     job_dir,
     package_job_output_files,
     package_job_output_items,
+    update_dobor_context_dict,
 )
 from .main import create_additional_supplier_search_for_client, create_supplier_search_from_exact_product, job_can_find_more_suppliers
 from .journey import claim_reminder, record_journey_event, reminder_candidates
@@ -153,10 +156,9 @@ INDIVIDUAL_TERMS_NOTE = (
 )
 BOT_PAYMENT_INSTRUCTIONS = (
     "🧾 Чтобы пополнить баланс:\n"
-    "1. Посмотрите стоимость функций выше.\n"
-    "2. Напишите владельцу сервиса в Telegram или на email.\n"
-    "3. Укажите сумму пополнения и ваш Telegram ID.\n"
-    "4. После подтверждения оплаты деньги будут зачислены на баланс."
+    "1. Выберите подходящий пакет пополнения или произвольную сумму.\n"
+    "2. Напишите владельцу сервиса в Telegram (кнопка ниже).\n"
+    "3. После перевода на карту или по реквизитам баланс с бонусом будет зачислен моментально."
 )
 OWNER_ALERT_STATUSES = {"failed", "needs_review"}
 OWNER_ALERTED_KEYS: set[tuple[str, str]] = set()
@@ -363,8 +365,10 @@ def analysis_and_suppliers_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False) -> InlineKeyboardMarkup:
+def cabinet_inline_keyboard(web_url: str = "", *, has_web_user: bool = False, contact_url: str = "") -> InlineKeyboardMarkup:
     rows = []
+    if contact_url:
+        rows.append([InlineKeyboardButton(text="💬 Пополнить баланс в Telegram", url=contact_url)])
     if web_url:
         label = "🌐 Открыть веб-кабинет" if has_web_user else "🌐 Создать веб-кабинет"
         rows.append([InlineKeyboardButton(text=label, url=web_url)])
@@ -1330,6 +1334,139 @@ async def _send_owner_alert(bot: Bot | None, text: str) -> None:
         return
 
 
+_LOW_BALANCE_OWNER_ALERTED: dict[str, float] = {}
+
+
+def reset_client_low_balance_alert(client_id: str) -> None:
+    _LOW_BALANCE_OWNER_ALERTED.pop(str(client_id or ""), None)
+
+
+async def _alert_owner_about_low_balance(
+    bot: Bot | None,
+    client: Client | None,
+    *,
+    reason: str,
+    job_title: str = "",
+    mode: str = "",
+    force: bool = False,
+) -> None:
+    if not client or bot is None:
+        return
+    owner_id = str(config.owner_telegram_id or "").strip()
+    if not owner_id:
+        return
+    client_tg = str(getattr(client, "telegram_id", "") or "").strip()
+    if client_tg and client_tg == owner_id:
+        return
+    client_id = str(getattr(client, "id", "") or "").strip()
+    if not client_id:
+        return
+    if client_id.startswith(("blocked", "fake")) or client_tg in {"blocked", "failed"}:
+        return
+    if os.getenv("PYTEST_CURRENT_TEST") and type(bot).__name__ not in ("AsyncMock", "MagicMock"):
+        return
+
+    now_ts = time.time()
+    last_ts = _LOW_BALANCE_OWNER_ALERTED.get(client_id, 0.0)
+    if not force and (now_ts - last_ts < 3600):
+        return
+    _LOW_BALANCE_OWNER_ALERTED[client_id] = now_ts
+
+    name = str(getattr(client, "name", "") or "").strip()
+    username = str(getattr(client, "username", "") or "").strip().lstrip("@")
+    client_num = getattr(client, "client_number", None)
+    balance_kopeks = getattr(client, "money_balance_kopeks", None)
+
+    # Try loading from DB if any key field is missing
+    if (not name or not username or client_num is None or balance_kopeks is None) and not client_id.startswith("test"):
+        try:
+            with SessionLocal() as db:
+                db_obj = db.get(Client, client_id)
+                if db_obj:
+                    name = name or str(db_obj.name or "").strip()
+                    username = username or str(db_obj.username or "").strip().lstrip("@")
+                    client_tg = client_tg or str(db_obj.telegram_id or "").strip()
+                    if client_num is None:
+                        client_num = db_obj.client_number
+                    if balance_kopeks is None:
+                        balance_kopeks = db_obj.money_balance_kopeks
+        except Exception:
+            pass
+
+    if name and username:
+        client_display = f"<b>{html_escape(name)}</b> (@{html_escape(username)})"
+    elif username:
+        client_display = f"@{html_escape(username)}"
+    elif name:
+        client_display = f"<b>{html_escape(name)}</b>"
+    elif client_tg and client_tg.isdigit():
+        client_display = f"Пользователь TG ID: <code>{client_tg}</code>"
+    else:
+        client_display = "Без имени"
+
+    client_num_str = f"№ {client_num} (#{client_num})" if client_num is not None else (f"ID {client_id[:8]}" if client_id else "не указан")
+    balance_rub = round(max(0, int(balance_kopeks or 0)) / 100, 2)
+    mode_name = _mode_label(mode) if mode else ""
+
+    if balance_rub <= 0:
+        header = "💳 <b>У клиента закончился баланс!</b>"
+        balance_note = "0.00 ₽"
+        advice = "ℹ️ <i>Клиенту в боте отправлено уведомление о пополнении с кнопкой связи с вами.</i>"
+    else:
+        header = "⚠️ <b>У клиента заканчивается баланс (осталось ≤ 100 ₽)!</b>"
+        balance_note = f"{balance_rub:.2f} ₽ (хватит не более чем на 1 задачу)"
+        advice = "ℹ️ <i>Напомните клиенту об оплате, чтобы не блокировать следующую задачу.</i>"
+
+    lines = [
+        header,
+        "",
+        f"👤 <b>Клиент:</b> {client_display}",
+        f"🆔 <b>Номер клиента:</b> {client_num_str}",
+    ]
+    if client_tg and client_tg.isdigit():
+        lines.append(f"📱 <b>Telegram ID:</b> <code>{client_tg}</code>")
+
+    lines.append(f"💰 <b>Остаток:</b> {balance_note}")
+
+    if mode_name:
+        lines.append(f"⚙️ <b>Услуга:</b> {html_escape(mode_name.capitalize())}")
+    if job_title and job_title.lower() not in {"failed", "none"}:
+        lines.append(f"📝 <b>Запрос / файл:</b> <i>{html_escape(job_title[:150])}</i>")
+    if reason:
+        lines.append(f"📌 <b>Событие:</b> {html_escape(reason)}")
+
+    lines.extend([
+        "",
+        advice,
+    ])
+
+    if username:
+        lines.extend(["", f'💬 <b>Связаться:</b> <a href="https://t.me/{username}">Написать клиенту (@{username})</a>'])
+    elif client_tg and client_tg.isdigit():
+        lines.extend(["", f'💬 <b>Связаться:</b> <a href="tg://user?id={client_tg}">Написать клиенту</a> (TG ID: {client_tg})'])
+
+    text = "\n".join(lines)
+
+    kb_rows = []
+    if username:
+        kb_rows.append([InlineKeyboardButton(text=f"💬 Написать @{username}", url=f"https://t.me/{username}")])
+    elif client_tg and client_tg.isdigit():
+        kb_rows.append([InlineKeyboardButton(text="💬 Написать клиенту в TG", url=f"tg://user?id={client_tg}")])
+
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+
+    try:
+        await bot.send_message(
+            chat_id=int(owner_id) if owner_id.isdigit() else owner_id,
+            text=text[:3900],
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        logger.warning("failed_to_send_low_balance_owner_alert", extra={"error": str(exc), "client_id": client_id})
+
+
 async def _alert_owner_about_job(
     message: Message,
     snapshot: JobProgressSnapshot,
@@ -1535,6 +1672,63 @@ def _telegram_contact_url(value: str) -> str:
     return ""
 
 
+def _telegram_contact_url_with_text(contact_value: str, text: str = "") -> str:
+    base_url = _telegram_contact_url(contact_value)
+    if not base_url:
+        base_url = "https://t.me/lexelence"
+    if not text:
+        return base_url
+    encoded_text = urllib.parse.quote(text)
+    delimiter = "&" if "?" in base_url else "?"
+    return f"{base_url}{delimiter}text={encoded_text}"
+
+
+def _low_balance_contact_info(settings, client: Client | None = None) -> tuple[str, str]:
+    contact_handle = str(getattr(settings, "contact_telegram", "") or "").strip()
+    if not contact_handle:
+        contact_handle = "@lexelence"
+    client_num = f"#{client.client_number}" if client and getattr(client, "client_number", None) else ""
+    client_ref = f" ({client_num})" if client_num else ""
+    prefill_text = f"Здравствуйте! У меня закончился баланс в TenderLex{client_ref}. Хочу пополнить."
+    contact_url = _telegram_contact_url_with_text(contact_handle, prefill_text)
+    return contact_handle, contact_url
+
+
+def low_balance_inline_keyboard(settings, client: Client | None = None) -> InlineKeyboardMarkup:
+    _, contact_url = _low_balance_contact_info(settings, client)
+    rows = []
+    if contact_url:
+        rows.append([InlineKeyboardButton(text="💬 Написать в Telegram для пополнения", url=contact_url)])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _is_insufficient_funds_error(error: str) -> bool:
+    err = str(error or "").lower()
+    return "недостаточно средств" in err or "недостаточно доступных генераций" in err or "недостаточно генераций" in err
+
+
+async def _send_client_low_balance_notification(
+    message: Message,
+    client: Client | None,
+    settings,
+    *,
+    error: str = "",
+) -> None:
+    contact_handle, _ = _low_balance_contact_info(settings, client)
+    text = (
+        "⚠️ <b>У вас закончился баланс</b>\n\n"
+        "Чтобы пополнить баланс и продолжить работу, напишите мне в Telegram — сразу вышлю реквизиты и начислю средства.\n\n"
+        f"💬 Контакт: {html_escape(contact_handle)}"
+    )
+    await message.answer(
+        text,
+        reply_markup=low_balance_inline_keyboard(settings, client),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
 def _contact_message_options() -> dict:
     return {"parse_mode": ParseMode.HTML, "disable_web_page_preview": True}
 
@@ -1548,10 +1742,15 @@ def _balance_line(counter: dict) -> str:
     )
 
 
-def _money_balance_warning(balances: dict) -> str:
+def _money_balance_warning(balances: dict, settings=None) -> str:
     money = balances.get("money")
     if isinstance(money, dict) and money.get("low"):
-        return "⚠️ Баланс заканчивается."
+        available_kopeks = int(money.get("available_kopeks", 0) or 0)
+        contact_handle = (getattr(settings, "contact_telegram", "") if settings else "") or "@lexelence"
+        if available_kopeks <= 0:
+            return f"⚠️ Баланс заканчивается. Баланс исчерпан (0 ₽). Напишите {contact_handle} в Telegram для пополнения."
+        balance_rub = available_kopeks / 100.0
+        return f"⚠️ Баланс заканчивается. Баланс подходит к концу ({balance_rub:.1f} ₽). Напишите {contact_handle} в Telegram для пополнения."
     return ""
 
 
@@ -1571,7 +1770,7 @@ def _cabinet_text(db, client: Client, settings) -> str:
         _balance_line(balances["procurement_report"]),
         _balance_line(balances["supplier_search_extra"]),
     ]
-    warning = _money_balance_warning(balances)
+    warning = _money_balance_warning(balances, settings=settings)
     if warning:
         lines.extend(["", warning])
     lines.extend(["", f"Пополнить баланс можно в разделе «{BUTTON_TARIFFS}»."])
@@ -1602,15 +1801,44 @@ def _money_text(amount_kopeks: int) -> str:
 
 def _tariffs_text(db, settings) -> str:
     packages = [tariff_to_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposits = [item for item in packages if item["kind"] == "deposit"]
     supplier = [item for item in packages if item["kind"] == "supplier_search"]
     exact_product = [item for item in packages if item["kind"] == "exact_product"]
     reports = [item for item in packages if item["kind"] == "procurement_report"]
     extra = [item for item in packages if item["kind"] == "supplier_search_extra"]
+
     lines = [
-        "💳 Тарифы и оплата",
+        "💳 <b>Тарифы и единый баланс TenderLex</b>",
         "",
-        "Баланс пополняется в рублях. При запуске стоимость услуги резервируется по тарифу, после успешной выдачи результата — списывается.",
+        "Баланс единый в рублях и расходуется на любые услуги без сгорания.",
     ]
+
+    if deposits:
+        lines.extend(["", "🎁 <b>Пакеты пополнения баланса (с бонусом):</b>"])
+        for item in deposits:
+            bonus = item.get("bonus_kopeks") or 0
+            badge = f" 🔥" if item.get("badge") else ""
+            if bonus > 0:
+                lines.append(
+                    f"• «{html_escape(item['name'])}»{badge} — {_price_text(item['price_kopeks'])} "
+                    f"(на баланс <b>{_price_text(item['credit_kopeks'])}</b>, +{_price_text(bonus)} бонус, ~{item.get('units', 1)} задач)"
+                )
+            else:
+                lines.append(
+                    f"• «{html_escape(item['name'])}» — {_price_text(item['price_kopeks'])} "
+                    f"(на баланс <b>{_price_text(item['credit_kopeks'])}</b>, ~{item.get('units', 1)} задач)"
+                )
+        lines.append("<i>При пополнении от 25 000 ₽ — максимальный бонус +50% и персональные условия.</i>")
+
+    lines.extend([
+        "",
+        "<b>Стоимость операций (списание с баланса):</b>",
+        "• 🔎 Поиск поставщиков: 99 ₽",
+        "• 🎯 Подбор товара и аналогов: 99 ₽",
+        "• 📄 Анализ документации: 99 ₽",
+        "• ⚡ Анализ + поиск: 198 ₽",
+    ])
+
     if supplier:
         lines.extend(["", "🔎 Поставщики:"])
         for item in supplier:
@@ -1631,8 +1859,10 @@ def _tariffs_text(db, settings) -> str:
         unit_price = _default_extra_supplier_price_kopeks(supplier[0])
         lines.extend(["", "🔎 Добор поставщиков:"])
         lines.append(f"• 1 добор поставщиков — {_price_text(unit_price)} (по тому же ТЗ)")
-    if not supplier and not exact_product and not reports and not extra:
-        lines.extend(["", "Тарифы пока не настроены в админ-панели."])
+    else:
+        lines.extend(["", "🔎 Добор поставщиков:"])
+        lines.append("• 1 добор поставщиков — 49 ₽ (по тому же ТЗ)")
+
     lines.extend(["", _bot_payment_instructions(settings)])
     lines.extend(["", INDIVIDUAL_TERMS_NOTE])
     lines.extend(["", AI_HELP_NOTE])
@@ -1661,6 +1891,15 @@ def _bot_payment_instructions(settings) -> str:
 
 
 def _partial_confirmation_text(snapshot: JobProgressSnapshot) -> str:
+    if snapshot.confirmation_kind == "multi_item_strategy":
+        return (
+            "📋 В вашей спецификации обнаружено несколько позиций.\n\n"
+            "Выберите стратегию поиска поставщиков:\n\n"
+            "• ⚖️ Сбалансированный поиск: единый сводный отчёт, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется единый лист «Сводный реестр» со сворачиваемой группировкой строк (+ / -) по позициям (1 списание).\n\n"
+            "• 🔍 Попозиционный глубокий поиск: независимый глубокий поиск поставщиков под каждую позицию спецификации с отдельным детальным анализом сайтов (по 1 списанию за позицию).\n\n"
+            "💡 Совет: если закупка крупная и охватывает разные рынки (электрика, сантехника, отделка), эффективнее разделять ТЗ на отдельные файлы по направлениям — так отклик от профильных заводов будет максимальным.\n\n"
+            "Выберите вариант для продолжения:"
+        )
     if snapshot.confirmation_kind == "registry_fallback":
         return _registry_fallback_confirmation_text(snapshot)
     return (
@@ -1691,6 +1930,29 @@ def _registry_fallback_confirmation_text(snapshot: JobProgressSnapshot) -> str:
 
 
 def _partial_confirmation_keyboard(job_id: str, confirmation_kind: str = "") -> InlineKeyboardMarkup:
+    if confirmation_kind == "multi_item_strategy":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⚖️ Сбалансированный поиск",
+                        callback_data=f"multi_strategy:balanced:{job_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔍 Попозиционный глубокий поиск",
+                        callback_data=f"multi_strategy:per_item:{job_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить задачу",
+                        callback_data=f"cancel_job:{job_id}",
+                    ),
+                ],
+            ]
+        )
     if confirmation_kind == "registry_fallback":
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -2338,7 +2600,7 @@ async def cancel_job_callback(callback: CallbackQuery) -> None:
         if not job:
             await callback.answer("Задача не найдена.", show_alert=True)
             return
-        if job.status not in {"pending", "running"}:
+        if job.status not in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}:
             await callback.answer("Эту задачу уже нельзя отменить.", show_alert=True)
             await _edit_or_send_status(callback.message, _format_job_progress(_job_snapshot(job)), clear_reply_markup=True)
             return
@@ -2442,11 +2704,21 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             if client:
                 record_journey_event(db, client.id, channel="telegram", event_name="launch_blocked", mode=pending.mode, reason_code="access")
             BATCH_RUNNING_CHATS.discard(chat_id)
-            blocked_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🗑 Очистить и отправить 1 ТЗ", callback_data="batch:cancel")],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
-            ])
-            await message.answer(error, reply_markup=blocked_keyboard)
+            if _is_insufficient_funds_error(error):
+                settings = get_or_create_settings(db)
+                await _send_client_low_balance_notification(message, client, settings, error=error)
+                await _alert_owner_about_low_balance(
+                    _message_bot(message),
+                    client,
+                    reason="Попытка запуска без средств",
+                    mode=pending.mode,
+                )
+            else:
+                blocked_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🗑 Очистить и отправить 1 ТЗ", callback_data="batch:cancel")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="open_create_menu")],
+                ])
+                await message.answer(error, reply_markup=blocked_keyboard)
             return
         assert client is not None
         settings = get_or_create_settings(db)
@@ -2469,7 +2741,17 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
                 reserve_error = _reserve_created_job(db, client, created)
                 if reserve_error:
                     BATCH_RUNNING_CHATS.discard(chat_id)
-                    await message.answer(reserve_error, reply_markup=main_menu())
+                    if _is_insufficient_funds_error(reserve_error):
+                        settings = get_or_create_settings(db)
+                        await _send_client_low_balance_notification(message, client, settings, error=reserve_error)
+                        await _alert_owner_about_low_balance(
+                            _message_bot(message),
+                            client,
+                            reason="Недостаточно средств при резервировании задачи",
+                            mode=pending.mode,
+                        )
+                    else:
+                        await message.answer(reserve_error, reply_markup=main_menu())
                     return
                 batch_jobs.append((str(created.id), files[0][0]))
             _record_telegram_terms_acceptance(db, pending.telegram_id)
@@ -2495,7 +2777,18 @@ async def _execute_batch_launch(message: Message, chat_id: int) -> None:
             if reserve_error:
                 _discard_unlaunched_jobs(db, [job])
                 BATCH_RUNNING_CHATS.discard(chat_id)
-                await message.answer(reserve_error, reply_markup=main_menu())
+                if _is_insufficient_funds_error(reserve_error):
+                    settings = get_or_create_settings(db)
+                    await _send_client_low_balance_notification(message, client, settings, error=reserve_error)
+                    await _alert_owner_about_low_balance(
+                        _message_bot(message),
+                        client,
+                        reason="Недостаточно средств при резервировании задачи",
+                        job_title=title,
+                        mode=pending.mode,
+                    )
+                else:
+                    await message.answer(reserve_error, reply_markup=main_menu())
                 return
             _record_telegram_terms_acceptance(db, pending.telegram_id)
             job.status = "pending"
@@ -2737,6 +3030,28 @@ async def _send_result_offer_outputs(
                 DELIVERED_JOB_IDS.add(str(job_id))
                 return False
             DELIVERED_JOB_IDS.add(str(job_id))
+            if job and job.client and hasattr(db, "query"):
+                try:
+                    balances = client_service_balance_summary(db, job.client)
+                    money_summary = balances.get("money") or {}
+                    available_kopeks = int(money_summary.get("available_kopeks", 0) or 0)
+                    if isinstance(money_summary, dict) and (
+                        available_kopeks <= 10_000 or money_summary.get("low")
+                    ):
+                        reason = (
+                            "Баланс исчерпан (0 ₽) после выдачи результата"
+                            if available_kopeks <= 0
+                            else f"Осталось ≤ 100 ₽ ({available_kopeks / 100:.2f} ₽) после выполнения задачи"
+                        )
+                        await _alert_owner_about_low_balance(
+                            _message_bot(message),
+                            job.client,
+                            reason=reason,
+                            job_title=getattr(job, "title", ""),
+                            mode=str(getattr(job, "mode", "") or ""),
+                        )
+                except Exception:
+                    pass
             if job.client and sent_output_message is not None:
                 await _edit_output_delivery_caption(
                     sent_output_message,
@@ -2815,6 +3130,28 @@ async def _send_job_outputs_locked(
             DELIVERED_JOB_IDS.add(str(job_id))
             if snapshot and snapshot.status in OWNER_ALERT_STATUSES:
                 await _alert_owner_about_job(message, snapshot, reason=f"problem_status:{snapshot.status}")
+            if done_job.client and hasattr(db, "query"):
+                try:
+                    balances = client_service_balance_summary(db, done_job.client)
+                    money_summary = balances.get("money") or {}
+                    available_kopeks = int(money_summary.get("available_kopeks", 0) or 0)
+                    if isinstance(money_summary, dict) and (
+                        available_kopeks <= 10_000 or money_summary.get("low")
+                    ):
+                        reason = (
+                            "Баланс исчерпан (0 ₽) после выдачи результата"
+                            if available_kopeks <= 0
+                            else f"Осталось ≤ 100 ₽ ({available_kopeks / 100:.2f} ₽) после выполнения задачи"
+                        )
+                        await _alert_owner_about_low_balance(
+                            _message_bot(message),
+                            done_job.client,
+                            reason=reason,
+                            job_title=getattr(done_job, "title", ""),
+                            mode=str(getattr(done_job, "mode", "") or ""),
+                        )
+                except Exception:
+                    pass
             if done_job.client and sent_output_message is not None:
                 await _edit_output_delivery_caption(
                     sent_output_message,
@@ -2845,9 +3182,10 @@ async def _send_job_outputs_locked(
 
 
 def _after_delivery_balance_text(db, client: Client) -> str:
+    settings = get_or_create_settings(db)
     balances = client_service_balance_summary(db, client)
     lines = ["✅ Результат отправлен. Баланс обновлён."]
-    warning = _money_balance_warning(balances)
+    warning = _money_balance_warning(balances, settings=settings)
     if warning:
         lines.append(warning)
     lines.extend(["", AI_CUSTOMER_NOTE])
@@ -3032,9 +3370,15 @@ async def access_button(message: Message) -> None:
                 "Ссылка одноразовая и действует 15 минут. Новый отдельный баланс не создаётся."
             )
 
+        balances = client_service_balance_summary(db, client)
+        contact_url = ""
+        money = balances.get("money") or {}
+        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+            _, contact_url = _low_balance_contact_info(settings, client)
+
         await message.answer(
             cabinet_text,
-            reply_markup=cabinet_inline_keyboard(web_url, has_web_user=has_web_user),
+            reply_markup=cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url),
             **_contact_message_options(),
         )
     finally:
@@ -3087,7 +3431,13 @@ async def open_cabinet_callback(callback: CallbackQuery) -> None:
                 "Ссылка одноразовая и действует 15 минут. Новый отдельный баланс не создаётся."
             )
 
-        kb = cabinet_inline_keyboard(web_url, has_web_user=has_web_user)
+        balances = client_service_balance_summary(db, client)
+        contact_url = ""
+        money = balances.get("money") or {}
+        if isinstance(money, dict) and (money.get("available_kopeks", 1) <= 0 or money.get("low")):
+            _, contact_url = _low_balance_contact_info(settings, client)
+
+        kb = cabinet_inline_keyboard(web_url, has_web_user=has_web_user, contact_url=contact_url)
         try:
             await callback.message.edit_text(cabinet_text, reply_markup=kb, **_contact_message_options())
         except Exception:
@@ -3258,13 +3608,16 @@ async def help_button(message: Message) -> None:
     text = (
         "❓ Помощь: Справочник функций и алгоритм работы TenderLex\n\n"
         "🚀 Рекомендуемый порядок работы:\n"
-        "1️⃣ Шаг 1: «🔎 Поиск поставщиков» — поиск прямых заводов РФ и дилеров по ТЗ с контактами/email для запроса КП.\n"
-        "2️⃣ Шаг 2: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
-        "3️⃣ Шаг 3: «📄 Анализ документации» — экспресс-аудит рисков, сроков, штрафов и нацрежима (44-ФЗ / 223-ФЗ) перед участием.\n"
+        "1️⃣ Шаг 1: «📄 Анализ документации» — экспресс-аудит рисков, сроков, штрафов и нацрежима (44-ФЗ / 223-ФЗ) перед участием.\n"
+        "2️⃣ Шаг 2: «🔎 Поиск поставщиков» — поиск прямых заводов РФ и дилеров по ТЗ с контактами/email для запроса КП.\n"
+        "3️⃣ Шаг 3: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
         "⚡ «📄🔎 Анализ + поиск» — совмещенный экспресс-запуск в 1 клик.\n\n"
+        "📋 Многопозиционные ТЗ и спецификации:\n"
+        "• ⚖️ Сбалансированный поиск: 1 запуск, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется единый лист «Сводный реестр» со сворачиваемой группировкой строк (+ / -) по позициям.\n"
+        "• 🔍 Попозиционный глубокий поиск: детальный независимый подбор поставщиков под каждую позицию спецификации с отдельным глубоким анализом сайтов.\n\n"
         "📋 Что нужно для запуска:\n"
-        "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n"
-        "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n\n"
+        "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
+        "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3281,13 +3634,16 @@ async def open_help_callback(callback: CallbackQuery) -> None:
     text = (
         "❓ Помощь: Справочник функций и алгоритм работы TenderLex\n\n"
         "🚀 Рекомендуемый порядок работы:\n"
-        "1️⃣ Шаг 1: «🔎 Поиск поставщиков» — поиск прямых заводов РФ и дилеров по ТЗ с контактами/email для запроса КП.\n"
-        "2️⃣ Шаг 2: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
-        "3️⃣ Шаг 3: «📄 Анализ документации» — экспресс-аудит рисков, сроков, штрафов и нацрежима (44-ФЗ / 223-ФЗ) перед участием.\n"
+        "1️⃣ Шаг 1: «📄 Анализ документации» — экспресс-аудит рисков, сроков, штрафов и нацрежима (44-ФЗ / 223-ФЗ) перед участием.\n"
+        "2️⃣ Шаг 2: «🔎 Поиск поставщиков» — поиск прямых заводов РФ и дилеров по ТЗ с контактами/email для запроса КП.\n"
+        "3️⃣ Шаг 3: «🎯 Подбор товара и аналогов» — расшифровка модели под ТЗ, характеристики для заявки и эквиваленты РФ.\n"
         "⚡ «📄🔎 Анализ + поиск» — совмещенный экспресс-запуск в 1 клик.\n\n"
+        "📋 Многопозиционные ТЗ и спецификации:\n"
+        "• ⚖️ Сбалансированный поиск: 1 запуск, квота поставщиков распределяется между всеми позициями ТЗ. В Excel формируется единый лист «Сводный реестр» со сворачиваемой группировкой строк (+ / -) по позициям.\n"
+        "• 🔍 Попозиционный глубокий поиск: детальный независимый подбор поставщиков под каждую позицию спецификации с отдельным глубоким анализом сайтов.\n\n"
         "📋 Что нужно для запуска:\n"
-        "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n"
-        "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n\n"
+        "• Для анализа и комплекса: 19-значный номер извещения ЕИС или ссылка на закупку.\n"
+        "• Для поиска поставщиков и подбора аналогов: файл ТЗ (.pdf, .docx, .xlsx, .zip) или текст спецификации.\n\n"
         "💳 Списание средств происходит только после успешной выдачи готового результата.\n"
         "📊 Баланс и история доступны в разделе «Кабинет» на сайте https://tenderlex.ru/cabinet\n\n"
         f"⚖️ Правовая информация: {LEGAL_INDEX_URL}"
@@ -3395,7 +3751,18 @@ async def find_more_suppliers_accept(callback: CallbackQuery) -> None:
         launch_snapshot = _job_snapshot(new_job)
     except HTTPException as exc:
         detail = str(exc.detail or "Не удалось запустить дополнительный поиск.")
-        await callback.answer(detail, show_alert=True)
+        if _is_insufficient_funds_error(detail):
+            settings = get_or_create_settings(db)
+            if callback.message:
+                await _send_client_low_balance_notification(callback.message, client, settings, error=detail)
+            await _alert_owner_about_low_balance(
+                _message_bot(callback.message) if callback.message else None,
+                client,
+                reason="Попытка запуска дополнительного поиска без средств",
+                mode=MODE_SUPPLIER_SEARCH_EXTRA,
+            )
+        else:
+            await callback.answer(detail, show_alert=True)
         return
     finally:
         db.close()
@@ -3478,7 +3845,18 @@ async def exact_suppliers_yes_callback(callback: CallbackQuery) -> None:
         launch_snapshot = _job_snapshot(new_job)
     except HTTPException as exc:
         detail = str(exc.detail or "Не удалось запустить поиск поставщиков.")
-        await callback.answer(detail, show_alert=True)
+        if _is_insufficient_funds_error(detail):
+            settings = get_or_create_settings(db)
+            if callback.message:
+                await _send_client_low_balance_notification(callback.message, client, settings, error=detail)
+            await _alert_owner_about_low_balance(
+                _message_bot(callback.message) if callback.message else None,
+                client,
+                reason="Попытка запуска поиска поставщиков по товару без средств",
+                mode=MODE_SUPPLIER_SEARCH,
+            )
+        else:
+            await callback.answer(detail, show_alert=True)
         return
     finally:
         db.close()
@@ -3560,6 +3938,44 @@ async def partial_report_accept(callback: CallbackQuery) -> None:
     await callback.answer("Отчёт отправлен.")
     await callback.message.answer("Неполный отчёт отправлен. Генерация списана после успешной отправки.", reply_markup=main_menu())
     await _send_find_more_suppliers_offer(callback.message, job_id)
+
+
+@router.callback_query(F.data.startswith("multi_strategy:"))
+async def multi_strategy_choice_callback(callback: CallbackQuery) -> None:
+    parts = str(callback.data or "").split(":")
+    if len(parts) < 3:
+        return
+    mode = parts[1]
+    job_id = parts[2]
+    if not callback.message:
+        return
+    if not _callback_job_allowed(callback, job_id):
+        await callback.answer("Эта задача относится к другому доступу.", show_alert=True)
+        return
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job or job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+            await callback.answer("Выбор стратегии уже не актуален.", show_alert=True)
+            return
+        normalized = "per_item" if mode == "per_item" else "balanced"
+        job.multi_item_mode = normalized
+        job.confirmation_kind = ""
+        job.confirmation_outcome = "accepted"
+        job.status = "pending"
+        job.progress = 32
+        job.message = f"Выбран режим: {'Попозиционный глубокий' if normalized == 'per_item' else 'Сбалансированный'}. Возобновляю поиск..."
+        update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+        enqueue_job(job.id)
+    finally:
+        db.close()
+    await callback.answer("Стратегия сохранена!")
+    mode_name = "🔍 Попозиционный глубокий поиск" if normalized == "per_item" else "⚖️ Сбалансированный поиск"
+    try:
+        await callback.message.edit_text(f"✅ Выбрана стратегия: {mode_name}.\n\nВозобновляю поиск поставщиков...")
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("result_offer_no:"))
@@ -3662,7 +4078,17 @@ async def _handle_document_locked(message: Message, bot: Bot) -> None:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         error = account_error or client_access_error(db, client, mode, incoming_file_count=1)
         if error:
-            await message.answer(error, reply_markup=main_menu())
+            if _is_insufficient_funds_error(error):
+                settings = get_or_create_settings(db)
+                await _send_client_low_balance_notification(message, client, settings, error=error)
+                await _alert_owner_about_low_balance(
+                    bot,
+                    client,
+                    reason="Попытка загрузки документа без средств на балансе",
+                    mode=mode,
+                )
+            else:
+                await message.answer(error, reply_markup=main_menu())
             return
         assert client is not None
         settings = get_or_create_settings(db)
@@ -3764,7 +4190,17 @@ async def _handle_supplier_text_tz_locked(message: Message) -> bool:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         error = account_error or client_access_error(db, client, mode, incoming_file_count=1)
         if error:
-            await message.answer(error, reply_markup=main_menu())
+            if _is_insufficient_funds_error(error):
+                settings = get_or_create_settings(db)
+                await _send_client_low_balance_notification(message, client, settings, error=error)
+                await _alert_owner_about_low_balance(
+                    _message_bot(message),
+                    client,
+                    reason="Попытка текстового запроса без средств на балансе",
+                    mode=mode,
+                )
+            else:
+                await message.answer(error, reply_markup=main_menu())
             return True
         assert client is not None
         settings = get_or_create_settings(db)
@@ -3840,7 +4276,17 @@ async def _handle_source_text(message: Message) -> bool:
         client, account_error = get_or_create_trial_client_by_telegram_id(db, telegram_id, username=username, name=name)
         error = account_error or client_access_error(db, client, mode, incoming_file_count=0)
         if error:
-            await message.answer(error, reply_markup=main_menu())
+            if _is_insufficient_funds_error(error):
+                settings = get_or_create_settings(db)
+                await _send_client_low_balance_notification(message, client, settings, error=error)
+                await _alert_owner_about_low_balance(
+                    _message_bot(message),
+                    client,
+                    reason="Попытка отправки ссылки на закупку без средств на балансе",
+                    mode=mode,
+                )
+            else:
+                await message.answer(error, reply_markup=main_menu())
             return True
         assert client is not None
         pending = PENDING_UPLOADS.get(message.chat.id)

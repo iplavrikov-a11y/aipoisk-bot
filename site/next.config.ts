@@ -41,6 +41,14 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      {
+        source: "/demo-design",
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
+      {
+        source: "/demo-buttons",
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
     ];
   },
   async rewrites() {

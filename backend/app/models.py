@@ -204,6 +204,7 @@ class Client(Base):
         cascade="all, delete-orphan",
     )
     billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
+    api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="client")
 
 
 class ClientTelegramAccount(Base):
@@ -392,6 +393,7 @@ class Job(Base):
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
+    multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
@@ -446,6 +448,8 @@ class TariffPackage(Base):
     units: Mapped[int] = mapped_column(Integer, default=1)
     price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
+    bonus_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    badge: Mapped[str] = mapped_column(String(40), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -594,7 +598,7 @@ class ApiKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    client: Mapped[Client | None] = relationship(foreign_keys=[client_id])
+    client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
 
 
 class PartnerPayoutRequest(Base):

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh TenderLex admin SEO analytics every hour
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Unit=tenderlex-seo-admin.service
+
+[Install]
+WantedBy=timers.target

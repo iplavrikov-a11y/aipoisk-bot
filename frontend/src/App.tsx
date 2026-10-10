@@ -1,3 +1,4 @@
+import { SeoTrafficView } from './SeoTrafficView'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   X,
@@ -84,11 +85,28 @@ type Client = {
   supplier_target_min: number
   notes: string
   jobs_count?: number
+  has_custom_tariffs?: boolean
   telegram_accounts: TelegramAccount[]
   web_users: WebUser[]
   usage: ClientUsage | null
   recent_usage: UsageEntry[]
   recent_billing: BillingTransaction[]
+  has_api_key?: boolean
+  api_keys?: Array<{
+    id: string
+    key_prefix: string
+    name: string
+    is_active: boolean
+    allowed_supplier_search: boolean
+    allowed_exact_product: boolean
+    allowed_procurement_report: boolean
+    spent_supplier_search: number
+    spent_exact_product: number
+    spent_procurement_report: number
+    total_spent: number
+    last_used_at?: string | null
+    created_at?: string | null
+  }>
   created_at?: string | null
   updated_at?: string | null
   onboarding?: {
@@ -138,6 +156,7 @@ type ClientUsage = {
     available_rub: number
   }
   effective_prices?: Record<string, { label: string; price_kopeks: number; price_rub: number; enabled: boolean; source: string }>
+  has_custom_tariffs?: boolean
 }
 
 type UsageCounter = {
@@ -235,6 +254,7 @@ type Job = {
   mode_label: string
   supplier_search_policy: string
   supplier_search_run_type: string
+  multi_item_mode?: string
   confirmation_kind?: string
   confirmation_outcome?: string
   offer_delivery_outcome?: string
@@ -422,11 +442,25 @@ type TariffPackage = {
   units: number
   price_kopeks: number
   price_rub: number
+  bonus_kopeks?: number
+  bonus_rub?: number
+  credit_kopeks?: number
+  credit_rub?: number
+  badge?: string
   description: string
   is_active: boolean
   sort_order: number
   created_at: string | null
   updated_at: string | null
+}
+
+function calculateBonusRub(amountRub: number): number {
+  if (!Number.isFinite(amountRub) || amountRub <= 0) return 0
+  if (amountRub >= 25000) return Math.round(amountRub * 0.5)
+  if (amountRub >= 10000) return 4000
+  if (amountRub >= 5000) return 1500
+  if (amountRub >= 3000) return 500
+  return 0
 }
 
 type BillingTransaction = {
@@ -661,7 +695,7 @@ const viewCopy: Record<View, { title: string; description: string }> = {
   },
   seo: {
     title: 'SEO и Трафик сайта',
-    description: 'Автоматический фоновый сбор данных Яндекс.Метрики и Вебмастера, поисковые фразы и накопление статистики.',
+    description: 'Автоматическая аналитика Метрики, Яндекс.Вебмастера и Google Search Console. Улучшения выполняем с агентом.',
   },
   outreach: {
     title: 'Лидогенерация и Рассылка',
@@ -1139,8 +1173,6 @@ export function App() {
   const [analytics, setAnalytics] = useState<BotAnalytics | null>(null)
   const [tariffs, setTariffs] = useState<TariffPackage[]>([])
   const [passwordResets, setPasswordResets] = useState<PasswordResetRequest[]>([])
-  const [seoAnalytics, setSeoAnalytics] = useState<SeoAnalytics | null>(null)
-  const [loadingSeo, setLoadingSeo] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showServerModal, setShowServerModal] = useState(false)
@@ -1210,12 +1242,6 @@ export function App() {
   }, [authenticated, view])
 
   useEffect(() => {
-    if (authenticated && view === 'seo' && !seoAnalytics && !loadingSeo) {
-      void loadSeoAnalytics()
-    }
-  }, [authenticated, view, seoAnalytics, loadingSeo])
-
-  useEffect(() => {
     if (authenticated && view === 'clients') {
       void api<Client[]>('/api/clients')
         .then(data => { if (data) setClients(data) })
@@ -1228,19 +1254,6 @@ export function App() {
 
   const isReady = authenticated
   const canLogin = username.trim().length > 0 && password.length > 0
-
-  async function loadSeoAnalytics(forceRefresh = false) {
-    if (!authenticated) return
-    setLoadingSeo(true)
-    try {
-      const data = await api<SeoAnalytics>(`/api/seo-analytics${forceRefresh ? '?refresh=true' : ''}`)
-      setSeoAnalytics(data)
-    } catch (err) {
-      console.error('Failed to load SEO analytics:', err)
-    } finally {
-      setLoadingSeo(false)
-    }
-  }
 
   async function loadAll(force = false) {
     if (!force && !authenticated) return
@@ -1650,13 +1663,14 @@ export function App() {
             onRefresh={loadAll}
           />
         )}
-        {isReady && view === 'seo' && <SeoView data={seoAnalytics} loading={loadingSeo} onRefresh={() => void loadSeoAnalytics(true)} />}
+        {isReady && view === 'seo' && <SeoTrafficView />}
         {isReady && view === 'clients' && (
           <ClientsView
             clients={clients}
             passwordResets={passwordResets}
             onChange={loadAll}
             onNavigateToClientJobs={handleNavigateToClientJobs}
+            onNavigateToMcp={() => setView('mcp')}
             isSyncing={isClientsSyncing}
             lastSyncAt={lastClientsSyncAt}
             onManualSync={handleManualClientsSync}
@@ -2207,1753 +2221,6 @@ function DashboardAttentionPanel({
   )
 }
 
-type RecommendationItem = {
-  id: string
-  category?: string
-  target?: string
-  title: string
-  current_text: string
-  proposed_text: string
-  rationale: string
-  impact?: string
-  status: 'pending' | 'applied' | 'rejected'
-  created_at?: string
-}
-
-type DailyMetricItem = {
-  date: string
-  clicks: number
-  shows: number
-  avg_position?: number
-  ctr_percent?: number
-  queries_count?: number
-  clicks_delta?: number
-  shows_delta?: number
-  pos_delta?: number
-  trend?: 'up' | 'down' | 'stable'
-}
-
-type CombinedDailyDynamic = {
-  date: string
-  total_clicks: number
-  total_shows: number
-  total_queries: number
-  yandex?: DailyMetricItem
-  google?: DailyMetricItem
-  yandex_pos?: number | null
-  google_pos?: number | null
-  yandex_trend?: 'up' | 'down' | 'stable'
-  google_trend?: 'up' | 'down' | 'stable'
-}
-
-type PhraseDynamicItem = {
-  text: string
-  engine: 'yandex' | 'google'
-  current_pos: number
-  prev_pos: number
-  delta: number
-  trend: 'up' | 'down' | 'stable'
-}
-
-type TodayEngineProgress = {
-  clicks: number
-  shows: number
-  avg_position: number
-  queries_count: number
-  clicks_delta: number
-  shows_delta: number
-  pos_delta: number
-  trend: 'up' | 'down' | 'stable'
-  data_date?: string
-}
-
-type TodayProgress = {
-  date: string
-  today_site_visits: number
-  today_site_users: number
-  today_site_pageviews: number
-  yandex: TodayEngineProgress
-  google: TodayEngineProgress
-  combined: {
-    clicks: number
-    shows: number
-    avg_position: number
-    queries_count: number
-    ranking_status: string
-  }
-}
-
-type SeoAnalytics = {
-  updated_at: string
-  collection_status: string
-  sample_size_ready: boolean
-  sample_visits: number
-  sample_target: number
-  today_progress?: TodayProgress
-  daily_dynamics?: CombinedDailyDynamic[]
-  phrase_dynamics?: PhraseDynamicItem[]
-  webmaster: {
-    sqi: number
-    searchable_pages: number
-    excluded_pages: number
-    top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
-    daily_dynamics?: DailyMetricItem[]
-    phrase_dynamics?: PhraseDynamicItem[]
-    growth_points?: {
-      text: string
-      shows: number
-      clicks: number
-      avg_position: number
-      wordstat_demand?: number
-      top3_potential_clicks?: number
-      priority?: 'high' | 'medium' | 'normal'
-      demand_source?: string
-      potential: string
-      action: string
-    }[]
-  }
-  google?: {
-    status: string
-    site_url: string
-    period_days: number
-    total_impressions: number
-    total_clicks: number
-    avg_position: number
-    avg_ctr_percent: number
-    top_queries: { text: string; shows: number; clicks: number; avg_position?: number; ctr_percent?: number }[]
-    daily_dynamics?: DailyMetricItem[]
-    phrase_dynamics?: PhraseDynamicItem[]
-    growth_points?: {
-      text: string
-      shows: number
-      clicks: number
-      avg_position: number
-      wordstat_demand?: number
-      top3_potential_clicks?: number
-      priority?: 'high' | 'medium' | 'normal'
-      potential: string
-      action: string
-    }[]
-    sitemaps?: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number }[]
-    error?: string
-  }
-  combined_queries?: {
-    text: string
-    yandex_pos?: number | null
-    yandex_shows: number
-    yandex_clicks: number
-    google_pos?: number | null
-    google_shows: number
-    google_clicks: number
-    total_shows: number
-    total_clicks: number
-    in_yandex: boolean
-    in_google: boolean
-  }[]
-  metrika: {
-    period_days: number
-    visits: number
-    users: number
-    pageviews: number
-    bounce_rate: number
-    avg_duration_seconds: number
-    sources: { name: string; visits: number; users: number }[]
-    top_pages: { path: string; visits: number; users: number; bounce_rate: number; avg_duration_seconds: number }[]
-    goals?: { id: number; name: string; type: string; reaches: number }[]
-    total_goal_reaches?: number
-    total_conversion_rate?: number
-  }
-  recommendations: RecommendationItem[]
-}
-
-function SeoView({ data, loading, onRefresh }: { data: SeoAnalytics | null; loading: boolean; onRefresh: () => void }) {
-  const [sendingDigest, setSendingDigest] = useState(false)
-  const [digestSuccess, setDigestSuccess] = useState('')
-  const [triggeringRecrawl, setTriggeringRecrawl] = useState(false)
-  const [recrawlMsg, setRecrawlMsg] = useState('')
-  const [querySearch, setQuerySearch] = useState('')
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
-  const [searchEngine, setSearchEngine] = useState<'all' | 'yandex' | 'google'>('all')
-  const [moduleFilter, setModuleFilter] = useState<'all' | 'suppliers' | 'analog' | 'analysis'>('all')
-  const [trendDays, setTrendDays] = useState<7 | 14 | 30>(14)
-
-  function classifyQuery(text: string): 'suppliers' | 'analog' | 'analysis' | 'other' {
-    const t = (text || '').toLowerCase()
-    if (t.includes('постав') || t.includes('производ') || t.includes('кп') || t.includes('коммерческ') || t.includes('запрос') || t.includes('счет') || t.includes('завод') || t.includes('фабрик') || t.includes('дилер') || t.includes('сбыт')) {
-      return 'suppliers'
-    }
-    if (t.includes('аналог') || t.includes('товар') || t.includes('эквивалент') || t.includes('гисп') || t.includes('образец') || t.includes('номенклатур') || t.includes('оборудован')) {
-      return 'analog'
-    }
-    if (t.includes('анализ') || t.includes('риск') || t.includes('документ') || t.includes('нмцк') || t.includes('44') || t.includes('223') || t.includes('актирован') || t.includes('контракт') || t.includes('тендер') || t.includes('закуп') || t.includes('вариаци') || t.includes('гаранти') || t.includes('реестр')) {
-      return 'analysis'
-    }
-    return 'other'
-  }
-
-  async function handleSendDigest() {
-    setSendingDigest(true)
-    setDigestSuccess('')
-    try {
-      const res = await api<{ ok: boolean; error?: string }>('/api/seo-analytics/send-digest', { method: 'POST' })
-      if (res?.ok) {
-        setDigestSuccess('Сводка отправлена вам в Telegram!')
-        setTimeout(() => setDigestSuccess(''), 4000)
-      } else {
-        alert(res?.error || 'Ошибка отправки в Telegram')
-      }
-    } catch (e) {
-      alert('Ошибка отправки в Telegram')
-    } finally {
-      setSendingDigest(false)
-    }
-  }
-
-  async function handleTriggerRecrawl() {
-    setTriggeringRecrawl(true)
-    setRecrawlMsg('')
-    try {
-      const res = await api<{ ok: boolean; submitted_count?: number; total_urls?: number; quota_remainder?: number; error?: string }>('/api/seo-analytics/recrawl', { method: 'POST' })
-      if (res?.ok) {
-        setRecrawlMsg(`Отправлено ${res.submitted_count}/${res.total_urls} страниц. Остаток квоты: ${res.quota_remainder}`)
-        setTimeout(() => setRecrawlMsg(''), 5000)
-      } else {
-        alert(res?.error || 'Ошибка отправки в очередь переобхода')
-      }
-    } catch (e) {
-      alert('Ошибка отправки в очередь переобхода')
-    } finally {
-      setTriggeringRecrawl(false)
-    }
-  }
-
-  async function handleRecAction(recId: string, action: 'applied' | 'rejected' | 'pending') {
-    setActionLoading(recId)
-    try {
-      const res = await api<{ ok: boolean; error?: string }>(`/api/seo-analytics/recommendations/${recId}/action`, {
-        method: 'POST',
-        body: JSON.stringify({ action })
-      })
-      if (res?.ok) {
-        onRefresh()
-      } else {
-        alert(res?.error || 'Ошибка обновления статуса')
-      }
-    } catch (e) {
-      alert('Ошибка обновления статуса')
-    } finally {
-      setActionLoading(null)
-    }
-  }
-
-  if (loading && !data) {
-    return <div className="empty"><Loader2 className="spin" size={24} /> Загрузка данных Яндекс.Метрики, Вебмастера и Google Search Console...</div>
-  }
-  if (!data) {
-    return (
-      <div className="empty">
-        <p>Данные аналитики пока не сформированы.</p>
-        <button onClick={onRefresh} className="primary" style={{ marginTop: 12 }}>
-          <RefreshCw size={14} /> Запросить данные
-        </button>
-      </div>
-    )
-  }
-
-  const { webmaster, metrika, google, combined_queries } = data
-  const durationMin = Math.floor((metrika.avg_duration_seconds || 0) / 60)
-  const durationSec = (metrika.avg_duration_seconds || 0) % 60
-  const durationFormatted = `${durationMin} мин ${durationSec} сек`
-
-  const metrics = [
-    { label: 'Посетители сайта', value: `${metrika.users || 0} чел.`, note: `за последние ${metrika.period_days || 30} дней`, icon: Users },
-    { label: 'Всего визитов', value: metrika.visits || 0, note: `${metrika.pageviews || 0} просмотров страниц`, icon: Globe },
-    { label: 'Конверсия в цели', value: `${metrika.total_conversion_rate || 0}%`, note: `${metrika.total_goal_reaches || 0} целевых действий`, icon: CheckCircle2 },
-    { label: 'Время на сайте', value: durationFormatted, note: 'средняя длительность визита', icon: ShieldCheck },
-    { label: 'Отказы', value: `${metrika.bounce_rate || 0}%`, note: 'ушли в первые 15 секунд', icon: ArrowDown },
-  ]
-
-  const yandexGrowthPoints = (webmaster.growth_points || []).map(g => ({ ...g, engine: 'yandex' as const }))
-  const googleGrowthPoints = (google?.growth_points || []).map(g => ({ ...g, engine: 'google' as const }))
-  
-  const allGrowthPoints = searchEngine === 'yandex'
-    ? yandexGrowthPoints
-    : searchEngine === 'google'
-    ? googleGrowthPoints
-    : [...yandexGrowthPoints, ...googleGrowthPoints]
-
-  const displayGrowthPoints = moduleFilter === 'all'
-    ? allGrowthPoints
-    : allGrowthPoints.filter(g => classifyQuery(g.text) === moduleFilter)
-
-  const goals = metrika.goals || []
-  const yandexQueries = webmaster.top_queries || []
-  const googleQueries = google?.top_queries || []
-  const combinedQueries = combined_queries || []
-
-  const todayProg = data.today_progress
-  const dailyDynamicsAll = data.daily_dynamics || []
-  const slicedDynamics = dailyDynamicsAll.slice(-trendDays)
-  const reversedDynamics = [...slicedDynamics].reverse()
-  const phraseDynamicsAll = data.phrase_dynamics || []
-  const filteredPhrases = searchEngine === 'all'
-    ? phraseDynamicsAll
-    : phraseDynamicsAll.filter(p => p.engine === searchEngine)
-
-  const currentClicks = searchEngine === 'all'
-    ? (todayProg?.combined.clicks ?? (metrika.visits || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.clicks ?? 0)
-    : (todayProg?.google.clicks ?? (google?.total_clicks || 0))
-
-  const currentClicksDelta = searchEngine === 'all'
-    ? ((todayProg?.yandex.clicks_delta || 0) + (todayProg?.google.clicks_delta || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.clicks_delta || 0)
-    : (todayProg?.google.clicks_delta || 0)
-
-  const currentShows = searchEngine === 'all'
-    ? (todayProg?.combined.shows ?? ((google?.total_impressions || 0) + 50))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.shows ?? 50)
-    : (todayProg?.google.shows ?? (google?.total_impressions || 0))
-
-  const currentShowsDelta = searchEngine === 'all'
-    ? ((todayProg?.yandex.shows_delta || 0) + (todayProg?.google.shows_delta || 0))
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.shows_delta || 0)
-    : (todayProg?.google.shows_delta || 0)
-
-  const currentPos = searchEngine === 'all'
-    ? (todayProg?.combined.avg_position || 14.0)
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.avg_position || 10.6)
-    : (todayProg?.google.avg_position || (google?.avg_position || 0.0))
-
-  const currentPosDelta = searchEngine === 'all'
-    ? Math.round((((todayProg?.yandex.pos_delta || 0) + (todayProg?.google.pos_delta || 0)) / 2) * 10) / 10
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.pos_delta || 0)
-    : (todayProg?.google.pos_delta || 0)
-
-  const currentQueries = searchEngine === 'all'
-    ? (todayProg?.combined.queries_count || combinedQueries.length)
-    : searchEngine === 'yandex'
-    ? (todayProg?.yandex.queries_count || yandexQueries.length)
-    : (todayProg?.google.queries_count || googleQueries.length)
-
-  const maxChartShows = Math.max(...slicedDynamics.map(d => {
-    if (searchEngine === 'yandex') return d.yandex?.shows || 0
-    if (searchEngine === 'google') return d.google?.shows || 0
-    return d.total_shows || 0
-  }), 10)
-
-  function formatDynamicsDate(dStr: string) {
-    if (!dStr) return '—'
-    try {
-      const parts = dStr.split('-')
-      if (parts.length === 3) {
-        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
-        const today = new Date()
-        if (d.toDateString() === today.toDateString()) return 'Сегодня'
-        const yest = new Date(today)
-        yest.setDate(today.getDate() - 1)
-        if (d.toDateString() === yest.toDateString()) return 'Вчера'
-        return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
-      }
-      return dStr
-    } catch {
-      return dStr
-    }
-  }
-
-  // Filtered queries based on engine and search input
-  const rawQueriesToFilter = searchEngine === 'yandex'
-    ? yandexQueries.map(q => ({
-        text: q.text,
-        shows: q.shows,
-        clicks: q.clicks,
-        yandex_pos: q.avg_position,
-        google_pos: null,
-        total_shows: q.shows,
-        total_clicks: q.clicks,
-        in_yandex: true,
-        in_google: false
-      }))
-    : searchEngine === 'google'
-    ? googleQueries.map(q => ({
-        text: q.text,
-        shows: q.shows,
-        clicks: q.clicks,
-        yandex_pos: null,
-        google_pos: q.avg_position,
-        total_shows: q.shows,
-        total_clicks: q.clicks,
-        in_yandex: false,
-        in_google: true
-      }))
-    : combinedQueries
-
-  const supplierCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'suppliers').length
-  const analogCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'analog').length
-  const analysisCount = rawQueriesToFilter.filter(q => classifyQuery(q.text) === 'analysis').length
-
-  const moduleFilteredQueries = moduleFilter === 'all'
-    ? rawQueriesToFilter
-    : rawQueriesToFilter.filter(q => classifyQuery(q.text) === moduleFilter)
-
-  const filteredQueries = querySearch.trim()
-    ? moduleFilteredQueries.filter(q => q.text.toLowerCase().includes(querySearch.toLowerCase().trim()))
-    : moduleFilteredQueries
-
-  const recs = data.recommendations || []
-
-  return (
-    <section className="stack">
-      {/* 1. STATUS BANNER & ACTION BAR */}
-      <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid var(--accent)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-              <span className="status-badge" style={{ background: '#e5f4f3', color: '#075b63', fontWeight: 'bold', padding: '3px 8px', borderRadius: 6 }}>
-                ● Автоматический сбор активен
-              </span>
-              <small style={{ color: 'var(--muted)' }}>
-                Обновлено: {new Date(data.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-              </small>
-              {digestSuccess && <span style={{ color: '#075b63', fontWeight: 'bold', fontSize: 12 }}>✓ {digestSuccess}</span>}
-              {recrawlMsg && <span style={{ color: '#047857', fontWeight: 'bold', fontSize: 12 }}>⚡ {recrawlMsg}</span>}
-            </div>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)' }}>
-              Сервер самостоятельно опрашивает Яндекс.Метрику, Вебмастер, Wordstat и Google Search Console API в фоновом режиме.
-            </p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <button className="secondary small-text" onClick={() => void handleTriggerRecrawl()} disabled={triggeringRecrawl} title="Отправить все страницы sitemap в очередь переобхода Яндекса">
-              <RefreshCw size={13} className={triggeringRecrawl ? 'spin' : ''} /> {triggeringRecrawl ? 'Отправка...' : '⚡ Переобход (Recrawl)'}
-            </button>
-            <button className="secondary small-text" onClick={() => void handleSendDigest()} disabled={sendingDigest}>
-              <Bot size={14} /> {sendingDigest ? 'Отправка...' : 'Отправить в Telegram'}
-            </button>
-            <button className="secondary small-text" onClick={onRefresh} disabled={loading}>
-              <RefreshCw size={13} className={loading ? 'spin' : ''} /> {loading ? 'Обновление...' : 'Обновить сейчас'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. METRIC CARDS (5 METRICS) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        {metrics.map(item => {
-          const Icon = item.icon
-          return (
-            <div className="metric" key={item.label}>
-              <Icon size={20} />
-              <div>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.note}</small>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* 2.1 SEARCH ENGINES OVERVIEW CARDS */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-        <div style={{ background: '#fff', border: '1px solid #fed7aa', borderLeft: '4px solid #ea580c', borderRadius: 8, padding: '12px 16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#9a3412' }}>🔴 Яндекс Поиск</span>
-            <span className="pill tg" style={{ fontSize: 11 }}>ИКС: {webmaster.sqi || 10}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в ТОПе:</span>
-              <strong style={{ fontSize: 16, color: '#0f172a' }}>{yandexQueries.length}</strong>
-            </div>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Точек роста ТОП-3:</span>
-              <strong style={{ fontSize: 16, color: '#c2410c' }}>{yandexGrowthPoints.length}</strong>
-            </div>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Страниц в индексе:</span>
-              <strong style={{ fontSize: 16, color: '#0f766e' }}>{webmaster.searchable_pages || 32}</strong>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ background: '#fff', border: '1px solid #bfdbfe', borderLeft: '4px solid #2563eb', borderRadius: 8, padding: '12px 16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8' }}>🔵 Google Search Console</span>
-            <span className="pill web" style={{ fontSize: 11 }}>API v1: {google?.status === 'active' ? 'Активен' : 'Подключение'}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Показы в Google:</span>
-              <strong style={{ fontSize: 16, color: '#0f172a' }}>{google?.total_impressions || 0}</strong>
-            </div>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Клики из Google:</span>
-              <strong style={{ fontSize: 16, color: '#047857' }}>{google?.total_clicks || 0}</strong>
-            </div>
-            <div>
-              <span style={{ fontSize: 11, color: 'var(--muted)', display: 'block' }}>Фраз в выдаче:</span>
-              <strong style={{ fontSize: 16, color: '#1d4ed8' }}>{googleQueries.length}</strong>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 2.2 SEARCH ENGINE FILTER TAB BAR */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Поисковая система:</span>
-          <button
-            className={searchEngine === 'all' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setSearchEngine('all')}
-            style={{ borderRadius: 20, padding: '4px 12px' }}
-          >
-            🌐 Все поисковики ({combinedQueries.length || (yandexQueries.length + googleQueries.length)})
-          </button>
-          <button
-            className={searchEngine === 'yandex' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setSearchEngine('yandex')}
-            style={{ borderRadius: 20, padding: '4px 12px', background: searchEngine === 'yandex' ? '#ea580c' : undefined, borderColor: searchEngine === 'yandex' ? '#ea580c' : undefined, color: searchEngine === 'yandex' ? '#fff' : undefined }}
-          >
-            🔴 Яндекс ({yandexQueries.length})
-          </button>
-          <button
-            className={searchEngine === 'google' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setSearchEngine('google')}
-            style={{ borderRadius: 20, padding: '4px 12px', background: searchEngine === 'google' ? '#2563eb' : undefined, borderColor: searchEngine === 'google' ? '#2563eb' : undefined, color: searchEngine === 'google' ? '#fff' : undefined }}
-          >
-            🔵 Google ({googleQueries.length})
-          </button>
-        </div>
-        <small style={{ color: 'var(--muted)' }}>
-          {searchEngine === 'all' ? 'Объединенный анализ видимости' : searchEngine === 'yandex' ? 'Поисковые данные Яндекса' : 'Поисковые данные Google'}
-        </small>
-      </div>
-
-      {/* 2.2b PLATFORM MODULES SEGMENTATION BAR */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 14px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Модуль платформы:</span>
-          <button
-            className={moduleFilter === 'all' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setModuleFilter('all')}
-            style={{ borderRadius: 20, padding: '4px 12px' }}
-          >
-            📦 Все 3 модуля ({rawQueriesToFilter.length})
-          </button>
-          <button
-            className={moduleFilter === 'suppliers' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setModuleFilter('suppliers')}
-            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'suppliers' ? '#0f766e' : undefined, borderColor: moduleFilter === 'suppliers' ? '#0f766e' : undefined, color: moduleFilter === 'suppliers' ? '#fff' : '#0f766e' }}
-            title="Основная функция: поиск прямых заводов, контакты отделов сбыта и запрос КП"
-          >
-            🏭 1. Поиск поставщиков ({supplierCount})
-          </button>
-          <button
-            className={moduleFilter === 'analog' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setModuleFilter('analog')}
-            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'analog' ? '#b45309' : undefined, borderColor: moduleFilter === 'analog' ? '#b45309' : undefined, color: moduleFilter === 'analog' ? '#fff' : '#b45309' }}
-            title="Вторая функция: сопоставление характеристик ТЗ, ГОСТ/ТУ/ГИСП и отчет в Word"
-          >
-            🔍 2. Подбор аналогов ({analogCount})
-          </button>
-          <button
-            className={moduleFilter === 'analysis' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setModuleFilter('analysis')}
-            style={{ borderRadius: 20, padding: '4px 12px', background: moduleFilter === 'analysis' ? '#1d4ed8' : undefined, borderColor: moduleFilter === 'analysis' ? '#1d4ed8' : undefined, color: moduleFilter === 'analysis' ? '#fff' : '#1d4ed8' }}
-            title="Третья функция: аудит документации, выявление скрытых рисков 44/223-ФЗ и расчет НМЦК"
-          >
-            📋 3. Анализ документации ({analysisCount})
-          </button>
-        </div>
-        <small style={{ color: 'var(--muted)' }}>
-          {moduleFilter === 'all' ? 'Показаны все поисковые фразы' : moduleFilter === 'suppliers' ? 'Фокус: поиск поставщиков и счетов' : moduleFilter === 'analog' ? 'Фокус: подбор эквивалентов по ТЗ' : 'Фокус: аудит рисков 44-ФЗ и расчет НМЦК'}
-        </small>
-      </div>
-
-      {/* 2.3 TODAY PROGRESS & KEY INDICATORS */}
-      <div className="form-panel full-width-panel" style={{ borderLeft: '4px solid #0f766e', background: 'linear-gradient(135deg, #f0fdfa, #f8fafc)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-          <div>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17, color: '#0f766e' }}>
-              ⚡ Прогресс на сегодняшний день ({formatDynamicsDate(todayProg?.date || '')})
-            </h2>
-            <p className="field-help" style={{ margin: '4px 0 0 0' }}>
-              Мгновенный срез показателей для {searchEngine === 'all' ? 'всех поисковых систем' : searchEngine === 'yandex' ? 'Яндекс Поиска' : 'Google Search Console'}
-            </p>
-          </div>
-          <span className="pill web" style={{ fontSize: 12, padding: '4px 10px', background: '#e6fffa', color: '#047857', borderColor: '#a7f3d0' }}>
-            {todayProg?.combined.ranking_status || '🟢 Позиции стабильны'}
-          </span>
-        </div>
-
-        <div className="seo-today-grid">
-          {/* Card 1: Clicks */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🖱️ Клики из поиска</span>
-            <div className="seo-today-val">
-              <span>{currentClicks}</span>
-              {currentClicksDelta !== 0 && (
-                <span className={`seo-delta-badge ${currentClicksDelta > 0 ? 'up' : 'down'}`}>
-                  {currentClicksDelta > 0 ? `+${currentClicksDelta}` : currentClicksDelta} к вчера
-                </span>
-              )}
-              {currentClicksDelta === 0 && (
-                <span className="seo-delta-badge stable">0 к вчера</span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.clicks || 0} • 🔵 Google: ${todayProg?.google.clicks || 0}`
-                : searchEngine === 'yandex' ? 'Яндекс.Метрика + Вебмастер' : 'Google Search Console API'}
-            </small>
-          </div>
-
-          {/* Card 2: Shows */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>👁️ Показы в выдаче</span>
-            <div className="seo-today-val">
-              <span>{currentShows}</span>
-              {currentShowsDelta !== 0 && (
-                <span className={`seo-delta-badge ${currentShowsDelta > 0 ? 'up' : 'down'}`}>
-                  {currentShowsDelta > 0 ? `+${currentShowsDelta}` : currentShowsDelta} к вчера
-                </span>
-              )}
-              {currentShowsDelta === 0 && (
-                <span className="seo-delta-badge stable">0 к вчера</span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.shows || 0} • 🔵 Google: ${todayProg?.google.shows || 0}`
-                : 'Показы в результатах поиска'}
-            </small>
-          </div>
-
-          {/* Card 3: Avg Position */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🎯 Средняя позиция сайта</span>
-            <div className="seo-today-val">
-              <span>{currentPos}</span>
-              {currentPosDelta > 0 && (
-                <span className="seo-delta-badge up" title="Позиция стала выше (номер уменьшился)">
-                  <TrendingUp size={12} /> ▲ +{currentPosDelta} поз.
-                </span>
-              )}
-              {currentPosDelta < 0 && (
-                <span className="seo-delta-badge down" title="Позиция просела">
-                  <TrendingDown size={12} /> ▼ -{Math.abs(currentPosDelta)} поз.
-                </span>
-              )}
-              {currentPosDelta === 0 && (
-                <span className="seo-delta-badge stable">
-                  <Minus size={12} /> ▬ Стабильно
-                </span>
-              )}
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {currentPosDelta > 0
-                ? '🟢 Ранжирование улучшается'
-                : currentPosDelta < 0
-                ? '🔴 Небольшое снижение позиций'
-                : '⚪ Результаты стабильны'}
-            </small>
-          </div>
-
-          {/* Card 4: Queries Count */}
-          <div className="seo-today-card">
-            <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>🗂️ Фраз в выдаче</span>
-            <div className="seo-today-val">
-              <span>{currentQueries}</span>
-              <span className="pill web" style={{ fontSize: 11 }}>В ТОП-100</span>
-            </div>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>
-              {searchEngine === 'all'
-                ? `🔴 Яндекс: ${todayProg?.yandex.queries_count || yandexQueries.length} • 🔵 Google: ${todayProg?.google.queries_count || googleQueries.length}`
-                : 'Поисковые запросы, по которым сайт ранжируется'}
-            </small>
-          </div>
-        </div>
-      </div>
-
-      {/* 2.4 DAILY DYNAMICS & TRENDS (CHART + TIMELINE TABLE) */}
-      <div className="form-panel full-width-panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
-            📈 Динамика ранжирования и показов по дням ({searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс' : 'Google'})
-          </h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: 'var(--muted)', marginRight: 4 }}>Период:</span>
-            <button
-              className={trendDays === 7 ? 'primary small-text' : 'secondary small-text'}
-              onClick={() => setTrendDays(7)}
-              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
-            >
-              7 дней
-            </button>
-            <button
-              className={trendDays === 14 ? 'primary small-text' : 'secondary small-text'}
-              onClick={() => setTrendDays(14)}
-              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
-            >
-              14 дней
-            </button>
-            <button
-              className={trendDays === 30 ? 'primary small-text' : 'secondary small-text'}
-              onClick={() => setTrendDays(30)}
-              style={{ borderRadius: 16, padding: '2px 10px', fontSize: 11 }}
-            >
-              30 дней
-            </button>
-          </div>
-        </div>
-        <p className="field-help" style={{ marginBottom: 10 }}>
-          Посуточный тренд показов, переходов и изменений позиций. Показывает, улучшаются или ухудшаются позиции сайта день за днем.
-        </p>
-
-        {/* Visual Bar Trend */}
-        {slicedDynamics.length > 0 && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>
-              <span>📊 График показов и тренда позиций по дням</span>
-              <span>Максимум за период: <strong>{maxChartShows}</strong> показов/день</span>
-            </div>
-            <div className="seo-chart-container">
-              {slicedDynamics.map((d, i) => {
-                const shows = searchEngine === 'yandex'
-                  ? (d.yandex?.shows || 0)
-                  : searchEngine === 'google'
-                  ? (d.google?.shows || 0)
-                  : (d.total_shows || 0)
-                const clicks = searchEngine === 'yandex'
-                  ? (d.yandex?.clicks || 0)
-                  : searchEngine === 'google'
-                  ? (d.google?.clicks || 0)
-                  : (d.total_clicks || 0)
-                const pos = searchEngine === 'yandex'
-                  ? (d.yandex_pos || d.yandex?.avg_position)
-                  : searchEngine === 'google'
-                  ? (d.google_pos || d.google?.avg_position)
-                  : (d.yandex_pos && d.google_pos ? Math.round(((d.yandex_pos + d.google_pos)/2)*10)/10 : (d.yandex_pos || d.google_pos))
-                const trend = searchEngine === 'yandex'
-                  ? (d.yandex?.trend || d.yandex_trend)
-                  : searchEngine === 'google'
-                  ? (d.google?.trend || d.google_trend)
-                  : (d.yandex_trend === 'up' || d.google_trend === 'up' ? 'up' : (d.yandex_trend === 'down' || d.google_trend === 'down' ? 'down' : 'stable'))
-
-                const barHeight = Math.max(8, Math.round((shows / maxChartShows) * 56))
-                const barColor = trend === 'up' ? '#059669' : trend === 'down' ? '#dc2626' : (searchEngine === 'google' ? '#2563eb' : searchEngine === 'yandex' ? '#ea580c' : '#0f766e')
-                const titleText = `${d.date}: ${shows} показов, ${clicks} кликов, ср. поз: ${pos || '—'}`
-
-                return (
-                  <div key={i} className="seo-chart-col" title={titleText}>
-                    <div
-                      className="seo-chart-bar"
-                      style={{
-                        height: `${barHeight}px`,
-                        backgroundColor: barColor,
-                        opacity: shows > 0 ? 1 : 0.25
-                      }}
-                    />
-                    <span className="seo-chart-date">{d.date.slice(5)}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Daily Dynamics Timeline Table */}
-        {reversedDynamics.length > 0 ? (
-          <div className="seo-table-wrap">
-            <table className="seo-table">
-              <thead>
-                <tr>
-                  <th style={{ width: '16%' }}>Дата</th>
-                  <th style={{ width: '14%' }}>Клики</th>
-                  <th style={{ width: '14%' }}>Показы</th>
-                  <th style={{ width: searchEngine === 'all' ? '24%' : '20%' }}>Средняя позиция</th>
-                  <th style={{ width: '14%' }}>Фраз в поиске</th>
-                  <th style={{ width: searchEngine === 'all' ? '18%' : '22%' }}>Динамика ранжирования</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reversedDynamics.map((row, idx) => {
-                  const yData: Partial<DailyMetricItem> = row.yandex || {}
-                  const gData: Partial<DailyMetricItem> = row.google || {}
-
-                  const clicks = searchEngine === 'yandex'
-                    ? (yData.clicks ?? 0)
-                    : searchEngine === 'google'
-                    ? (gData.clicks ?? 0)
-                    : row.total_clicks
-                  const clicksDelta = searchEngine === 'yandex'
-                    ? yData.clicks_delta
-                    : searchEngine === 'google'
-                    ? gData.clicks_delta
-                    : ((yData.clicks_delta || 0) + (gData.clicks_delta || 0))
-
-                  const shows = searchEngine === 'yandex'
-                    ? (yData.shows ?? 0)
-                    : searchEngine === 'google'
-                    ? (gData.shows ?? 0)
-                    : row.total_shows
-                  const showsDelta = searchEngine === 'yandex'
-                    ? yData.shows_delta
-                    : searchEngine === 'google'
-                    ? gData.shows_delta
-                    : ((yData.shows_delta || 0) + (gData.shows_delta || 0))
-
-                  const yPos = row.yandex_pos || yData.avg_position
-                  const gPos = row.google_pos || gData.avg_position
-                  const yPosDelta = yData.pos_delta
-                  const gPosDelta = gData.pos_delta
-
-                  const queriesCount = searchEngine === 'yandex'
-                    ? (yData.queries_count || 0)
-                    : searchEngine === 'google'
-                    ? (gData.queries_count || 0)
-                    : row.total_queries
-
-                  const engineTrend = searchEngine === 'yandex'
-                    ? yData.trend
-                    : searchEngine === 'google'
-                    ? gData.trend
-                    : (yData.trend === 'up' || gData.trend === 'up' ? 'up' : (yData.trend === 'down' || gData.trend === 'down' ? 'down' : 'stable'))
-
-                  return (
-                    <tr key={idx}>
-                      <td>
-                        <strong>{formatDynamicsDate(row.date)}</strong>
-                        <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>{row.date}</small>
-                      </td>
-                      <td>
-                        <strong style={{ fontSize: 14 }}>{clicks}</strong>
-                        {clicksDelta !== undefined && clicksDelta !== 0 && (
-                          <span className={`seo-delta-badge ${clicksDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
-                            {clicksDelta > 0 ? `+${clicksDelta}` : clicksDelta}
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        <strong style={{ fontSize: 14 }}>{shows}</strong>
-                        {showsDelta !== undefined && showsDelta !== 0 && (
-                          <span className={`seo-delta-badge ${showsDelta > 0 ? 'up' : 'down'}`} style={{ marginLeft: 6 }}>
-                            {showsDelta > 0 ? `+${showsDelta}` : showsDelta}
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {searchEngine === 'all' ? (
-                          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                            <div>
-                              <small style={{ color: '#c2410c', display: 'block', fontSize: 10, fontWeight: 700 }}>ЯНДЕКС</small>
-                              {yPos ? (
-                                <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
-                                  {yPos}
-                                </span>
-                              ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            </div>
-                            <div>
-                              <small style={{ color: '#1d4ed8', display: 'block', fontSize: 10, fontWeight: 700 }}>GOOGLE</small>
-                              {gPos ? (
-                                <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
-                                  {gPos}
-                                </span>
-                              ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            </div>
-                          </div>
-                        ) : searchEngine === 'yandex' ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {yPos ? (
-                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
-                                {yPos} место
-                              </span>
-                            ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            {yPosDelta !== undefined && yPosDelta !== 0 && (
-                              <span className={`seo-delta-badge ${yPosDelta > 0 ? 'up' : 'down'}`}>
-                                {yPosDelta > 0 ? `▲ +${yPosDelta}` : `▼ ${yPosDelta}`}
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {gPos ? (
-                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
-                                {gPos} место
-                              </span>
-                            ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            {gPosDelta !== undefined && gPosDelta !== 0 && (
-                              <span className={`seo-delta-badge ${gPosDelta > 0 ? 'up' : 'down'}`}>
-                                {gPosDelta > 0 ? `▲ +${gPosDelta}` : `▼ ${gPosDelta}`}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>{queriesCount}</span> <small style={{ color: 'var(--muted)' }}>фраз</small>
-                      </td>
-                      <td>
-                        {engineTrend === 'up' ? (
-                          <span className="seo-delta-badge up" style={{ padding: '4px 8px' }}>
-                            <TrendingUp size={12} /> 🟢 Позиции растут
-                          </span>
-                        ) : engineTrend === 'down' ? (
-                          <span className="seo-delta-badge down" style={{ padding: '4px 8px' }}>
-                            <TrendingDown size={12} /> 🔴 Снижение позиций
-                          </span>
-                        ) : (
-                          <span className="seo-delta-badge stable" style={{ padding: '4px 8px' }}>
-                            <Minus size={12} /> ⚪ Стабильно
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="inline-note" style={{ padding: '12px 0' }}>
-            Накапливается подневная статистика ранжирования.
-          </div>
-        )}
-      </div>
-
-      {/* 2.5 PHRASE MOVEMENTS (WHO ROSE, WHO DROPPED) */}
-      {filteredPhrases.length > 0 && (
-        <div className="form-panel full-width-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
-              🎯 Динамика позиций по фразам (Кто вырос, кто просел)
-            </h2>
-            <span className="pill web" style={{ fontSize: 11 }}>
-              {filteredPhrases.length} фраз с изменением позиций
-            </span>
-          </div>
-          <p className="field-help" style={{ marginBottom: 10 }}>
-            Конкретные поисковые запросы, изменившие позиции в Яндексе и Google за последние дни.
-          </p>
-
-          <div className="seo-table-wrap">
-            <table className="seo-table">
-              <thead>
-                <tr>
-                  <th style={{ width: '40%' }}>Поисковая фраза</th>
-                  <th style={{ width: '15%' }}>Поисковик</th>
-                  <th style={{ width: '15%' }}>Текущая позиция</th>
-                  <th style={{ width: '15%' }}>Предыдущая</th>
-                  <th style={{ width: '15%' }}>Изменение</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredPhrases.slice(0, 15).map((p, pIdx) => {
-                  const isUp = p.delta > 0
-                  return (
-                    <tr key={pIdx}>
-                      <td>
-                        <strong style={{ fontSize: 13, color: '#0f172a' }}>«{p.text}»</strong>
-                      </td>
-                      <td>
-                        {p.engine === 'google' ? (
-                          <span className="pill web" style={{ fontSize: 11, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
-                            🔵 Google
-                          </span>
-                        ) : (
-                          <span className="pill tg" style={{ fontSize: 11, background: '#fff7ed', color: '#c2410c', borderColor: '#ffedd5' }}>
-                            🔴 Яндекс
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`seo-pos-badge ${p.current_pos <= 3.5 ? 'top3' : p.current_pos <= 10.5 ? 'growth' : 'other'}`}>
-                          {p.current_pos} место
-                        </span>
-                      </td>
-                      <td>
-                        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{p.prev_pos} место</span>
-                      </td>
-                      <td>
-                        {isUp ? (
-                          <span className="seo-delta-badge up">
-                            <TrendingUp size={12} /> ▲ +{p.delta} поз.
-                          </span>
-                        ) : (
-                          <span className="seo-delta-badge down">
-                            <TrendingDown size={12} /> ▼ {p.delta} поз.
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* 3. FULL-WIDTH TABLE: GROWTH POINTS WITH WORDSTAT DEMAND */}
-      <div className="form-panel full-width-panel" style={{ background: 'linear-gradient(135deg, #fbfdfc, #f4faf8)', border: '1px solid #b8c8c5' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 17 }}>
-            🔥 Точки быстрого роста (Потенциал выхода в ТОП-3)
-          </h2>
-          <span className="pill tg" style={{ fontSize: 11 }}>
-            {searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс (поз. 4–10)' : 'Google (поз. 4–20)'}
-          </span>
-        </div>
-        <p className="field-help" style={{ marginBottom: 12 }}>
-          По этим запросам поисковики уже выводят сайт близко к ТОП-3. Дожим в ТОП-3 по этим фразам обеспечит основной приток целевых B2B-клиентов.
-        </p>
-        
-        {displayGrowthPoints.length > 0 ? (
-          <div className="seo-table-wrap">
-            <table className="seo-table">
-              <thead>
-                <tr>
-                  <th style={{ width: '30%' }}>Поисковая фраза</th>
-                  <th style={{ width: '12%' }}>Поисковик</th>
-                  <th style={{ width: '11%' }}>Позиция</th>
-                  <th style={{ width: '10%' }}>Показы</th>
-                  <th style={{ width: '18%' }}>Спрос Вордстат / Рынок</th>
-                  <th style={{ width: '14%' }}>Потенциал ТОП-3</th>
-                  <th style={{ width: '15%' }}>SEO-Приоритет</th>
-                </tr>
-              </thead>
-              <tbody>
-                {displayGrowthPoints.map((g, idx) => {
-                  const isHighPriority = g.priority === 'high' || (idx === 0 && (g.wordstat_demand || 0) > 0)
-                  const demand = g.wordstat_demand || 0
-                  const potentialClicks = g.top3_potential_clicks || Math.round(demand * 0.35)
-                  const isGoogle = (g as any).engine === 'google'
-                  return (
-                    <tr key={idx} className={isHighPriority ? 'priority-row-high' : ''}>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <strong style={{ fontSize: 14, color: '#0f172a' }}>«{g.text}»</strong>
-                          {isHighPriority && <span className="wordstat-badge-top">🔥 Приоритет №1</span>}
-                          {classifyQuery(g.text) === 'suppliers' && (
-                            <span className="pill tg" style={{ fontSize: 10, padding: '1px 6px', background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0' }}>
-                              🏭 Поставщики
-                            </span>
-                          )}
-                          {classifyQuery(g.text) === 'analog' && (
-                            <span className="pill balance" style={{ fontSize: 10, padding: '1px 6px', background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
-                              🔍 Аналоги
-                            </span>
-                          )}
-                          {classifyQuery(g.text) === 'analysis' && (
-                            <span className="pill web" style={{ fontSize: 10, padding: '1px 6px', background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
-                              📋 Анализ
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        {isGoogle ? (
-                          <span className="pill web" style={{ fontSize: 11, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>🔵 Google</span>
-                        ) : (
-                          <span className="pill tg" style={{ fontSize: 11, background: '#fff7ed', color: '#c2410c', borderColor: '#ffedd5' }}>🔴 Яндекс</span>
-                        )}
-                      </td>
-                      <td>
-                        <span className="seo-pos-badge growth">{g.avg_position} место</span>
-                      </td>
-                      <td>
-                        <strong style={{ fontSize: 14 }}>{g.shows}</strong> <small style={{ color: 'var(--muted)' }}>показов</small>
-                      </td>
-                      <td>
-                        <span className="wordstat-demand-val">{demand.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>запр./мес</small>
-                      </td>
-                      <td>
-                        <span className="wordstat-potential-val">+{potentialClicks.toLocaleString('ru-RU')}</span> <small style={{ color: 'var(--muted)' }}>кл./мес (35%)</small>
-                      </td>
-                      <td>
-                        {isHighPriority ? (
-                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px', background: '#fef3c7', color: '#92400e', borderColor: '#fde68a' }}>
-                            SEO-дожим в ТОП-3
-                          </span>
-                        ) : (
-                          <span className="pill balance" style={{ fontSize: 11, padding: '3px 8px' }}>
-                            Дожать в ТОП-3
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="inline-note" style={{ padding: '12px 0' }}>
-            Идет накопление истории позиций. Как только запросы поднимутся в диапазон точек роста, система автоматически сформирует список.
-          </div>
-        )}
-      </div>
-
-      {/* 4. FULL-WIDTH TABLE: ALL SEARCH QUERIES WITH SEARCH FILTER */}
-      <div className="form-panel full-width-panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>
-            🔎 Все поисковые фразы и позиции ({searchEngine === 'all' ? 'Яндекс + Google' : searchEngine === 'yandex' ? 'Яндекс' : 'Google'})
-          </h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input
-              type="text"
-              placeholder="🔍 Поиск по фразам..."
-              value={querySearch}
-              onChange={e => setQuerySearch(e.target.value)}
-              style={{ maxWidth: 220, minHeight: 32, padding: '4px 10px', fontSize: 12, borderRadius: 6 }}
-            />
-            <span className="pill web" style={{ fontSize: 11 }}>{filteredQueries.length} из {rawQueriesToFilter.length} запросов</span>
-          </div>
-        </div>
-        <p className="field-help" style={{ marginBottom: 12 }}>
-          Точные поисковые запросы реальных людей, средняя позиция показа и клики в поисковых системах
-        </p>
-
-        {filteredQueries.length > 0 ? (
-          <div className="seo-table-wrap">
-            <table className="seo-table">
-              <thead>
-                <tr>
-                  <th style={{ width: searchEngine === 'all' ? '38%' : '45%' }}>Поисковый запрос</th>
-                  {searchEngine === 'all' ? (
-                    <>
-                      <th style={{ width: '13%' }}>🔴 Позиция Яндекс</th>
-                      <th style={{ width: '13%' }}>🔵 Позиция Google</th>
-                      <th style={{ width: '13%' }}>Показы всего</th>
-                      <th style={{ width: '10%' }}>Клики</th>
-                      <th style={{ width: '13%' }}>Статус</th>
-                    </>
-                  ) : searchEngine === 'yandex' ? (
-                    <>
-                      <th style={{ width: '18%' }}>Позиция в Яндексе</th>
-                      <th style={{ width: '15%' }}>Показы в Яндексе</th>
-                      <th style={{ width: '12%' }}>Клики</th>
-                      <th style={{ width: '15%' }}>Статус</th>
-                    </>
-                  ) : (
-                    <>
-                      <th style={{ width: '18%' }}>Позиция в Google</th>
-                      <th style={{ width: '15%' }}>Показы в Google</th>
-                      <th style={{ width: '12%' }}>Клики</th>
-                      <th style={{ width: '15%' }}>Статус</th>
-                    </>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredQueries.map((q, idx) => {
-                  const yPos = (q as any).yandex_pos
-                  const gPos = (q as any).google_pos
-                  const bestPos = yPos && gPos ? Math.min(yPos, gPos) : (yPos || gPos || 0)
-                  const isTop3 = bestPos > 0 && bestPos <= 3.5
-                  const isGrowth = bestPos > 3.5 && bestPos <= 12.0
-                  const totalShows = (q as any).total_shows ?? (q as any).shows ?? 0
-                  const totalClicks = (q as any).total_clicks ?? (q as any).clicks ?? 0
-
-                  return (
-                    <tr key={idx}>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{q.text}</span>
-                          {classifyQuery(q.text) === 'suppliers' && (
-                            <span className="pill tg" style={{ fontSize: 10, padding: '1px 6px', background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0' }}>
-                              🏭 Поставщики
-                            </span>
-                          )}
-                          {classifyQuery(q.text) === 'analog' && (
-                            <span className="pill balance" style={{ fontSize: 10, padding: '1px 6px', background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
-                              🔍 Аналоги
-                            </span>
-                          )}
-                          {classifyQuery(q.text) === 'analysis' && (
-                            <span className="pill web" style={{ fontSize: 10, padding: '1px 6px', background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}>
-                              📋 Анализ
-                            </span>
-                          )}
-                          {searchEngine === 'all' && (
-                            <div style={{ display: 'flex', gap: 4 }}>
-                              {(q as any).in_yandex && <span style={{ fontSize: 10, color: '#ea580c', fontWeight: 'bold' }}>Яндекс</span>}
-                              {(q as any).in_google && <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 'bold' }}>Google</span>}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-
-                      {searchEngine === 'all' ? (
-                        <>
-                          <td>
-                            {yPos ? (
-                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
-                                {yPos} место
-                              </span>
-                            ) : (
-                              <span style={{ color: 'var(--muted)' }}>—</span>
-                            )}
-                          </td>
-                          <td>
-                            {gPos ? (
-                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
-                                {gPos} место
-                              </span>
-                            ) : (
-                              <span style={{ color: 'var(--muted)' }}>—</span>
-                            )}
-                          </td>
-                          <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
-                          </td>
-                          <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
-                            </span>
-                          </td>
-                          <td>
-                            {isTop3 ? (
-                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
-                            ) : isGrowth ? (
-                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
-                            ) : (
-                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
-                            )}
-                          </td>
-                        </>
-                      ) : searchEngine === 'yandex' ? (
-                        <>
-                          <td>
-                            {yPos ? (
-                              <span className={`seo-pos-badge ${yPos <= 3.5 ? 'top3' : yPos <= 10.5 ? 'growth' : 'other'}`}>
-                                {yPos} место
-                              </span>
-                            ) : (
-                              <span style={{ color: 'var(--muted)' }}>—</span>
-                            )}
-                          </td>
-                          <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
-                          </td>
-                          <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
-                            </span>
-                          </td>
-                          <td>
-                            {yPos && yPos <= 3.5 ? (
-                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
-                            ) : yPos && yPos <= 10.5 ? (
-                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 1-я страница</span>
-                            ) : (
-                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
-                            )}
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td>
-                            {gPos ? (
-                              <span className={`seo-pos-badge ${gPos <= 3.5 ? 'top3' : gPos <= 15.0 ? 'growth' : 'other'}`}>
-                                {gPos} место
-                              </span>
-                            ) : (
-                              <span style={{ color: 'var(--muted)' }}>—</span>
-                            )}
-                          </td>
-                          <td>
-                            <strong style={{ fontSize: 14 }}>{totalShows}</strong>
-                          </td>
-                          <td>
-                            <span style={{ fontSize: 13, color: totalClicks > 0 ? '#047857' : 'var(--muted)' }}>
-                              {totalClicks}
-                            </span>
-                          </td>
-                          <td>
-                            {gPos && gPos <= 3.5 ? (
-                              <span className="pill web" style={{ fontSize: 11 }}>🏆 ТОП-3</span>
-                            ) : gPos && gPos <= 15.0 ? (
-                              <span className="pill tg" style={{ fontSize: 11 }}>🔥 Точка роста</span>
-                            ) : (
-                              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Поиск</span>
-                            )}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="inline-note" style={{ padding: '12px 0' }}>
-            {querySearch ? 'По вашему фильтру запросов не найдено.' : 'Поисковых показов пока не зафиксировано.'}
-          </div>
-        )}
-      </div>
-
-      {/* 5. 50/50 GRID: SOURCES + CONVERSION GOALS */}
-      <div className="ops-grid">
-        <div className="form-panel">
-          <h2 style={{ fontSize: 16, marginBottom: 4 }}>Источники переходов на сайт</h2>
-          <p className="field-help" style={{ marginBottom: 14 }}>Откуда приходят посетители за последние 30 дней</p>
-          
-          <div style={{ display: 'grid', gap: 10 }}>
-            {(metrika.sources || []).map((s, idx) => {
-              let label = s.name
-              if (s.name === 'Direct traffic') label = 'Прямые заходы (адрес / закладки)'
-              else if (s.name === 'Link traffic') label = 'Переходы по внешним ссылкам'
-              else if (s.name === 'Search engine traffic') label = 'Поисковые системы (Яндекс / Google)'
-              else if (s.name === 'Social network traffic') label = 'Telegram и соцсети'
-              else if (s.name === 'Internal traffic') label = 'Внутренние переходы'
-
-              const totalVisits = metrika.visits || 1
-              const percent = Math.round((s.visits / totalVisits) * 100)
-
-              return (
-                <div key={idx} style={{ padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{label}</span>
-                    <strong style={{ fontSize: 13 }}>{s.visits} визитов <small style={{ color: 'var(--muted)', fontWeight: 'normal' }}>({percent}%)</small></strong>
-                  </div>
-                  <div className="seo-progress-bar-bg">
-                    <div className="seo-progress-bar-fill" style={{ width: `${percent}%` }} />
-                  </div>
-                </div>
-              )
-            })}
-            {!(metrika.sources || []).length && <div className="inline-note">Источников пока нет.</div>}
-          </div>
-        </div>
-
-        <div className="form-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-            <h2 style={{ fontSize: 16, margin: 0 }}>🎯 Цели и конверсии (Метрика)</h2>
-            <span className="pill balance" style={{ fontSize: 11 }}>Конверсия: {metrika.total_conversion_rate || 0}%</span>
-          </div>
-          <p className="field-help" style={{ marginBottom: 14 }}>Реальные целевые действия посетителей (кнопки, формы, кабинет)</p>
-          
-          <div style={{ display: 'grid', gap: 10 }}>
-            {goals.map((g, idx) => {
-              const reaches = g.reaches || 0
-              return (
-                <div key={idx} style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: reaches > 0 ? '#f0fdf4' : '#fff', borderColor: reaches > 0 ? '#bbf7d0' : '#e2e8f0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <strong style={{ fontSize: 13, color: reaches > 0 ? '#166534' : '#0f172a' }}>{g.name}</strong>
-                      <small style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>Тип: {g.type}</small>
-                    </div>
-                    <span className={reaches > 0 ? 'pill balance' : 'pill web'} style={{ fontSize: 12 }}>
-                      {reaches} {reaches === 1 ? 'действие' : reaches > 1 && reaches < 5 ? 'действия' : 'действий'}
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
-            {!goals.length && <div className="inline-note">Цели загружаются из Яндекс.Метрики.</div>}
-          </div>
-        </div>
-      </div>
-
-      {/* 6. TECHNICAL STATUS (YANDEX & GOOGLE) */}
-      <div className="form-panel full-width-panel">
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Индексация и техническое состояние (Яндекс и Google)</h2>
-        <p className="field-help" style={{ marginBottom: 12 }}>Показатели доступности страниц для поисковых роботов Яндекса и Google</p>
-        
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>ИКС сайта (Яндекс)</span>
-            <strong style={{ display: 'block', fontSize: 22, color: '#0f766e', marginTop: 4 }}>{webmaster.sqi || 10}</strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Индекс качества сайта</small>
-          </div>
-          
-          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Яндекс: страниц в поиске</span>
-            <strong style={{ display: 'block', fontSize: 22, color: '#0f172a', marginTop: 4 }}>{webmaster.searchable_pages || 32}</strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>Проиндексировано роботом</small>
-          </div>
-          
-          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Google: показы в выдаче</span>
-            <strong style={{ display: 'block', fontSize: 22, color: '#2563eb', marginTop: 4 }}>
-              {google?.total_impressions || 0}
-            </strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>За последние 30 дней</small>
-          </div>
-
-          <div style={{ padding: 12, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff' }}>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>Статус Google API</span>
-            <strong style={{ display: 'block', fontSize: 16, color: google?.status === 'active' ? '#047857' : '#9a3412', marginTop: 6 }}>
-              {google?.status === 'active' ? '● Активен' : 'Подключение'}
-            </strong>
-            <small style={{ color: 'var(--muted)', fontSize: 11 }}>{google?.site_url || 'sc-domain:tenderlex.ru'}</small>
-          </div>
-        </div>
-      </div>
-
-      {/* 7. AI RECOMMENDATIONS & INTERACTIVE APPROVAL SECTION */}
-      <div className="form-panel full-width-panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>🧠 AI-Рекомендации по оптимизации (Согласование владельцем)</h2>
-          <span className="pill web">Выборка: {metrika.visits} / {data.sample_target || 300} визитов</span>
-        </div>
-        
-        <p className="field-help" style={{ marginBottom: 14 }}>
-          Интеллектуальные рекомендации сформированы на основе реальных поисковых фраз Вебмастера, Google Search Console и поведенческих конверсий Метрики. Вы можете согласовать или отклонить любое предложение.
-        </p>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
-          {recs.map(r => {
-            const isApplied = r.status === 'applied'
-            const isRejected = r.status === 'rejected'
-            const isPending = !isApplied && !isRejected
-            const isLoading = actionLoading === r.id
-
-            return (
-              <div 
-                key={r.id} 
-                style={{ 
-                  background: '#fff', 
-                  border: `1px solid ${isApplied ? '#86efac' : isRejected ? '#e2e8f0' : '#cbd5e1'}`, 
-                  borderRadius: 10, 
-                  padding: 16, 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  justifyContent: 'space-between',
-                  boxShadow: isApplied ? '0 0 0 2px #dcfce7' : 'none'
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#0f766e', textTransform: 'uppercase' }}>
-                      {r.category || 'Оптимизация'}
-                    </span>
-                    {isApplied ? (
-                      <span className="pill balance" style={{ fontSize: 11, background: '#dcfce7', color: '#166534' }}>✅ Согласовано</span>
-                    ) : isRejected ? (
-                      <span className="pill" style={{ fontSize: 11, background: '#f1f5f9', color: '#64748b' }}>Отклонено</span>
-                    ) : (
-                      <span className="pill web" style={{ fontSize: 11, background: '#fef3c7', color: '#92400e' }}>Ожидает решения</span>
-                    )}
-                  </div>
-
-                  <strong style={{ display: 'block', fontSize: 14, color: '#0f172a', marginBottom: 10 }}>{r.title}</strong>
-                  
-                  <div style={{ background: '#fef2f2', borderLeft: '3px solid #ef4444', padding: '6px 10px', borderRadius: 4, marginBottom: 8, fontSize: 12 }}>
-                    <span style={{ display: 'block', fontSize: 10, fontWeight: 700, color: '#b91c1c' }}>ТЕКУЩИЙ ВАРИАНТ (ДО):</span>
-                    <span style={{ color: '#475569' }}>«{r.current_text}»</span>
-                  </div>
-
-                  <div style={{ background: '#f0fdf4', borderLeft: '3px solid #16a34a', padding: '6px 10px', borderRadius: 4, marginBottom: 10, fontSize: 12 }}>
-                    <span style={{ display: 'block', fontSize: 10, fontWeight: 700, color: '#15803d' }}>ПРЕДЛОЖЕНИЕ ИИ (ПОСЛЕ):</span>
-                    <span style={{ color: '#0f172a', fontWeight: 600 }}>«{r.proposed_text}»</span>
-                  </div>
-
-                  <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.4, marginBottom: 8 }}>
-                    <strong>💡 Обоснование:</strong> {r.rationale}
-                  </div>
-
-                  {r.impact && (
-                    <div style={{ fontSize: 11, color: '#0f766e', fontWeight: 600, marginBottom: 12 }}>
-                      🚀 Ожидаемый эффект: {r.impact}
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: 6, borderTop: '1px solid #f1f5f9', paddingTop: 10, marginTop: 4 }}>
-                  {!isApplied ? (
-                    <button 
-                      className="primary small-text" 
-                      style={{ flex: 1, minHeight: 30 }}
-                      disabled={isLoading}
-                      onClick={() => void handleRecAction(r.id, 'applied')}
-                    >
-                      {isLoading ? '...' : '✅ Согласовать'}
-                    </button>
-                  ) : (
-                    <button 
-                      className="ghost small-text" 
-                      style={{ flex: 1, minHeight: 30 }}
-                      disabled={isLoading}
-                      onClick={() => void handleRecAction(r.id, 'pending')}
-                    >
-                      {isLoading ? '...' : '↩️ Отменить'}
-                    </button>
-                  )}
-                  {isPending && (
-                    <button 
-                      className="ghost small-text" 
-                      style={{ minHeight: 30 }}
-                      disabled={isLoading}
-                      onClick={() => void handleRecAction(r.id, 'rejected')}
-                    >
-                      Отклонить
-                    </button>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      <SerpPreviewTool />
-    </section>
-  )
-}
-
-function SerpPreviewTool() {
-  const PRESETS = [
-    {
-      name: 'Главная страница',
-      url: 'https://tenderlex.ru',
-      path: 'tenderlex.ru',
-      title: 'TenderLex — поиск поставщиков и анализ любых закупок',
-      desc: 'ИИ-поиск поставщиков по ТЗ, подбор аналогов и аудит рисков контрактов 44-ФЗ, 223-ФЗ за 2 мин. Прямые контакты заводов. Попробуйте бесплатно!',
-    },
-    {
-      name: 'Поиск поставщиков',
-      url: 'https://tenderlex.ru/poisk-postavshchikov-po-tz',
-      path: 'tenderlex.ru › poisk-postavshchikov-po-tz',
-      title: 'Поиск поставщиков по ТЗ — до 10 фабрик РФ | TenderLex',
-      desc: 'ИИ-поиск производителей и дилеров по спецификациям за 2 мин. Выгрузка прямых контактов отделов сбыта. Отчет в Word и Excel. 1 проверка бесплатно!',
-    },
-    {
-      name: 'Подбор товара и аналогов',
-      url: 'https://tenderlex.ru/podbor-tovara-i-analogov-po-tz',
-      path: 'tenderlex.ru › podbor-tovara-i-analogov-po-tz',
-      title: 'Подбор аналогов по ТЗ: эквиваленты по ГОСТ | TenderLex',
-      desc: 'ИИ-подбор эквивалентов и аналогов продукции под ТЗ и ПП 719 за 2 мин. Проверка по ГОСТ и ГИСП. Полный отчет в Word (.docx). 1 проверка бесплатно!',
-    },
-    {
-      name: 'Анализ документации',
-      url: 'https://tenderlex.ru/analiz-zakupochnoi-dokumentacii',
-      path: 'tenderlex.ru › analiz-zakupochnoi-dokumentacii',
-      title: 'Анализ закупочной документации и рисков контракта',
-      desc: 'ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин. Выявление скрытых штрафов, сжатых сроков и рисков. Проверьте бесплатно!',
-    },
-    {
-      name: 'Анализ рынка 44-ФЗ (НМЦК)',
-      url: 'https://tenderlex.ru/analiz-rynka-44-fz',
-      path: 'tenderlex.ru › analiz-rynka-44-fz',
-      title: 'Анализ рынка 44-ФЗ и расчет НМЦК онлайн',
-      desc: 'Анализ рынка по 44-ФЗ и расчет НМЦК методом сопоставимых цен онлайн. Поиск заводов, коммерческие предложения и калькулятор. Попробуйте бесплатно!',
-    },
-  ]
-
-  const [engine, setEngine] = useState<'yandex' | 'google'>('yandex')
-  const [selectedPreset, setSelectedPreset] = useState(0)
-  const [customTitle, setCustomTitle] = useState(PRESETS[0].title)
-  const [customDesc, setCustomDesc] = useState(PRESETS[0].desc)
-  const [customPath, setCustomPath] = useState(PRESETS[0].path)
-
-  function applyPreset(idx: number) {
-    setSelectedPreset(idx)
-    setCustomTitle(PRESETS[idx].title)
-    setCustomDesc(PRESETS[idx].desc)
-    setCustomPath(PRESETS[idx].path)
-  }
-
-  const titleLen = customTitle.length
-  const descLen = customDesc.length
-  const titleStatus = titleLen >= 40 && titleLen <= 60 ? 'good' : titleLen > 60 ? 'warn' : 'short'
-  const descStatus = descLen >= 120 && descLen <= 160 ? 'good' : descLen > 160 ? 'warn' : 'short'
-
-  return (
-    <div className="form-panel full-width-panel" style={{ marginTop: 24, borderTop: '3px solid #2563eb' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
-        <div>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, fontSize: 18, color: '#1e293b' }}>
-            <Sparkles size={18} style={{ color: '#2563eb' }} />
-            Интерактивный предпросмотр сниппета в поисковой выдаче (Live SERP Preview)
-          </h2>
-          <p className="field-help" style={{ margin: '4px 0 0 0' }}>
-            Проверяйте отображение Title и Description для мобильной и десктопной выдачи Яндекса и Google перед обновлением сайта.
-          </p>
-        </div>
-
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button
-            type="button"
-            className={engine === 'yandex' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setEngine('yandex')}
-            style={{ borderRadius: 20, padding: '4px 14px', background: engine === 'yandex' ? '#ea580c' : undefined, borderColor: engine === 'yandex' ? '#ea580c' : undefined, color: engine === 'yandex' ? '#fff' : undefined }}
-          >
-            🔴 Яндекс Сниппет
-          </button>
-          <button
-            type="button"
-            className={engine === 'google' ? 'primary small-text' : 'secondary small-text'}
-            onClick={() => setEngine('google')}
-            style={{ borderRadius: 20, padding: '4px 14px', background: engine === 'google' ? '#2563eb' : undefined, borderColor: engine === 'google' ? '#2563eb' : undefined, color: engine === 'google' ? '#fff' : undefined }}
-          >
-            🔵 Google Сниппет
-          </button>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Пресеты страниц:</span>
-        {PRESETS.map((p, idx) => (
-          <button
-            key={idx}
-            type="button"
-            className={selectedPreset === idx ? 'primary small-text' : 'ghost small-text'}
-            onClick={() => applyPreset(idx)}
-            style={{ borderRadius: 16, fontSize: 12, padding: '3px 10px' }}
-          >
-            {p.name}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, alignItems: 'start' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Title страницы:</label>
-              <span style={{
-                fontSize: 11,
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: 12,
-                background: titleStatus === 'good' ? '#dcfce7' : titleStatus === 'warn' ? '#fee2e2' : '#fef3c7',
-                color: titleStatus === 'good' ? '#166534' : titleStatus === 'warn' ? '#991b1b' : '#92400e',
-              }}>
-                {titleLen} / 60 симв. {titleStatus === 'good' ? '✓ Оптимально' : titleStatus === 'warn' ? '⚠️ Обрежется в SERP' : 'Короткий'}
-              </span>
-            </div>
-            <input
-              type="text"
-              value={customTitle}
-              onChange={(e) => setCustomTitle(e.target.value)}
-              style={{ width: '100%', padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid #cbd5e1' }}
-            />
-          </div>
-
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Description (Сниппет):</label>
-              <span style={{
-                fontSize: 11,
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: 12,
-                background: descStatus === 'good' ? '#dcfce7' : descStatus === 'warn' ? '#fee2e2' : '#fef3c7',
-                color: descStatus === 'good' ? '#166534' : descStatus === 'warn' ? '#991b1b' : '#92400e',
-              }}>
-                {descLen} / 160 симв. {descStatus === 'good' ? '✓ Оптимально' : descStatus === 'warn' ? '⚠️ Обрежется в SERP' : 'Короткий'}
-              </span>
-            </div>
-            <textarea
-              rows={3}
-              value={customDesc}
-              onChange={(e) => setCustomDesc(e.target.value)}
-              style={{ width: '100%', padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid #cbd5e1', resize: 'vertical' }}
-            />
-          </div>
-
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 700, color: '#334155', display: 'block', marginBottom: 4 }}>
-              Хлебные крошки / URL пути:
-            </label>
-            <input
-              type="text"
-              value={customPath}
-              onChange={(e) => setCustomPath(e.target.value)}
-              style={{ width: '100%', padding: '8px 12px', fontSize: 12, borderRadius: 8, border: '1px solid #cbd5e1', color: '#64748b' }}
-            />
-          </div>
-        </div>
-
-        <div>
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 6 }}>
-            {engine === 'yandex' ? 'Как выглядит в результатах Яндекса:' : 'Как выглядит в результатах Google:'}
-          </span>
-
-          {engine === 'yandex' ? (
-            <div style={{
-              background: '#ffffff',
-              border: '1px solid #e2e8f0',
-              borderRadius: 12,
-              padding: '16px 18px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
-              fontFamily: 'Arial, sans-serif',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span style={{ width: 16, height: 16, borderRadius: '50%', background: '#075b63', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 900 }}>T</span>
-                <span style={{ fontSize: 13, color: '#242424', fontWeight: 600 }}>TenderLex</span>
-                <span style={{ fontSize: 12, color: '#00701a' }}>{customPath}</span>
-              </div>
-
-              <div style={{ fontSize: 18, fontWeight: 400, color: '#1a0dab', lineHeight: 1.3, marginBottom: 6, cursor: 'pointer' }}>
-                {customTitle || 'Заголовок страницы'}
-              </div>
-
-              <div style={{ fontSize: 13, color: '#333333', lineHeight: 1.45 }}>
-                {customDesc || 'Описание сниппета страницы отображается здесь.'}
-              </div>
-
-              <div style={{ display: 'flex', gap: 12, marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e2e8f0', fontSize: 12, color: '#00701a' }}>
-                <span style={{ cursor: 'pointer' }}>Подбор аналогов</span>
-                <span style={{ cursor: 'pointer' }}>Поиск заводов</span>
-                <span style={{ cursor: 'pointer' }}>Анализ ТЗ</span>
-                <span style={{ cursor: 'pointer' }}>Кабинет</span>
-              </div>
-            </div>
-          ) : (
-            <div style={{
-              background: '#ffffff',
-              border: '1px solid #e2e8f0',
-              borderRadius: 12,
-              padding: '16px 18px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
-              fontFamily: 'Arial, sans-serif',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #e2e8f0' }}>
-                  <span style={{ color: '#075b63', fontWeight: 900, fontSize: 12 }}>T</span>
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, color: '#202124', fontWeight: 500, lineHeight: 1.2 }}>TenderLex</div>
-                  <div style={{ fontSize: 12, color: '#4d5156', lineHeight: 1.2 }}>https://tenderlex.ru › {customPath.replace('tenderlex.ru › ', '')}</div>
-                </div>
-              </div>
-
-              <div style={{ fontSize: 20, color: '#1a0dab', lineHeight: 1.3, marginBottom: 4, cursor: 'pointer' }}>
-                {customTitle || 'Заголовок страницы'}
-              </div>
-
-              <div style={{ fontSize: 14, color: '#4d5156', lineHeight: 1.5 }}>
-                {customDesc || 'Описание сниппета страницы отображается здесь.'}
-              </div>
-            </div>
-          )}
-
-          <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}>
-            <span style={{ fontWeight: 700, color: '#0f172a', display: 'block', marginBottom: 4 }}>Чеклист максимального CTR:</span>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, color: '#475569' }}>
-              <span>{titleStatus === 'good' ? '✅' : '⚠️'} Длина Title ({titleLen}/60)</span>
-              <span>{descStatus === 'good' ? '✅' : '⚠️'} Длина Description ({descLen}/160)</span>
-              <span>{customDesc.includes('бесплатно') ? '✅' : '💡'} Триггер «бесплатно»</span>
-              <span>{customTitle.includes('TenderLex') ? '✅' : '💡'} Бренд «TenderLex»</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function SystemStatusPanel({ opsStatus }: { opsStatus: OpsStatus | null }) {
   if (!opsStatus) {
     return <div className="form-panel full-width-panel"><h2>Состояние системы</h2><div className="empty inline-empty">Данные состояния пока не загружены.</div></div>
@@ -4041,6 +2308,7 @@ function ClientsView({
   passwordResets,
   onChange,
   onNavigateToClientJobs,
+  onNavigateToMcp,
   isSyncing,
   lastSyncAt,
   onManualSync,
@@ -4052,6 +2320,7 @@ function ClientsView({
   passwordResets: PasswordResetRequest[]
   onChange: () => Promise<void>
   onNavigateToClientJobs?: (clientId: string) => void
+  onNavigateToMcp?: () => void
   isSyncing?: boolean
   lastSyncAt?: number
   onManualSync?: () => void
@@ -4083,7 +2352,7 @@ function ClientsView({
       setPage(1)
     }
   }, [selectedClientIdFromParent])
-  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg'>('all')
+  const [clientFilter, setClientFilter] = useState<'all' | 'balance' | 'web' | 'tg' | 'api'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
@@ -4130,6 +2399,10 @@ function ClientsView({
     () => clients.filter(c => (c.usage?.money?.available_kopeks || 0) > 0).length,
     [clients]
   )
+  const apiClientsCount = useMemo(
+    () => clients.filter(c => c.has_api_key || (c.api_keys && c.api_keys.length > 0) || c.source === 'api').length,
+    [clients]
+  )
 
   const filteredClients = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -4144,6 +2417,8 @@ function ClientsView({
         if (!realAccounts.length && !client.telegram_id) return false
       } else if (clientFilter === 'balance') {
         if (!client.usage?.money || client.usage.money.available_kopeks <= 0) return false
+      } else if (clientFilter === 'api') {
+        if (!client.has_api_key && (!client.api_keys || client.api_keys.length === 0) && client.source !== 'api') return false
       }
 
       if (!q) return true
@@ -4313,6 +2588,14 @@ function ClientsView({
     const amountRub = Number(String(draft.amount_rub || 0).replace(',', '.'))
     const amountKopeks = Number.isFinite(amountRub) && amountRub > 0 ? rublesToKopeks(amountRub) : 0
     if (amountKopeks <= 0) return
+    const hasCustomPrices = Boolean(
+      client.has_custom_tariffs ||
+      client.usage?.has_custom_tariffs ||
+      (client.usage?.effective_prices &&
+        Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+    )
+    const bonusRub = hasCustomPrices ? 0 : calculateBonusRub(amountRub)
+    const bonusKopeks = rublesToKopeks(bonusRub)
     const requestSlot = `${client.id}:grant`
     if (balanceRequestsInFlight.current[requestSlot]) return
     const idempotencyKey = balanceRequestIds.current[requestSlot] || crypto.randomUUID()
@@ -4326,7 +2609,8 @@ function ClientsView({
           package_id: '',
           units: 1,
           amount_kopeks: amountKopeks,
-          note: 'Ручное пополнение баланса',
+          bonus_kopeks: bonusKopeks,
+          note: '',
           operation: 'grant',
           idempotency_key: idempotencyKey,
         }),
@@ -4649,6 +2933,25 @@ function ClientsView({
             >
               С балансом ({balanceClientsCount})
             </button>
+            <button
+              type="button"
+              className={`ghost small-text ${clientFilter === 'api' ? 'active' : ''}`}
+              style={{
+                background: clientFilter === 'api' ? '#7e22ce' : 'transparent',
+                color: clientFilter === 'api' ? '#fff' : '#7e22ce',
+                border: '1px solid #d8b4fe',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+              onClick={() => {
+                setClientFilter('api')
+                setPage(1)
+              }}
+            >
+              🔑 API ({apiClientsCount})
+            </button>
           </div>
           <select
             value={pageSize}
@@ -4708,6 +3011,33 @@ function ClientsView({
                       {isNewClient && (
                         <span className="badge-new-client" title="Зарегистрирован недавно">
                           Новый
+                        </span>
+                      )}
+                      {(client.has_api_key || (client.api_keys && client.api_keys.length > 0)) && (
+                        <span
+                          className="badge-api-client"
+                          style={{
+                            background: '#ede9fe',
+                            color: '#6d28d9',
+                            border: '1px solid #c4b5fd',
+                            borderRadius: 4,
+                            padding: '1px 6px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            cursor: onNavigateToMcp ? 'pointer' : 'default',
+                          }}
+                          title="Подключен API-доступ (TenderLex API / CRM). Нажмите для перехода в MCP & API"
+                          onClick={(e) => {
+                            if (onNavigateToMcp) {
+                              e.stopPropagation()
+                              onNavigateToMcp()
+                            }
+                          }}
+                        >
+                          🔑 API
                         </span>
                       )}
                       {!client.is_active && <StatusBadge status="disabled" />}
@@ -4778,7 +3108,13 @@ function ClientsView({
                 <div className="client-section client-telegram-section">
                   <div className="section-head">
                     <h3>Доступы</h3>
-                    <span>{webUsers.length ? `Web: ${webUsers.length} · Telegram: ${accounts.length}` : accounts.length || 'нет'}</span>
+                    <span>
+                      {[
+                        webUsers.length ? `Web: ${webUsers.length}` : '',
+                        accounts.length ? `Telegram: ${accounts.length}` : '',
+                        client.api_keys && client.api_keys.length ? `API: ${client.api_keys.length}` : '',
+                      ].filter(Boolean).join(' · ') || 'нет'}
+                    </span>
                   </div>
                   <div className="access-subsection">
                     <div className="subsection-label">Web-доступ</div>
@@ -4872,6 +3208,53 @@ function ClientsView({
                       </details>
                     </div>
                   </div>
+                  <div className="access-subsection">
+                    <div className="subsection-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>API-доступ (CRM / Интеграции)</span>
+                      {onNavigateToMcp && (
+                        <button
+                          type="button"
+                          className="small-text"
+                          style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                          onClick={onNavigateToMcp}
+                        >
+                          Управление в MCP & API →
+                        </button>
+                      )}
+                    </div>
+                    {client.api_keys && client.api_keys.length > 0 ? (
+                      <div className="account-edit-list">
+                        {client.api_keys.map(k => (
+                          <div className="account-edit-row" key={k.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: '#f8fafc', borderRadius: 6, marginBottom: 4 }}>
+                            <div>
+                              <strong style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>{k.key_prefix}...</strong>
+                              <span style={{ marginLeft: 8, fontSize: '0.82rem', color: '#475569' }}>{k.name || 'API Key'}</span>
+                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                                Всего вызовов: <strong>{k.total_spent || 0}</strong> · Списание с единого баланса клиента
+                              </div>
+                            </div>
+                            <div className="account-edit-actions">
+                              {!k.is_active ? <StatusBadge status="disabled" /> : <StatusBadge status="active" />}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="inline-note" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>API-ключ пока не привязан.</span>
+                        {onNavigateToMcp && (
+                          <button
+                            type="button"
+                            className="small-text"
+                            style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer' }}
+                            onClick={onNavigateToMcp}
+                          >
+                            + Создать ключ
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="client-section client-balance-section">
@@ -4895,25 +3278,95 @@ function ClientsView({
                   )}
                   <div className="subsection-label">Операции с балансом</div>
                   <div className="balance-adjust-panel">
-                    <div className="balance-adjust-row">
-                      <label className="mini-field">
-                        <span>Пополнить баланс, ₽</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          placeholder="Сумма"
-                          value={grant.amount_rub}
-                          onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
-                          }}
-                        />
-                      </label>
-                      <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
-                        <Plus size={16} />Пополнить
-                      </button>
-                    </div>
+                    {(() => {
+                      const hasCustomPrices = Boolean(
+                        client.has_custom_tariffs ||
+                        client.usage?.has_custom_tariffs ||
+                        (client.usage?.effective_prices &&
+                          Object.values(client.usage.effective_prices).some(p => p?.source === 'client_override'))
+                      )
+                      const quickChips = hasCustomPrices
+                        ? [
+                            { label: '1 000 ₽', val: '1000' },
+                            { label: '3 000 ₽', val: '3000' },
+                            { label: '5 000 ₽', val: '5000' },
+                            { label: '10 000 ₽', val: '10000' },
+                            { label: '25 000 ₽', val: '25000' },
+                          ]
+                        : [
+                            { label: '1 000 ₽', val: '1000' },
+                            { label: '3 000 ₽ (+500)', val: '3000' },
+                            { label: '5 000 ₽ (+1.5k)', val: '5000' },
+                            { label: '10 000 ₽ (+4k)', val: '10000' },
+                            { label: '25 000 ₽ (+12.5k)', val: '25000' },
+                          ]
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                            {quickChips.map(p => (
+                              <button
+                                key={p.val}
+                                type="button"
+                                className="ghost small-text"
+                                style={{
+                                  padding: '2px 8px',
+                                  fontSize: 11,
+                                  background: grant.amount_rub === p.val ? '#0f766e' : '#f1f5f9',
+                                  color: grant.amount_rub === p.val ? '#fff' : '#0f766e',
+                                  fontWeight: 600,
+                                  borderRadius: 6,
+                                }}
+                                onClick={() => setGrantDraft(client, { amount_rub: p.val })}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="balance-adjust-row">
+                            <label className="mini-field">
+                              <span>Пополнить баланс, ₽</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                placeholder="Сумма"
+                                value={grant.amount_rub}
+                                onChange={e => setGrantDraft(client, { amount_rub: e.currentTarget.value })}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && grantAmountValid) void topUpClientBalance(client)
+                                }}
+                              />
+                              {(() => {
+                                const amt = Number(String(grant.amount_rub || 0).replace(',', '.'))
+                                if (hasCustomPrices) {
+                                  if (amt > 0) {
+                                    return (
+                                      <small style={{ color: '#64748b', fontWeight: 600, display: 'block', marginTop: 2 }}>
+                                        Индивидуальный тариф: к зачислению ровно {amt.toLocaleString('ru-RU')} ₽ (без бонуса)
+                                      </small>
+                                    )
+                                  }
+                                  return null
+                                }
+                                const bonus = calculateBonusRub(amt)
+                                if (bonus > 0) {
+                                  return (
+                                    <small style={{ color: '#0f766e', fontWeight: 600, display: 'block', marginTop: 2 }}>
+                                      Итого: {(amt + bonus).toLocaleString('ru-RU')} ₽ (оплата {amt} ₽ + бонус {bonus.toLocaleString('ru-RU')} ₽)
+                                    </small>
+                                  )
+                                }
+                                return null
+                              })()}
+                            </label>
+                            <button onClick={() => void topUpClientBalance(client)} disabled={!grantAmountValid}>
+                              <Plus size={16} />Пополнить
+                            </button>
+                          </div>
+                        </>
+                      )
+                    })()}
                     <div className="balance-adjust-row">
                       <label className="mini-field">
                         <span>Списать с баланса, ₽</span>
@@ -5637,10 +4090,16 @@ function JobsView({
                     {job.client_email ? ` (${job.client_email})` : ''}
                   </span>
                   {' · '}
-                  {job.created_by_label || (
-                    String(job.created_by_telegram_id || '').startsWith('web:')
-                      ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
-                      : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
+                  {job.created_by_label?.startsWith('API:') ? (
+                    <span style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd', borderRadius: 4, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600 }}>
+                      🔑 {job.created_by_label}
+                    </span>
+                  ) : (
+                    job.created_by_label || (
+                      String(job.created_by_telegram_id || '').startsWith('web:')
+                        ? (job.client_email ? `Веб: ${job.client_email}` : 'Веб-кабинет')
+                        : (job.created_by_telegram_id || job.telegram_id || 'автор не указан')
+                    )
                   )}
                 </p>
               </div>
@@ -5681,6 +4140,18 @@ function JobsView({
                     <>
                       <span className="meta-sep">·</span>
                       <span className="meta-item">{supplierRunLabel}</span>
+                    </>
+                  )}
+
+                  {(job.mode === 'supplier_search' || job.mode === 'analysis_and_suppliers') && (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span
+                        className="meta-item"
+                        title={job.multi_item_mode === 'per_item' ? 'Глубокий независимый поиск под каждую позицию спецификации' : 'Единая квота распределяется по всем позициям со вкладками в Excel'}
+                      >
+                        {job.multi_item_mode === 'per_item' ? '🔍 Попозиционный' : '⚖️ Сбалансированный'}
+                      </span>
                     </>
                   )}
 
@@ -5956,7 +4427,7 @@ function JobsView({
                     title={`Входной файл клиента: ${inputFiles[0].original_filename}`}
                   >
                     <FileText size={12} />
-                    <span className="pill-filename" style={{ maxWidth: 180 }}>{inputFiles[0].original_filename}</span>
+                    <span className="pill-filename" title={inputFiles[0].original_filename}>{inputFiles[0].original_filename}</span>
                   </button>
                 ) : null}
 
@@ -6445,10 +4916,19 @@ function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
 }
 
 function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
-  const [newTariff, setNewTariff] = useState({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+  const [newTariff, setNewTariff] = useState({
+    kind: 'deposit',
+    name: '',
+    units: 10,
+    price_kopeks: 0,
+    bonus_kopeks: 0,
+    badge: '',
+    sort_order: 100,
+    is_active: true,
+  })
   async function createTariff() {
     await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
-    setNewTariff({ kind: 'supplier_search', name: '', units: 10, price_kopeks: 0, sort_order: 100, is_active: true })
+    setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
     await onChange()
   }
   async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
@@ -6459,38 +4939,81 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
     await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
     await onChange()
   }
+  const depositTariffs = tariffs.filter(item => item.kind === 'deposit')
   const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
   const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
   const extraSupplierTariffs = tariffs.filter(item => item.kind === 'supplier_search_extra')
   const exactProductTariffs = tariffs.filter(item => item.kind === 'exact_product')
+
   return (
     <section className="stack">
       <div className="form-panel full-width-panel">
-        <h2>Новый пакет</h2>
+        <h2>Новый тарифный пакет</h2>
         <div className="tariff-form-grid">
           <label className="field">
             <span>Тип</span>
             <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
-              <option value="supplier_search">Поиск поставщиков</option>
-              <option value="exact_product">Подбор товара и аналогов</option>
-              <option value="procurement_report">Анализ документации</option>
-              <option value="supplier_search_extra">Добор поставщиков</option>
+              <option value="deposit">Пакет пополнения баланса (с бонусом)</option>
+              <option value="supplier_search">Поиск поставщиков (базовый)</option>
+              <option value="exact_product">Подбор товара и аналогов (базовый)</option>
+              <option value="procurement_report">Анализ документации (базовый)</option>
+              <option value="supplier_search_extra">Добор поставщиков (базовый)</option>
             </select>
           </label>
           <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
-          <NumberField label="Генераций" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
-          <NumberField label="Цена, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+          <NumberField label="Оплата, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+          {newTariff.kind === 'deposit' ? (
+            <>
+              <NumberField label="Бонус, ₽" value={kopeksToRubles(newTariff.bonus_kopeks)} onChange={value => setNewTariff({ ...newTariff, bonus_kopeks: rublesToKopeks(value) })} />
+              <TextField label="Бейдж" value={newTariff.badge} onChange={value => setNewTariff({ ...newTariff, badge: value })} />
+            </>
+          ) : null}
+          <NumberField label="Генераций / Задач" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
           <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать клиентам</label>
         </div>
         <p className="field-help">Включённые пакеты сразу видны на сайте, в кабинете и в Telegram.</p>
         <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
       </div>
 
-      <TariffGroup title="Поиск поставщиков" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Подбор товара и аналогов" tariffs={exactProductTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroupDeposit title="Пакеты пополнения единого баланса (со скидкой / бонусом)" tariffs={depositTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Базовые цены: Поиск поставщиков" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Базовые цены: Подбор товара и аналогов" tariffs={exactProductTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Базовые цены: Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      <TariffGroup title="Базовые цены: Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
     </section>
+  )
+}
+
+function TariffGroupDeposit({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
+  return (
+    <div className="form-panel full-width-panel">
+      <div className="panel-heading">
+        <h2>{title}</h2>
+        <span className="sync-note">Сайт + кабинет + Telegram (единый баланс)</span>
+      </div>
+      <div className="tariff-list">
+        {tariffs.map(item => {
+          const payRub = kopeksToRubles(item.price_kopeks)
+          const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
+          const totalRub = payRub + bonusRub
+          return (
+            <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr)) auto', gap: 6, alignItems: 'center' }}>
+              <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
+              <label className="mini-field"><span>Оплата, ₽</span><input type="number" min={0} step={1} defaultValue={payRub} aria-label="Сумма оплаты" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
+              <label className="mini-field"><span>Бонус, ₽</span><input type="number" min={0} step={1} defaultValue={bonusRub} aria-label="Бонус" onBlur={e => void onPatch(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
+              <label className="mini-field"><span>Бейдж</span><input defaultValue={item.badge || ''} placeholder="Хит" aria-label="Бейдж" onBlur={e => void onPatch(item, { badge: e.currentTarget.value })} /></label>
+              <label className="mini-field"><span>Примерно задач</span><input type="number" min={1} defaultValue={item.units} aria-label="Задач" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#0f766e', alignSelf: 'center', minWidth: 95 }}>
+                Итого: {totalRub.toLocaleString('ru-RU')} ₽
+              </div>
+              <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать</label>
+              <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
+            </article>
+          )
+        })}
+        {!tariffs.length && <div className="empty inline-empty">Пакеты пополнения ещё не добавлены.</div>}
+      </div>
+    </div>
   )
 }
 

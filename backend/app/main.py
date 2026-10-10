@@ -36,6 +36,11 @@ from .result_offers import (
 from .billing import (
     BillingError,
     KIND_MONEY,
+    KIND_DEPOSIT,
+    KIND_SUPPLIER_SEARCH,
+    KIND_EXACT_PRODUCT,
+    KIND_PROCUREMENT_REPORT,
+    KIND_SUPPLIER_SEARCH_EXTRA,
     OP_CHARGE,
     OP_GRANT,
     OP_MANUAL_DEBIT,
@@ -47,13 +52,16 @@ from .billing import (
     STATUS_DELIVERY_EXPIRED,
     VALID_BILLING_KINDS,
     billing_kind_label,
+    calculate_deposit_bonus_kopeks,
     charge_job_reservation,
     charge_job_kind_reservation,
     client_balance_summary,
+    client_has_custom_tariffs,
     client_service_balance_summary,
     client_uses_trial_access,
     debit_money_balance,
     debit_package_units,
+    effective_price_kopeks,
     expire_stale_confirmations,
     grant_money_balance,
     grant_package_units,
@@ -98,11 +106,14 @@ from .jobs import (
     read_supplier_exclusions,
     read_supplier_exclusions_payload,
     recover_interrupted_jobs,
+    read_dobor_context,
+    update_dobor_context_dict,
     write_dobor_context,
     write_supplier_exclusions,
 )
 from .models import (
     AccountLinkToken,
+    ApiKey,
     BillingTransaction,
     Client,
     ClientTariffOverride,
@@ -218,7 +229,7 @@ ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
-from .mcp_api import router as mcp_router, admin_router as mcp_admin_router
+from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
@@ -608,7 +619,8 @@ def customer_yandex_callback_api(
         return resp
 
     token, csrf_token, session = create_web_session(db, user, request=request)
-    resp = RedirectResponse(url="/cabinet", status_code=303)
+    success_fragment = "registration_success" if is_new else "login_success"
+    resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
     clear_yandex_oauth_state_cookie(resp)
     return resp
@@ -676,7 +688,8 @@ def customer_telegram_callback_api(
         )
 
     token, csrf_token, session = create_web_session(db, user, request=request)
-    resp = RedirectResponse(url="/cabinet", status_code=303)
+    success_fragment = "registration_success" if is_new else "login_success"
+    resp = RedirectResponse(url=f"/cabinet#{success_fragment}", status_code=303)
     set_customer_session_cookie(resp, token)
     return resp
 
@@ -937,6 +950,91 @@ def customer_referral_api(
     return get_referral_stats(db, context.user.client)
 
 
+@app.get("/api/customer/api-keys")
+def customer_list_api_keys(
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    client = context.user.client
+    keys = (
+        db.query(ApiKey)
+        .filter(ApiKey.client_id == client.id, ApiKey.is_active == True)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+    items = []
+    for k in keys:
+        items.append({
+            "id": k.id,
+            "key_prefix": k.key_prefix,
+            "raw_key": k.secret_token or k.key_prefix,
+            "name": k.name,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+            "is_active": k.is_active,
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "total_spent": (k.spent_supplier_search or 0) + (k.spent_exact_product or 0) + (k.spent_procurement_report or 0),
+        })
+    return {
+        "keys": items,
+        "balance_rub": (client.money_balance_kopeks or 0) / 100.0,
+    }
+
+
+@app.post("/api/customer/api-keys")
+def customer_create_api_key(
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        secret_token=raw_key,
+        name="Ключ API (Личный кабинет)",
+        client_id=client.id,
+        is_admin=False,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=True,
+        allowed_procurement_report=True,
+        quota_supplier_search=999999,
+        quota_exact_product=999999,
+        quota_procurement_report=999999,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    return {
+        "ok": True,
+        "raw_key": raw_key,
+        "key_prefix": key_prefix,
+        "id": api_key.id,
+        "name": api_key.name,
+        "created_at": api_key.created_at.isoformat() if api_key.created_at else None,
+        "balance_rub": (client.money_balance_kopeks or 0) / 100.0,
+    }
+
+
+@app.post("/api/customer/api-keys/{key_id}/revoke")
+def customer_revoke_api_key(
+    key_id: str,
+    request: Request,
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    client = context.user.client
+    api_key = db.query(ApiKey).filter(ApiKey.id == key_id, ApiKey.client_id == client.id).first()
+    if not api_key:
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+    api_key.is_active = False
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/customer/jobs")
 def customer_jobs_api(
     response: Response,
@@ -1030,6 +1128,7 @@ async def customer_create_job_route(
     request: Request,
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
     supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
+    multi_item_mode: str = Form(default="balanced"),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -1041,6 +1140,7 @@ async def customer_create_job_route(
     return await create_customer_job_api(
         mode=mode,
         supplier_search_policy=supplier_search_policy,
+        multi_item_mode=multi_item_mode,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -1065,6 +1165,7 @@ def customer_job_detail_api(
 def customer_job_retry_api(
     job_id: str,
     policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
     context: WebAuthContext = Depends(require_web_context),
     db: Session = Depends(db_session),
 ) -> dict:
@@ -1072,6 +1173,8 @@ def customer_job_retry_api(
     if policy:
         normalized = _normalize_supplier_search_policy_for_job(job.mode, policy)
         job.supplier_search_policy = normalized
+    if multi_item_mode in ("balanced", "per_item"):
+        job.multi_item_mode = multi_item_mode
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -1163,6 +1266,36 @@ def customer_decline_partial_route(
     return decline_customer_partial_job_api(job_id, context=context, db=db)
 
 
+@app.post("/api/customer/jobs/{job_id}/choose-strategy")
+async def customer_choose_strategy_route(
+    job_id: str,
+    request: Request,
+    multi_item_mode: str = Query(default="balanced"),
+    context: WebAuthContext = Depends(require_web_context),
+    db: Session = Depends(db_session),
+) -> dict:
+    require_customer_csrf(request, context)
+    selected_item_ids: list[str] | None = None
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            if isinstance(body, dict):
+                if "multi_item_mode" in body:
+                    multi_item_mode = str(body["multi_item_mode"] or multi_item_mode)
+                if "selected_item_ids" in body and isinstance(body["selected_item_ids"], list):
+                    selected_item_ids = [str(x).strip() for x in body["selected_item_ids"] if str(x).strip()]
+    except Exception:
+        pass
+    return choose_customer_multi_item_strategy_api(
+        job_id,
+        multi_item_mode=multi_item_mode,
+        selected_item_ids=selected_item_ids,
+        context=context,
+        db=db,
+    )
+
+
 @app.post("/api/customer/jobs/{job_id}/find-more-suppliers")
 async def customer_find_more_suppliers_route(
     job_id: str,
@@ -1192,12 +1325,14 @@ async def customer_start_supplier_search_route(
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     supplier_search_policy = SUPPLIER_POLICY_NORMAL
+    multi_item_mode = "balanced"
     include_alternatives = True
     additional_prompt = ""
     try:
         body = await request.json()
         if isinstance(body, dict):
             supplier_search_policy = str(body.get("supplier_search_policy") or SUPPLIER_POLICY_NORMAL).strip()
+            multi_item_mode = str(body.get("multi_item_mode") or "balanced").strip()
             include_alternatives = bool(body.get("include_alternatives", True))
             additional_prompt = str(body.get("additional_prompt") or "").strip()
     except Exception:
@@ -1209,6 +1344,7 @@ async def customer_start_supplier_search_route(
         original_job=original_job,
         created_by_telegram_id=f"web:{context.user.id}",
         supplier_search_policy=supplier_search_policy,
+        multi_item_mode=multi_item_mode,
         include_alternatives=include_alternatives,
         additional_prompt=additional_prompt,
     )
@@ -1387,7 +1523,8 @@ def bot_analytics_api(period_days: int = 30, db: Session = Depends(db_session)) 
 
 
 @app.get("/api/seo-analytics", dependencies=[Depends(require_admin)])
-def seo_analytics_api(refresh: bool = False) -> dict:
+def seo_analytics_api(response: Response, refresh: bool = False) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     from app.yandex_seo import get_cached_or_fresh_analytics
     return get_cached_or_fresh_analytics(force_refresh=refresh)
 
@@ -1563,6 +1700,7 @@ def list_clients(db: Session = Depends(db_session)) -> list[dict]:
             selectinload(Client.telegram_accounts),
             selectinload(Client.web_users),
             selectinload(Client.tariff_overrides),
+            selectinload(Client.api_keys),
         )
         .order_by(Client.created_at.desc())
         .all()
@@ -1799,16 +1937,60 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
         raise HTTPException(status_code=400, detail="Tariff package can only be used for grants")
     kind = package.kind if package else data.kind
     units = package.units if package else data.units
-    if kind == KIND_MONEY:
-        if package:
-            raise HTTPException(status_code=400, detail="Money balance can only be changed directly")
+    if kind in {KIND_MONEY, KIND_DEPOSIT}:
+        has_custom_tariffs = client_has_custom_tariffs(db, client)
+        if package and package.kind == KIND_DEPOSIT:
+            pay_kopeks = int(package.price_kopeks or 0)
+            bonus_kopeks = 0 if has_custom_tariffs else int(getattr(package, "bonus_kopeks", 0) or 0)
+            total_amount_kopeks = pay_kopeks + bonus_kopeks
+            bonus_rub = round(bonus_kopeks / 100)
+            pay_rub = round(pay_kopeks / 100)
+            grant_note = (
+                data.note
+                or (
+                    f"Пополнение по тарифу «{package.name}» (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
+                    if bonus_rub > 0
+                    else (
+                        f"Пополнение по индивидуальному тарифу ({pay_rub} ₽)"
+                        if has_custom_tariffs
+                        else f"Пополнение по тарифу «{package.name}» ({pay_rub} ₽)"
+                    )
+                )
+            )
+        elif operation == "grant":
+            pay_kopeks = int(data.amount_kopeks or 0)
+            if has_custom_tariffs:
+                bonus_kopeks = 0
+            else:
+                bonus_kopeks = int(getattr(data, "bonus_kopeks", 0) or 0)
+                if bonus_kopeks <= 0 and pay_kopeks > 0:
+                    bonus_kopeks = calculate_deposit_bonus_kopeks(pay_kopeks, db, client)
+            total_amount_kopeks = pay_kopeks + bonus_kopeks
+            bonus_rub = round(bonus_kopeks / 100)
+            pay_rub = round(pay_kopeks / 100)
+            grant_note = (
+                data.note
+                or (
+                    f"Пополнение баланса (оплата {pay_rub} ₽, бонус +{bonus_rub} ₽)"
+                    if bonus_rub > 0
+                    else (
+                        f"Пополнение баланса по индивидуальному тарифу ({pay_rub} ₽)"
+                        if has_custom_tariffs
+                        else f"Пополнение баланса ({pay_rub} ₽)"
+                    )
+                )
+            )
+        else:
+            total_amount_kopeks = int(data.amount_kopeks or 0)
+            grant_note = data.note or "Ручное списание с баланса"
+
         try:
             if operation == "grant":
                 transaction = grant_money_balance(
                     db,
                     client,
-                    amount_kopeks=data.amount_kopeks,
-                    note=data.note or "Ручное пополнение баланса",
+                    amount_kopeks=total_amount_kopeks,
+                    note=grant_note,
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
@@ -1816,8 +1998,8 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 transaction = debit_money_balance(
                     db,
                     client,
-                    amount_kopeks=data.amount_kopeks,
-                    note=data.note or "Ручное списание с баланса",
+                    amount_kopeks=total_amount_kopeks,
+                    note=grant_note,
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
@@ -2474,12 +2656,20 @@ def get_job_evidence(job_id: str, db: Session = Depends(db_session)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
-def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session = Depends(db_session)) -> dict:
+def retry_job(
+    job_id: str,
+    policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
+    db: Session = Depends(db_session),
+) -> dict:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if policy:
         job.supplier_search_policy = _normalize_supplier_search_policy_for_job(job.mode, policy)
+    if multi_item_mode in ("balanced", "per_item"):
+        job.multi_item_mode = multi_item_mode
+        update_dobor_context_dict(job, {"multi_item_confirmed": True})
     job.status = "pending"
     job.progress = 0
     job.error = ""
@@ -2489,10 +2679,20 @@ def retry_job(job_id: str, policy: str | None = Query(default=None), db: Session
     return {"success": True, "job": job_to_dict(job)}
 
 
+@app.post("/api/jobs/{job_id}/choose-strategy", dependencies=[Depends(require_admin)])
+def choose_admin_strategy(
+    job_id: str,
+    multi_item_mode: str = Query(default="balanced"),
+    db: Session = Depends(db_session),
+) -> dict:
+    return choose_admin_multi_item_strategy_api(job_id, multi_item_mode=multi_item_mode, db=db)
+
+
 @app.post("/api/jobs/{job_id}/admin-rerun", dependencies=[Depends(require_admin)])
 def admin_rerun_job(
     job_id: str,
     policy: str | None = Query(default=None),
+    multi_item_mode: str | None = Query(default=None),
     db: Session = Depends(db_session),
 ) -> dict:
     parent_job = resolve_admin_job(job_id, db)
@@ -2513,6 +2713,7 @@ def admin_rerun_job(
         created_by_telegram_id="",
         mode=parent_job.mode,
         supplier_search_policy=_normalize_supplier_search_policy_for_job(parent_job.mode, policy or parent_job.supplier_search_policy),
+        multi_item_mode=multi_item_mode if multi_item_mode in ("balanced", "per_item") else getattr(parent_job, "multi_item_mode", "balanced"),
         title=admin_title,
         status="pending",
         progress=0,
@@ -3381,6 +3582,18 @@ def _settings_yookassa_ready(settings: SystemSettings) -> bool:
 def public_site_payload(db: Session) -> dict:
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
+    price_search = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact = effective_price_kopeks(db, None, KIND_EXACT_PRODUCT) or 9900
+    price_report = effective_price_kopeks(db, None, KIND_PROCUREMENT_REPORT) or 9900
+    price_extra = effective_price_kopeks(db, None, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    function_prices = {
+        "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
+        "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
+        "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
+        "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
+        "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+    }
     return {
         "site": {
             "name": "TenderLex",
@@ -3415,7 +3628,10 @@ def public_site_payload(db: Session) -> dict:
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
         },
         "tariffs": tariffs,
+        "deposit_packages": deposit_packages,
+        "function_prices": function_prices,
         "tariff_groups": {
+            "deposit": deposit_packages,
             "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
             "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
@@ -3426,14 +3642,24 @@ def public_site_payload(db: Session) -> dict:
 
 
 def tariff_to_public_dict(package: TariffPackage) -> dict:
+    price_kopeks = int(package.price_kopeks or 0)
+    bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+    total_credit_kopeks = price_kopeks + bonus_kopeks
     return {
         "id": package.id,
         "kind": package.kind,
         "label": billing_kind_label(package.kind),
         "name": package.name,
         "units": package.units,
-        "price_kopeks": package.price_kopeks,
-        "price_rub": round(package.price_kopeks / 100, 2),
+        "price_kopeks": price_kopeks,
+        "price_rub": round(price_kopeks / 100, 2),
+        "bonus_kopeks": bonus_kopeks,
+        "bonus_rub": round(bonus_kopeks / 100, 2),
+        "credit_kopeks": total_credit_kopeks,
+        "credit_rub": round(total_credit_kopeks / 100, 2),
+        "total_kopeks": total_credit_kopeks,
+        "total_rub": round(total_credit_kopeks / 100, 2),
+        "badge": getattr(package, "badge", "") or "",
         "description": package.description,
         "sort_order": package.sort_order,
     }
@@ -3474,6 +3700,32 @@ def max_public_url(value: str) -> str:
 
 def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = "", authenticated: bool = True) -> dict:
     settings = get_or_create_settings(db)
+    tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
+    deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
+    if client_has_custom_tariffs(db, user.client):
+        deposit_packages = [
+            {
+                **item,
+                "bonus_kopeks": 0,
+                "bonus_rub": 0,
+                "total_kopeks": item.get("price_kopeks", 0),
+                "total_rub": item.get("price_rub", 0),
+                "credit_rub": item.get("price_rub", 0),
+                "badge": "",
+            }
+            for item in deposit_packages
+        ]
+    price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
+    price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
+    price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
+    price_extra = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    function_prices = {
+        "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
+        "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
+        "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
+        "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
+        "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+    }
     return {
         "authenticated": authenticated,
         "csrf_token": csrf_token,
@@ -3491,12 +3743,15 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
             "procurement_report_limit": max(0, int(settings.trial_procurement_report_limit or 0)),
             "file_limit": max(0, int(settings.trial_file_limit or 0)),
         },
-        "tariffs": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)],
+        "tariffs": tariffs,
+        "deposit_packages": deposit_packages,
+        "function_prices": function_prices,
         "tariff_groups": {
-            "exact_product": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "exact_product"],
-            "supplier_search": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search"],
-            "procurement_report": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "procurement_report"],
-            "supplier_search_extra": [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True) if item.kind == "supplier_search_extra"],
+            "deposit": deposit_packages,
+            "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
+            "supplier_search": [item for item in tariffs if item["kind"] == "supplier_search"],
+            "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
+            "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
         "contacts": {
             "email": settings.contact_email,
@@ -3595,6 +3850,36 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
     result_files = customer_job_result_files(job)
     confirmation_kind = str(getattr(job, "confirmation_kind", "") or "")
     result_offer = result_offer_to_dict(db, job) if confirmation_kind else None
+    multi_item_details = None
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    if not profile_dict and job.status in {"completed", "done", "running"}:
+        try:
+            ev = read_job_evidence_payload(job)
+            if isinstance(ev, dict):
+                profile_dict = ev.get("procurement_profile") or ev.get("supplier_search", {}).get("procurement_profile") or {}
+        except Exception:
+            pass
+    raw_items = profile_dict.get("items") or []
+    if raw_items:
+        multi_item_details = {
+            "items": [
+                {
+                    "id": str(it.get("id") or f"item-{idx}"),
+                    "name": str(it.get("name") or ""),
+                    "quantity": str(it.get("quantity") or ""),
+                    "unit": str(it.get("unit") or ""),
+                    "is_core": bool(it.get("is_core", True)),
+                    "is_auxiliary": bool(it.get("is_auxiliary", False)),
+                    "included_sub_items": list(it.get("included_sub_items") or []),
+                    "cost_tier": str(it.get("cost_tier") or "medium"),
+                }
+                for idx, it in enumerate(raw_items)
+                if isinstance(it, dict) and (it.get("name") or it.get("title"))
+            ],
+            "total_items": len(raw_items),
+            "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
+        }
     status_lbl = human_status_label(job.status)
     if job.status == "failed" and getattr(job, "supplier_search_policy", "") == SUPPLIER_POLICY_MINPROM_ONLY and ("реестр" in (job.error or "").lower() or "реестр" in (job.message or "").lower()):
         status_lbl = "нет в реестре"
@@ -3606,6 +3891,9 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
+        "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
+        "confirmation_kind": confirmation_kind,
+        "multi_item_details": multi_item_details,
         "status": job.status,
         "status_label": status_lbl,
         "progress": job.progress,
@@ -3619,7 +3907,7 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "file_count": job.file_count,
         "has_result": bool(result_files),
         "can_download": bool(result_files) and job.status not in {STATUS_AWAITING_CUSTOMER_CONFIRMATION, STATUS_CUSTOMER_DECLINED},
-        "can_cancel": job.status in {"pending", "running"},
+        "can_cancel": job.status in {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION},
         "can_find_more_suppliers": job_can_find_more_suppliers(job),
         "can_start_supplier_search": job_can_start_supplier_search(job),
         "exact_product_summary": _customer_exact_product_summary(job) if job_can_start_supplier_search(job) else None,
@@ -3694,6 +3982,7 @@ async def create_customer_job_api(
     *,
     mode: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    multi_item_mode: str = "balanced",
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -3706,6 +3995,7 @@ async def create_customer_job_api(
     if not context.user.is_email_verified:
         raise HTTPException(status_code=403, detail="Подтвердите email, чтобы запускать задачи.")
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
+    normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:
@@ -3752,6 +4042,7 @@ async def create_customer_job_api(
                     files=job_files,
                     sources=[],
                     supplier_search_policy=normalized_policy,
+                    multi_item_mode=normalized_multi_item_mode,
                 )
                 reserve_job_units(db, client, job)
                 enqueue_job(job.id)
@@ -3769,6 +4060,7 @@ async def create_customer_job_api(
             files=payload,
             sources=sources,
             supplier_search_policy=normalized_policy,
+            multi_item_mode=normalized_multi_item_mode,
         )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         enqueue_job(job.id)
@@ -3904,7 +4196,8 @@ def download_customer_job_file_api(job_id: str, file_kind: str, *, context: WebA
 
 def cancel_customer_job_api(job_id: str, *, context: WebAuthContext, db: Session) -> dict:
     job = _customer_job_or_404(db, job_id, context)
-    if job.status not in {"pending", "running"}:
+    cancellable_statuses = {"pending", "running", STATUS_AWAITING_CUSTOMER_CONFIRMATION}
+    if job.status not in cancellable_statuses:
         raise HTTPException(status_code=409, detail="Эту задачу уже нельзя отменить.")
     release_job_reservation(db, job, note="Резерв возвращён: задача отменена клиентом")
     job.status = "cancelled"
@@ -4014,6 +4307,113 @@ def decline_customer_partial_job_api(job_id: str, *, context: WebAuthContext, db
     return {"success": True, "job": customer_job_to_dict(job, db=db)}
 
 
+def choose_customer_multi_item_strategy_api(
+    job_id: str,
+    *,
+    multi_item_mode: str,
+    selected_item_ids: list[str] | None = None,
+    context: WebAuthContext,
+    db: Session,
+) -> dict:
+    job = _customer_job_or_404(db, job_id, context)
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+        raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
+    normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    job.multi_item_mode = normalized
+    job.confirmation_kind = ""
+    job.confirmation_outcome = "accepted"
+    job.status = "pending"
+    job.progress = 32
+
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    raw_items = profile_dict.get("items") or []
+
+    final_selected_ids: list[str] | None = None
+    if normalized == "per_item":
+        if selected_item_ids:
+            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
+            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
+            if valid_ids:
+                final_selected_ids = valid_ids
+        target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
+        if target_count > 1 and job.client:
+            from .billing import reserve_additional_job_units, BillingError
+            try:
+                reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
+            except BillingError as err:
+                raise HTTPException(status_code=402, detail=str(err))
+
+        job.message = f"Выбран режим: Попозиционный глубокий ({target_count} поз.). Возобновляю поиск..."
+    else:
+        job.message = "Выбран режим: Сбалансированный. Возобновляю поиск..."
+
+    update_dobor_context_dict(
+        job,
+        {
+            "multi_item_confirmed": True,
+            "selected_item_ids": final_selected_ids,
+        },
+    )
+    db.commit()
+    enqueue_job(job.id)
+    return {"success": True, "job": customer_job_to_dict(job, db=db)}
+
+
+def choose_admin_multi_item_strategy_api(
+    job_id: str,
+    *,
+    multi_item_mode: str,
+    selected_item_ids: list[str] | None = None,
+    db: Session,
+) -> dict:
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != STATUS_AWAITING_CUSTOMER_CONFIRMATION or job.confirmation_kind != "multi_item_strategy":
+        raise HTTPException(status_code=409, detail="Выбор стратегии уже не актуален.")
+    normalized = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
+    job.multi_item_mode = normalized
+    job.confirmation_kind = ""
+    job.confirmation_outcome = "accepted"
+    job.status = "pending"
+    job.progress = 32
+
+    dobor_ctx = read_dobor_context(job)
+    profile_dict = dobor_ctx.get("procurement_profile") or {}
+    raw_items = profile_dict.get("items") or []
+
+    final_selected_ids: list[str] | None = None
+    if normalized == "per_item":
+        if selected_item_ids:
+            all_ids = {str(it.get("id") or f"item-{i}") for i, it in enumerate(raw_items)}
+            valid_ids = [sid for sid in selected_item_ids if sid in all_ids]
+            if valid_ids:
+                final_selected_ids = valid_ids
+        target_count = len(final_selected_ids) if final_selected_ids is not None else len(raw_items)
+        if target_count > 1 and job.client:
+            from .billing import reserve_additional_job_units, BillingError
+            try:
+                reserve_additional_job_units(db, job.client, job, additional_units=target_count - 1)
+            except BillingError as err:
+                raise HTTPException(status_code=402, detail=str(err))
+
+        job.message = f"Выбран режим: Попозиционный глубокий ({target_count} поз.). Возобновляю поиск..."
+    else:
+        job.message = "Выбран режим: Сбалансированный. Возобновляю поиск..."
+
+    update_dobor_context_dict(
+        job,
+        {
+            "multi_item_confirmed": True,
+            "selected_item_ids": final_selected_ids,
+        },
+    )
+    db.commit()
+    enqueue_job(job.id)
+    return {"success": True, "job": job_to_dict(job, db=db)}
+
+
 FIND_MORE_SUPPLIER_STATUSES = {"completed", "partial", "needs_review"}
 
 
@@ -4104,6 +4504,7 @@ def create_additional_supplier_search_for_client(
                 getattr(original_job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
             ),
             supplier_search_run_type=SUPPLIER_RUN_ADDITIONAL,
+            multi_item_mode=getattr(original_job, "multi_item_mode", "balanced"),
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         prior_verified_count = _cumulative_prior_verified_count(original_job)
@@ -4339,6 +4740,7 @@ def create_supplier_search_from_exact_product(
     original_job: Job,
     created_by_telegram_id: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
+    multi_item_mode: str = "balanced",
     include_alternatives: bool = True,
     additional_prompt: str = "",
 ) -> Job:
@@ -4395,6 +4797,7 @@ def create_supplier_search_from_exact_product(
             sources=[],
             supplier_search_policy=normalized_policy,
             supplier_search_run_type="initial",
+            multi_item_mode=multi_item_mode,
         )
         reserve_job_units(db, client, job, supplier_search_count=1)
         enqueue_job(job.id)
@@ -4982,6 +5385,29 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
             .scalar()
             or 0
         )
+    raw_api_keys = getattr(client, "api_keys", None)
+    if raw_api_keys is None and db is not None:
+        from app.models import ApiKey
+        raw_api_keys = db.query(ApiKey).filter(ApiKey.client_id == client.id).all()
+    client_keys = sorted(raw_api_keys or [], key=lambda k: k.created_at or datetime.min, reverse=True)
+    serialized_keys = [
+        {
+            "id": k.id,
+            "key_prefix": k.key_prefix,
+            "name": k.name,
+            "is_active": k.is_active,
+            "allowed_supplier_search": k.allowed_supplier_search,
+            "allowed_exact_product": k.allowed_exact_product,
+            "allowed_procurement_report": k.allowed_procurement_report,
+            "spent_supplier_search": k.spent_supplier_search,
+            "spent_exact_product": k.spent_exact_product,
+            "spent_procurement_report": k.spent_procurement_report,
+            "total_spent": (k.spent_supplier_search + k.spent_exact_product + k.spent_procurement_report),
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+        }
+        for k in client_keys
+    ]
     return {
         "id": client.id,
         "client_number": getattr(client, "client_number", None),
@@ -5004,7 +5430,10 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "jobs_count": int(jobs_count or 0),
         "telegram_accounts": [telegram_account_to_dict(account) for account in sorted(client.telegram_accounts, key=lambda item: item.created_at, reverse=True)],
         "web_users": [web_user_to_admin_dict(user) for user in sorted(client.web_users, key=lambda item: item.created_at, reverse=True)],
-        "source": "web" if client.web_users else "telegram",
+        "has_api_key": bool(serialized_keys),
+        "api_keys": serialized_keys,
+        "has_custom_tariffs": client_has_custom_tariffs(db, client) if db else False,
+        "source": "api" if (serialized_keys and not client.web_users and not client.telegram_accounts) else ("web" if client.web_users else "telegram"),
         "usage": client_usage_summary(db, client) if db else None,
         "recent_usage": client_recent_usage(db, client) if db else [],
         "recent_billing": recent_billing_transactions(db, client) if db else [],
@@ -5088,6 +5517,9 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
             created_by_label = f"Веб: {client_email}"
         else:
             created_by_label = "Веб-кабинет"
+    elif created_by_raw.startswith("api:"):
+        key_pfx = created_by_raw[4:]
+        created_by_label = f"API: {key_pfx}"
     elif created_by_raw:
         if created_by_raw.startswith("@"):
             created_by_label = f"TG: {created_by_raw}"
@@ -5112,6 +5544,7 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "mode_label": mode_label(job.mode),
         "supplier_search_policy": getattr(job, "supplier_search_policy", None) or SUPPLIER_POLICY_NORMAL,
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", None) or SUPPLIER_RUN_INITIAL,
+        "multi_item_mode": getattr(job, "multi_item_mode", "balanced") or "balanced",
         "confirmation_kind": confirmation_kind,
         "confirmation_outcome": confirmation_outcome,
         "offer_delivery_outcome": offer_delivery_outcome,

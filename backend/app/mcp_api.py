@@ -18,12 +18,25 @@ from sqlalchemy.orm import Session
 from .ai import get_model_selection
 from .config import config
 from .db import db_session
+from .billing import (
+    BillingError,
+    BillingTransaction,
+    OP_CHARGE,
+    OP_RELEASE,
+    OP_RESERVE,
+    _billing_client_lock,
+    billing_kind_label,
+    charge_job_reservation,
+    effective_price_kopeks,
+    release_job_reservation,
+    reserve_job_units,
+)
 from .exact_product import (
     ExactProductReport,
     analyze_exact_product,
     write_exact_product_docx,
 )
-from .models import ApiKey, Client, SystemSettings, now_utc
+from .models import ApiKey, Client, Job, SystemSettings, now_utc
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -151,59 +164,336 @@ def get_api_key_auth(
 
 def consume_quota(db: Session, api_key: ApiKey, service: str, count: int = 1) -> int:
     """
-    Verifies service permission and consumes quota.
-    For admin master keys, quotas are bypassed.
-    Returns remaining quota count (-1 for unlimited).
+    Verifies service permission and consumes quota or client money balance.
+    - For admin master keys, quotas are bypassed.
+    - When linked to a Client: deducts from the client's unified money balance based on
+      their effective tariff (taking into account individual client price overrides),
+      logs BillingTransaction, and tracks usage on the key.
+    - For standalone keys without a client: checks legacy key request quotas.
+    Returns remaining requests (-1 for unlimited).
     """
     if api_key.is_admin:
         return -1
 
+    # 1. Check module permission
     if service == "supplier_search":
         if not api_key.allowed_supplier_search:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Supplier search service ('supplier_search') is not permitted for this API key",
             )
-        if (api_key.spent_supplier_search + count) > api_key.quota_supplier_search:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Supplier search quota exceeded (spent: {api_key.spent_supplier_search}, limit: {api_key.quota_supplier_search})",
-            )
-        api_key.spent_supplier_search += count
-        db.commit()
-        return max(0, api_key.quota_supplier_search - api_key.spent_supplier_search)
-
     elif service == "exact_product":
         if not api_key.allowed_exact_product:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Exact product & Form 2 service ('exact_product') is not permitted for this API key",
             )
-        if (api_key.spent_exact_product + count) > api_key.quota_exact_product:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Exact product quota exceeded (spent: {api_key.spent_exact_product}, limit: {api_key.quota_exact_product})",
-            )
-        api_key.spent_exact_product += count
-        db.commit()
-        return max(0, api_key.quota_exact_product - api_key.spent_exact_product)
-
     elif service == "procurement_report":
         if not api_key.allowed_procurement_report:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Procurement documentation analysis service ('procurement_report') is not permitted for this API key",
             )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown service '{service}'",
+        )
+
+    # 2. Linked Client -> UNIFIED MONEY BALANCE
+    if api_key.client_id:
+        client = db.get(Client, api_key.client_id)
+        if not client or not client.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Аккаунт клиента заблокирован или не найден",
+            )
+
+        price_kopeks = effective_price_kopeks(db, client, service)
+        if price_kopeks is None or price_kopeks < 0:
+            price_kopeks = 0
+        total_cost_kopeks = price_kopeks * count
+
+        with _billing_client_lock(client.id):
+            db.refresh(client)
+            available_money_kopeks = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+
+            if total_cost_kopeks > 0 and available_money_kopeks < total_cost_kopeks:
+                needed_rub = total_cost_kopeks / 100
+                avail_rub = available_money_kopeks / 100
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Недостаточно средств на едином балансе. Требуется: {needed_rub:.2f} ₽, доступно: {avail_rub:.2f} ₽. Пополните баланс.",
+                )
+
+            if total_cost_kopeks > 0:
+                client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - total_cost_kopeks)
+                service_label = billing_kind_label(service)
+                tx = BillingTransaction(
+                    client_id=client.id,
+                    kind=service,
+                    operation=OP_CHARGE,
+                    units=count,
+                    amount_kopeks=total_cost_kopeks,
+                    balance_after_kopeks=client.money_balance_kopeks,
+                    reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                    note=f"Запрос по API ({api_key.name or api_key.key_prefix}): {service_label}",
+                    created_by="api",
+                )
+                db.add(tx)
+
+            # Update usage metrics on API key
+            if service == "supplier_search":
+                api_key.spent_supplier_search += count
+            elif service == "exact_product":
+                api_key.spent_exact_product += count
+            elif service == "procurement_report":
+                api_key.spent_procurement_report += count
+            api_key.last_used_at = now_utc()
+            db.commit()
+
+        if price_kopeks > 0:
+            return int(client.money_balance_kopeks // price_kopeks)
+        return 999999
+
+    # 3. Standalone key without client -> Legacy fixed quota check
+    if service == "supplier_search":
+        if (api_key.spent_supplier_search + count) > api_key.quota_supplier_search:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Supplier search quota exceeded (spent: {api_key.spent_supplier_search}, limit: {api_key.quota_supplier_search})",
+            )
+        api_key.spent_supplier_search += count
+        api_key.last_used_at = now_utc()
+        db.commit()
+        return max(0, api_key.quota_supplier_search - api_key.spent_supplier_search)
+
+    elif service == "exact_product":
+        if (api_key.spent_exact_product + count) > api_key.quota_exact_product:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Exact product quota exceeded (spent: {api_key.spent_exact_product}, limit: {api_key.quota_exact_product})",
+            )
+        api_key.spent_exact_product += count
+        api_key.last_used_at = now_utc()
+        db.commit()
+        return max(0, api_key.quota_exact_product - api_key.spent_exact_product)
+
+    elif service == "procurement_report":
         if (api_key.spent_procurement_report + count) > api_key.quota_procurement_report:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f"Procurement analysis quota exceeded (spent: {api_key.spent_procurement_report}, limit: {api_key.quota_procurement_report})",
             )
         api_key.spent_procurement_report += count
+        api_key.last_used_at = now_utc()
         db.commit()
         return max(0, api_key.quota_procurement_report - api_key.spent_procurement_report)
 
     return -1
+
+
+def check_api_service_permission(api_key: ApiKey, service: str) -> None:
+    """Validates that the API key has permission for the specified service."""
+    if api_key.is_admin:
+        return
+    if service == "supplier_search":
+        if not api_key.allowed_supplier_search:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Supplier search service ('supplier_search') is not permitted for this API key",
+            )
+    elif service == "exact_product":
+        if not api_key.allowed_exact_product:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Exact product service ('exact_product') is not permitted for this API key",
+            )
+    elif service == "procurement_report":
+        if not api_key.allowed_procurement_report:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Procurement documentation analysis service ('procurement_report') is not permitted for this API key",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown service '{service}'",
+        )
+
+
+def start_api_job_with_reservation(
+    db: Session,
+    api_key: ApiKey,
+    service: str,
+    title: str,
+    target_count: int = 0,
+) -> tuple[Optional[Job], int]:
+    """
+    Begins an API request with two-phase reservation:
+    1. Validates permissions and account status.
+    2. For linked clients: creates a Job in 'running' status and reserves required funds (OP_RESERVE).
+       If balance is insufficient, raises 402 HTTP.
+    3. For standalone keys: validates remaining quota.
+    Returns: (job, remaining_runs)
+    """
+    check_api_service_permission(api_key, service)
+
+    from .jobs import next_job_number
+
+    if api_key.is_admin:
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=api_key.client_id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=service,
+            status="running",
+            progress=0,
+            title=title[:250],
+            target_suppliers=target_count,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job, -1
+
+    if api_key.client_id:
+        client = db.get(Client, api_key.client_id)
+        if not client or not client.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Аккаунт клиента заблокирован или не найден",
+            )
+
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=client.id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=service,
+            status="running",
+            progress=0,
+            title=title[:250],
+            target_suppliers=target_count,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        try:
+            reserve_job_units(db, client, job, supplier_search_count=1)
+        except BillingError as be:
+            job.status = "failed"
+            job.error = str(be)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=str(be),
+            )
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка резервирования средств: {exc}",
+            )
+
+        # Calculate remaining runs from available balance
+        price_kopeks = effective_price_kopeks(db, client, service) or 0
+        avail_kopeks = max(0, int(client.money_balance_kopeks or 0) - int(client.money_reserved_kopeks or 0))
+        remaining = int(avail_kopeks // price_kopeks) if price_kopeks > 0 else 999999
+        return job, remaining
+
+    # Standalone key (legacy fixed quota)
+    spent = getattr(api_key, f"spent_{service}", 0)
+    quota = getattr(api_key, f"quota_{service}", 0)
+    if (spent + 1) > quota:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"{service} quota exceeded (spent: {spent}, limit: {quota})",
+        )
+    return None, max(0, quota - spent - 1)
+
+
+def finalize_api_job_success(
+    db: Session,
+    api_key: ApiKey,
+    job: Optional[Job],
+    service: str,
+    *,
+    result_path: str = "",
+    evidence_path: str = "",
+    verified_count: int = 0,
+) -> None:
+    """
+    Settles reserved funds upon successful execution (OP_CHARGE),
+    updates usage counters and marks job completed.
+    """
+    if job and job.client_id:
+        charge_job_reservation(
+            db,
+            job,
+            note=f"Запрос по API ({api_key.name or api_key.key_prefix}): {billing_kind_label(service)}",
+        )
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = now_utc()
+        job.result_path = result_path
+        job.evidence_path = evidence_path
+        job.verified_count = verified_count
+    elif job:
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = now_utc()
+        job.result_path = result_path
+        job.evidence_path = evidence_path
+        job.verified_count = verified_count
+
+    # Update spent on API key
+    if service == "supplier_search":
+        api_key.spent_supplier_search += 1
+    elif service == "exact_product":
+        api_key.spent_exact_product += 1
+    elif service == "procurement_report":
+        api_key.spent_procurement_report += 1
+    api_key.last_used_at = now_utc()
+    db.commit()
+
+
+def release_api_job_reservation(
+    db: Session,
+    api_key: ApiKey,
+    job: Optional[Job],
+    service: str,
+    *,
+    error: str = "",
+    note: str = "",
+    status_val: str = "failed",
+    verified_count: int = 0,
+) -> None:
+    """
+    Safely releases reserved funds when request fails or yields 0 items (OP_RELEASE).
+    Client is NOT charged.
+    """
+    if job and job.client_id:
+        release_note = note or f"Резерв возвращён: сбой запроса API ({error[:80]})"
+        release_job_reservation(db, job, note=release_note)
+        job.status = status_val
+        job.error = error[:500] if error else ""
+        job.verified_count = verified_count
+        if status_val == "completed":
+            job.progress = 100
+            job.completed_at = now_utc()
+    elif job:
+        job.status = status_val
+        job.error = error[:500] if error else ""
+        job.verified_count = verified_count
+
+    # Standalone keys: do NOT increment spent on failure
+    api_key.last_used_at = now_utc()
+    db.commit()
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +553,10 @@ class McpBalanceResponse(BaseModel):
     key_prefix: str
     is_admin: bool
     is_active: bool
+    client_id: Optional[str] = None
+    client_name: Optional[str] = None
+    client_balance_rub: Optional[float] = None
+    billing_mode: str = "money_balance"  # "money_balance" | "fixed_quota"
     supplier_search: Dict[str, Any]
     exact_product: Dict[str, Any]
     procurement_report: Dict[str, Any]
@@ -473,35 +767,95 @@ class McpProcurementAnalyzeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/balance", response_model=McpBalanceResponse)
-def get_mcp_balance(api_key: ApiKey = Depends(get_api_key_auth)):
+def get_mcp_balance(
+    api_key: ApiKey = Depends(get_api_key_auth),
+    db: Session = Depends(db_session),
+):
     """Check remaining quotas, active services, and limits for the authenticated API key."""
+    client = db.get(Client, api_key.client_id) if api_key.client_id else None
+    client_name = client.name if client else None
+    client_balance_rub = round((client.money_balance_kopeks or 0) / 100, 2) if client else None
+    billing_mode = "money_balance" if client else "fixed_quota"
+
+    def _service_stat(kind: str, allowed: bool, spent: int, fallback_quota: int) -> dict[str, Any]:
+        if api_key.is_admin:
+            return {"allowed": True, "quota": "unlimited", "spent": spent, "remaining": "unlimited", "price_rub": 0.0}
+        if client:
+            price_kopeks = effective_price_kopeks(db, client, kind) or 0
+            price_rub = round(price_kopeks / 100, 2)
+            rem = int((client.money_balance_kopeks or 0) // price_kopeks) if price_kopeks > 0 else 999999
+            return {
+                "allowed": allowed,
+                "billing_type": "client_money_balance",
+                "price_rub": price_rub,
+                "spent": spent,
+                "remaining": rem,
+                "client_balance_rub": client_balance_rub,
+            }
+        return {
+            "allowed": allowed,
+            "billing_type": "fixed_quota",
+            "quota": fallback_quota,
+            "spent": spent,
+            "remaining": max(0, fallback_quota - spent),
+        }
+
     return McpBalanceResponse(
         ok=True,
         key_name=api_key.name,
         key_prefix=api_key.key_prefix,
         is_admin=api_key.is_admin,
         is_active=api_key.is_active,
-        supplier_search={
-            "allowed": api_key.allowed_supplier_search or api_key.is_admin,
-            "quota": api_key.quota_supplier_search if not api_key.is_admin else "unlimited",
-            "spent": api_key.spent_supplier_search,
-            "remaining": max(0, api_key.quota_supplier_search - api_key.spent_supplier_search) if not api_key.is_admin else "unlimited",
-        },
-        exact_product={
-            "allowed": api_key.allowed_exact_product or api_key.is_admin,
-            "quota": api_key.quota_exact_product if not api_key.is_admin else "unlimited",
-            "spent": api_key.spent_exact_product,
-            "remaining": max(0, api_key.quota_exact_product - api_key.spent_exact_product) if not api_key.is_admin else "unlimited",
-        },
-        procurement_report={
-            "allowed": api_key.allowed_procurement_report or api_key.is_admin,
-            "quota": api_key.quota_procurement_report if not api_key.is_admin else "unlimited",
-            "spent": api_key.spent_procurement_report,
-            "remaining": max(0, api_key.quota_procurement_report - api_key.spent_procurement_report) if not api_key.is_admin else "unlimited",
-        },
+        client_id=api_key.client_id,
+        client_name=client_name,
+        client_balance_rub=client_balance_rub,
+        billing_mode=billing_mode,
+        supplier_search=_service_stat("supplier_search", api_key.allowed_supplier_search, api_key.spent_supplier_search, api_key.quota_supplier_search),
+        exact_product=_service_stat("exact_product", api_key.allowed_exact_product, api_key.spent_exact_product, api_key.quota_exact_product),
+        procurement_report=_service_stat("procurement_report", api_key.allowed_procurement_report, api_key.spent_procurement_report, api_key.quota_procurement_report),
         rate_limit_per_minute=api_key.rate_limit_per_minute or 30,
         expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
     )
+
+
+def record_api_job(
+    db: Session,
+    api_key: ApiKey,
+    mode: str,
+    title: str,
+    status: str = "completed",
+    error: str = "",
+    target_count: int = 0,
+    verified_count: int = 0,
+    result_path: str = "",
+    evidence_path: str = "",
+) -> Optional[Job]:
+    """Records an executed or failed API request into the central jobs table for audit and admin visibility."""
+    if not api_key or not api_key.client_id:
+        return None
+    try:
+        from .jobs import next_job_number
+        job = Job(
+            job_number=next_job_number(db),
+            client_id=api_key.client_id,
+            created_by_telegram_id=f"api:{api_key.key_prefix}",
+            mode=mode,
+            status=status,
+            progress=100 if status == "completed" else 0,
+            title=title[:250],
+            target_suppliers=target_count,
+            verified_count=verified_count,
+            result_path=result_path,
+            evidence_path=evidence_path,
+            error=error,
+            completed_at=now_utc() if status == "completed" else None,
+        )
+        db.add(job)
+        db.commit()
+        return job
+    except Exception as exc:
+        logger.warning("failed_to_record_api_job: %s", exc)
+        return None
 
 
 @router.post("/suppliers/search", response_model=McpSupplierSearchResponse)
@@ -513,20 +867,26 @@ async def mcp_supplier_search(
     """
     Search direct suppliers, manufacturers, and distributors matching technical specification in real time.
     Returns contact details, verified websites, phone numbers, and optional commercial offer markdown.
+    Uses two-phase reservation billing: funds are reserved first and settled only upon verified results.
+    If 0 suppliers found or error occurs, the reservation is released and money is not charged.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "supplier_search", count=1)
 
     spec_text = req.specification.strip()
     if req.city:
         spec_text = f"Регион поставки: {req.city.strip()}\n\n{spec_text}"
 
-    clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
+    job_title = f"API: Поиск поставщиков — {spec_text[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "supplier_search", job_title, target_count=req.target_count
+    )
+
     policy = req.search_policy.strip() if req.search_policy else "normal"
     if policy not in {"normal", "minprom_registry_priority", "minprom_registry_only"}:
         policy = "normal"
 
     try:
+        clean_context = (await extract_supplier_search_context(settings, spec_text)) or spec_text[:20000]
         with supplier_search_job_context(f"mcp_{api_key.id[:8]}"):
             accepted_rows, evidence = await discover_suppliers(
                 settings=settings,
@@ -534,8 +894,11 @@ async def mcp_supplier_search(
                 target=req.target_count,
                 supplier_search_policy=policy,
             )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_supplier_search_failed: %s", exc, exc_info=True)
+        release_api_job_reservation(
+            db, api_key, job, "supplier_search", error=str(exc)
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Supplier search processing error: {str(exc)}",
@@ -573,6 +936,32 @@ async def mcp_supplier_search(
         except Exception as exc:
             logger.warning("mcp_quote_request_gen_failed: %s", exc)
 
+    source_title = str(evidence.get("subject") or "").strip()
+    if source_title and job:
+        job.title = f"API: Поиск поставщиков — {source_title[:80].strip()}"
+
+    # Billing settlement based on results:
+    if len(supplier_items) == 0:
+        # 0 suppliers found: release reservation! Do NOT charge the client.
+        release_api_job_reservation(
+            db,
+            api_key,
+            job,
+            "supplier_search",
+            note="Резерв возвращён: поставщики не найдены",
+            status_val="completed",
+            verified_count=0,
+        )
+    else:
+        # Success: charge reserved funds
+        finalize_api_job_success(
+            db,
+            api_key,
+            job,
+            "supplier_search",
+            verified_count=len(supplier_items),
+        )
+
     return McpSupplierSearchResponse(
         ok=True,
         total_found=len(supplier_items),
@@ -580,7 +969,7 @@ async def mcp_supplier_search(
         suppliers=supplier_items,
         quote_request_markdown=quote_markdown,
         quota_remaining=remaining_quota,
-        source_title=str(evidence.get("subject") or "").strip(),
+        source_title=source_title,
     )
 
 
@@ -593,12 +982,16 @@ async def mcp_exact_product(
     """
     Deep technical specification analysis to uncover hidden original model, Form 2 parameters,
     and 2-4 verified equivalent analogues with compliance verification and DOCX report.
+    Uses two-phase reservation billing: funds settled on success, released on error.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "exact_product", count=1)
-
     spec_text = req.specification.strip()
     proc_title = req.procurement_title.strip()
+
+    job_title = f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "exact_product", job_title
+    )
 
     try:
         report: ExactProductReport = await analyze_exact_product(
@@ -606,8 +999,11 @@ async def mcp_exact_product(
             context=spec_text,
             procurement_title=proc_title,
         )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_exact_product_failed: %s", exc, exc_info=True)
+        release_api_job_reservation(
+            db, api_key, job, "exact_product", error=str(exc)
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Exact product analysis error: {str(exc)}",
@@ -658,7 +1054,7 @@ async def mcp_exact_product(
                     for alt_s in alt.specs_breakdown
                 ],
             )
-            for alt in pos.alternative_brands
+            for alt in (getattr(pos, "alternativeBrands", None) or getattr(pos, "alternative_brands", []))
         ]
         positions_output.append(
             McpExactPositionItem(
@@ -673,6 +1069,16 @@ async def mcp_exact_product(
                 alternatives=alts_list,
             )
         )
+
+    verified_positions = len(report.positions) if (report and hasattr(report, "positions")) else 0
+    finalize_api_job_success(
+        db,
+        api_key,
+        job,
+        "exact_product",
+        result_path=docx_rel_url or "",
+        verified_count=verified_positions,
+    )
 
     return McpExactProductResponse(
         ok=True,
@@ -692,19 +1098,33 @@ async def mcp_procurement_analyze(
 ):
     """
     Expert audit of procurement contracts, notice terms, national regime, guarantees, and legal pitfalls under 44-FZ and 223-FZ.
+    Uses two-phase reservation billing: funds settled on success, released on error.
     """
     settings = get_or_create_settings(db)
-    remaining_quota = consume_quota(db, api_key, "procurement_report", count=1)
-
     doc_text = req.document_text.strip()
+    job_title = f"API: Анализ документации — {doc_text[:80].strip()}"
+    job, remaining_quota = start_api_job_with_reservation(
+        db, api_key, "procurement_report", job_title
+    )
+
     try:
         gen_result = await generate_procurement_report(settings, doc_text)
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError, BaseException) as exc:
         logger.error("mcp_procurement_analyze_failed: %s", exc, exc_info=True)
+        release_api_job_reservation(
+            db, api_key, job, "procurement_report", error=str(exc)
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Procurement report analysis error: {str(exc)}",
         )
+
+    finalize_api_job_success(
+        db,
+        api_key,
+        job,
+        "procurement_report",
+    )
 
     return McpProcurementAnalyzeResponse(
         ok=True,
@@ -745,6 +1165,7 @@ class AdminApiKeyItem(BaseModel):
     name: str
     client_id: Optional[str] = None
     client_name: Optional[str] = None
+    client_balance_rub: Optional[float] = None
     is_admin: bool
     is_active: bool
     allowed_supplier_search: bool
@@ -770,9 +1191,9 @@ class AdminCreateApiKeyRequest(BaseModel):
     allowed_supplier_search: bool = True
     allowed_exact_product: bool = True
     allowed_procurement_report: bool = True
-    quota_supplier_search: int = Field(default=10, ge=0)
-    quota_exact_product: int = Field(default=10, ge=0)
-    quota_procurement_report: int = Field(default=10, ge=0)
+    quota_supplier_search: int = Field(default=999999, ge=0)
+    quota_exact_product: int = Field(default=999999, ge=0)
+    quota_procurement_report: int = Field(default=999999, ge=0)
     rate_limit_per_minute: int = Field(default=30, ge=1, le=300)
     notes: str = ""
     expires_days: Optional[int] = Field(default=None, ge=1, le=3650)
@@ -804,12 +1225,14 @@ class AdminTestApiKeyRequest(BaseModel):
 
 
 def _serialize_api_key_item(k: ApiKey, client_name: Optional[str] = None) -> AdminApiKeyItem:
+    client_balance_rub = round((k.client.money_balance_kopeks or 0) / 100, 2) if k.client else None
     return AdminApiKeyItem(
         id=k.id,
         key_prefix=k.key_prefix,
         name=k.name,
         client_id=k.client_id,
         client_name=client_name or (k.client.name if k.client else None),
+        client_balance_rub=client_balance_rub,
         is_admin=k.is_admin,
         is_active=k.is_active,
         allowed_supplier_search=k.allowed_supplier_search,

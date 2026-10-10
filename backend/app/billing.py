@@ -19,6 +19,7 @@ KIND_PROCUREMENT_REPORT = "procurement_report"
 KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
 KIND_EXACT_PRODUCT = "exact_product"
 KIND_MONEY = "money"
+KIND_DEPOSIT = "deposit"
 VALID_BILLING_KINDS = {
     KIND_SUPPLIER_SEARCH,
     KIND_PROCUREMENT_REPORT,
@@ -108,6 +109,8 @@ def _idempotent_transaction(
 def billing_kind_label(kind: str) -> str:
     if kind == KIND_MONEY:
         return "Баланс"
+    if kind == KIND_DEPOSIT:
+        return "Пополнение баланса"
     if kind == KIND_PROCUREMENT_REPORT:
         return "Анализ документации"
     if kind == KIND_SUPPLIER_SEARCH_EXTRA:
@@ -174,6 +177,7 @@ def client_balance_summary(db: Session, client: Client) -> dict:
             kind: effective_price_to_dict(db, client, kind)
             for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
         },
+        "has_custom_tariffs": client_has_custom_tariffs(db, client),
     }
 
 
@@ -243,10 +247,14 @@ def balance_counter(db: Session, client: Client, kind: str) -> dict:
     return counter
 
 
+LOW_BALANCE_MONEY_THRESHOLD_KOPEKS = 10_000  # 100.00 ₽
+
+
 def money_balance_summary(db: Session, client: Client) -> dict:
     balance = max(0, int(getattr(client, "money_balance_kopeks", 0) or 0))
     reserved = max(0, int(getattr(client, "money_reserved_kopeks", 0) or 0))
     available = max(0, balance - reserved)
+    threshold = max(LOW_BALANCE_MONEY_THRESHOLD_KOPEKS, _lowest_active_function_price(db, client))
     return {
         "balance_kopeks": balance,
         "reserved_kopeks": reserved,
@@ -255,7 +263,7 @@ def money_balance_summary(db: Session, client: Client) -> dict:
         "reserved_rub": round(reserved / 100, 2),
         "available_rub": round(available / 100, 2),
         "source": "money_ledger",
-        "low": available <= _lowest_active_function_price(db, client),
+        "low": available <= threshold,
     }
 
 
@@ -379,6 +387,21 @@ def _client_tariff_override(db: Session, client: Client, kind: str) -> ClientTar
         .filter(ClientTariffOverride.kind == kind)
         .order_by(ClientTariffOverride.updated_at.desc())
         .first()
+    )
+
+
+def client_has_custom_tariffs(db: Session, client: Client | None) -> bool:
+    if not client:
+        return False
+    overrides = getattr(client, "tariff_overrides", None)
+    if overrides is not None and isinstance(overrides, list):
+        return any(bool(ov.is_enabled and (ov.price_kopeks is not None and ov.price_kopeks > 0)) for ov in overrides)
+    return (
+        db.query(ClientTariffOverride)
+        .filter(ClientTariffOverride.client_id == client.id)
+        .filter(ClientTariffOverride.is_enabled.is_(True))
+        .filter(ClientTariffOverride.price_kopeks > 0)
+        .count() > 0
     )
 
 
@@ -626,6 +649,59 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
             )
         )
     db.commit()
+
+
+def reserve_additional_job_units(
+    db: Session,
+    client: Client,
+    job: Job,
+    additional_units: int,
+    *,
+    kind: str = KIND_SUPPLIER_SEARCH,
+) -> None:
+    if additional_units <= 0:
+        return
+    with _billing_client_lock(client.id):
+        db.refresh(client)
+        _initialize_legacy_balance_if_needed(db, client, exclude_job_id=job.id)
+        units_to_reserve = {kind: additional_units}
+        error = access_error_for_units(db, client, units_to_reserve)
+        if error:
+            raise BillingError(error)
+        amount = _reservable_amount_for_kind(db, client, kind, additional_units)
+        if amount > 0:
+            client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
+        existing_tx = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.job_id == job.id,
+                BillingTransaction.kind == kind,
+                BillingTransaction.operation == OP_RESERVE,
+            )
+            .first()
+        )
+        if existing_tx:
+            existing_tx.units = int(existing_tx.units or 0) + additional_units
+            existing_tx.amount_kopeks = int(existing_tx.amount_kopeks or 0) + amount
+            existing_tx.reserved_after_kopeks = max(0, int(client.money_reserved_kopeks or 0))
+            existing_tx.balance_after_kopeks = max(0, int(client.money_balance_kopeks or 0))
+            existing_tx.note = f"Резерв для попозиционного поиска ({existing_tx.units} поз.)"
+        else:
+            db.add(
+                BillingTransaction(
+                    client_id=client.id,
+                    job_id=job.id,
+                    kind=kind,
+                    operation=OP_RESERVE,
+                    units=additional_units,
+                    amount_kopeks=amount,
+                    balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
+                    reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
+                    note=f"Дополнительный резерв для попозиционного поиска ({additional_units} поз.)" if amount > 0 else f"Резерв для попозиционного поиска ({additional_units} поз.)",
+                    created_by="system",
+                )
+            )
+        db.commit()
 
 
 def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: int) -> int:
@@ -952,6 +1028,11 @@ def _grant_money_balance_locked(
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
+    try:
+        from .bot import reset_client_low_balance_alert
+        reset_client_low_balance_alert(client.id)
+    except Exception:
+        pass
     return transaction
 
 
@@ -1072,6 +1153,11 @@ def _grant_trial_balance_locked(
             )
         )
         db.flush()
+        try:
+            from .bot import reset_client_low_balance_alert
+            reset_client_low_balance_alert(client.id)
+        except Exception:
+            pass
         return
 
     for kind, units in (
@@ -1210,14 +1296,71 @@ def list_tariffs(db: Session, *, active_only: bool = False) -> list[TariffPackag
     return query.order_by(TariffPackage.kind.asc(), TariffPackage.sort_order.asc(), TariffPackage.units.asc()).all()
 
 
+def list_deposit_packages(db: Session, *, active_only: bool = True) -> list[TariffPackage]:
+    query = db.query(TariffPackage).filter(TariffPackage.kind == KIND_DEPOSIT)
+    if active_only:
+        query = query.filter(TariffPackage.is_active.is_(True))
+    return query.order_by(TariffPackage.sort_order.asc(), TariffPackage.price_kopeks.asc()).all()
+
+
+def calculate_deposit_bonus_kopeks(amount_kopeks: int, db: Session | None = None, client: Client | None = None) -> int:
+    """Рассчитать бонус при пополнении баланса.
+
+    Если у клиента установлены индивидуальные тарифы — бонус не действует (всегда 0).
+    Если в базе есть активный пакет deposit с такой ценой — берётся его bonus_kopeks.
+    Иначе действует базовая прогрессивная шкала:
+    - до 3 000 ₽: 0 ₽
+    - 3 000 - 4 999 ₽: 500 ₽
+    - 5 000 - 9 999 ₽: 1 500 ₽
+    - 10 000 - 24 999 ₽: 4 000 ₽
+    - от 25 000 ₽: 50% от суммы
+    """
+    safe_amount = max(0, int(amount_kopeks or 0))
+    if safe_amount <= 0:
+        return 0
+    if db is not None and client is not None and client_has_custom_tariffs(db, client):
+        return 0
+    if db is not None:
+        matched = (
+            db.query(TariffPackage)
+            .filter(
+                TariffPackage.kind == KIND_DEPOSIT,
+                TariffPackage.is_active.is_(True),
+                TariffPackage.price_kopeks == safe_amount,
+            )
+            .first()
+        )
+        if matched and getattr(matched, "bonus_kopeks", 0):
+            return int(matched.bonus_kopeks)
+    if safe_amount >= 2_500_000:
+        return round(safe_amount * 0.5)
+    if safe_amount >= 1_000_000:
+        return 400_000
+    if safe_amount >= 500_000:
+        return 150_000
+    if safe_amount >= 300_000:
+        return 50_000
+    return 0
+
+
 def tariff_to_dict(package: TariffPackage) -> dict:
+    price_kopeks = int(package.price_kopeks or 0)
+    bonus_kopeks = int(getattr(package, "bonus_kopeks", 0) or 0)
+    total_credit_kopeks = price_kopeks + bonus_kopeks
     return {
         "id": package.id,
         "kind": package.kind,
         "name": package.name,
         "units": package.units,
-        "price_kopeks": package.price_kopeks,
-        "price_rub": round(package.price_kopeks / 100, 2),
+        "price_kopeks": price_kopeks,
+        "price_rub": round(price_kopeks / 100, 2),
+        "bonus_kopeks": bonus_kopeks,
+        "bonus_rub": round(bonus_kopeks / 100, 2),
+        "credit_kopeks": total_credit_kopeks,
+        "credit_rub": round(total_credit_kopeks / 100, 2),
+        "total_kopeks": total_credit_kopeks,
+        "total_rub": round(total_credit_kopeks / 100, 2),
+        "badge": getattr(package, "badge", "") or "",
         "description": package.description,
         "is_active": package.is_active,
         "sort_order": package.sort_order,

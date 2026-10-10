@@ -113,7 +113,8 @@ REGISTRY_FALLBACK_REPORT_DISCLAIMER = (
 )
 QUOTE_REQUEST_INTRO = (
     "Просим выставить счёт или направить коммерческое предложение по указанным ниже товарам. "
-    "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки."
+    "В предложении просим указать цену, срок поставки, условия оплаты, документы качества и условия доставки. "
+    "Допускается и приветствуется предоставление коммерческого предложения как на весь перечень, так и на отдельные товарные позиции (попозиционная поставка)."
 )
 
 
@@ -283,37 +284,102 @@ def _calc_supplier_row_h(cells: list[tuple[str, int]], line_h: int = 15, min_h: 
     return max(min_h, max_lines * line_h + 8)
 
 
-def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, target: int, subject: str = "", policy: str = "") -> Path:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Поставщики"
+def _safe_sheet_title(name: str, index: int, existing_titles: set[str]) -> str:
+    cleaned = re.sub(r'[\\/*?:\[\]]', ' ', str(name or "")).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    if not cleaned:
+        cleaned = f"Позиция {index}"
+    cleaned = re.sub(r"^\d+[\.\)]\s*", "", cleaned)
+    prefix = f"{index}. "
+    max_len = 31 - len(prefix)
+    title = f"{prefix}{cleaned[:max_len].strip()}"
+    candidate = title
+    suffix = 1
+    while candidate in existing_titles or not candidate:
+        extra = f" ({suffix})"
+        max_sub = 31 - len(prefix) - len(extra)
+        candidate = f"{prefix}{cleaned[:max_sub].strip()}{extra}"
+        suffix += 1
+    existing_titles.add(candidate)
+    return candidate
+
+
+def _style_category_header_row(ws, row_idx: int, title_text: str) -> None:
+    cat_font = Font(name="Calibri", size=11, bold=True, color="064E3B")
+    cat_fill = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
+    cat_border = Border(
+        left=Side(style="medium", color="059669"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="059669"),
+        bottom=Side(style="thin", color="059669"),
+    )
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(SUPPLIER_HEADERS))
+    for col in range(1, len(SUPPLIER_HEADERS) + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.fill = cat_fill
+        c.border = cat_border
+    c1 = ws.cell(row=row_idx, column=1)
+    c1.value = clean_xml_compatible(title_text)
+    c1.font = cat_font
+    c1.alignment = Alignment(vertical="center", horizontal="left", indent=1)
+    ws.row_dimensions[row_idx].height = 26
+
+
+def _style_empty_category_notice_row(ws, row_idx: int, notice_text: str) -> None:
+    notice_font = Font(name="Calibri", size=10, italic=True, color="64748B")
+    notice_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    notice_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(SUPPLIER_HEADERS))
+    for col in range(1, len(SUPPLIER_HEADERS) + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.fill = notice_fill
+        c.border = notice_border
+    c1 = ws.cell(row=row_idx, column=1)
+    c1.value = clean_xml_compatible(notice_text)
+    c1.font = notice_font
+    c1.alignment = Alignment(vertical="center", horizontal="left", indent=2)
+    ws.row_dimensions[row_idx].height = 22
+
+
+def _populate_supplier_sheet(
+    ws,
+    rows: list[dict],
+    *,
+    brand_title: str,
+    subtitle: str,
+    summary: str,
+    is_fallback: bool,
+    is_multi_item: bool = False,
+    sections: list[tuple[str, list[dict]]] | None = None,
+) -> None:
     ws.views.sheetView[0].showGridLines = True
 
     # 1. Шапка документа
-    brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
     ws.append([brand_title])
     _style_range(ws, 1, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=14, bold=True, color="047857"), align=Alignment(vertical="center"))
     ws.row_dimensions[1].height = 28
 
     # 2. Подзаголовок (ТЗ + Режим)
-    policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
-    item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
-    ws.append([clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")])
+    ws.append([subtitle])
     _style_range(ws, 2, 1, len(SUPPLIER_HEADERS), font=Font(name="Calibri", size=11, bold=True, color="064E3B"), align=Alignment(vertical="center"))
     ws.row_dimensions[2].height = 22
 
-    # 3. Сводка / KPI (без лишней плашки "как работать")
-    summary = clean_xml_compatible(_supplier_count_summary(rows, target))
-    is_fallback = _is_registry_fallback_report(rows)
-    if is_fallback:
-        summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
+    # 3. Сводка / KPI
     ws.append([summary])
     summary_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") if is_fallback else PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")
     summary_font = Font(name="Calibri", size=10, bold=is_fallback, color="9C2A10" if is_fallback else "064E3B")
     _style_range(ws, 3, 1, len(SUPPLIER_HEADERS), fill=summary_fill, font=summary_font, align=Alignment(vertical="center", wrap_text=True))
-    ws.row_dimensions[3].height = 36 if is_fallback else 24
+    if is_fallback:
+        ws.row_dimensions[3].height = 54
+    elif is_multi_item:
+        ws.row_dimensions[3].height = 48
+    else:
+        ws.row_dimensions[3].height = 24
 
     # 4. Разделитель
     ws.append([None] * len(SUPPLIER_HEADERS))
@@ -338,11 +404,9 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         bottom=Side(style="thin", color="CBD5E1"),
     )
 
-    data_start_row = header_row + 1
-    for row_idx, row in enumerate(rows, start=data_start_row):
-        is_even = (row_idx % 2 == 0)
+    def _render_row(row_idx: int, row: dict, is_even: bool) -> None:
         base_bg = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") if is_even else PatternFill(start_color="F4FBF7", end_color="F4FBF7", fill_type="solid")
-        
+
         company = clean_xml_compatible(str(row.get("company_name") or "").strip())
         reg_text, reg_font, reg_fill = _registry_badge(row)
         reg_text = clean_xml_compatible(reg_text)
@@ -350,7 +414,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         site_display = clean_xml_compatible(unquote(site_raw) if site_raw else "")
         phone = clean_xml_compatible(str(row.get("phone") or "").strip())
         email = clean_xml_compatible(str(row.get("email") or "").strip())
-        comment = clean_xml_compatible(_client_supplier_comment(row))
+        comment = clean_xml_compatible(_client_supplier_comment(row, is_multi_item=is_multi_item))
 
         ws.append([company, site_display, phone, email, comment, reg_text])
 
@@ -393,7 +457,7 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
         c5.border = thin_border
         c5.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # Col 6: Реестр Минпромторга (последний столбец)
+        # Col 6: Реестр Минпромторга
         c6 = ws.cell(row=row_idx, column=6)
         c6.font = reg_font
         c6.fill = reg_fill
@@ -402,9 +466,261 @@ def write_supplier_xlsx(path: str | Path, rows: list[dict], *, title: str, targe
 
         ws.row_dimensions[row_idx].height = _calc_supplier_row_h([(company, 32), (comment, 60)], min_h=24)
 
+    if is_multi_item and sections:
+        ws.sheet_properties.outlinePr.summaryBelow = False
+        ws.sheet_properties.outlinePr.showOutlineSymbols = True
+        should_collapse = len(sections) > 4
+        current_row = header_row + 1
+        for sec_idx, (sec_name, sec_rows) in enumerate(sections, start=1):
+            sec_header_row = current_row
+            ws.append([None] * len(SUPPLIER_HEADERS))
+            if sec_rows:
+                icon = "▶" if should_collapse else "▼"
+                action_tip = "нажмите [+] слева для раскрытия" if should_collapse else "нажмите [-] слева для сворачивания"
+                sec_title = f"{icon} Позиция {sec_idx}: {sec_name} (найдено поставщиков: {len(sec_rows)} · {action_tip})"
+            else:
+                sec_title = f"▷ Позиция {sec_idx}: {sec_name} (поставщиков не найдено)"
+            _style_category_header_row(ws, sec_header_row, sec_title)
+            current_row += 1
+
+            if sec_rows:
+                group_start = current_row
+                for r_idx, r_data in enumerate(sec_rows):
+                    _render_row(current_row, r_data, is_even=(r_idx % 2 == 0))
+                    ws.row_dimensions[current_row].outlineLevel = 1
+                    ws.row_dimensions[current_row].hidden = should_collapse
+                    current_row += 1
+                group_end = current_row - 1
+                ws.row_dimensions.group(group_start, group_end, outline_level=1, hidden=should_collapse)
+            else:
+                notice = (
+                    "В реестре Минпромторга/ГИСП подтверждённых записей для данной номенклатурной группы не обнаружено."
+                    if is_fallback or any(r.get("supplier_search_policy") == "minprom_registry_only" for r in rows)
+                    else "Подходящих поставщиков для данной позиции в базе не найдено."
+                )
+                ws.append([None] * len(SUPPLIER_HEADERS))
+                _style_empty_category_notice_row(ws, current_row, notice)
+                ws.row_dimensions[current_row].outlineLevel = 1
+                ws.row_dimensions[current_row].hidden = should_collapse
+                ws.row_dimensions.group(current_row, current_row, outline_level=1, hidden=should_collapse)
+                current_row += 1
+    else:
+        data_start_row = header_row + 1
+        for row_idx, row in enumerate(rows, start=data_start_row):
+            _render_row(row_idx, row, is_even=(row_idx % 2 == 0))
+
     widths = [32, 35, 22, 26, 60, 26]
     for column, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(column)].width = width
+
+
+def _build_item_specs(profile_items: list[dict]) -> list[dict]:
+    stop_words = {
+        "для", "или", "под", "над", "при", "без", "все", "из", "на", "по", "со", "от", "до",
+        "комплект", "пакет", "штук", "поставка", "изделия", "оборудование", "услуги", "монтаж",
+        "работы", "товар", "товары", "гост", "ту"
+    }
+    item_specs = []
+    all_word_occurrences: dict[str, int] = {}
+
+    for idx, it in enumerate(profile_items, start=1):
+        it_id = str(it.get("id") or f"item-{idx}").strip().lower()
+        name = str(it.get("name") or it.get("title") or "").strip()
+        phrases: set[str] = set()
+        words: set[str] = set()
+
+        def add_phrase(s: str) -> None:
+            s_clean = s.strip().lower()
+            if len(s_clean) >= 3 and s_clean not in stop_words:
+                phrases.add(s_clean)
+                for w in re.findall(r"[a-zA-Zа-яА-Я0-9_-]{3,}", s_clean):
+                    if w not in stop_words and len(w) >= 3 and not w.isdigit():
+                        words.add(w)
+
+        add_phrase(name)
+        for field in ["aliases", "category_terms", "exact_terms", "required_terms", "included_sub_items"]:
+            for val in (it.get(field) or []):
+                add_phrase(str(val))
+
+        for w in words:
+            all_word_occurrences[w] = all_word_occurrences.get(w, 0) + 1
+
+        item_specs.append({
+            "item": it,
+            "id": it_id,
+            "name": name,
+            "phrases": phrases,
+            "words": words,
+        })
+
+    shared_words = {w for w, count in all_word_occurrences.items() if count > 1}
+    for spec in item_specs:
+        spec["distinctive_words"] = spec["words"] - shared_words
+
+    return item_specs
+
+
+def _match_supplier_to_item_ids(r: dict, item_specs: list[dict]) -> set[str]:
+    raw_id = str(r.get("procurement_item_id") or "").strip().lower()
+    raw_id_parts = set(raw_id.replace(",", " ").split())
+
+    text = f"{r.get('procurement_item', '')} {r.get('product', '')} {r.get('search_query', '')} {r.get('comment', '')}".lower()
+
+    scores: list[tuple[int, str]] = []
+    for spec in item_specs:
+        score = 0
+        if spec["id"] and spec["id"] in raw_id_parts:
+            score += 15
+        for phrase in spec["phrases"]:
+            if len(phrase) >= 4 and phrase in text:
+                score += 5
+        for word in spec["distinctive_words"]:
+            if len(word) >= 3 and word in text:
+                score += 3
+        scores.append((score, spec["id"]))
+
+    max_score = max(s[0] for s in scores) if scores else 0
+    matched = set()
+    if max_score > 0:
+        threshold = max(3, int(max_score * 0.4))
+        for score, it_id in scores:
+            if score >= threshold:
+                matched.add(it_id)
+
+    if not matched and item_specs:
+        matched.add(item_specs[0]["id"])
+    return matched
+
+
+def write_supplier_xlsx(
+    path: str | Path,
+    rows: list[dict],
+    *,
+    title: str,
+    target: int = 10,
+    subject: str = "",
+    policy: str = "normal",
+    profile: dict | None = None,
+) -> Path:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+
+    profile_items: list[dict] = []
+    if isinstance(profile, dict) and isinstance(profile.get("items"), list):
+        profile_items = [it for it in profile["items"] if isinstance(it, dict) and (it.get("name") or it.get("title"))]
+
+    is_multi = len(profile_items) > 1
+
+    item_sections: list[tuple[str, list[dict]]] = []
+    unmatched_item_names: list[str] = []
+    if is_multi:
+        item_specs = _build_item_specs(profile_items)
+        # Precompute row matches once per row O(M * N) instead of O(N^2 * M)
+        spec_id_to_rows: dict[str, list[dict]] = {spec["id"]: [] for spec in item_specs}
+        for r in rows:
+            for matched_id in _match_supplier_to_item_ids(r, item_specs):
+                if matched_id in spec_id_to_rows:
+                    spec_id_to_rows[matched_id].append(r)
+
+        for spec in item_specs:
+            it = spec["item"]
+            it_name = str(it.get("name") or it.get("title")).strip()
+            matched_rows = spec_id_to_rows.get(spec["id"], [])
+            item_sections.append((it_name, matched_rows))
+            if not matched_rows:
+                unmatched_item_names.append(it_name)
+    elif not profile_items:
+        raw_distinct: list[str] = []
+        for r in rows:
+            p_item = _clean_comment_text(r.get("procurement_item") or "")
+            if p_item and p_item not in raw_distinct:
+                raw_distinct.append(p_item)
+
+        distinct_items = []
+        cluster_map: dict[str, str] = {}
+        for item in raw_distinct:
+            matched_cluster = None
+            for existing in distinct_items:
+                if existing.lower() in item.lower() or item.lower() in existing.lower() or existing[:20].lower() == item[:20].lower():
+                    matched_cluster = existing
+                    break
+            if matched_cluster:
+                cluster_map[item] = matched_cluster
+            else:
+                distinct_items.append(item)
+                cluster_map[item] = item
+
+        if len(distinct_items) > 1:
+            is_multi = True
+            item_to_rows: dict[str, list[dict]] = {item: [] for item in distinct_items}
+            for r in rows:
+                mapped = cluster_map.get(_clean_comment_text(r.get("procurement_item") or ""))
+                if mapped in item_to_rows:
+                    item_to_rows[mapped].append(r)
+            for item in distinct_items:
+                item_sections.append((item, item_to_rows[item]))
+
+    # Single unified sheet with collapsible row outline structure (+ / -)
+    ws = wb.active
+    brand_title = clean_xml_compatible(f"TenderLex | {_supplier_report_heading(title, subject)}")
+    policy_label = _supplier_policy_label(policy) or "Режим: Поиск поставщиков (Обычный)"
+    item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
+    is_fallback = _is_registry_fallback_report(rows)
+
+    if is_multi and item_sections:
+        ws.title = "Сводный реестр"
+        subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
+        if len(item_sections) > 20:
+            displayed = item_sections[:20]
+            remaining = len(item_sections) - 20
+            breakdown_text = (
+                " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(displayed, 1))
+                + f" · ...и ещё {remaining} позиций (см. строки таблицы ниже)"
+            )
+        else:
+            breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sections, 1))
+        control_guide = (
+            "💡 Как смотреть: нажимайте значки [+] слева от номеров строк или кнопку [2] в верхнем левом углу над таблицей, чтобы раскрыть всё."
+            if len(item_sections) > 4
+            else "💡 Как управлять: нажимайте значки [-] / [+] слева от номеров строк или кнопки [1] (свернуть всё) / [2] (развернуть всё) в верхнем левом углу над таблицей."
+        )
+        summary_text = (
+            f"Сводный реестр по всем позициям ТЗ со структурой группировки (+ / -). Всего проверено уникальных компаний: {len(rows)}.\n"
+            f"{control_guide}\n"
+            f"Позиции ТЗ: {breakdown_text}"
+        )
+        if unmatched_item_names:
+            if len(unmatched_item_names) > 15:
+                unmatched_text = (
+                    " · ".join(unmatched_item_names[:15])
+                    + f" · ...и ещё {len(unmatched_item_names) - 15} позиций"
+                )
+            else:
+                unmatched_text = " · ".join(unmatched_item_names)
+            if policy == "minprom_registry_only":
+                summary_text += f"\nПозиции без подтверждённых записей в реестре Минпромторга: {unmatched_text}."
+            else:
+                summary_text += f"\nПозиции без найденных поставщиков: {unmatched_text}."
+        summary = clean_xml_compatible(summary_text)
+    else:
+        ws.title = "Поставщики"
+        subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
+        summary = clean_xml_compatible(_supplier_count_summary(rows, target))
+
+    if is_fallback:
+        summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")
+
+    _populate_supplier_sheet(
+        ws,
+        rows,
+        brand_title=brand_title,
+        subtitle=subtitle,
+        summary=summary,
+        is_fallback=is_fallback,
+        is_multi_item=is_multi,
+        sections=item_sections if is_multi else None,
+    )
 
     _save_xlsx(wb, out)
     return out
@@ -446,11 +762,14 @@ def _is_registry_fallback_report(rows: list[dict]) -> bool:
     )
 
 
-def _client_supplier_comment(row: dict) -> str:
+def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:
     product_fit = str(row.get("product_fit") or "").strip().lower()
-    product = _clean_comment_text(row.get("product") or row.get("procurement_item") or "")
+    item_name = _clean_comment_text(row.get("procurement_item") or "")
+    product = _clean_comment_text(row.get("product") or item_name or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
+    if is_multi_item and item_name:
+        detail = f"Позиция: {item_name} | {detail}" if detail else f"Позиция: {item_name}"
     registry_note = _supplier_registry_note(row)
     if product_fit == "exact":
         if detail:
@@ -465,6 +784,8 @@ def _client_supplier_comment(row: dict) -> str:
             return _join_supplier_comment(f"Категория совпадает: {detail}. Конкретный товар не подтвержден.", registry_note)
         return _join_supplier_comment("Категория совпадает. Конкретный товар не подтвержден.", registry_note)
     if product_fit == "profile":
+        if is_multi_item and item_name:
+            return _join_supplier_comment(f"Позиция: {item_name}. Профиль компании подходит. Наличие товара уточнить.", registry_note)
         return _join_supplier_comment("Профиль компании подходит. Наличие товара уточнить.", registry_note)
     if detail:
         return _join_supplier_comment(f"Соответствие требует уточнения: {detail}.", registry_note)
@@ -746,9 +1067,31 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
 
     rows: list[list[str]] = [_parse_table_row(lines[index])]
     index += 2
-    while index < len(lines) and lines[index].strip().startswith("|") and lines[index].strip().endswith("|"):
-        rows.append(_parse_table_row(lines[index]))
-        index += 1
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            break
+        if bool(re.fullmatch(r"\|[\s:\-|]+\|", line)):
+            index += 1
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            rows.append(_parse_table_row(line))
+            index += 1
+        elif line.startswith("|"):
+            # Multi-line cell continuation
+            combined = line
+            index += 1
+            while index < len(lines):
+                next_l = lines[index].strip()
+                if not next_l:
+                    break
+                combined += "<br>" + next_l
+                index += 1
+                if combined.endswith("|"):
+                    break
+            rows.append(_parse_table_row(combined))
+        else:
+            break
     width = max(len(row) for row in rows)
     table = doc.add_table(rows=len(rows), cols=width)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -814,12 +1157,25 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
 
 
 def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
+    if width <= 0:
+        return None
     normalized = [_normalize_table_header(header) for header in headers]
-    if normalized[:5] == ["№", "наименование", "характеристики", "ед.изм.", "кол-во"]:
-        if width >= 6 and normalized[5] == "примечание":
-            return [520, 2100, 4700, 850, 850, 1340]
-        return [520, 2300, 5600, 850, 850]
-    return None
+    if len(normalized) >= 5:
+        is_num = any(k in normalized[0] for k in ("№", "номер", "n", "п/п", "позиц"))
+        is_name = any(k in normalized[1] for k in ("наименование", "товар", "позици", "продукци", "предмет"))
+        is_chars = any(k in normalized[2] for k in ("характерист", "описан", "требован", "параметр", "спецификац"))
+        is_unit = any(k in normalized[3] for k in ("ед", "изм", "единиц"))
+        is_qty = any(k in normalized[4] for k in ("кол", "объем"))
+        if is_num and is_name and is_chars and is_unit and is_qty:
+            if width >= 6 and any(k in normalized[5] for k in ("примечан", "коммент")):
+                return [520, 2100, 4700, 850, 850, 1340]
+            return [520, 2300, 5600, 850, 850]
+    col_w = 10037 // width
+    remainder = 10037 - col_w * width
+    widths = [col_w] * width
+    if remainder > 0:
+        widths[-1] += remainder
+    return widths
 
 
 def _normalize_table_header(value: object) -> str:

@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "collected_at": "2026-10-01T22:46:00.209653+00:00",
+  "collection_date": "2026-10-02",
+  "sources": {
+    "google": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-09-01",
+        "end_date": "2026-09-28",
+        "timezone": "America/Los_Angeles",
+        "period_days": 28,
+        "is_closed": true,
+        "data_state": "final"
+      },
+      "metrics": {
+        "impressions": 910,
+        "clicks": 10,
+        "ctr_percent": 1.1,
+        "avg_position": 25.01
+      }
+    },
+    "yandex_index": {
+      "status": "available",
+      "period": null,
+      "metrics": {
+        "searchable_pages": 57,
+        "excluded_pages": 3,
+        "sqi": 10
+      },
+      "annotation": "Point-in-time index observation; it has no traffic period.",
+      "observed_at": "2026-10-01T22:46:00.209653+00:00"
+    },
+    "yandex_popular_query_sample": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-09-22",
+        "end_date": "2026-09-28",
+        "timezone": "provider-defined"
+      },
+      "metrics": {
+        "impressions": 245,
+        "clicks": 6,
+        "visible_query_rows": 50
+      },
+      "annotation": {
+        "coverage": "Sum of visible provider-returned popular-query rows; not all site searches or property totals.",
+        "visible_query_rows": 50
+      }
+    },
+    "metrika": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-09-04",
+        "end_date": "2026-10-01",
+        "timezone": "Europe/Moscow",
+        "period_days": 28,
+        "is_closed": true
+      },
+      "metrics": {
+        "visits": 30,
+        "users": 16,
+        "pageviews": 39,
+        "bounce_rate": 23.3,
+        "avg_duration_seconds": 173
+      },
+      "sampling": {
+        "sampled": false,
+        "sample_share": 1.0,
+        "sample_size": 30,
+        "sample_space": 30
+      }
+    },
+    "registration_all": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-01",
+        "timezone": "Europe/Moscow",
+        "period_days": 1,
+        "is_closed": true,
+        "instrumented_from": "2026-09-30",
+        "full_days_from": "2026-10-01"
+      },
+      "metrics": {
+        "visits": 0,
+        "goal_visits": 0,
+        "rate_percent": null
+      },
+      "sampling": {
+        "sampled": false,
+        "sample_share": 1.0,
+        "sample_size": 0,
+        "sample_space": 0
+      }
+    },
+    "registration_organic": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-01",
+        "timezone": "Europe/Moscow",
+        "period_days": 1,
+        "is_closed": true,
+        "instrumented_from": "2026-09-30",
+        "full_days_from": "2026-10-01"
+      },
+      "metrics": {
+        "visits": 0,
+        "goal_visits": 0,
+        "rate_percent": null
+      },
+      "sampling": {
+        "sampled": false,
+        "sample_share": 1.0,
+        "sample_size": 0,
+        "sample_space": 0
+      }
+    },
+    "task_goals_all": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-01",
+        "timezone": "Europe/Moscow",
+        "period_days": 1,
+        "is_closed": true,
+        "instrumented_from": "2026-09-30",
+        "full_days_from": "2026-10-01"
+      },
+      "metrics": {
+        "visits": 0.0,
+        "task_started_visits": 0.0,
+        "result_downloaded_visits": 0.0
+      },
+      "sampling": {
+        "sampled": false,
+        "sample_share": 1.0,
+        "sample_size": 0,
+        "sample_space": 0
+      }
+    },
+    "task_goals_organic": {
+      "status": "available",
+      "period": {
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-01",
+        "timezone": "Europe/Moscow",
+        "period_days": 1,
+        "is_closed": true,
+        "instrumented_from": "2026-09-30",
+        "full_days_from": "2026-10-01"
+      },
+      "metrics": {
+        "visits": 0.0,
+        "task_started_visits": 0.0,
+        "result_downloaded_visits": 0.0
+      },
+      "sampling": {
+        "sampled": false,
+        "sample_share": 1.0,
+        "sample_size": 0,
+        "sample_space": 0
+      }
+    }
+  },
+  "sample_ready": false,
+  "seo_uplift_proven": false,
+  "collection_complete": true,
+  "notes": [
+    "Different engines and periods are never added together.",
+    "300 organic visits is an operational minimum, not proof of significance or uplift.",
+    "Consent, blockers and counter filters limit Metrika coverage.",
+    "Registration full-day measurement starts 2026-10-01.",
+    "Goal visits are independent observations, not an ordered cohort or sequential conversion rate.",
+    "Yandex popular-query values are an annotated provider-returned sample, not sitewide search totals."
+  ]
+}

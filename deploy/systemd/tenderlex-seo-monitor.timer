@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily TenderLex SEO observations, 08:00 Moscow
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=60
+Unit=tenderlex-seo-monitor.service
+
+[Install]
+WantedBy=timers.target

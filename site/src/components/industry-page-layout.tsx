@@ -1,3 +1,4 @@
+import { PublicSiteLink } from "@/components/public-site-link";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
@@ -66,14 +67,14 @@ export function IndustryPageLayout({
                 >
                   <span>Найти поставщиков</span>
                 </a>
-                <a
-                  href="https://t.me/tenderlex_bot"
+                <PublicSiteLink
+                  channel="bot"
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
                 >
-                  <span>Запустить @tenderlex_bot</span>
-                </a>
+                  <span>Запустить в Telegram</span>
+                </PublicSiteLink>
               </div>
             </div>
           </div>
@@ -150,7 +151,7 @@ export function IndustryPageLayout({
                   Требуется подобрать отечественные аналоги по спецификации?
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  ИИ TenderLex выявит скрытого производителя по параметрам номенклатуры {categoryTitle}, сопоставит рабочие диапазоны по ГОСТ и паспортам заводов РФ и подберет эквиваленты из реестра Минпромторга (ГИСП).
+                  TenderLex помогает сопоставить параметры номенклатуры {categoryTitle} с кандидатами на замену. Характеристики, изготовителя и применимую реестровую запись нужно подтвердить по техническим документам и действующим источникам.
                 </p>
               </div>
               <Link
@@ -165,7 +166,7 @@ export function IndustryPageLayout({
 
         <ContactSection
           title={`Подбор поставщиков: ${categoryTitle}`}
-          subtitle="Загрузите спецификацию в кабинет или Telegram-бот TenderLex для получения прямых контактов заводов."
+          subtitle="Загрузите спецификацию в кабинет или Telegram-бот TenderLex для поиска кандидатов и доступных контактов. Изготовителя и полномочия адресата подтвердите перед обращением."
         />
 
         <SiteFooter />

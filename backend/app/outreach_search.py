@@ -377,23 +377,35 @@ async def fetch_yandex_search_candidates(
                 "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
             }
             try:
-                res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
-                requests_count += 1
-                if res.status_code != 200:
-                    break
-                op_id = str(res.json().get("id") or "")
-                if not op_id:
-                    break
-
                 raw_xml = ""
-                for _ in range(12):
-                    await asyncio.sleep(1.2)
-                    op_res = await client.get(f"https://operation.api.cloud.yandex.net/operations/{op_id}", headers=headers)
-                    if op_res.status_code == 200:
-                        op_data = op_res.json()
-                        if op_data.get("done"):
-                            raw_xml = str(op_data.get("response", {}).get("rawData") or "")
-                            break
+                # Fast path: Synchronous endpoint (<1s)
+                try:
+                    res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/search", headers=headers, json=body)
+                    requests_count += 1
+                    if res.status_code == 200:
+                        data = res.json()
+                        raw_xml = str(data.get("rawData") or (data.get("response") or {}).get("rawData") or "")
+                except Exception as sync_exc:
+                    logger.debug("outreach yandex sync error: %s", sync_exc)
+
+                # Slow path: Async operation polling fallback
+                if not raw_xml:
+                    res = await client.post("https://searchapi.api.cloud.yandex.net/v2/web/searchAsync", headers=headers, json=body)
+                    requests_count += 1
+                    if res.status_code != 200:
+                        break
+                    op_id = str(res.json().get("id") or "")
+                    if not op_id:
+                        break
+
+                    for _ in range(25):
+                        await asyncio.sleep(1.8)
+                        op_res = await client.get(f"https://operation.api.cloud.yandex.net/operations/{op_id}", headers=headers)
+                        if op_res.status_code == 200:
+                            op_data = op_res.json()
+                            if op_data.get("done"):
+                                raw_xml = str((op_data.get("response") or {}).get("rawData") or "")
+                                break
 
                 if not raw_xml:
                     break
