@@ -625,12 +625,17 @@ function formatInlineMarkdown(value: string) {
 function extractQuoteTableItems(markdown: string): Array<{ index: number; name: string }> {
   const lines = String(markdown || "").split(/\r?\n/);
   const tableRows: string[][] = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-      const compact = trimmed.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("|")) {
+      let combined = trimmed;
+      while (!combined.endsWith("|") && i + 1 < lines.length && lines[i + 1].trim()) {
+        i++;
+        combined += " <br> " + lines[i].trim();
+      }
+      const compact = combined.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
       if (!compact) continue;
-      tableRows.push(trimmed.slice(1, -1).split("|").map((cell) => cell.trim()));
+      tableRows.push(combined.slice(1, -1).split("|").map((cell) => cell.trim()));
     }
   }
   if (tableRows.length < 2) return [];
@@ -678,13 +683,18 @@ function quoteMarkdownToHtml(markdown: string, selectedRowIndexes?: number[] | n
     tableRows = [];
   };
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("|")) {
       flushList();
-      const compact = trimmed.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
+      let combined = trimmed;
+      while (!combined.endsWith("|") && i + 1 < lines.length && lines[i + 1].trim()) {
+        i++;
+        combined += " <br> " + lines[i].trim();
+      }
+      const compact = combined.replace(/\|/g, "").replace(/:/g, "").replace(/-/g, "").trim();
       if (!compact) continue;
-      tableRows.push(trimmed.slice(1, -1).split("|").map((cell) => cell.trim()));
+      tableRows.push(combined.slice(1, -1).split("|").map((cell) => cell.trim()));
       continue;
     }
     flushTable();
@@ -716,6 +726,25 @@ function cellsText(row: HTMLTableRowElement) {
     const clone = cell.cloneNode(true) as HTMLElement;
     clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
     return (clone.textContent || "").replace(/[ \t]+/g, " ").trim();
+  });
+}
+
+function cellsForMarkdownTable(row: HTMLTableRowElement) {
+  return Array.from(row.querySelectorAll("th,td")).map((cell) => {
+    const clone = cell.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("br").forEach((br) => br.replaceWith(" <br> "));
+    clone.querySelectorAll("p, div, li").forEach((el) => {
+      if (el !== clone.firstElementChild) {
+        el.before(" <br> ");
+      }
+    });
+    const raw = clone.textContent || "";
+    return raw
+      .replace(/[\r\n]+/g, " <br> ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\|/g, "/")
+      .replace(/(?:\s*<br>\s*)+/gi, "<br>")
+      .trim();
   });
 }
 
@@ -798,7 +827,7 @@ function quoteHtmlToMarkdown(root: HTMLElement | null) {
     if (tableEl) {
       const rows = normalizeQuoteTableRows(
         Array.from(tableEl.querySelectorAll("tr"))
-          .map((row) => cellsText(row as HTMLTableRowElement))
+          .map((row) => cellsForMarkdownTable(row as HTMLTableRowElement))
           .filter((row) => row.some(Boolean)),
       );
       if (rows.length) {

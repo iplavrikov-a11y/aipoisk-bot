@@ -603,6 +603,27 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertIn("Клей", wb.sheetnames[2])
             wb.close()
 
+    def test_write_quote_request_docx_multiline_table_integrity(self) -> None:
+        from docx import Document
+        from app.report_builder import write_quote_request_docx
+
+        md = (
+            "| № | Наименование | Характеристики | Ед.изм. | Кол-во |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1 | Товар 1 | линия 1\nлиния 2 | шт | 10 |\n"
+            "| 2 | Товар 2 | • параметр 1<br>• параметр 2 | к-т | 5 |\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "quote_request.docx"
+            write_quote_request_docx(doc_path, md, title="Запрос КП")
+            doc = Document(str(doc_path))
+            self.assertEqual(len(doc.tables), 1)
+            table = doc.tables[0]
+            self.assertEqual(len(table.rows), 3)
+            self.assertEqual(table.rows[0].cells[1].text.strip(), "Наименование")
+            self.assertEqual(table.rows[1].cells[1].text.strip(), "Товар 1")
+            self.assertEqual(table.rows[2].cells[1].text.strip(), "Товар 2")
+
 
 if __name__ == "__main__":
     unittest.main()

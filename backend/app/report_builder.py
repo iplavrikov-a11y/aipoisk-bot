@@ -956,9 +956,31 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
 
     rows: list[list[str]] = [_parse_table_row(lines[index])]
     index += 2
-    while index < len(lines) and lines[index].strip().startswith("|") and lines[index].strip().endswith("|"):
-        rows.append(_parse_table_row(lines[index]))
-        index += 1
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            break
+        if bool(re.fullmatch(r"\|[\s:\-|]+\|", line)):
+            index += 1
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            rows.append(_parse_table_row(line))
+            index += 1
+        elif line.startswith("|"):
+            # Multi-line cell continuation
+            combined = line
+            index += 1
+            while index < len(lines):
+                next_l = lines[index].strip()
+                if not next_l:
+                    break
+                combined += "<br>" + next_l
+                index += 1
+                if combined.endswith("|"):
+                    break
+            rows.append(_parse_table_row(combined))
+        else:
+            break
     width = max(len(row) for row in rows)
     table = doc.add_table(rows=len(rows), cols=width)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -1024,12 +1046,25 @@ def _add_markdown_table(doc, lines: list[str], index: int) -> int:
 
 
 def _table_column_widths(headers: list[str], width: int) -> list[int] | None:
+    if width <= 0:
+        return None
     normalized = [_normalize_table_header(header) for header in headers]
-    if normalized[:5] == ["№", "наименование", "характеристики", "ед.изм.", "кол-во"]:
-        if width >= 6 and normalized[5] == "примечание":
-            return [520, 2100, 4700, 850, 850, 1340]
-        return [520, 2300, 5600, 850, 850]
-    return None
+    if len(normalized) >= 5:
+        is_num = any(k in normalized[0] for k in ("№", "номер", "n", "п/п", "позиц"))
+        is_name = any(k in normalized[1] for k in ("наименование", "товар", "позици", "продукци", "предмет"))
+        is_chars = any(k in normalized[2] for k in ("характерист", "описан", "требован", "параметр", "спецификац"))
+        is_unit = any(k in normalized[3] for k in ("ед", "изм", "единиц"))
+        is_qty = any(k in normalized[4] for k in ("кол", "объем"))
+        if is_num and is_name and is_chars and is_unit and is_qty:
+            if width >= 6 and any(k in normalized[5] for k in ("примечан", "коммент")):
+                return [520, 2100, 4700, 850, 850, 1340]
+            return [520, 2300, 5600, 850, 850]
+    col_w = 10037 // width
+    remainder = 10037 - col_w * width
+    widths = [col_w] * width
+    if remainder > 0:
+        widths[-1] += remainder
+    return widths
 
 
 def _normalize_table_header(value: object) -> str:
