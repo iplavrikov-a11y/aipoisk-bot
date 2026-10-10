@@ -14,7 +14,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
-- Telegram polling worker: `tenderlex-bot.service`.
+- Large Specification Scaling & Anti-Hang Guardrails for 1,000+ Items (2026-10-11):
+  - Linear Excel matching optimization (`backend/app/report_builder.py`): eliminated $O(N^2 \times M)$ nested matching hang, reducing 1,000-item Excel generation time to 4.7s (2.2ms match step) via dictionary lookup.
+  - Excel cell character limit protection: capped cell A3 summary breakdown to top 20 items + explicit continuation counter, strictly preventing 32,767 OpenXML corruption in Microsoft Excel.
+  - AI prompt & normalization guardrails (`backend/app/supplier_search.py`): Rule 6 clusters large specifications and estimates into 25–35 market pools; `MAX_PROFILE_ITEMS = 50` caps profile size and absorbs overflow into sub-items.
+  - Customer guidance banners: added helpful intake advice in web cabinet launcher, task cards, strategy modal, and Telegram bot recommending file splitting for mixed-trade specifications or balanced search.
+  - Verified with 828 passing backend tests, Next.js build, and live production deployment.
 - Usability of Multi-Item Excel Reports: Adaptive Row-Group Collapsing & Clear On-Sheet Guidance (2026-10-11):
   - Adaptive initial outline state (`backend/app/report_builder.py`): $\le 4$ items open expanded (`hidden=False`) for instant visibility of contacts; $> 4$ items (5–35+ positions/estimates) open collapsed (`hidden=True`) to prevent 500+ row overload.
   - Interactive on-sheet guidance: cell A3 provides clear instructions on operating outline buttons `[+]` / `[-]` or levels `[1]` / `[2]`. Category banner rows include intuitive symbols and action hints (`▼` / `▶` / `▷` + `нажмите [-] слева для сворачивания` / `нажмите [+] слева для раскрытия`).

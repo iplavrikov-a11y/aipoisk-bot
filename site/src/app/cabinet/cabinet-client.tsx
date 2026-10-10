@@ -2852,6 +2852,13 @@ export function CabinetClient() {
               </div>
             ) : null}
 
+            {selectedFiles.length ? (
+              <p className="text-[11px] text-slate-500 leading-normal flex items-center gap-1.5 px-1">
+                <span>💡</span>
+                <span>Совет: если спецификация крупная и объединяет разные рынки (электрика, отделка, сантехника), эффективнее загружать разделы отдельными файлами для максимальной глубины подбора.</span>
+              </p>
+            ) : null}
+
             {acceptsSources ? (
               <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
                 <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
@@ -3436,6 +3443,23 @@ export function CabinetClient() {
 
                     return (
                       <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-2.5">
+                        {items.length >= 10 ? (
+                          <div className="p-2.5 sm:p-3 rounded-lg bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
+                            <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                            <div className="space-y-1">
+                              <div className="font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
+                                <span>Крупная спецификация ({items.length} {declensionCategory(items.length)}): как получить максимум?</span>
+                              </div>
+                              <p className="text-amber-900/90 text-[11px] sm:text-xs">
+                                Поставщики работают по специализированным рынкам (электрика, вентиляция, металлопрокат, отделка). Если закупка разнородная, <strong>рекомендуется разделять ТЗ на отдельные файлы по направлениям</strong> и запускать независимыми задачами — так вы получите максимальный отклик от профильных заводов по каждому разделу.
+                              </p>
+                              <p className="text-amber-800/90 text-[11px]">
+                                Либо выберите <strong>«⚖️ Сбалансированный поиск»</strong> (1 задача), чтобы сервис автоматически распределил квоту и сформировал единый сводный реестр по ключевым системам.
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+
                         {/* Top Control Bar: Segmented Switcher & Primary CTA */}
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
                           {/* Segmented Mode Switcher */}
@@ -4319,6 +4343,20 @@ export function CabinetClient() {
 
             {/* Content Body */}
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
+              {(strategyConfirmJob.multi_item_details?.items?.length || 0) >= 10 ? (
+                <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
+                  <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+                  <div className="space-y-1">
+                    <div className="font-bold text-amber-950">
+                      Крупная спецификация ({strategyConfirmJob.multi_item_details?.total_items || strategyConfirmJob.multi_item_details?.items?.length} позиций)
+                    </div>
+                    <p className="text-amber-900/90 text-[11px] sm:text-xs">
+                      Поставщики специализируются по рынкам сбыта (электрика, вентиляция, металл, отделка). Для максимального отклика рекомендуется <strong>разбивать ТЗ на отдельные файлы по направлениям</strong>. Либо выберите «⚖️ Сбалансированный поиск» (1 задача) для сводного реестра по ключевым системам.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
               {/* Detected Items Card */}
               {strategyConfirmJob.multi_item_details?.items && strategyConfirmJob.multi_item_details.items.length > 0 ? (
                 <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-2.5">

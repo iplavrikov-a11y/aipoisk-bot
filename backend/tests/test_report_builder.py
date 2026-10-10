@@ -652,6 +652,41 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertTrue(ws.row_dimensions[15].hidden)
             wb.close()
 
+    def test_supplier_xlsx_massive_items_performance_and_cell_overflow_protection(self) -> None:
+        import time
+        profile = {
+            "items": [
+                {"id": f"item-{i}", "name": f"Товарная позиция номер {i} в длинной спецификации", "aliases": []}
+                for i in range(1, 101)
+            ]
+        }
+        rows = [
+            {"company_name": f"ООО Поставщик {i}", "product_fit": "exact", "procurement_item_id": f"item-{i % 100 + 1}", "procurement_item": f"Товарная позиция номер {i % 100 + 1}"}
+            for i in range(1, 301)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_massive.xlsx"
+            start = time.monotonic()
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="Крупная спецификация 100 позиций",
+                target=300,
+                profile=profile,
+            )
+            elapsed = time.monotonic() - start
+            # Must generate in under 3.5 seconds (linear time)
+            self.assertLess(elapsed, 3.5, f"Massive Excel generation took {elapsed:.2f}s")
+
+            wb = load_workbook(path)
+            ws = wb["Сводный реестр"]
+            summary_val = str(ws.cell(row=3, column=1).value)
+            # Cell A3 text must stay safely under 32,767 characters
+            self.assertLess(len(summary_val), 3000)
+            # Must contain the truncation indicator for items beyond 20
+            self.assertIn("...и ещё 80 позиций", summary_val)
+            wb.close()
+
     def test_write_quote_request_docx_multiline_table_integrity(self) -> None:
         from docx import Document
         from app.report_builder import write_quote_request_docx

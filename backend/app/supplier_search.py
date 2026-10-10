@@ -1537,6 +1537,11 @@ async def build_procurement_profile(settings: SystemSettings, context: str) -> P
    - Условия поставки, адреса, сроки, ГОСТы, гарантии, сертификаты выноси в excluded_terms.
    - В okpd2_codes добавляй только явные коды ОКПД2/ОКПД из ТЗ. Не выдумывай коды.
 
+6. МАКСИМАЛЬНОЕ КОЛИЧЕСТВО СИСТЕМ (ДЛЯ КРУПНЫХ СПЕЦИФИКАЦИЙ И СМЕТ):
+   - Для любых объемных смет и спецификаций (даже если в документе 100-1000 строк) выдели не более 25-35 укрупненных товарных систем для поиска поставщиков.
+   - Объединяй позиции по профильным рынкам производителей (Электрика, Кабельная продукция, Трубопроводная арматура, Сантехника, Вентиляция, Металлопрокат, Отделочные материалы, Оборудование).
+   - Все сопутствующие мелкие позиции, расходники, метизы и комплектующие обязательно группируй внутрь массива "included_sub_items" соответствующей системы.
+
 Ответ строго JSON:
 {{
   "summary": "краткое описание предмета закупки",
@@ -2695,6 +2700,31 @@ def _normalize_procurement_profile(data: dict) -> ProcurementProfile:
                 cost_tier=cost_tier,
             )
         )
+    MAX_PROFILE_ITEMS = 50
+    if len(items) > MAX_PROFILE_ITEMS:
+        core_items = [it for it in items if it.is_core]
+        other_items = [it for it in items if not it.is_core]
+        sorted_items = core_items + other_items
+        kept_items = list(sorted_items[:MAX_PROFILE_ITEMS])
+        overflow_items = sorted_items[MAX_PROFILE_ITEMS:]
+        if overflow_items and kept_items:
+            extra_sub_items = [it.name for it in overflow_items]
+            last = kept_items[-1]
+            kept_items[-1] = ProcurementItem(
+                id=last.id,
+                name=last.name,
+                aliases=last.aliases,
+                okpd2_codes=last.okpd2_codes,
+                category_terms=last.category_terms,
+                exact_terms=last.exact_terms,
+                required_terms=last.required_terms,
+                excluded_terms=last.excluded_terms,
+                is_core=last.is_core,
+                is_auxiliary=last.is_auxiliary,
+                included_sub_items=tuple(list(last.included_sub_items) + extra_sub_items[:50]),
+                cost_tier=last.cost_tier,
+            )
+        items = kept_items
     summary = re.sub(r"\s+", " ", str(data.get("summary") or "")).strip() if isinstance(data, dict) else ""
     if summary.lower() in {"не определено", "неопределено", "не определен", "undefined"} or "предмет закупки не определен" in summary.lower():
         summary = ""

@@ -616,10 +616,17 @@ def write_supplier_xlsx(
     unmatched_item_names: list[str] = []
     if is_multi:
         item_specs = _build_item_specs(profile_items)
-        for idx, spec in enumerate(item_specs, start=1):
+        # Precompute row matches once per row O(M * N) instead of O(N^2 * M)
+        spec_id_to_rows: dict[str, list[dict]] = {spec["id"]: [] for spec in item_specs}
+        for r in rows:
+            for matched_id in _match_supplier_to_item_ids(r, item_specs):
+                if matched_id in spec_id_to_rows:
+                    spec_id_to_rows[matched_id].append(r)
+
+        for spec in item_specs:
             it = spec["item"]
             it_name = str(it.get("name") or it.get("title")).strip()
-            matched_rows = [r for r in rows if spec["id"] in _match_supplier_to_item_ids(r, item_specs)]
+            matched_rows = spec_id_to_rows.get(spec["id"], [])
             item_sections.append((it_name, matched_rows))
             if not matched_rows:
                 unmatched_item_names.append(it_name)
@@ -646,9 +653,13 @@ def write_supplier_xlsx(
 
         if len(distinct_items) > 1:
             is_multi = True
+            item_to_rows: dict[str, list[dict]] = {item: [] for item in distinct_items}
+            for r in rows:
+                mapped = cluster_map.get(_clean_comment_text(r.get("procurement_item") or ""))
+                if mapped in item_to_rows:
+                    item_to_rows[mapped].append(r)
             for item in distinct_items:
-                matched_rows = [r for r in rows if cluster_map.get(_clean_comment_text(r.get("procurement_item") or "")) == item]
-                item_sections.append((item, matched_rows))
+                item_sections.append((item, item_to_rows[item]))
 
     # Single unified sheet with collapsible row outline structure (+ / -)
     ws = wb.active
@@ -660,7 +671,15 @@ def write_supplier_xlsx(
     if is_multi and item_sections:
         ws.title = "Сводный реестр"
         subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
-        breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sections, 1))
+        if len(item_sections) > 20:
+            displayed = item_sections[:20]
+            remaining = len(item_sections) - 20
+            breakdown_text = (
+                " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(displayed, 1))
+                + f" · ...и ещё {remaining} позиций (см. строки таблицы ниже)"
+            )
+        else:
+            breakdown_text = " · ".join(f"{idx}. {name} ({len(i_rows)})" for idx, (name, i_rows) in enumerate(item_sections, 1))
         control_guide = (
             "💡 Как смотреть: нажимайте значки [+] слева от номеров строк или кнопку [2] в верхнем левом углу над таблицей, чтобы раскрыть всё."
             if len(item_sections) > 4
@@ -672,7 +691,13 @@ def write_supplier_xlsx(
             f"Позиции ТЗ: {breakdown_text}"
         )
         if unmatched_item_names:
-            unmatched_text = " · ".join(unmatched_item_names)
+            if len(unmatched_item_names) > 15:
+                unmatched_text = (
+                    " · ".join(unmatched_item_names[:15])
+                    + f" · ...и ещё {len(unmatched_item_names) - 15} позиций"
+                )
+            else:
+                unmatched_text = " · ".join(unmatched_item_names)
             if policy == "minprom_registry_only":
                 summary_text += f"\nПозиции без подтверждённых записей в реестре Минпромторга: {unmatched_text}."
             else:

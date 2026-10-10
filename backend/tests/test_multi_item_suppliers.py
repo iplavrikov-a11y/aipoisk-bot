@@ -491,6 +491,32 @@ class MultiItemSuppliersTests(unittest.IsolatedAsyncioTestCase):
             item_count = sum(1 for r in accepted if r.get("procurement_item_id") == f"item-{item_idx}")
             self.assertEqual(item_count, 70)
 
+    def test_normalize_procurement_profile_caps_massive_items_at_50(self) -> None:
+        from app.supplier_search import _normalize_procurement_profile
+
+        raw_data = {
+            "summary": "Крупная закупка на 80 позиций",
+            "items": [
+                {
+                    "id": f"item-{i}",
+                    "name": f"Позиция {i}",
+                    "is_core": i <= 30,
+                    "is_auxiliary": i > 30,
+                    "included_sub_items": [],
+                }
+                for i in range(1, 81)
+            ],
+        }
+        profile = _normalize_procurement_profile(raw_data)
+        # Must be capped at 50 items
+        self.assertEqual(len(profile.items), 50)
+        # All 30 core items preserved
+        core_count = sum(1 for it in profile.items if it.is_core)
+        self.assertEqual(core_count, 30)
+        # The 50th item should absorb overflow items in included_sub_items
+        last_item = profile.items[-1]
+        self.assertTrue(len(last_item.included_sub_items) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
