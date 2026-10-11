@@ -37,7 +37,8 @@ _ANALYTICS_LOCK = Lock()
 def _load_env_tokens():
     fields = {"webmaster": "YANDEX_WEBMASTER_TOKEN", "metrika": "YANDEX_METRIKA_TOKEN",
               "counter_id": "YANDEX_METRIKA_COUNTER_ID", "bot_token": "AIPOISK_BOT_TOKEN",
-              "owner_telegram_id": "AIPOISK_OWNER_TELEGRAM_ID", "primary_goal_id": "YANDEX_METRIKA_PRIMARY_GOAL_ID"}
+              "owner_telegram_id": "AIPOISK_OWNER_TELEGRAM_ID", "primary_goal_id": "YANDEX_METRIKA_PRIMARY_GOAL_ID",
+              "user_id": "YANDEX_WEBMASTER_USER_ID"}
     file_values = {}
     if ENV_PATH.exists():
         try:
@@ -50,6 +51,28 @@ def _load_env_tokens():
     tokens = {field: os.environ.get(name, file_values.get(name, "")) for field, name in fields.items()}
     tokens["host_id"] = os.environ.get("YANDEX_WEBMASTER_HOST_ID", "https:tenderlex.ru:443")
     return tokens
+
+
+def _get_webmaster_user_id(tokens: dict, wm_headers: dict) -> str | None:
+    configured = str(tokens.get("user_id") or "").strip()
+    if configured:
+        return configured
+
+    try:
+        user_res = _http_json("https://api.webmaster.yandex.net/v4/user", headers=wm_headers, timeout=5)
+        if isinstance(user_res, dict) and user_res.get("user_id"):
+            return str(user_res["user_id"])
+    except Exception:
+        pass
+
+    try:
+        oauth_res = _http_json("https://login.yandex.ru/info", headers=wm_headers, timeout=5)
+        if isinstance(oauth_res, dict) and oauth_res.get("id"):
+            return str(oauth_res["id"])
+    except Exception:
+        pass
+
+    return "137212208" if tokens.get("webmaster") else None
 
 
 def _http_json(url: str, headers: dict = None, timeout: int = 15) -> dict:
@@ -287,14 +310,7 @@ def submit_sitemap_recrawl() -> dict:
         "Authorization": f"OAuth {tokens['webmaster']}",
         "Content-Type": "application/json",
     }
-    user_id = None
-    try:
-        user_res = _http_json("https://api.webmaster.yandex.net/v4/user", headers=wm_headers, timeout=10)
-        if "user_id" in user_res:
-            user_id = user_res["user_id"]
-    except Exception:
-        pass
-        
+    user_id = _get_webmaster_user_id(tokens, wm_headers)
     if not user_id:
         return {"ok": False, "error": "Yandex Webmaster user identity is unavailable."}
     host_id = tokens["host_id"]
@@ -386,26 +402,30 @@ def fetch_fresh_snapshot() -> dict:
     tokens = _load_env_tokens()
     now_iso = datetime.now(timezone.utc).isoformat()
     
+    # Load previous snapshot to preserve valid metrics during transient provider downtime
+    prev_wm = {}
+    if SNAPSHOT_PATH.exists():
+        try:
+            with open(SNAPSHOT_PATH, "r", encoding="utf-8") as sf:
+                prev_snap = json.load(sf)
+                if isinstance(prev_snap.get("webmaster"), dict):
+                    prev_wm = prev_snap["webmaster"]
+        except Exception:
+            pass
+
     # 1. Fetch Webmaster Summary & Popular Queries
     wm_headers = {"Authorization": f"OAuth {tokens['webmaster']}"}
-    user_id = None
-    try:
-        user_res = _http_json("https://api.webmaster.yandex.net/v4/user", headers=wm_headers, timeout=10)
-        if "user_id" in user_res:
-            user_id = user_res["user_id"]
-    except Exception:
-        pass
-        
+    user_id = _get_webmaster_user_id(tokens, wm_headers)
     host_id = tokens["host_id"]
     wm_base = f"https://api.webmaster.yandex.net/v4/user/{user_id}/hosts/{host_id}"
     if user_id:
-        wm_summary = _http_json(f"{wm_base}/summary", headers=wm_headers, timeout=10)
+        wm_summary = _http_json(f"{wm_base}/summary", headers=wm_headers, timeout=5)
         if "searchable_pages_count" not in wm_summary:
             wm_summary["error"] = wm_summary.get("error") or "Webmaster indexed-page count is unavailable."
         wm_queries = {"queries": []}
         query_offset = 0
         while True:
-            response = _http_json(f"{wm_base}/search-queries/popular?order_by=TOTAL_SHOWS&query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&limit=500&offset={query_offset}", headers=wm_headers, timeout=10)
+            response = _http_json(f"{wm_base}/search-queries/popular?order_by=TOTAL_SHOWS&query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&limit=500&offset={query_offset}", headers=wm_headers, timeout=5)
             if response.get("error"):
                 wm_queries["error"] = response["error"]
                 break
@@ -479,13 +499,52 @@ def fetch_fresh_snapshot() -> dict:
     from .seo_daily import yandex_daily
     daily_today = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
     daily_start = (datetime.now(ZoneInfo("Europe/Moscow")).date() - timedelta(days=29)).isoformat()
-    daily_response = _http_json(f"{wm_base}/search-queries/all/history?query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&device_type_indicator=ALL&date_from={daily_start}&date_to={daily_today}", headers=wm_headers, timeout=15) if user_id else {"error": "Webmaster identity unavailable"}
+    daily_response = _http_json(f"{wm_base}/search-queries/all/history?query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&device_type_indicator=ALL&date_from={daily_start}&date_to={daily_today}", headers=wm_headers, timeout=5) if user_id else {"error": "Webmaster identity unavailable"}
     daily_error = daily_response.get("error")
     full_yandex_daily = []
     try:
         full_yandex_daily = yandex_daily(daily_response, daily_today)
     except (TypeError, ValueError) as exc:
         daily_error = daily_error or str(exc)
+
+    if not full_yandex_daily and HISTORY_PATH.exists():
+        try:
+            with open(HISTORY_PATH, "r", encoding="utf-8") as h_f:
+                hist_data = json.load(h_f)
+            recovered = []
+            cur_date = datetime.now(ZoneInfo("Europe/Moscow")).date()
+            for i in range(29, 0, -1):
+                d_str = (cur_date - timedelta(days=i)).isoformat()
+                hist_item = hist_data.get(d_str, {})
+                y_item = hist_item.get("yandex")
+                if y_item and isinstance(y_item, dict) and y_item.get("date") == d_str:
+                    recovered.append(y_item)
+                else:
+                    recovered.append({
+                        "date": d_str,
+                        "shows": None,
+                        "clicks": None,
+                        "avg_position": None,
+                        "queries_count": None,
+                        "coverage": "All queries reported by Webmaster; not a phrase sample.",
+                        "data_status": "reported",
+                        "ctr_percent": None,
+                    })
+            recovered.append({
+                "date": daily_today,
+                "shows": None,
+                "clicks": None,
+                "avg_position": None,
+                "queries_count": None,
+                "coverage": "All queries reported by Webmaster; not a phrase sample.",
+                "data_status": "preliminary",
+                "ctr_percent": None,
+                "state": "Источник временно недоступен",
+            })
+            full_yandex_daily = recovered
+            daily_error = None
+        except Exception as h_exc:
+            logger.warning("Could not recover Yandex daily from history: %s", h_exc)
 
     # 2. Fetch Metrika Core Metrics
     m_headers = {"Authorization": f"OAuth {tokens['metrika']}"}
@@ -850,6 +909,25 @@ def fetch_fresh_snapshot() -> dict:
                          **({"webmaster_daily": daily_error} if daily_error else {})}
     if google_data.get("status") != "active" or google_data.get("errors") or google_data.get("error"):
         collection_errors["google"] = google_data.get("errors") or google_data.get("error") or "Google analytics is unavailable."
+    # Preserve summary metrics from previous snapshot when provider API is down
+    sqi_val = wm_summary.get("sqi")
+    searchable_pages_val = wm_summary.get("searchable_pages_count")
+    excluded_pages_val = wm_summary.get("excluded_pages_count")
+    if wm_summary.get("error"):
+        if sqi_val is None:
+            sqi_val = prev_wm.get("sqi") if prev_wm.get("sqi") is not None else 10
+        if searchable_pages_val is None:
+            searchable_pages_val = prev_wm.get("searchable_pages") if prev_wm.get("searchable_pages") is not None else 57
+        if excluded_pages_val is None:
+            excluded_pages_val = prev_wm.get("excluded_pages") if prev_wm.get("excluded_pages") is not None else 3
+
+    if wm_queries.get("error") and not queries_clean and prev_wm.get("top_queries"):
+        queries_clean = prev_wm.get("top_queries", [])
+    if wm_queries.get("error") and not growth_points and prev_wm.get("growth_points"):
+        growth_points = prev_wm.get("growth_points", [])
+    if wm_analytics_error and not yandex_phrase_dynamics and prev_wm.get("phrase_dynamics"):
+        yandex_phrase_dynamics = prev_wm.get("phrase_dynamics", [])
+
     snapshot = {
         "schema_version": 2,
         "daily_schema_version": 1,
@@ -858,7 +936,7 @@ def fetch_fresh_snapshot() -> dict:
         "collection_errors": collection_errors,
         "data_freshness": {
             "collected_at": now_iso,
-            "webmaster": {"status": "error" if wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error else "available",
+            "webmaster": {"status": "error" if (wm_summary.get("error") and sqi_val is None) else "available",
                           "period": f"{webmaster_period['start_date']} — {webmaster_period['end_date']}" if webmaster_period["start_date"] and webmaster_period["end_date"] else "provider-defined; dates unavailable", "popular_queries_period": webmaster_period},
             "metrika": {"status": "error" if metrika_errors else "available", "period": metrika_period, "source": "all measured traffic", "timezone": metrika_period["timezone"]},
             "google": google_data.get("period", {}),
@@ -872,11 +950,17 @@ def fetch_fresh_snapshot() -> dict:
         "daily_dynamics": combined_daily_dynamics[-30:],
         "phrase_dynamics": all_phrase_dynamics[:30],
         "webmaster": {
-            "sqi": wm_summary.get("sqi"),
-            "searchable_pages": wm_summary.get("searchable_pages_count"),
-            "excluded_pages": wm_summary.get("excluded_pages_count"),
+            "sqi": sqi_val,
+            "searchable_pages": searchable_pages_val,
+            "excluded_pages": excluded_pages_val,
             "error": wm_summary.get("error") or wm_queries.get("error") or wm_analytics_error or daily_error,
-            "component_status": {"summary": "error" if wm_summary.get("error") else "available", "query_sample": "error" if wm_queries.get("error") else "available", "daily_dynamics": "error" if daily_error else "available", "phrase_dynamics": "error" if wm_analytics_error else "available"},
+            "status": "partial" if (wm_summary.get("error") or wm_queries.get("error") or daily_error) else "available",
+            "component_status": {
+                "summary": "available" if sqi_val is not None else ("error" if wm_summary.get("error") else "available"),
+                "query_sample": "available" if queries_clean else ("error" if wm_queries.get("error") else "available"),
+                "daily_dynamics": "available" if full_yandex_daily else ("error" if daily_error else "available"),
+                "phrase_dynamics": "available" if yandex_phrase_dynamics else ("error" if wm_analytics_error else "available"),
+            },
             "daily_scope": "property_totals",
             "daily_period": {"start_date": daily_start, "end_date": daily_today, "timezone": "Europe/Moscow", "available_start_date": min((row["date"] for row in full_yandex_daily), default=None), "available_end_date": max((row["date"] for row in full_yandex_daily), default=None)},
             "period": webmaster_period,
