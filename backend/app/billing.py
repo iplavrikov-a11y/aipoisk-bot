@@ -18,6 +18,7 @@ KIND_SUPPLIER_SEARCH = "supplier_search"
 KIND_PROCUREMENT_REPORT = "procurement_report"
 KIND_SUPPLIER_SEARCH_EXTRA = "supplier_search_extra"
 KIND_EXACT_PRODUCT = "exact_product"
+KIND_PRICE_MONITORING = "price_monitoring"
 KIND_MONEY = "money"
 KIND_DEPOSIT = "deposit"
 VALID_BILLING_KINDS = {
@@ -25,9 +26,11 @@ VALID_BILLING_KINDS = {
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH_EXTRA,
     KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
 }
 SUPPLIER_SEARCH_EXTRA_DEFAULT_PERCENT = 50
 DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS = 9900
+DEFAULT_PRICE_MONITORING_PRICE_KOPEKS = 5000
 
 OP_GRANT = "grant"
 OP_RESERVE = "reserve"
@@ -46,6 +49,7 @@ MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 MODE_EXACT_PRODUCT = "exact_product"
+MODE_PRICE_MONITORING = "price_monitoring"
 
 INTERNAL_JOB_TOKENS = (
     "smoke",
@@ -117,20 +121,24 @@ def billing_kind_label(kind: str) -> str:
         return "Добор поставщиков"
     if kind == KIND_EXACT_PRODUCT:
         return "Подбор товара и аналогов"
+    if kind == KIND_PRICE_MONITORING:
+        return "Мониторинг цен"
     return "Поставщики"
 
 
 def requested_billing_units(mode: str, *, supplier_search_count: int = 1) -> dict[str, int]:
     supplier_units = max(1, int(supplier_search_count or 1))
     if mode == MODE_SUPPLIER_SEARCH:
-        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
+        return {KIND_SUPPLIER_SEARCH: supplier_units, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0, KIND_PRICE_MONITORING: 0}
     if mode == MODE_PROCUREMENT_REPORT:
-        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0, KIND_PRICE_MONITORING: 0}
     if mode == MODE_ANALYSIS_AND_SUPPLIERS:
-        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
+        return {KIND_SUPPLIER_SEARCH: 1, KIND_PROCUREMENT_REPORT: 1, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0, KIND_PRICE_MONITORING: 0}
     if mode == MODE_EXACT_PRODUCT:
-        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 1}
-    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0}
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 1, KIND_PRICE_MONITORING: 0}
+    if mode == MODE_PRICE_MONITORING:
+        return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0, KIND_PRICE_MONITORING: 1}
+    return {KIND_SUPPLIER_SEARCH: 0, KIND_PROCUREMENT_REPORT: 0, KIND_SUPPLIER_SEARCH_EXTRA: 0, KIND_EXACT_PRODUCT: 0, KIND_PRICE_MONITORING: 0}
 
 
 def requested_billing_kinds(mode: str, *, supplier_search_count: int = 1, supplier_search_run_type: str = "initial") -> dict[str, int]:
@@ -175,7 +183,13 @@ def client_balance_summary(db: Session, client: Client) -> dict:
         "money": money,
         "effective_prices": {
             kind: effective_price_to_dict(db, client, kind)
-            for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
+            for kind in (
+                KIND_SUPPLIER_SEARCH,
+                KIND_PROCUREMENT_REPORT,
+                KIND_SUPPLIER_SEARCH_EXTRA,
+                KIND_EXACT_PRODUCT,
+                KIND_PRICE_MONITORING,
+            )
         },
         "has_custom_tariffs": client_has_custom_tariffs(db, client),
     }
@@ -277,6 +291,9 @@ def effective_price_kopeks(db: Session, client: Client | None, kind: str) -> int
         return _default_supplier_search_extra_price_kopeks(db, client)
     if kind == KIND_EXACT_PRODUCT:
         return DEFAULT_EXACT_PRODUCT_PRICE_KOPEKS
+    if kind == KIND_PRICE_MONITORING:
+        settings = db.query(SystemSettings).first()
+        return max(0, int(getattr(settings, "price_monitoring_default_price_kopeks", DEFAULT_PRICE_MONITORING_PRICE_KOPEKS) or DEFAULT_PRICE_MONITORING_PRICE_KOPEKS))
     return 0
 
 
@@ -434,7 +451,7 @@ def _effective_price_source(kind: str, *, override: ClientTariffOverride | None,
 def _lowest_active_function_price(db: Session, client: Client) -> int:
     prices = [
         effective_price_kopeks(db, client, kind)
-        for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT)
+        for kind in (KIND_SUPPLIER_SEARCH, KIND_PROCUREMENT_REPORT, KIND_SUPPLIER_SEARCH_EXTRA, KIND_EXACT_PRODUCT, KIND_PRICE_MONITORING)
     ]
     active = [price for price in prices if price > 0]
     return min(active) if active else 1
@@ -608,6 +625,8 @@ def _access_counter(db: Session, client: Client, kind: str) -> dict:
 
 
 def reserve_job_units(db: Session, client: Client, job: Job, *, supplier_search_count: int = 1) -> None:
+    if str(getattr(job, "mode", "") or "") == MODE_PRICE_MONITORING:
+        return
     with _billing_client_lock(client.id):
         db.refresh(client)
         _reserve_job_units_locked(db, client, job, supplier_search_count=supplier_search_count)
@@ -1436,3 +1455,39 @@ def expire_stale_confirmations(db: Session, *, older_than: timedelta = timedelta
     if expired_jobs:
         db.commit()
     return len(expired_jobs)
+
+
+def charge_price_monitoring_job(
+    db: Session,
+    job: Job,
+    *,
+    found_count: int,
+    price_per_item_kopeks: int,
+) -> int:
+    """Списывает средства за фактически найденные позиции мониторинга цен."""
+    if not job.client_id or found_count <= 0 or price_per_item_kopeks <= 0:
+        return 0
+    total_amount_kopeks = found_count * price_per_item_kopeks
+    with _billing_client_lock(job.client_id):
+        client = db.get(Client, job.client_id)
+        if not client:
+            return 0
+        db.refresh(client)
+        client.money_balance_kopeks = max(0, int(client.money_balance_kopeks or 0) - total_amount_kopeks)
+        db.add(
+            BillingTransaction(
+                client_id=client.id,
+                job_id=job.id,
+                kind=KIND_PRICE_MONITORING,
+                operation=OP_CHARGE,
+                units=found_count,
+                amount_kopeks=total_amount_kopeks,
+                balance_after_kopeks=client.money_balance_kopeks,
+                reserved_after_kopeks=int(client.money_reserved_kopeks or 0),
+                note=f"Мониторинг цен: найдено {found_count} поз. по {round(price_per_item_kopeks / 100, 2)} ₽",
+                created_by="system",
+            )
+        )
+        db.commit()
+    return total_amount_kopeks
+

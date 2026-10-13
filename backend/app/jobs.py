@@ -16,14 +16,19 @@ from sqlalchemy.orm import Session, aliased
 from . import document_parser
 from .ai import get_model_selection
 from .billing import (
+    KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
+    MODE_PRICE_MONITORING,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
     STATUS_DELIVERY_EXPIRED,
     charge_job_reservation,
+    charge_price_monitoring_job,
+    effective_price_kopeks,
     release_job_kind_reservation,
     release_job_reservation,
     expire_stale_confirmations,
@@ -44,6 +49,7 @@ from .exact_product import (
     write_exact_product_docx,
     ExactProductReport,
 )
+from .price_monitoring import run_price_monitoring_pipeline
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -87,12 +93,14 @@ MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 MODE_EXACT_PRODUCT = "exact_product"
+MODE_PRICE_MONITORING = "price_monitoring"
 KIND_EXACT_PRODUCT = "exact_product"
 VALID_JOB_MODES = {
     MODE_SUPPLIER_SEARCH,
     MODE_PROCUREMENT_REPORT,
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_EXACT_PRODUCT,
+    MODE_PRICE_MONITORING,
 }
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
@@ -759,6 +767,9 @@ def _process_job_sync(job_id: str) -> None:
         elif job.mode == MODE_EXACT_PRODUCT:
             stage = "exact_product"
             _process_exact_product(db, job, settings, context)
+        elif job.mode == MODE_PRICE_MONITORING:
+            stage = "price_monitoring"
+            _process_price_monitoring(db, job, settings, context)
         else:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
@@ -1607,6 +1618,107 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     _set_job(db, job, status="completed", progress=100, message=f"Готово: выявлено {report.total_positions} поз. с аналогами")
     job.completed_at = now_utc()
     db.commit()
+
+
+def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
+    _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
+    _set_job(db, job, progress=10, message="Загружаю спецификацию для мониторинга цен...")
+
+    input_dir = job_dir(job.id) / "input"
+    file_bytes = b""
+    if input_dir.exists():
+        for p in input_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in {".xlsx", ".xls"}:
+                file_bytes = p.read_bytes()
+                break
+            elif p.is_file() and not file_bytes:
+                file_bytes = p.read_bytes()
+
+    if not file_bytes and context:
+        import io
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Номенклатура", "Ед. изм."])
+        for line in context.splitlines():
+            line_str = line.strip()
+            if line_str:
+                parts = [p.strip() for p in line_str.split("\t") if p.strip()]
+                if len(parts) >= 2:
+                    ws.append([parts[0], parts[1]])
+                else:
+                    ws.append([line_str, "шт"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        file_bytes = buf.getvalue()
+
+    if not file_bytes:
+        _set_job(db, job, status="failed", progress=100, message="Файл со спецификацией не найден или пуст", error="No input file")
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    price_kopeks = effective_price_kopeks(db, job.client, KIND_PRICE_MONITORING)
+    price_rub = round(price_kopeks / 100, 2)
+
+    out_dir = job_dir(job.id) / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / _result_filename("price_monitoring", "Отчет_по_ценам", ".xlsx")
+
+    def _progress_cb(progress: int, message: str) -> None:
+        _check_cancelled(job.id, db=db, job=job)
+        _set_job(db, job, progress=progress, message=message)
+
+    try:
+        batch_res = asyncio.run(
+            run_price_monitoring_pipeline(
+                file_bytes=file_bytes,
+                settings=settings,
+                output_excel_path=str(out_file),
+                price_per_position_rub=price_rub,
+                progress_callback=_progress_cb,
+                max_suppliers=5,
+            )
+        )
+    except Exception as exc:
+        logger.error("Price monitoring failed for job %s: %s", job.id, exc, exc_info=True)
+        _set_job(db, job, status="failed", progress=100, message=f"Ошибка обработки: {exc}", error=str(exc))
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    _check_cancelled(job.id)
+    charged_kopeks = charge_price_monitoring_job(
+        db,
+        job,
+        found_count=batch_res.found_positions,
+        price_per_item_kopeks=price_kopeks,
+    )
+
+    output_files = [
+        _output_artifact("price_monitoring", "Отчет по ценам поставщиков (.xlsx)", out_file, KIND_PRICE_MONITORING),
+    ]
+    evidence_payload = {
+        "mode": job.mode,
+        "subject": job.title or "Мониторинг цен",
+        "total_positions": batch_res.total_positions,
+        "found_positions": batch_res.found_positions,
+        "price_per_position_rub": price_rub,
+        "charged_rub": round(charged_kopeks / 100, 2),
+        "output_files": output_files,
+    }
+    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+    job.evidence_path = str(evidence_path)
+    job.result_path = str(out_file)
+    job.verified_count = batch_res.found_positions
+    job.file_count = batch_res.total_positions
+
+    msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций. Списано: {round(charged_kopeks / 100, 2)} ₽"
+    _set_job(db, job, status="completed", progress=100, message=msg)
+    job.completed_at = now_utc()
+    db.commit()
+
 
 
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:

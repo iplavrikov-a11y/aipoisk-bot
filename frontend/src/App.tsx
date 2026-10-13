@@ -49,11 +49,13 @@ import {
   Activity,
   Calendar,
   Crown,
+  Coins,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
+import { PriceMonitoringView } from './PriceMonitoringView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring'
 
 type Dashboard = {
   clients: number
@@ -705,12 +707,18 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'MCP & Public API',
     description: 'Управление API-ключами, интеграция с Claude Desktop, Cursor, ChatGPT Codex и прямое подключение внешних систем.',
   },
+  price_monitoring: {
+    title: 'Мониторинг цен',
+    description: 'Закрытый модуль мониторинга цен поставщиков по спецификациям: настройки тарификации, доступ клиентов и история запусков.',
+  },
 }
 
 const modeLabels: Record<string, string> = {
   supplier_search: 'Поиск поставщиков',
   procurement_report: 'Анализ документации',
   analysis_and_suppliers: 'Анализ + поставщики',
+  exact_product: 'Подбор товара и аналогов',
+  price_monitoring: 'Мониторинг цен',
 }
 
 const statusLabels: Record<string, string> = {
@@ -1146,7 +1154,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1556,6 +1564,7 @@ export function App() {
     { id: 'outreach' as const, label: 'Лиды и Рассылка', icon: Mail },
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
+    { id: 'price_monitoring' as const, label: 'Мониторинг цен', icon: Coins },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
     { id: 'mcp' as const, label: 'MCP & API', icon: KeyRound },
   ]
@@ -1693,6 +1702,7 @@ export function App() {
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
+        {isReady && view === 'price_monitoring' && <PriceMonitoringView />}
 
         {showServerModal && opsStatus && (
           <div className="server-modal-backdrop" onClick={() => setShowServerModal(false)}>

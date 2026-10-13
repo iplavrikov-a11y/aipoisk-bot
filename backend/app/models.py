@@ -87,6 +87,7 @@ class SystemSettings(Base):
     yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
+    price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -143,6 +144,7 @@ class SystemSettings(Base):
             "yookassa_shop_id": self.yookassa_shop_id,
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
+            "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -174,6 +176,7 @@ class Client(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)

@@ -39,6 +39,7 @@ from .billing import (
     KIND_DEPOSIT,
     KIND_SUPPLIER_SEARCH,
     KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH_EXTRA,
     OP_CHARGE,
@@ -85,6 +86,7 @@ from .db import db_session, init_db
 from .jobs import (
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_EXACT_PRODUCT,
+    MODE_PRICE_MONITORING,
     MODE_PROCUREMENT_REPORT,
     MODE_SUPPLIER_SEARCH,
     SUPPLIER_POLICY_MINPROM_ONLY,
@@ -1690,6 +1692,146 @@ def delete_tariff_api(package_id: str, db: Session = Depends(db_session)) -> dic
     db.commit()
     invalidate_tariff_packages_cache()
     return {"success": True}
+
+
+# --- PRICE MONITORING ADMIN API ---
+
+@app.get("/api/price-monitoring/settings", dependencies=[Depends(require_admin)])
+def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> dict:
+    settings = get_or_create_settings(db)
+    def_kopeks = int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
+    return {
+        "default_price_kopeks": def_kopeks,
+        "default_price_rub": round(def_kopeks / 100, 2),
+        "max_suppliers_per_item": 5,
+    }
+
+
+@app.post("/api/price-monitoring/settings", dependencies=[Depends(require_admin)])
+def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_session)) -> dict:
+    settings = get_or_create_settings(db)
+    if "default_price_rub" in data:
+        settings.price_monitoring_default_price_kopeks = max(0, int(float(data["default_price_rub"]) * 100))
+    elif "default_price_kopeks" in data:
+        settings.price_monitoring_default_price_kopeks = max(0, int(data["default_price_kopeks"]))
+    db.commit()
+    return admin_get_price_monitoring_settings(db)
+
+
+@app.get("/api/price-monitoring/clients", dependencies=[Depends(require_admin)])
+def admin_list_price_monitoring_clients(db: Session = Depends(db_session)) -> dict:
+    settings = get_or_create_settings(db)
+    base_kopeks = int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
+    clients = db.query(Client).order_by(Client.created_at.desc()).all()
+    items = []
+    for c in clients:
+        override = (
+            db.query(ClientTariffOverride)
+            .filter(ClientTariffOverride.client_id == c.id, ClientTariffOverride.kind == KIND_PRICE_MONITORING)
+            .first()
+        )
+        custom_price_rub = round(override.price_kopeks / 100, 2) if (override and override.is_enabled and override.price_kopeks is not None and override.price_kopeks > 0) else None
+        effective_kopeks = override.price_kopeks if (override and override.is_enabled and override.price_kopeks is not None and override.price_kopeks > 0) else base_kopeks
+        emails = [u.email for u in c.web_users]
+        items.append({
+            "id": c.id,
+            "name": c.name or c.username or (emails[0] if emails else f"Клиент {c.id[:8]}"),
+            "email": emails[0] if emails else "",
+            "telegram_id": c.telegram_id,
+            "balance_rub": round(int(c.money_balance_kopeks or 0) / 100, 2),
+            "allowed": bool(getattr(c, "allowed_price_monitoring", False)),
+            "custom_price_rub": custom_price_rub,
+            "effective_price_rub": round(effective_kopeks / 100, 2),
+            "has_override": custom_price_rub is not None,
+        })
+    return {"clients": items, "base_price_rub": round(base_kopeks / 100, 2)}
+
+
+@app.post("/api/price-monitoring/clients/{client_id}", dependencies=[Depends(require_admin)])
+def admin_update_price_monitoring_client(client_id: str, data: dict, db: Session = Depends(db_session)) -> dict:
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    if "allowed" in data:
+        client.allowed_price_monitoring = bool(data["allowed"])
+
+    if "custom_price_rub" in data:
+        override = (
+            db.query(ClientTariffOverride)
+            .filter(ClientTariffOverride.client_id == client.id, ClientTariffOverride.kind == KIND_PRICE_MONITORING)
+            .first()
+        )
+        raw_custom = data["custom_price_rub"]
+        if raw_custom is not None and str(raw_custom).strip() != "":
+            try:
+                price_kop = max(0, int(float(raw_custom) * 100))
+            except (ValueError, TypeError):
+                price_kop = 0
+            if price_kop > 0:
+                if override:
+                    override.price_kopeks = price_kop
+                    override.is_enabled = True
+                    override.updated_at = now_utc()
+                else:
+                    override = ClientTariffOverride(
+                        client_id=client.id,
+                        kind=KIND_PRICE_MONITORING,
+                        price_kopeks=price_kop,
+                        is_enabled=True,
+                        note="Настройка в панели мониторинга цен",
+                    )
+                    db.add(override)
+            else:
+                if override:
+                    override.is_enabled = False
+                    override.price_kopeks = 0
+                    override.updated_at = now_utc()
+        else:
+            if override:
+                override.is_enabled = False
+                override.price_kopeks = 0
+                override.updated_at = now_utc()
+    db.commit()
+    return {"success": True}
+
+
+@app.get("/api/price-monitoring/jobs", dependencies=[Depends(require_admin)])
+def admin_list_price_monitoring_jobs(db: Session = Depends(db_session)) -> dict:
+    jobs = (
+        db.query(Job)
+        .filter(Job.mode == MODE_PRICE_MONITORING)
+        .order_by(Job.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    items = []
+    for j in jobs:
+        c = j.client
+        emails = [u.email for u in c.web_users] if c else []
+        charged_tx = (
+            db.query(BillingTransaction)
+            .filter(BillingTransaction.job_id == j.id, BillingTransaction.operation == OP_CHARGE)
+            .first()
+        )
+        charged_rub = round(int(charged_tx.amount_kopeks or 0) / 100, 2) if charged_tx else 0.0
+        items.append({
+            "id": j.id,
+            "job_number": j.job_number,
+            "client_id": j.client_id,
+            "client_name": c.name or (emails[0] if emails else "Клиент") if c else "-",
+            "title": j.title or "Спецификация",
+            "status": j.status,
+            "progress": j.progress,
+            "message": j.message,
+            "total_positions": j.file_count,
+            "found_positions": j.verified_count,
+            "charged_rub": charged_rub,
+            "created_at": j.created_at.isoformat() if j.created_at else None,
+            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            "download_url": f"/api/jobs/{j.id}/download" if j.result_path else None,
+        })
+    return {"jobs": items}
+
 
 
 @app.get("/api/clients", dependencies=[Depends(require_admin)])
@@ -3719,12 +3861,14 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
     price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
     price_extra = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH_EXTRA) or 4900
+    price_monitoring = effective_price_kopeks(db, user.client, KIND_PRICE_MONITORING) or int(getattr(settings, "price_monitoring_default_price_kopeks", 5000) or 5000)
     function_prices = {
         "supplier_search": {"price_kopeks": price_search, "price_rub": round(price_search / 100)},
         "exact_product": {"price_kopeks": price_exact, "price_rub": round(price_exact / 100)},
         "procurement_report": {"price_kopeks": price_report, "price_rub": round(price_report / 100)},
         "supplier_search_extra": {"price_kopeks": price_extra, "price_rub": round(price_extra / 100)},
         "analysis_and_suppliers": {"price_kopeks": price_search + price_report, "price_rub": round((price_search + price_report) / 100)},
+        "price_monitoring": {"price_kopeks": price_monitoring, "price_rub": round(price_monitoring / 100)},
     }
     return {
         "authenticated": authenticated,
@@ -3783,6 +3927,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "is_active": bool(user.is_active),
         "is_email_verified": bool(user.is_email_verified),
         "client_id": user.client_id,
+        "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
@@ -3973,6 +4118,8 @@ def _customer_result_file_label(kind: str, label: str = "") -> str:
         return "Запрос КП"
     if kind in {"exact_product", "exact_product_table", "exact_product_spec"}:
         return "Подбор товара и аналоги"
+    if kind in {"price_monitoring", "price_monitoring_table"}:
+        return "Цены поставщиков (.xlsx)"
     if kind in {"admin_supplement", "admin-supplement"}:
         return "Дополнительный отчет (эксперт)"
     return "Файл"
@@ -5042,6 +5189,7 @@ def mode_label(mode: str) -> str:
         MODE_PROCUREMENT_REPORT: "Анализ документации",
         MODE_ANALYSIS_AND_SUPPLIERS: "Анализ + поставщики",
         MODE_EXACT_PRODUCT: "Подбор товара и аналогов",
+        MODE_PRICE_MONITORING: "Мониторинг цен",
     }
     return labels.get(mode, "Задача")
 
@@ -5053,6 +5201,7 @@ def client_usage_summary(db: Session, client: Client) -> dict:
         "procurement_report": usage_counter_from_balance(balances["procurement_report"]),
         "supplier_search_extra": usage_counter_from_balance(balances["supplier_search_extra"]),
         "exact_product": usage_counter_from_balance(balances.get("exact_product", {})),
+        "price_monitoring": usage_counter_from_balance(balances.get("price_monitoring", {})),
         "money": balances["money"],
         "effective_prices": balances["effective_prices"],
     }
@@ -5421,6 +5570,7 @@ def client_to_dict(client: Client, *, db: Session | None = None) -> dict:
         "allowed_supplier_search": client.allowed_supplier_search,
         "allowed_procurement_report": client.allowed_procurement_report,
         "allowed_exact_product": getattr(client, "allowed_exact_product", True),
+        "allowed_price_monitoring": getattr(client, "allowed_price_monitoring", False),
         "monthly_job_limit": client.monthly_job_limit,
         "monthly_supplier_search_limit": client.monthly_supplier_search_limit,
         "monthly_procurement_report_limit": client.monthly_procurement_report_limit,

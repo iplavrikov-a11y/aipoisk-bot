@@ -102,6 +102,7 @@ def _ensure_schema() -> None:
             "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
             "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
             "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
+            "price_monitoring_default_price_kopeks": "INTEGER DEFAULT 5000",
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {
@@ -111,6 +112,7 @@ def _ensure_schema() -> None:
             "allowed_supplier_search": "BOOLEAN DEFAULT 1",
             "allowed_procurement_report": "BOOLEAN DEFAULT 0",
             "allowed_exact_product": "BOOLEAN DEFAULT 1",
+            "allowed_price_monitoring": "BOOLEAN DEFAULT 0",
             "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
             "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
             "money_balance_kopeks": "INTEGER DEFAULT 0",

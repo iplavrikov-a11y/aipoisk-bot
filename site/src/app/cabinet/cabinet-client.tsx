@@ -47,11 +47,12 @@ import {
   Wallet,
   X,
   XCircle,
+  Coins,
   type LucideIcon,
 } from "lucide-react";
 
-type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
-type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product";
+type JobMode = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
+type Scenario = "supplier_search" | "procurement_report" | "analysis_and_suppliers" | "exact_product" | "price_monitoring";
 type SupplierSearchPolicy = "normal" | "minprom_registry_only" | "minprom_registry_priority";
 
 function normalizeSupplierSearchPolicy(val?: string | null): SupplierSearchPolicy {
@@ -158,6 +159,7 @@ type SessionPayload = {
     name: string;
     is_trial: boolean;
     is_email_verified: boolean;
+    allowed_price_monitoring?: boolean;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -404,6 +406,17 @@ const modeCopy: Record<Scenario, {
     hint: "Укажите номер извещения ЕИС или ссылку на закупку на ЕИС (zakupki.gov.ru). Ссылки на сторонние сайты не поддерживаются. В результате вы получите анализ закупки и контакты поставщиков.",
     submit: "Запустить анализ + поиск",
   },
+  price_monitoring: {
+    mode: "price_monitoring",
+    formSubtitle: "Загрузите файл спецификации (XLSX) с наименованиями и единицами измерения для поиска актуальных цен поставщиков.",
+    uploadTitle: "Загрузить спецификацию",
+    uploadText: "Перетащите файл спецификации сюда или нажмите для выбора (.xlsx)",
+    multipleFiles: false,
+    textLabel: "Или вставьте список позиций текстом",
+    textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Сталь листовая горячекатаная 10мм, т",
+    hint: "ИИ найдёт до 5 реальных поставщиков с актуальными ценами, контактами, ИНН и ссылками на товар. Списание баланса происходит ТОЛЬКО за реально найденные позиции.",
+    submit: "Запустить мониторинг цен",
+  },
 };
 
 
@@ -559,6 +572,7 @@ function modeDisplayName(job: CustomerJob) {
       : "Обычный";
 
   if (job.mode === "exact_product") return "Подбор товара и аналогов";
+  if (job.mode === "price_monitoring") return "Мониторинг цен";
   if (job.mode === "procurement_report") return "Анализ документации";
   if (job.mode === "analysis_and_suppliers") return `Анализ + поиск (${policyLabel})`;
   return `Поиск поставщиков (${policyLabel})`;
@@ -2642,6 +2656,19 @@ export function CabinetClient() {
                         {formatRubles(comboPriceKopeks)}
                       </b>
                     </div>
+                    {session?.user?.allowed_price_monitoring ? (() => {
+                      const pmPriceKopeks =
+                        session?.balance?.effective_prices?.price_monitoring?.price_kopeks ?? 5000;
+                      const pmIsOverride = session?.balance?.effective_prices?.price_monitoring?.source === "client_override";
+                      return (
+                        <div className={`px-2 py-1 ${pmIsOverride ? 'bg-amber-50/80 border-amber-200 text-amber-950' : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'} border rounded-md flex items-center justify-between text-xs font-medium shadow-2xs`}>
+                          <span className="truncate mr-2 font-semibold">5. Мониторинг цен (за найденную)</span>
+                          <b className="font-extrabold shrink-0 whitespace-nowrap">
+                            {formatRubles(pmPriceKopeks)}
+                          </b>
+                        </div>
+                      );
+                    })() : null}
                   </div>
                 </div>
 
@@ -2711,8 +2738,16 @@ export function CabinetClient() {
             <p className="text-[11px] text-slate-500">{selectedCopy.formSubtitle}</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl" role="tablist" aria-label="Тип задачи">
-            {scenarioOptions.map((item) => {
+          <div className={`grid grid-cols-1 ${session?.user?.allowed_price_monitoring ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-1.5 p-1 bg-slate-100 border border-slate-200/90 rounded-xl`} role="tablist" aria-label="Тип задачи">
+            {(session?.user?.allowed_price_monitoring ? [
+              ...scenarioOptions,
+              {
+                id: "price_monitoring" as const,
+                label: "Мониторинг цен",
+                description: "поиск цен и поставщиков по спецификации Excel",
+                icon: Coins,
+              },
+            ] : scenarioOptions).map((item) => {
               const ItemIcon = item.icon;
               const isSelected = scenario === item.id;
               return (
@@ -2994,6 +3029,9 @@ export function CabinetClient() {
               <option value="supplier_search">Поиск поставщиков</option>
               <option value="analysis_and_suppliers">Анализ + поиск</option>
               <option value="exact_product">Подбор товара и аналогов</option>
+              {session?.user?.allowed_price_monitoring ? (
+                <option value="price_monitoring">Мониторинг цен</option>
+              ) : null}
             </select>
           </div>
 
@@ -3158,7 +3196,7 @@ export function CabinetClient() {
                             disabled={busy}
                           >
                             <RotateCcw size={14} className="text-amber-700" aria-hidden="true" />
-                            <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
+                            <span>{job.mode === "exact_product" ? "Повторить подбор" : job.mode === "price_monitoring" ? "Повторить мониторинг" : job.mode === "procurement_report" ? "Повторить анализ" : "Повторить поиск"}</span>
                           </button>
                         )}
                       </>
@@ -4917,6 +4955,20 @@ export function CabinetClient() {
                 <CheckCircle2 size={14} className={helpModalTab === "exact_product" ? "text-emerald-600" : "text-slate-400"} />
                 <span className="truncate">Подбор товара</span>
               </button>
+              {session?.user?.allowed_price_monitoring ? (
+                <button
+                  type="button"
+                  onClick={() => setHelpModalTab("price_monitoring")}
+                  className={`py-2 px-2.5 rounded-xl font-bold transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    helpModalTab === "price_monitoring"
+                      ? "bg-white text-teal-950 border border-slate-300/90 shadow-2xs ring-1 ring-teal-600/20"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                  }`}
+                >
+                  <Coins size={14} className={helpModalTab === "price_monitoring" ? "text-amber-600" : "text-slate-400"} />
+                  <span className="truncate">Мониторинг цен</span>
+                </button>
+              ) : null}
             </div>
 
             {/* Modal Body Content (Spacious, High-Value, Emerald-Themed) */}
@@ -5290,6 +5342,51 @@ export function CabinetClient() {
                       className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
                       <span>Выбрать «Подбор товара»</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {helpModalTab === "price_monitoring" ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-amber-50/70 border border-amber-200/80 rounded-2xl">
+                    <h3 className="font-extrabold text-amber-950 text-sm mb-1">
+                      Мониторинг цен поставщиков по спецификации (XLSX)
+                    </h3>
+                    <p className="text-amber-900 text-xs leading-relaxed">
+                      Автоматический сбор актуальных рыночных цен из открытых источников и каталогов поставщиков. До 5 реальных предложений на позицию с контактами, ИНН и ссылками на товар.
+                    </p>
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                      <div className="font-bold text-slate-900 text-xs">⚡ Оплата только за результат</div>
+                      <p className="text-slate-600 text-[11px] leading-relaxed">
+                        Списание с баланса происходит исключительно за те позиции спецификации, по которым фактически найдена и подтверждена цена. Позиции без найденной цены не тарифицируются (0 ₽).
+                      </p>
+                    </div>
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                      <div className="font-bold text-slate-900 text-xs">📊 Формат выгрузки</div>
+                      <p className="text-slate-600 text-[11px] leading-relaxed">
+                        Готовый Excel-отчет (.xlsx) в утвержденном формате: сравнительная сводка по 5 поставщикам, детальный реестр с ценой за единицу, датой, телефоном, почтой и ссылкой.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between gap-3 border-t border-slate-100">
+                    <span className="text-xs text-slate-500 font-medium">
+                      💡 Совет: загружайте спецификацию в формате .xlsx с колонками «Наименование» и «Ед. изм.».
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectScenario("price_monitoring");
+                        setShowHelpModal(false);
+                      }}
+                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>Выбрать «Мониторинг цен»</span>
                       <ArrowRight size={14} />
                     </button>
                   </div>
