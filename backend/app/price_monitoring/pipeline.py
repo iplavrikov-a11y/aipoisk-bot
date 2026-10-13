@@ -94,18 +94,34 @@ def validate_and_reconcile_item_quotes(item_res: ItemPriceResult) -> None:
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за баллон 40л -> {converted:,.2f} ₽/м³"
 
-            # 3. Металлопрокат (тонна vs кг, коэффициент 1000)
-            elif any(kw in item_lower for kw in ("лист", "полоса", "круг", "труба", "сталь", "арматура")):
-                if norm_u in ("кг", "к-г") and q_ratio >= 400.0:
-                    converted = round(q.price_rub / 1000.0, 2)
-                    q.price_rub = converted
-                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за тонну -> {converted:,.2f} ₽/кг"
-                elif norm_u in ("т", "тонна") and (min_p / q.price_rub) >= 400.0:
-                    converted = round(q.price_rub * 1000.0, 2)
-                    q.price_rub = converted
-                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.2f} ₽/кг -> {converted:,.0f} ₽/т"
+            # 3. Вес и сыпучие: Тонна <-> Килограмм
+            if norm_u in ("кг", "к-г") and q_ratio >= 400.0 and q.price_rub > 20000:
+                converted = round(q.price_rub / 1000.0, 2)
+                q.price_rub = converted
+                q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за тонну -> {converted:,.2f} ₽/кг"
+            elif norm_u in ("т", "тонна") and (max_p / q.price_rub) >= 300.0 and q.price_rub < 3000:
+                converted = round(q.price_rub * 1000.0, 2)
+                q.price_rub = converted
+                q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.2f} ₽/кг -> {converted:,.0f} ₽/т"
 
-            # 4. Упаковки по 100 шт vs штука
+            # 4. Цемент в мешках: 50 кг vs тонна (20 мешков в тонне)
+            elif norm_u in ("т", "тонна") and "цемент" in item_lower and (max_p / q.price_rub) >= 15.0 and q.price_rub < 1500:
+                converted = round(q.price_rub * 20.0, 2)
+                q.price_rub = converted
+                q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за мешок 50 кг -> {converted:,.0f} ₽/т"
+
+            # 5. ГСМ и жидкости: Бочка 200л vs Литр
+            elif norm_u in ("л", "литр") and (q_ratio >= 100.0 or (max_p / q.price_rub) >= 100.0) and q.price_rub > 15000:
+                converted = round(q.price_rub / 200.0, 2)
+                q.price_rub = converted
+                q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за бочку 200л -> {converted:,.2f} ₽/л"
+
+            # 6. Пиломатериалы: штука vs м³
+            elif norm_u in ("м3", "куб") and any(w in item_lower for w in ("доск", "брус", "пиломатериал")) and (max_p / q.price_rub) >= 10.0 and q.price_rub < 3000:
+                q.is_outlier = True
+                q.comment = f"⚠️ Цена {q.price_rub:,.0f} ₽ указана за штуку (хлыст), а не за м³. Рекомендуется проверить кубатуру."
+
+            # 7. Упаковки по 100 шт vs штука
             elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and "100" in item_lower:
                 converted = round(q.price_rub / 100.0, 2)
                 q.price_rub = converted

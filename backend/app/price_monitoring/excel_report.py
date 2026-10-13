@@ -156,7 +156,17 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
         inn_kpp_text = "ИНН / КПП"
         contacts_text = "контакты"
 
-        if sup_quote:
+        # Проверяем, является ли поставщик общим для всей закупки (характерно для моно-закупок до 15 позиций)
+        # либо это сборная мульти-отраслевая смета на 50-200 позиций с разными поставщиками под каждую строку
+        is_dominant = False
+        if sup_quote and supplier_freq:
+            item_coverage = supplier_freq.get(sup_quote.company_name, 0)
+            if len(items) <= 15:
+                is_dominant = item_coverage >= 1
+            else:
+                is_dominant = item_coverage >= max(5, int(len(items) * 0.3))
+
+        if sup_quote and is_dominant:
             c_name = sup_quote.company_name.strip()
             if not any(c_name.startswith(p) for p in ("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
                 c_display = f'ООО "{c_name}"'
@@ -171,6 +181,10 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                 inn_parts.append(f"КПП {sup_quote.kpp}")
             inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: уточняется"
             contacts_text = _format_contacts_multiline(sup_quote.contacts)
+        else:
+            sup_name_text = f"Поставщик {s_idx}"
+            inn_kpp_text = "ИНН / КПП (в подсказке ячейки / Лист 2)"
+            contacts_text = "Контакты (в подсказке ячейки / Лист 2)"
 
         # Строка 1: Поставщик N (наименование)
         ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
