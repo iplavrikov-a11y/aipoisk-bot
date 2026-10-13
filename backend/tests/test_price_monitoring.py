@@ -303,3 +303,41 @@ def test_excel_report_structure_and_links(tmp_path):
     assert cell_c5.value == 723.0
     assert cell_c5.hyperlink.target == "https://www.foroffice.ru/products/description/1129.html"
     assert cell_c5.comment is not None
+
+
+@pytest.mark.asyncio
+async def test_dadata_quote_enrichment():
+    from app.dadata_client import enrich_company_by_inn_or_query
+
+    # Test by known INN
+    res_inn = await enrich_company_by_inn_or_query(inn="7728820940")
+    if res_inn:
+        assert res_inn.get("inn") == "7728820940"
+        assert "ДЕАЛМЕД" in res_inn.get("company_name", "").upper()
+        assert res_inn.get("kpp") == "772801001"
+        assert res_inn.get("status") == "ACTIVE"
+
+    # Test by company query name
+    res_q = await enrich_company_by_inn_or_query(query="Автопитер")
+    if res_q:
+        assert res_q.get("inn") == "9714085165"
+        assert "АВТОПИТЕР" in res_q.get("company_name", "").upper()
+
+
+def test_dynamic_pack_weight_from_site_unit():
+    from app.price_monitoring.extractor import reconcile_quote_unit
+
+    # Item doesn't have weight in name, but site_unit specifies 5.5 kg pack
+    q = SupplierQuote(
+        company_name="Сварка",
+        price_rub=825.0,
+        raw_price_rub=825.0,
+        site_unit="пачка 5.5 кг",
+        unit="пачка",
+        url="https://svar.ru/el",
+        is_price_found=True,
+    )
+    rec = reconcile_quote_unit(q, "Электрод сварочный ОЗС-12", "КГ")
+    assert rec.price_rub == 150.0  # 825 / 5.5 = 150.0
+    assert "5.5 кг" in rec.conversion_comment
+

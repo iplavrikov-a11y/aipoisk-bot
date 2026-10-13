@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..ai import call_llm, parse_json_object
+from ..dadata_client import enrich_company_by_inn_or_query
 from ..models import SystemSettings
 from .cleaner import extract_package_hints, normalize_unit
 from .models import SupplierQuote
@@ -203,8 +204,13 @@ def reconcile_quote_unit(
 
     # 3. ЭЛЕКТРОДЫ СВАРОЧНЫЕ (часто фасовка 5 кг или 5.5 кг)
     if "электрод" in target_item_name.lower() and norm_target == "кг":
-        # Если цена свыше 500 руб (пачка 5.5 кг)
-        pack_kg = hints.get("pack_weight_kg") or 5.0
+        pack_kg = hints.get("pack_weight_kg")
+        if not pack_kg:
+            m_wt = re.search(r'(\d+(?:[.,]\d+)?)\s*кг', (quote.site_unit or "").lower())
+            if m_wt:
+                pack_kg = float(m_wt.group(1).replace(",", "."))
+            else:
+                pack_kg = 5.0
         if price > 500 and ("пач" in (quote.site_unit or "").lower() or "уп" in (quote.site_unit or "").lower() or price > 600):
             converted_p = round(price / pack_kg, 2)
             quote.price_rub = converted_p
@@ -214,14 +220,19 @@ def reconcile_quote_unit(
 
     # 4. ШТУКИ И УПАКОВКИ: УП <-> ШТ
     pack_pcs = hints.get("pack_pieces")
+    if not pack_pcs:
+        m_pcs = re.search(r'(\d+)\s*(?:шт|штук)\b', (quote.site_unit or "").lower())
+        if m_pcs:
+            pack_pcs = int(m_pcs.group(1))
+
     if pack_pcs and pack_pcs > 1:
-        if norm_target == "шт" and site_u == "уп" and price > 100:
+        if norm_target == "шт" and ("уп" in site_u or "пач" in site_u or price > 100):
             converted_p = round(price / pack_pcs, 2)
             quote.price_rub = converted_p
             quote.unit = norm_target
             quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за уп ({pack_pcs} шт). Пересчитано в шт: {converted_p:,.2f} ₽/шт"
             return quote
-        elif norm_target == "уп" and site_u == "шт" and price < 50:
+        elif norm_target in ("уп", "пач") and ("шт" in site_u or price < 50):
             converted_p = round(price * pack_pcs, 2)
             quote.price_rub = converted_p
             quote.unit = norm_target
@@ -354,6 +365,26 @@ URL страницы: {url}
             conversion_comment=conv_comment,
             comment="",
         )
+
+        # Обогащение реквизитами через DaData (ИНН, КПП, официальное наименование, статус)
+        try:
+            dadata_info = await enrich_company_by_inn_or_query(
+                inn=quote.inn,
+                query=quote.company_name if quote.company_name != domain else None,
+            )
+            if dadata_info:
+                if not quote.inn and dadata_info.get("inn"):
+                    quote.inn = dadata_info["inn"]
+                if not quote.kpp and dadata_info.get("kpp"):
+                    quote.kpp = dadata_info["kpp"]
+                official_name = dadata_info.get("company_name")
+                if official_name and (quote.company_name == domain or not quote.company_name.startswith(("ООО", "АО", "ЗАО", "ПАО", "ИП"))):
+                    quote.company_name = official_name
+                city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
+                if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
+                    quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+        except Exception as d_exc:
+            logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
 
         # Применяем детерминированную проверку и до-пересчет единиц
         return reconcile_quote_unit(quote, target_item_name, target_unit)
