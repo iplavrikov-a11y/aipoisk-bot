@@ -531,5 +531,44 @@ def test_fallback_queries_short_names():
     assert len(comm_wheel) >= 3
 
 
+def test_strict_cluster_ratio_and_marketplaces():
+    from app.price_monitoring.pipeline import cluster_and_reconcile_item_quotes, KNOWN_MAJOR_RETAILERS
+    from app.price_monitoring.extractor import is_valid_domain
 
+    # 1. Verification: cluster_ratio=1.4 rejects 2x outlier
+    # In live test on cable: [69.0, 79.0, 83.5, 95.0, 151.34]
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Кабель ВВГнг(А)-LS 3х2.5",
+        clean_name="Кабель ВВГнг(А)-LS 3х2.5",
+        unit="М",
+        quotes=[
+            SupplierQuote(company_name="Поставщик 1", price_rub=69.0, raw_price_rub=69.0, unit="М"),
+            SupplierQuote(company_name="Поставщик 2", price_rub=79.0, raw_price_rub=79.0, unit="М"),
+            SupplierQuote(company_name="Поставщик 3", price_rub=83.5, raw_price_rub=83.5, unit="М"),
+            SupplierQuote(company_name="Поставщик 4", price_rub=95.0, raw_price_rub=95.0, unit="М"),
+            SupplierQuote(company_name="Поставщик 5 (Завышенный)", price_rub=151.34, raw_price_rub=151.34, unit="М"),
+        ],
+    )
 
+    cluster_and_reconcile_item_quotes(item, cluster_ratio=1.4)
+
+    # 151.34 / 69.0 = 2.19x > 1.4 -> MUST BE MARKED AS OUTLIER
+    valid_qs = [q for q in item.quotes if not q.is_outlier]
+    outlier_qs = [q for q in item.quotes if q.is_outlier]
+
+    assert len(valid_qs) == 4
+    assert len(outlier_qs) == 1
+    assert outlier_qs[0].price_rub == 151.34
+    assert [q.price_rub for q in valid_qs] == [69.0, 79.0, 83.5, 95.0]
+
+    # 2. Marketplaces validation: ozon, wb, avito are valid domains when filter_marketplaces=False
+    assert is_valid_domain("https://www.ozon.ru/product/123", filter_marketplaces=False) is True
+    assert is_valid_domain("https://www.wildberries.ru/catalog/123/detail.aspx", filter_marketplaces=False) is True
+    assert is_valid_domain("https://www.avito.ru/item/123", filter_marketplaces=False) is True
+
+    # 3. Known major retailers dictionary includes marketplaces with valid INN
+    assert "ozon.ru" in KNOWN_MAJOR_RETAILERS
+    assert KNOWN_MAJOR_RETAILERS["ozon.ru"]["inn"] == "7704217370"
+    assert "wildberries.ru" in KNOWN_MAJOR_RETAILERS
+    assert "avito.ru" in KNOWN_MAJOR_RETAILERS

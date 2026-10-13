@@ -91,8 +91,8 @@ class SystemSettings(Base):
     price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
     price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
     price_monitoring_concurrency: Mapped[int] = mapped_column(Integer, default=4)
-    price_monitoring_cluster_ratio: Mapped[float] = mapped_column(Float, default=2.2)
-    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_monitoring_cluster_ratio: Mapped[float] = mapped_column(Float, default=1.4)
+    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 

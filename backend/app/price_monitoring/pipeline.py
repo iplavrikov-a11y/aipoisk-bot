@@ -32,37 +32,67 @@ KNOWN_MAJOR_RETAILERS: dict[str, dict[str, str]] = {
     "vseinstrumenti.ru": {
         "company_name": 'ООО "Всеинструменты.ру"',
         "inn": "7722753969",
-        "contacts": "+7 (800) 550-37-70, г. Москва",
+        "contacts": "+7 (800) 550-37-70",
     },
     "etm.ru": {
         "company_name": 'ООО "ЭТМ"',
         "inn": "7804028214",
-        "contacts": "+7 (800) 775-17-71, г. Санкт-Петербург",
+        "contacts": "+7 (800) 775-17-71",
     },
     "chipdip.ru": {
         "company_name": 'АО "Чип и Дип"',
         "inn": "7709022648",
-        "contacts": "+7 (800) 555-62-70, г. Москва",
+        "contacts": "+7 (800) 555-62-70",
     },
     "rs24.ru": {
         "company_name": 'ООО "Русский Свет"',
         "inn": "6901032540",
-        "contacts": "+7 (800) 777-70-04, г. Тверь",
+        "contacts": "+7 (800) 777-70-04",
     },
     "lemanapro.ru": {
         "company_name": 'ООО "Лемана ПРО"',
         "inn": "5029069967",
-        "contacts": "+7 (800) 700-00-99, г. Мытищи",
+        "contacts": "+7 (800) 700-00-99",
     },
     "dns-shop.ru": {
         "company_name": 'ООО "ДНС Ритейл"',
         "inn": "2540167061",
-        "contacts": "+7 (800) 770-79-99, г. Владивосток",
+        "contacts": "+7 (800) 770-79-99",
     },
     "komus.ru": {
         "company_name": 'ООО "Комус"',
         "inn": "7721793895",
-        "contacts": "+7 (800) 200-33-83, г. Москва",
+        "contacts": "+7 (800) 200-33-83",
+    },
+    "citilink.ru": {
+        "company_name": 'ООО "Ситилинк"',
+        "inn": "7718979307",
+        "contacts": "+7 (800) 250-40-10",
+    },
+    "ozon.ru": {
+        "company_name": 'ООО "Интернет Решения"',
+        "inn": "7704217370",
+        "contacts": "+7 (800) 234-77-11",
+    },
+    "wildberries.ru": {
+        "company_name": 'ООО "РВБ"',
+        "inn": "9714053621",
+        "contacts": "+7 (800) 100-75-05",
+    },
+    "avito.ru": {
+        "company_name": 'ООО "КЕХ еКоммерц"',
+        "inn": "7710668349",
+        "contacts": "+7 (800) 600-00-01",
+    },
+    "market.yandex.ru": {
+        "company_name": 'ООО "Яндекс"',
+        "inn": "7736207543",
+        "contacts": "+7 (800) 234-27-12",
+    },
+    "megamarket.ru": {
+        "company_name": 'ООО "Маркетплейс"',
+        "inn": "9701048328",
+        "contacts": "+7 (800) 600-08-88",
     },
 }
 
@@ -102,7 +132,7 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     return items
 
 
-def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: float = 2.2) -> None:
+def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: float = 1.4) -> None:
     """
     1. Авто-приведение кратностей (баллоны 50л -> кг, м3 -> штуки, мешки 50кг -> т, упаковки 100 шт).
     2. Кластеризация цен (Price Clustering):
@@ -291,8 +321,8 @@ async def process_single_item(
     search_semaphore: asyncio.Semaphore,
     max_suppliers: int = 3,
     min_target_suppliers: int = 3,
-    cluster_ratio: float = 2.2,
-    filter_marketplaces: bool = True,
+    cluster_ratio: float = 1.4,
+    filter_marketplaces: bool = False,
 ) -> ItemPriceResult:
     row_idx, raw_name, unit = item_tuple
     clean = clean_nomenclature_name(raw_name)
@@ -473,8 +503,8 @@ async def run_price_monitoring_pipeline(
     max_suppliers: int = 3,
     max_parallel_items: int = 4,
     checkpoint_path: Optional[str] = None,
-    cluster_ratio: float = 2.2,
-    filter_marketplaces: bool = True,
+    cluster_ratio: float = 1.4,
+    filter_marketplaces: bool = False,
 ) -> BatchMonitoringResult:
     """Полный пайплайн мониторинга цен с защитой от сбоев (чекпоинты) и кластеризацией цен."""
     parsed_items = parse_input_excel(file_bytes)
@@ -494,7 +524,7 @@ async def run_price_monitoring_pipeline(
         folder_id=settings.yandex_search_folder_id,
         api_key=settings.yandex_search_api_key,
     )
-    search_sem = asyncio.Semaphore(3)
+    search_sem = asyncio.Semaphore(max_parallel_items)
 
     results: List[ItemPriceResult] = []
     completed_rows: set[int] = set()
@@ -525,7 +555,7 @@ async def run_price_monitoring_pipeline(
                         http_client,
                         search_sem,
                         max_suppliers=max_suppliers,
-                        min_target_suppliers=min(3, max_suppliers),
+                        min_target_suppliers=max_suppliers,
                         cluster_ratio=cluster_ratio,
                         filter_marketplaces=filter_marketplaces,
                     )

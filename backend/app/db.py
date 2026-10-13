@@ -106,8 +106,8 @@ def _ensure_schema() -> None:
             "price_monitoring_max_suppliers": "INTEGER DEFAULT 3",
             "price_monitoring_max_positions": "INTEGER DEFAULT 1000",
             "price_monitoring_concurrency": "INTEGER DEFAULT 4",
-            "price_monitoring_cluster_ratio": "REAL DEFAULT 2.2",
-            "price_monitoring_filter_marketplaces": "BOOLEAN DEFAULT 1",
+            "price_monitoring_cluster_ratio": "REAL DEFAULT 1.4",
+            "price_monitoring_filter_marketplaces": "BOOLEAN DEFAULT 0",
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {

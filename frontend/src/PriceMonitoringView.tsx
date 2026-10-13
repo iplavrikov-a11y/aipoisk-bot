@@ -59,8 +59,8 @@ export function PriceMonitoringView() {
   const [maxSuppliers, setMaxSuppliers] = useState<number>(3)
   const [maxPositions, setMaxPositions] = useState<number>(1000)
   const [concurrency, setConcurrency] = useState<number>(4)
-  const [clusterRatio, setClusterRatio] = useState<number>(2.2)
-  const [filterMarketplaces, setFilterMarketplaces] = useState<boolean>(true)
+  const [clusterRatio, setClusterRatio] = useState<number>(1.4)
+  const [filterMarketplaces, setFilterMarketplaces] = useState<boolean>(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
 
@@ -94,8 +94,8 @@ export function PriceMonitoringView() {
         setMaxSuppliers(sData.max_suppliers_per_item ?? sData.max_suppliers ?? 3)
         setMaxPositions(sData.max_positions ?? 1000)
         setConcurrency(sData.concurrency ?? 4)
-        setClusterRatio(sData.cluster_ratio ?? 2.2)
-        setFilterMarketplaces(sData.filter_marketplaces ?? true)
+        setClusterRatio(sData.cluster_ratio ?? 1.4)
+        setFilterMarketplaces(sData.filter_marketplaces ?? false)
       }
 
       if (clientsRes.ok) {
@@ -404,15 +404,16 @@ export function PriceMonitoringView() {
             </label>
             <select
               value={clusterRatio}
-              onChange={(e) => setClusterRatio(parseFloat(e.target.value) || 2.2)}
+              onChange={(e) => setClusterRatio(parseFloat(e.target.value) || 1.4)}
               className="form-input"
               style={{ width: '100%', padding: '6px 10px', fontSize: '13px' }}
             >
-              <option value={1.8}>до 1.8x (строгий отбор)</option>
-              <option value={2.2}>до 2.2x (оптимальный)</option>
-              <option value={2.8}>до 2.8x (широкий диапазон)</option>
+              <option value={1.3}>до +30% (строгий консенсус)</option>
+              <option value={1.4}>до +40% (оптимальный, по умолчанию)</option>
+              <option value={1.5}>до +50% (умеренный)</option>
+              <option value={1.6}>до +60% (расширенный)</option>
             </select>
-            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Исключать выбросы выше порога</span>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Отсекает выбросы выше порога от мин.</span>
           </div>
 
           {/* Marketplaces Filter Toggle */}
@@ -429,7 +430,7 @@ export function PriceMonitoringView() {
               />
               <span style={{ fontSize: '13px', color: '#334155' }}>Исключать Ozon, WB, Avito</span>
             </label>
-            <span style={{ fontSize: '11px', color: '#94a3b8' }}>B2B порталы остаются активны</span>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>По умолчанию выключено (все площадки включены)</span>
           </div>
         </div>
       </div>

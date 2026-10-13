@@ -1706,8 +1706,8 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "max_suppliers_per_item": int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3),
         "max_positions": int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000),
         "concurrency": int(getattr(settings, "price_monitoring_concurrency", 4) or 4),
-        "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 2.2) or 2.2),
-        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
+        "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4),
+        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", False)),
     }
 
 
@@ -1726,7 +1726,7 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
     if "concurrency" in data:
         settings.price_monitoring_concurrency = max(1, min(8, int(data["concurrency"])))
     if "cluster_ratio" in data:
-        settings.price_monitoring_cluster_ratio = max(1.2, min(5.0, float(data["cluster_ratio"])))
+        settings.price_monitoring_cluster_ratio = max(1.15, min(3.0, float(data["cluster_ratio"])))
     if "filter_marketplaces" in data:
         settings.price_monitoring_filter_marketplaces = bool(data["filter_marketplaces"])
 

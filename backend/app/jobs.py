@@ -1673,8 +1673,8 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     checkpoint_file = out_dir / "checkpoint.json"
     max_sup = int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3)
     concurrency = int(getattr(settings, "price_monitoring_concurrency", 4) or 4)
-    cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 2.2) or 2.2)
-    filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", True))
+    cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
+    filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", False))
 
     try:
         batch_res = asyncio.run(
