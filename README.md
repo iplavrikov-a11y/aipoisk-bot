@@ -14,14 +14,15 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
-- Custom Price Monitoring Module & Per-Found-Item Billing (2026-10-13):
-  - Dedicated architecture in `backend/app/price_monitoring/`: `cleaner.py` (query normalization and packaging detection), `extractor.py` (HTML crawler + footer preservation + regex INN/KPP extraction + unit conversion), `excel_report.py` (2-sheet Excel report strictly following client template: rows 1-3 supplier requisites, shortened clickable links, rich hover comments, and extended register), and `pipeline.py` (parallel execution with cross-supplier unit reconciliation and outlier detection).
-  - Intelligent unit conversion & tare packaging reconciliation: automatically converts cylinder gas prices (50L propane -> 21 kg gas, 40L oxygen -> 6.3 m³ gas), metric weight (tons <-> kg), and packs/pieces, eliminating 35x unit price discrepancies and providing transparent conversion comments.
+- Custom Price Monitoring Module, Rule 14 Semantic Validation & Excel Outlier Protection (2026-10-13):
+  - Dedicated architecture in `backend/app/price_monitoring/`: `cleaner.py` (query normalization and packaging detection), `extractor.py` (HTML crawler + footer preservation + regex INN/KPP extraction + Rule 14 Chain-of-Thought unit conversion), `excel_report.py` (2-sheet Excel report strictly following client template: rows 1-3 supplier requisites, shortened clickable links, rich hover comments, and extended register), and `pipeline.py` (parallel execution with cross-supplier unit reconciliation and outlier detection).
+  - Strict Rule 14 Semantic Matching: eliminates homonyms, false positives, and trivial substring matching via mandatory Chain-of-Thought (`nomenclature_class`, `site_product_name`, `semantic_match_reason` before `is_relevant`). Rejects military armor for industrial crushers, automotive pistons for crane pins, and marine sensors for industrial codes.
+  - Excel Formula Outlier Protection: `=MIN(...)` and `=AVERAGE(...)` formulas dynamically reference only clean quotes (`clean_col_letters`), isolating anomalous or retail pricing from procurement summaries while preserving full transparency via colored cells and explanatory comments.
+  - Intelligent unit conversion & tare packaging reconciliation: automatically converts cylinder gas prices (50L propane -> 21 kg gas, 40L oxygen -> 6.3 m³ gas), metric weight (tons <-> kg), and packs/pieces, eliminating unit price discrepancies.
   - Zero-cost guarantee for unfound items: clients are charged strictly for positions where confirmed public prices were found (`charge_price_monitoring_job`), charging 0 ₽ for missing/custom-cast positions.
   - Granular pricing controls: default 50 ₽ per item configurable globally via `SystemSettings`, with per-client tariff overrides in admin panel.
-  - Closed access security: module restricted behind `allowed_price_monitoring` flag, with administrative toggles in React Admin and instant enablement for admin account.
   - Customer cabinet integration: conditional 5th tab «Мониторинг цен» in Next.js web cabinet with Excel drag-and-drop, real-time balance transparency, and direct `.xlsx` download.
-  - Verified on live 20-item specification test (#870), 836 backend tests passing (100%), and live production deployment.
+  - Verified on live tasks #877 (20 positions, 100%), #878 (6 positions, 100%), #879 (5 positions, 100%), 839 backend tests passing (100%), and live production deployment.
 - Large Specification Scaling & Anti-Hang Guardrails for 1,000+ Items (2026-10-11):
   - Linear Excel matching optimization (`backend/app/report_builder.py`): eliminated $O(N^2 \times M)$ nested matching hang, reducing 1,000-item Excel generation time to 4.7s (2.2ms match step) via dictionary lookup.
   - Excel cell character limit protection: capped cell A3 summary breakdown to top 20 items + explicit continuation counter, strictly preventing 32,767 OpenXML corruption in Microsoft Excel.
