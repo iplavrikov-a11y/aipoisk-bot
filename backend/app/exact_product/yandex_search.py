@@ -340,8 +340,8 @@ class YandexSearchEngine:
 
                     url = url_elem.text.strip()
                     title = (
-                        title_elem.text.strip()
-                        if title_elem is not None and title_elem.text
+                        "".join(title_elem.itertext()).strip()
+                        if title_elem is not None
                         else ""
                     )
 
@@ -350,12 +350,21 @@ class YandexSearchEngine:
                     except Exception:
                         continue
 
-                    snippet = ""
+                    snippet_parts: list[str] = []
+                    headline = doc.find("headline")
+                    if headline is not None:
+                        hl = "".join(headline.itertext()).strip()
+                        if hl:
+                            snippet_parts.append(hl)
+
                     passages = doc.find("passages")
                     if passages is not None:
-                        passage = passages.find("passage")
-                        if passage is not None and passage.text:
-                            snippet = passage.text.strip()
+                        for p in passages.findall("passage"):
+                            pt = "".join(p.itertext()).strip()
+                            if pt:
+                                snippet_parts.append(pt)
+
+                    snippet = " ".join(snippet_parts)
 
                     position += 1
                     results.append(

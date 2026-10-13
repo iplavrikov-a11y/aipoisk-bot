@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 import openpyxl
 
-from ..exact_product.yandex_search import YandexSearchEngine
+from ..exact_product.yandex_search import YandexSearchEngine, YandexSearchResult
 from ..models import SystemSettings
 from .cleaner import build_commercial_search_queries, clean_nomenclature_name, normalize_unit
 from .excel_report import generate_price_monitoring_excel
@@ -19,6 +19,45 @@ from .extractor import extract_supplier_quote, fetch_page_content_and_meta, is_v
 from .models import BatchMonitoringResult, ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
+
+# Реестр федеральных ритейлеров с официальными юрлицами и ИНН для гарантированной точности реквизитов
+KNOWN_MAJOR_RETAILERS: dict[str, dict[str, str]] = {
+    "vseinstrumenti.ru": {
+        "company_name": 'ООО "Всеинструменты.ру"',
+        "inn": "7722753969",
+        "contacts": "+7 (800) 550-37-70, г. Москва",
+    },
+    "etm.ru": {
+        "company_name": 'ООО "ЭТМ"',
+        "inn": "7804028214",
+        "contacts": "+7 (800) 775-17-71, г. Санкт-Петербург",
+    },
+    "chipdip.ru": {
+        "company_name": 'АО "Чип и Дип"',
+        "inn": "7709022648",
+        "contacts": "+7 (800) 555-62-70, г. Москва",
+    },
+    "rs24.ru": {
+        "company_name": 'ООО "Русский Свет"',
+        "inn": "6901032540",
+        "contacts": "+7 (800) 777-70-04, г. Тверь",
+    },
+    "lemanapro.ru": {
+        "company_name": 'ООО "Лемана ПРО"',
+        "inn": "5029069967",
+        "contacts": "+7 (800) 700-00-99, г. Мытищи",
+    },
+    "dns-shop.ru": {
+        "company_name": 'ООО "ДНС Ритейл"',
+        "inn": "2540167061",
+        "contacts": "+7 (800) 770-79-99, г. Владивосток",
+    },
+    "komus.ru": {
+        "company_name": 'ООО "Комус"',
+        "inn": "7721793895",
+        "contacts": "+7 (800) 200-33-83, г. Москва",
+    },
+}
 
 
 def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
@@ -159,17 +198,20 @@ async def process_single_item(
 
     queries = build_commercial_search_queries(clean, unit)
     candidate_urls: list[str] = []
+    url_to_meta: dict[str, YandexSearchResult] = {}
 
     async with search_semaphore:
         for q in queries[:4]:
             try:
-                results = await engine.search(q, max_results=8, enrich_query=False, filter_marketplaces=False)
+                results = await engine.search(q, max_results=10, enrich_query=False, filter_marketplaces=False)
                 for r in results:
-                    if r.url and is_valid_domain(r.url) and r.url not in candidate_urls:
-                        candidate_urls.append(r.url)
+                    if r.url and is_valid_domain(r.url):
+                        url_to_meta[r.url] = r
+                        if r.url not in candidate_urls:
+                            candidate_urls.append(r.url)
             except Exception as e:
                 logger.warning("Search query error for %s: %s", q, e)
-            if len(candidate_urls) >= 15:
+            if len(candidate_urls) >= 20:
                 break
 
     # Сбор и извлечение цен с найденных страниц
@@ -178,13 +220,28 @@ async def process_single_item(
         if len(item_res.quotes) >= max_suppliers:
             break
         try:
-            domain = urlparse(url).netloc.lower()
+            domain = urlparse(url).netloc.lower().replace("www.", "")
             if domain in seen_domains:
                 continue
 
             page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
-            if not page_text or len(page_text) < 60:
+
+            # Если страница заблокирована WAF (403/444) или пуста, применяем Fallback к сниппету Яндекса
+            meta = url_to_meta.get(url)
+            if (not page_text or len(page_text) < 60) and meta and (meta.snippet or meta.title):
+                page_text = f"Заголовок: {meta.title}\nОписание/Сниппет: {meta.snippet}\nИсточник: {url}"
+
+            if not page_text or len(page_text) < 30:
                 continue
+
+            # Предварительное сопоставление с реестром крупных федеральных ритейлеров
+            for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
+                if kd in domain:
+                    if not inn:
+                        inn = kdata["inn"]
+                    if not contacts:
+                        contacts = kdata["contacts"]
+                    break
 
             quote = await extract_supplier_quote(
                 settings=settings,
@@ -197,6 +254,14 @@ async def process_single_item(
                 pre_contacts=contacts,
             )
             if quote and quote.is_price_found and quote.price_rub > 0:
+                # Гарантируем официальное юрлицо и ИНН для федеральных сетей
+                for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
+                    if kd in domain:
+                        quote.company_name = kdata["company_name"]
+                        quote.inn = kdata["inn"]
+                        if not quote.contacts:
+                            quote.contacts = kdata["contacts"]
+                        break
                 seen_domains.add(domain)
                 item_res.quotes.append(quote)
         except Exception as exc:
@@ -236,7 +301,8 @@ async def run_price_monitoring_pipeline(
     results: List[ItemPriceResult] = []
     completed = 0
 
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http_client:
+    proxy_url = os.getenv("PRICE_MONITORING_PROXY") or os.getenv("HTTPS_PROXY")
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, proxy=proxy_url) as http_client:
         # Обрабатываем пакетами с контролируемым параллелизмом
         batch_size = max_parallel_items
         for i in range(0, total, batch_size):
