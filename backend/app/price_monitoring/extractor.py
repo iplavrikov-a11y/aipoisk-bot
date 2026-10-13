@@ -175,15 +175,26 @@ def reconcile_quote_unit(
                 quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 50л (21 кг газа). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
                 return quote
 
-    # КИСЛОРОД: при запросе в М3 (баллон 40л содержит ~6.3 м³ газа при 150 атм)
-    if gas_type == "oxygen" or "кислород" in target_item_name.lower():
+    # КИСЛОРОД, АЗОТ, АРГОН: при запросе в М3 (баллон 40л содержит ~6.3 м³ газа при 150 атм)
+    if gas_type in ("oxygen", "nitrogen", "argon") or any(g in target_item_name.lower() for g in ("кислород", "азот", "аргон")):
         if norm_target in ("м3", "куб"):
-            # Если цена указана за баллон целиком (обычно 700 - 1800 руб), а нужна за м³ (~80-160 руб)
+            # Если цена указана за баллон целиком (обычно 700 - 3500 руб), а нужна за м³
             if price > 250 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 40):
                 converted_p = round(price / 6.3, 2)
                 quote.price_rub = converted_p
                 quote.unit = norm_target
-                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (6.3 м³ газа). Пересчитано в м³: {converted_p:,.2f} ₽/м³"
+                gas_label = "кислорода" if "кислород" in target_item_name.lower() else ("азота" if "азот" in target_item_name.lower() else "аргона")
+                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (6.3 м³ {gas_label}). Пересчитано в м³: {converted_p:,.2f} ₽/м³"
+                return quote
+
+    # УГЛЕКИСЛОТА: при запросе в КГ (баллон 40л содержит ~24 кг углекислоты)
+    if gas_type == "co2" or "углекислот" in target_item_name.lower():
+        if norm_target in ("кг", "к-г"):
+            if price > 300 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 40):
+                converted_p = round(price / 24.0, 2)
+                quote.price_rub = converted_p
+                quote.unit = norm_target
+                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (24 кг углекислоты). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
                 return quote
 
     # 2. МЕТАЛЛОПРОКАТ / ВЕС: Тонна <-> Килограмм
