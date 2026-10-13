@@ -404,13 +404,28 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                 cell_price.value = ""
                 cell_link.value = ""
 
-        # Формулы Мин. цена и Средняя цена
+        # Формулы Мин. цена и Средняя цена (исключаем аномальные выбросы из базового расчета)
+        clean_col_letters = []
+        all_numeric_col_letters = []
+        for s_idx in range(1, max_suppliers + 1):
+            if s_idx <= len(item.quotes):
+                q = item.quotes[s_idx - 1]
+                if q.price_rub > 0:
+                    c_let = get_column_letter(3 + (s_idx - 1) * 2)
+                    all_numeric_col_letters.append(c_let)
+                    if not q.is_outlier:
+                        clean_col_letters.append(c_let)
+
+        target_letters = clean_col_letters if clean_col_letters else all_numeric_col_letters
+        if not target_letters:
+            target_letters = price_col_letters
+
+        args_str = ",".join(f"{col_let}{current_row}" for col_let in target_letters)
         cell_min = ws.cell(row=current_row, column=col_min_idx)
         cell_min.border = thin_border
         cell_min.alignment = align_right
         cell_min.number_format = "#,##0.00"
         cell_min.font = font_price_bold
-        args_str = ",".join(f"{col_let}{current_row}" for col_let in price_col_letters)
         cell_min.value = f"=MIN({args_str})"
 
         cell_avg = ws.cell(row=current_row, column=col_avg_idx)

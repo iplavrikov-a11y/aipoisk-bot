@@ -36,6 +36,9 @@ class ItemPriceResult:
 
     @property
     def best_price(self) -> Optional[float]:
+        clean = [q.price_rub for q in self.quotes if q.price_rub > 0 and not q.is_outlier]
+        if clean:
+            return min(clean)
         valid = [q.price_rub for q in self.quotes if q.price_rub > 0]
         return min(valid) if valid else None
 

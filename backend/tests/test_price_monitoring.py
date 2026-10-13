@@ -349,3 +349,40 @@ def test_dynamic_pack_weight_from_site_unit():
     assert rec.price_rub == 150.0  # 825 / 5.5 = 150.0
     assert "5.5 кг" in rec.conversion_comment
 
+
+def test_outlier_excluded_from_excel_formulas(tmp_path):
+    import openpyxl
+    from app.price_monitoring.excel_report import generate_price_monitoring_excel
+
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Подшипник 13630",
+        clean_name="Подшипник 13630",
+        unit="ШТ",
+        quotes=[
+            SupplierQuote(company_name="Русподшипник", price_rub=22000.0, raw_price_rub=22000.0, unit="ШТ", is_outlier=False),
+            SupplierQuote(company_name="Уралпруток", price_rub=38000.0, raw_price_rub=38000.0, unit="ШТ", is_outlier=False),
+            SupplierQuote(company_name="Аскет", price_rub=45000.0, raw_price_rub=45000.0, unit="ШТ", is_outlier=False),
+            SupplierQuote(company_name="ЭТМ", price_rub=492.43, raw_price_rub=492.43, unit="ШТ", is_outlier=True),
+        ],
+    )
+
+    assert item.best_price == 22000.0  # 492.43 excluded from best_price!
+
+    out_file = tmp_path / "test_outliers.xlsx"
+    generate_price_monitoring_excel([item], str(out_file))
+
+    wb = openpyxl.load_workbook(str(out_file))
+    ws = wb["Пример отчета"]
+
+    # In row 5: Supplier 1 is C, Supplier 2 is E, Supplier 3 is G, Supplier 4 (outlier) is I
+    min_formula = ws["M5"].value
+    avg_formula = ws["N5"].value
+
+    assert "C5" in min_formula
+    assert "E5" in min_formula
+    assert "G5" in min_formula
+    assert "I5" not in min_formula  # Outlier column I MUST be excluded!
+    assert "I5" not in avg_formula
+
+

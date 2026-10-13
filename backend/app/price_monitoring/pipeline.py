@@ -168,12 +168,19 @@ def validate_and_reconcile_item_quotes(item_res: ItemPriceResult) -> None:
 
         # Проверка статистических выбросов по медиане после пересчета
         updated_prices = [q.price_rub for q in valid_quotes]
-        med_p = statistics.median(updated_prices)
-        for q in valid_quotes:
-            if q.price_rub > med_p * 3.5 or (med_p > 0 and q.price_rub < med_p / 3.5):
-                q.is_outlier = True
-                warning_note = f"⚠️ Цена {q.price_rub:,.2f} ₽ существенно отличается от среднерыночной ({med_p:,.2f} ₽). Рекомендуется проверить фасовку."
-                q.comment = f"{q.comment} | {warning_note}".strip(" |")
+        if len(updated_prices) >= 3:
+            med_p = statistics.median(updated_prices)
+            for q in valid_quotes:
+                if q.price_rub > med_p * 2.8 or (med_p > 0 and q.price_rub < med_p / 2.8):
+                    q.is_outlier = True
+                    warning_note = f"⚠️ Цена {q.price_rub:,.2f} ₽ существенно отличается от среднерыночной ({med_p:,.2f} ₽). Исключена из расчета мин/средней."
+                    q.comment = f"{q.comment} | {warning_note}".strip(" |")
+        elif len(updated_prices) == 2:
+            p1, p2 = updated_prices
+            if min(p1, p2) > 0 and (max(p1, p2) / min(p1, p2)) >= 4.0:
+                for q in valid_quotes:
+                    warning_note = "⚠️ Сильный разброс цен между двумя поставщиками (>4x). Рекомендуется ручная сверка характеристик."
+                    q.comment = f"{q.comment} | {warning_note}".strip(" |")
 
     # Сортируем: сначала подтвержденные цены без статуса выброса
     item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
