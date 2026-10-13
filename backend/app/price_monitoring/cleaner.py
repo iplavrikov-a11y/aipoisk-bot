@@ -107,3 +107,83 @@ def build_commercial_search_queries(clean_name: str, unit: str) -> list[str]:
     # 4. В наличии с доставкой
     queries.append(f"{clean_name} прайс лист купить со склада")
     return queries
+
+
+def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
+    """
+    Генерирует расширенные адаптивные запросы для 2-й волны поиска,
+    когда по жестким первоначальным запросам найдено < 3 подтвержденных цен.
+    Снимает жесткие ограничения и добавляет отраслевой контекст (дробилки, сальники, бумага, муфты).
+    """
+    queries: list[str] = []
+    text_lower = clean_name.lower()
+
+    # 1. Диаграммная бумага и ленты (Р-1763, 0-100, 120мм)
+    if "диаграммн" in text_lower:
+        r_num = re.search(r'(?:р|r)[\s\-]?(\d{3,4})\b', text_lower)
+        if r_num:
+            queries.append(f"Лента диаграммная Р{r_num.group(1)} купить цена")
+            queries.append(f"Диаграммная бумага Р-{r_num.group(1)} прайс лист")
+        else:
+            queries.append("Лента диаграммная реестровая купить цена")
+
+    # 2. Сальниковые набивки и уплотнения (ВАТИ, АГИ, АФТ, ХБП)
+    elif "набивк" in text_lower:
+        v_match = re.search(r'(вати[\s\-]?\d+|аги|афт|графитекс|герморум)', text_lower)
+        dim_match = re.search(r'(\d+[хx]\d+)', text_lower)
+        if v_match:
+            base_q = f"Набивка сальниковая {v_match.group(1).upper()}"
+            if dim_match:
+                queries.append(f"{base_q} {dim_match.group(1)} купить цена")
+            queries.append(f"{base_q} цена за кг в наличии")
+        else:
+            queries.append("Набивка сальниковая купить цена за кг")
+
+    # 3. Дробильно-размольное оборудование (Било, Билодержатель, Броня, Футеровка)
+    elif any(w in text_lower for w in ("било", "билодержател", "броня", "футеровк")):
+        art_match = re.search(r'([а-яa-z]?[\s\-]?\d+[\.\-\/]\d+[\.\-\/]?\d*)', text_lower)
+        art_str = art_match.group(1).replace(" ", "") if art_match else ""
+        if "билодержател" in text_lower:
+            queries.append(f"Билодержатель {art_str} дробилка купить цена".strip())
+            queries.append(f"Билодержатель молотковой дробилки {art_str} производитель".strip())
+        elif "било" in text_lower:
+            queries.append(f"Било молотковой дробилки {art_str} купить цена".strip())
+            queries.append(f"Било {art_str} запасные части мельниц цена".strip())
+        elif "броня" in text_lower or "футеровк" in text_lower:
+            queries.append(f"Броня радиальная {art_str} бетоносмеситель купить цена".strip())
+            queries.append(f"Броня {art_str} литье запчасти цена".strip())
+
+    # 4. Крановые и муфтовые детали (Палец, втулка, полумуфта)
+    elif "палец" in text_lower and not any(w in text_lower for w in ("поршн", "двс", "авто")):
+        art_match = re.search(r'([а-яa-z]?[\s\-]?\d+[\.\-\/]\d+[\.\-\/]?\d*)', text_lower)
+        art_str = art_match.group(1).replace(" ", "") if art_match else ""
+        queries.append(f"Палец {art_str} крановый муфта купить цена".strip())
+        queries.append(f"Палец муфты МУВП {art_str} цена в наличии".strip())
+
+    # 5. Сложные датчики и контроллеры (Rosemount, GT13E2, Danfoss, Wika)
+    elif any(b in text_lower for b in ("rosemount", "gt13e2", "danfoss", "wika", "endress", "siemens")):
+        words = clean_name.split()
+        brand = words[0]
+        model_part = words[1][:10] if len(words) > 1 else ""
+        queries.append(f"Датчик {brand} {model_part} купить цена")
+        queries.append(f"{brand} {model_part} стоимость в наличии поставщики")
+
+    # 6. Общее упрощение: берем главное существительное + марку/ГОСТ без лишних параметров
+    tokens = clean_name.split()
+    if len(tokens) > 3:
+        # Укороченный запрос из первых 3-4 ключевых слов
+        short_name = " ".join(tokens[:4])
+        queries.append(f"{short_name} купить цена")
+        queries.append(f"{short_name} прайс лист в наличии")
+
+    # Убираем дубли
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_cln = " ".join(q.split())
+        if q_cln and q_cln.lower() not in seen:
+            seen.add(q_cln.lower())
+            unique_queries.append(q_cln)
+
+    return unique_queries
+

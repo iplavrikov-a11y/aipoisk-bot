@@ -32,7 +32,7 @@ class ItemPriceResult:
 
     @property
     def has_prices(self) -> bool:
-        return any(q.price_rub > 0 for q in self.quotes)
+        return any(q.price_rub > 0 and not q.is_outlier for q in self.quotes)
 
     @property
     def best_price(self) -> Optional[float]:

@@ -103,6 +103,11 @@ def _ensure_schema() -> None:
             "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
             "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
             "price_monitoring_default_price_kopeks": "INTEGER DEFAULT 5000",
+            "price_monitoring_max_suppliers": "INTEGER DEFAULT 3",
+            "price_monitoring_max_positions": "INTEGER DEFAULT 1000",
+            "price_monitoring_concurrency": "INTEGER DEFAULT 4",
+            "price_monitoring_cluster_ratio": "REAL DEFAULT 2.2",
+            "price_monitoring_filter_marketplaces": "BOOLEAN DEFAULT 1",
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {

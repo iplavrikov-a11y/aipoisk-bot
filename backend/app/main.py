@@ -1703,7 +1703,11 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
     return {
         "default_price_kopeks": def_kopeks,
         "default_price_rub": round(def_kopeks / 100, 2),
-        "max_suppliers_per_item": 5,
+        "max_suppliers_per_item": int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3),
+        "max_positions": int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000),
+        "concurrency": int(getattr(settings, "price_monitoring_concurrency", 4) or 4),
+        "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 2.2) or 2.2),
+        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
     }
 
 
@@ -1714,6 +1718,18 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_default_price_kopeks = max(0, int(float(data["default_price_rub"]) * 100))
     elif "default_price_kopeks" in data:
         settings.price_monitoring_default_price_kopeks = max(0, int(data["default_price_kopeks"]))
+
+    if "max_suppliers_per_item" in data:
+        settings.price_monitoring_max_suppliers = max(2, min(5, int(data["max_suppliers_per_item"])))
+    if "max_positions" in data:
+        settings.price_monitoring_max_positions = max(10, min(10000, int(data["max_positions"])))
+    if "concurrency" in data:
+        settings.price_monitoring_concurrency = max(1, min(8, int(data["concurrency"])))
+    if "cluster_ratio" in data:
+        settings.price_monitoring_cluster_ratio = max(1.2, min(5.0, float(data["cluster_ratio"])))
+    if "filter_marketplaces" in data:
+        settings.price_monitoring_filter_marketplaces = bool(data["filter_marketplaces"])
+
     db.commit()
     return admin_get_price_monitoring_settings(db)
 

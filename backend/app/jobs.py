@@ -1670,6 +1670,12 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
         _check_cancelled(job.id, db=db, job=job)
         _set_job(db, job, progress=progress, message=message)
 
+    checkpoint_file = out_dir / "checkpoint.json"
+    max_sup = int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3)
+    concurrency = int(getattr(settings, "price_monitoring_concurrency", 4) or 4)
+    cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 2.2) or 2.2)
+    filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", True))
+
     try:
         batch_res = asyncio.run(
             run_price_monitoring_pipeline(
@@ -1678,7 +1684,11 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                 output_excel_path=str(out_file),
                 price_per_position_rub=price_rub,
                 progress_callback=_progress_cb,
-                max_suppliers=5,
+                max_suppliers=max_sup,
+                max_parallel_items=concurrency,
+                checkpoint_path=str(checkpoint_file),
+                cluster_ratio=cluster_ratio,
+                filter_marketplaces=filter_marketplaces,
             )
         )
     except Exception as exc:

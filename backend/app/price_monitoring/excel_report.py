@@ -347,7 +347,10 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
         cell_unit.alignment = align_center
         cell_unit.border = thin_border
 
-        # Заполняем котировки поставщиков
+        display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
+        has_divergent = any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
+
+        # Заполняем котировки поставщиков (СТРОГО согласованный кластер цен)
         for s_idx in range(1, max_suppliers + 1):
             col_start = 3 + (s_idx - 1) * 2
             col_end = col_start + 1
@@ -360,80 +363,78 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
             cell_link.border = thin_border
             cell_link.alignment = align_left
 
-            if s_idx <= len(item.quotes):
-                q = item.quotes[s_idx - 1]
-                if q.price_rub > 0:
-                    cell_price.value = q.price_rub
-                    cell_price.number_format = "#,##0.00"
-                    cell_price.font = font_price_outlier if q.is_outlier else font_price_bold
+            if s_idx <= len(display_quotes):
+                q = display_quotes[s_idx - 1]
+                cell_price.value = q.price_rub
+                cell_price.number_format = "#,##0.00"
+                cell_price.font = font_price_bold
 
-                    # В ячейку источника выводим реквизиты поставщика, контакты через запятую и ссылку
-                    c_name = q.company_name.strip()
-                    if not any(c_name.startswith(p) for p in ("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
-                        clean_c = c_name.strip(" '\"")
-                        if clean_c != format_short_url(q.url) and "." not in clean_c:
-                            c_display = f'ООО "{clean_c}"'
-                        else:
-                            c_display = clean_c
+                c_name = q.company_name.strip()
+                if not any(c_name.startswith(p) for p in ("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
+                    clean_c = c_name.strip(" '\"")
+                    if clean_c != format_short_url(q.url) and "." not in clean_c:
+                        c_display = f'ООО "{clean_c}"'
                     else:
-                        c_display = c_name
-
-                    line1 = c_display + (f" | ИНН {q.inn}" if q.inn else "")
-                    line2 = _format_contacts_compact(q.contacts)
-                    short_link_display = format_short_url(q.url)
-                    line3 = short_link_display
-
-                    cell_link.value = f"{line1}\n{line2}\n{line3}"
-                    if q.url.startswith("http"):
-                        cell_link.hyperlink = q.url
-                        cell_link.font = font_link
-                        cell_price.hyperlink = q.url
-
-                    # Формируем информативную всплывающую подсказку в ячейке
-                    comment_obj = _build_cell_comment(q, item.unit)
-                    cell_link.comment = comment_obj
-                    cell_price.comment = comment_obj
+                        c_display = clean_c
                 else:
-                    cell_price.value = "по запросу"
-                    cell_price.font = font_calibri_regular
-                    cell_link.value = format_short_url(q.url)
-                    if q.url.startswith("http"):
-                        cell_link.hyperlink = q.url
-                        cell_link.font = font_link
+                    c_display = c_name
+
+                line1 = c_display + (f" | ИНН {q.inn}" if q.inn else "")
+                line2 = _format_contacts_compact(q.contacts)
+                line3 = format_short_url(q.url)
+
+                cell_link.value = f"{line1}\n{line2}\n{line3}"
+                if q.url.startswith("http"):
+                    cell_link.hyperlink = q.url
+                    cell_link.font = font_link
+                    cell_price.hyperlink = q.url
+
+                # Формируем информативную всплывающую подсказку в ячейке
+                comment_obj = _build_cell_comment(q, item.unit)
+                cell_link.comment = comment_obj
+                cell_price.comment = comment_obj
+            elif s_idx == 1 and not display_quotes and has_divergent:
+                # Если найденные цены разнятся в разы и единый кластер не найден — скрываем источники и предупреждаем
+                cell_price.value = "разброс цен"
+                cell_price.font = font_price_outlier
+                cell_link.value = "Источники скрыты: разброс цен >2.2x"
+                cell_link.font = font_calibri_regular
+                comm_text = "⚠️ Найденные в сети цены имеют критический разброс (>2.2x). Достоверный ценовой кластер не подтвержден. Ошибочные источники скрыты для защиты от дезинформации."
+                c_comm = Comment(comm_text, "TenderLex")
+                c_comm.width = 320
+                c_comm.height = 90
+                cell_price.comment = c_comm
+                cell_link.comment = c_comm
             else:
                 cell_price.value = ""
                 cell_link.value = ""
 
-        # Формулы Мин. цена и Средняя цена (исключаем аномальные выбросы из базового расчета)
-        clean_col_letters = []
-        all_numeric_col_letters = []
-        for s_idx in range(1, max_suppliers + 1):
-            if s_idx <= len(item.quotes):
-                q = item.quotes[s_idx - 1]
-                if q.price_rub > 0:
-                    c_let = get_column_letter(3 + (s_idx - 1) * 2)
-                    all_numeric_col_letters.append(c_let)
-                    if not q.is_outlier:
-                        clean_col_letters.append(c_let)
+        # Формулы Мин. цена и Средняя цена (СТРОГО по отображаемым ценам согласованного кластера)
+        clean_col_letters = [
+            get_column_letter(3 + (s - 1) * 2)
+            for s in range(1, len(display_quotes) + 1)
+        ]
 
-        target_letters = clean_col_letters if clean_col_letters else all_numeric_col_letters
-        if not target_letters:
-            target_letters = price_col_letters
-
-        args_str = ",".join(f"{col_let}{current_row}" for col_let in target_letters)
         cell_min = ws.cell(row=current_row, column=col_min_idx)
         cell_min.border = thin_border
         cell_min.alignment = align_right
         cell_min.number_format = "#,##0.00"
         cell_min.font = font_price_bold
-        cell_min.value = f"=MIN({args_str})"
 
         cell_avg = ws.cell(row=current_row, column=col_avg_idx)
         cell_avg.border = thin_border
         cell_avg.alignment = align_right
         cell_avg.number_format = "#,##0.00"
         cell_avg.font = font_calibri_bold
-        cell_avg.value = f"=AVERAGE({args_str})"
+
+        if clean_col_letters:
+            args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
+            cell_min.value = f"=MIN({args_str})"
+            cell_avg.value = f"=AVERAGE({args_str})"
+        else:
+            cell_min.value = ""
+            cell_avg.value = ""
+
 
         current_row += 1
 
@@ -484,16 +485,21 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
 
     row_num = 2
     for idx, item in enumerate(items, 1):
+        display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
+        has_divergent = any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
+        status_text = "Подтверждено" if display_quotes else ("Разброс цен" if has_divergent else "Не найдено")
+        best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
+
         row_vals = [
             idx,
             item.raw_name,
             item.unit,
-            "Найдено" if item.has_prices else "Не найдено",
-            item.best_price if item.has_prices else "-",
+            status_text,
+            best_p,
         ]
         for s_idx in range(1, max_suppliers + 1):
-            if s_idx <= len(item.quotes):
-                q = item.quotes[s_idx - 1]
+            if s_idx <= len(display_quotes):
+                q = display_quotes[s_idx - 1]
                 row_vals.extend([
                     q.company_name or "-",
                     q.inn or "-",

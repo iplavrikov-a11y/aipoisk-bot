@@ -386,3 +386,41 @@ def test_outlier_excluded_from_excel_formulas(tmp_path):
     assert "I5" not in avg_formula
 
 
+def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
+    import openpyxl
+    from app.price_monitoring.pipeline import cluster_and_reconcile_item_quotes
+    from app.price_monitoring.excel_report import generate_price_monitoring_excel
+
+    # Two wildly divergent quotes (14.40 vs 1950.00 = 135x difference)
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Броня радиальная К4-52",
+        clean_name="Броня радиальная К4-52",
+        unit="ШТ",
+        quotes=[
+            SupplierQuote(company_name="Лейрус", price_rub=14.4, raw_price_rub=14.4, unit="ШТ"),
+            SupplierQuote(company_name="ЗаводДробмаш", price_rub=1950.0, raw_price_rub=1950.0, unit="ШТ"),
+        ],
+    )
+
+    cluster_and_reconcile_item_quotes(item, cluster_ratio=2.2)
+
+    # Both must be marked as outliers because no consensus cluster of >= 2 close prices exists
+    assert all(q.is_outlier for q in item.quotes)
+    assert item.has_prices is False
+
+    out_file = tmp_path / "test_divergence.xlsx"
+    generate_price_monitoring_excel([item], str(out_file))
+
+    wb = openpyxl.load_workbook(str(out_file))
+    ws = wb["Пример отчета"]
+
+    # Price cell must state "разброс цен" and suppress faulty sources
+    assert ws["C5"].value == "разброс цен"
+    assert "разброс цен" in str(ws["D5"].value)
+    # Min and Average cells must be empty (no false math on wild numbers)
+    assert ws["M5"].value in (None, "")
+    assert ws["N5"].value in (None, "")
+
+
+

@@ -88,6 +88,11 @@ class SystemSettings(Base):
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
     price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
+    price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
+    price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
+    price_monitoring_concurrency: Mapped[int] = mapped_column(Integer, default=4)
+    price_monitoring_cluster_ratio: Mapped[float] = mapped_column(Float, default=2.2)
+    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -145,6 +150,11 @@ class SystemSettings(Base):
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
             "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
+            "price_monitoring_max_suppliers": self.price_monitoring_max_suppliers,
+            "price_monitoring_max_positions": self.price_monitoring_max_positions,
+            "price_monitoring_concurrency": self.price_monitoring_concurrency,
+            "price_monitoring_cluster_ratio": self.price_monitoring_cluster_ratio,
+            "price_monitoring_filter_marketplaces": self.price_monitoring_filter_marketplaces,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:

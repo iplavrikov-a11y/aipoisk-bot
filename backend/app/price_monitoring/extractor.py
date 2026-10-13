@@ -18,19 +18,55 @@ from .models import SupplierQuote
 
 logger = logging.getLogger(__name__)
 
-# Сайты, которые не содержат коммерческих цен или являются соцсетями/видео
+# Сайты, которые не содержат коммерческих цен или являются соцсетями/видео/справочниками
 BLOCKED_DOMAINS = {
     "youtube.com", "vk.com", "ok.ru", "dzen.ru", "wikipedia.org", "gosuslugi.ru",
-    "zakupki.gov.ru", "consultant.ru", "garant.ru", "nalog.gov.ru", "tass.ru", "ria.ru"
+    "zakupki.gov.ru", "consultant.ru", "garant.ru", "nalog.gov.ru", "tass.ru", "ria.ru",
+    "zen.yandex.ru", "vc.ru", "drive2.ru", "pikabu.ru", "otzovik.com", "irecommend.ru",
+    "habr.com", "tbank.ru", "sberbank.ru", "hh.ru", "superjob.ru", "rabota.ru", "audit-it.ru",
+    "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru"
+}
+
+# Автомобильные ритейлеры (ложные срабатывания по артикулам для промышленного оборудования)
+AUTOMOTIVE_DOMAINS = {
+    "rossko.ru", "exist.ru", "autodoc.ru", "emex.ru", "avtoall.ru", "euroauto.ru",
+    "baza.drom.ru", "zapchasti.rf", "kolesa-darom.ru", "autopiter.ru", "ixora-auto.ru",
+    "carro.ru", "amaster.pro", "partauto.ru", "shinservice.ru", "avtoto.ru", "exist.ua",
+    "japancar.ru", "autorus.ru", "kolesa.ru", "drom.ru"
+}
+
+# Маркетплейсы потребительских товаров
+MARKETPLACE_DOMAINS = {
+    "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru", "aliexpress.ru", "avito.ru"
 }
 
 
-def is_valid_domain(url: str) -> bool:
+def is_valid_domain(url: str, target_item_name: str = "", filter_marketplaces: bool = False) -> bool:
     try:
         domain = urlparse(url).netloc.lower()
         if domain.startswith("www."):
             domain = domain[4:]
-        return domain not in BLOCKED_DOMAINS
+
+        # Проверка глобальных стоп-доменов
+        for bd in BLOCKED_DOMAINS:
+            if domain == bd or domain.endswith("." + bd):
+                return False
+
+        # Опциональная фильтрация потребительских маркетплейсов
+        if filter_marketplaces:
+            for md in MARKETPLACE_DOMAINS:
+                if domain == md or domain.endswith("." + md):
+                    return False
+
+        # Защита от автомагазинов: если ищется промышленное оборудование, отсекаем автозапчасти
+        target_lower = target_item_name.lower()
+        is_auto_item = any(w in target_lower for w in ("автомобил", "ваз", "камаз", "газель", "колодки торм", "двс", "моторное масл", "свечи зажиг"))
+        if not is_auto_item:
+            for ad in AUTOMOTIVE_DOMAINS:
+                if domain == ad or domain.endswith("." + ad):
+                    return False
+
+        return True
     except Exception:
         return False
 
@@ -307,7 +343,9 @@ URL страницы: {url}
    - Проверь, что на странице продается именно этот товар того же функционального назначения (или точная марка/ГОСТ/типоразмер/артикул).
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ СМЫСЛОВЫЕ ПОДМЕНЫ И ОМОНИМЫ:
      * Промышленная деталь vs Военная экипировка: если ищется броня/футеровка для оборудования/дробилки/смесителя (например "Броня радиальная К4-52"), СТРОГО ЗАПРЕЩЕНО брать бронежилеты, бронеплиты защиты человека ("Атлант Армор", "плита Бр4")! Это разные товары (is_relevant: false, is_price_found: false).
+     * Промышленные молотки и била дробилок vs Автозапчасти: если ищется било/молоток дробилки или мельницы (например "Било Л-04.524", "Билодержатель"), КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО брать автомобильные запчасти, тормозные колодки Brembo, диски, автофильтры! На странице ОБЯЗАНО быть именно било/молоток промышленной дробилки! (is_relevant: false, is_price_found: false).
      * Муфтовые/крановые пальцы vs Автозапчасти: если ищется палец муфты/оборудования (например "Палец К4-79"), ЗАПРЕЩЕНО брать поршневые пальцы двигателей автомобилей или строительные шплинты!
+     * Запрет частичных совпадений цифр артикула: совпадение только суффикса (например "524" в "P 00 524") при поиске промышленного кода "Л-04.524" ЯВЛЯЕТСЯ ГРУБОЙ ОШИБКОЙ. Брать только точное совпадение модели/чертежа.
      * Запрещено делить цену сложных комплектов (например, комплект поршней 4 шт с пальцами) на части для искусственного вычисления цены отдельного элемента! Если деталь не продается отдельно — is_price_found: false.
      * Точные артикулы и марки: если в наименовании указан буквенно-цифровой индекс/код (например: "GT13E2", "0065C...", "13630", "К4-52"), на странице ОБЯЗАН быть именно этот артикул или его полный сертифицированный аналог! Не брать датчики или детали других марок и серий.
      * Агрегат/деталь vs Расходник/аксессуар: если ищется подшипник, ЗАПРЕЩЕНО брать уплотнительное кольцо, сальник, манжету или смазку к нему (цена в десятки раз ниже!).
