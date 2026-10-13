@@ -13,6 +13,7 @@ from ..ai import call_llm, parse_json_object
 from ..dadata_client import enrich_company_by_inn_or_query
 from ..models import SystemSettings
 from .cleaner import extract_package_hints, normalize_unit
+from .cookie_manager import cookie_manager
 from .models import SupplierQuote
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,9 @@ async def fetch_page_content_and_meta(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     }
+    custom_cookie = cookie_manager.get_cookie_for_url(url)
+    if custom_cookie:
+        headers["Cookie"] = custom_cookie
     try:
         resp = await client.get(url, headers=headers, timeout=8.0)
         if resp.status_code != 200 or not resp.text:

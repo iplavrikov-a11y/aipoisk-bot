@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from typing import List, Optional
 from urllib.parse import urlparse
@@ -43,14 +44,100 @@ def format_short_url(url: str) -> str:
 
 
 def _format_contacts_multiline(contacts: Optional[str]) -> str:
-    """Форматирует контакты с переносами строк (телефон, email, город) для предотвращения обрезания."""
+    """
+    Форматирует контакты компактно по категориям:
+    - Телефоны на 1 строке через запятую: "Тел: +7..., 8..."
+    - Email на 1 строке через запятую: "Email: info@..., sales@..."
+    - Город / адрес на 1 строке.
+    Гарантирует не более 3 строк, исключая обрезание в ячейках Excel.
+    """
     if not contacts:
         return "контакты на сайте"
-    parts = [p.strip() for p in contacts.split(",") if p.strip()]
-    if len(parts) <= 1:
-        return contacts
-    return "\n".join(parts)
 
+    raw_parts = [p.strip() for p in re.split(r'[,;\n]+', contacts) if p.strip()]
+    phones: list[str] = []
+    emails: list[str] = []
+    others: list[str] = []
+    seen: set[str] = set()
+
+    for p in raw_parts:
+        clean_p = re.sub(r'\s+', ' ', p).strip()
+        key = clean_p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if "@" in clean_p and "." in clean_p:
+            emails.append(clean_p)
+        elif any(c.isdigit() for c in clean_p) and (len(re.sub(r'\D', '', clean_p)) in (10, 11) or "800" in clean_p or "+7" in clean_p or "tel" in clean_p.lower()):
+            phones.append(clean_p)
+        else:
+            others.append(clean_p)
+
+    lines: list[str] = []
+    if phones:
+        lines.append("Тел: " + ", ".join(phones[:3]))
+    if emails:
+        lines.append("Email: " + ", ".join(emails[:2]))
+    if others:
+        clean_others: list[str] = []
+        for o in others:
+            if not any(o.lower() == co.lower() or o.lower() in co.lower() for co in clean_others):
+                clean_others.append(o)
+        if clean_others:
+            lines.append(", ".join(clean_others[:2]))
+
+    if not lines:
+        return contacts[:80]
+    return "\n".join(lines[:3])
+
+
+
+def _format_contacts_compact(contacts: Optional[str]) -> str:
+    """
+    Форматирует контакты в одну горизонтальную строку:
+    'Тел: +7..., Email: info@..., г. Москва'
+    Все телефоны и email разделяются запятыми, предотвращая обрезание в строках.
+    """
+    if not contacts:
+        return "контакты на сайте"
+
+    raw_parts = [p.strip() for p in re.split(r'[,;\n]+', contacts) if p.strip()]
+    phones: list[str] = []
+    emails: list[str] = []
+    cities: list[str] = []
+    seen: set[str] = set()
+
+    for p in raw_parts:
+        clean_p = re.sub(r'\s+', ' ', p).strip()
+        key = clean_p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if "@" in clean_p and "." in clean_p:
+            emails.append(clean_p)
+        elif any(c.isdigit() for c in clean_p) and (len(re.sub(r'\D', '', clean_p)) in (10, 11) or "800" in clean_p or "+7" in clean_p or "tel" in clean_p.lower()):
+            phones.append(clean_p)
+        else:
+            cities.append(clean_p)
+
+    out_items: list[str] = []
+    if phones:
+        out_items.append("Тел: " + ", ".join(phones[:2]))
+    if emails:
+        out_items.append("Email: " + ", ".join(emails[:2]))
+    if cities:
+        clean_cities: list[str] = []
+        for c in cities:
+            if not any(c.lower() == cc.lower() or c.lower() in cc.lower() for cc in clean_cities):
+                clean_cities.append(c)
+        if clean_cities:
+            out_items.append(", ".join(clean_cities[:2]))
+
+    if not out_items:
+        return contacts[:80]
+    return ", ".join(out_items)
 
 
 def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
@@ -135,7 +222,10 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
 
     top_suppliers = [sup_name for sup_name, _ in supplier_freq.most_common(max_suppliers)]
 
-    # Шапка поставщиков 1..5 (строки 1-4)
+    # Поставщик считается доминирующим ТОЛЬКО если закрывает почти всю закупку (>= 80% позиций)
+    dominant_threshold = max(1, int(len(items) * 0.8)) if len(items) > 1 else 1
+
+    # Шапка поставщиков 1..max_suppliers (строки 1-4)
     for s_idx in range(1, max_suppliers + 1):
         col_start = 3 + (s_idx - 1) * 2  # C=3, E=5, G=7, I=9, K=11
         col_end = col_start + 1          # D=4, F=6, H=8, J=10, L=12
@@ -152,19 +242,10 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                     sup_quote = it.quotes[s_idx - 1]
                     break
 
-        sup_name_text = f"Поставщик {s_idx}"
-        inn_kpp_text = "ИНН / КПП"
-        contacts_text = "контакты"
-
-        # Проверяем, является ли поставщик общим для всей закупки (характерно для моно-закупок до 15 позиций)
-        # либо это сборная мульти-отраслевая смета на 50-200 позиций с разными поставщиками под каждую строку
         is_dominant = False
         if sup_quote and supplier_freq:
             item_coverage = supplier_freq.get(sup_quote.company_name, 0)
-            if len(items) <= 15:
-                is_dominant = item_coverage >= 1
-            else:
-                is_dominant = item_coverage >= max(5, int(len(items) * 0.3))
+            is_dominant = item_coverage >= dominant_threshold
 
         if sup_quote and is_dominant:
             c_name = sup_quote.company_name.strip()
@@ -182,9 +263,9 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
             inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: уточняется"
             contacts_text = _format_contacts_multiline(sup_quote.contacts)
         else:
-            sup_name_text = f"Поставщик {s_idx}"
-            inn_kpp_text = "ИНН / КПП (в подсказке ячейки / Лист 2)"
-            contacts_text = "Контакты (в подсказке ячейки / Лист 2)"
+            sup_name_text = f"Поставщик {s_idx} ( наименование )"
+            inn_kpp_text = "ИНН/КПП"
+            contacts_text = "контакты"
 
         # Строка 1: Поставщик N (наименование)
         ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
@@ -219,16 +300,37 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
         cell_src.font = font_header_regular
         cell_src.alignment = align_center
 
+    # Сводные колонки: Мин. цена и Средняя цена
+    col_min_idx = 3 + max_suppliers * 2
+    col_avg_idx = col_min_idx + 1
+    col_min_let = get_column_letter(col_min_idx)
+    col_avg_let = get_column_letter(col_avg_idx)
+
+    ws.merge_cells(f"{col_min_let}1:{col_min_let}4")
+    cell_min_hdr = ws[f"{col_min_let}1"]
+    cell_min_hdr.value = "Мин. цена, руб."
+    cell_min_hdr.font = font_calibri_bold
+    cell_min_hdr.alignment = align_center
+
+    ws.merge_cells(f"{col_avg_let}1:{col_avg_let}4")
+    cell_avg_hdr = ws[f"{col_avg_let}1"]
+    cell_avg_hdr.value = "Средняя цена, руб."
+    cell_avg_hdr.font = font_calibri_bold
+    cell_avg_hdr.alignment = align_center
+
     # Применяем границы и фон к заголовкам
-    max_col = 2 + max_suppliers * 2
+    max_col = col_avg_idx
     for r in range(1, 5):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
             cell.border = thin_border
-            if r == 4 or c <= 2:
+            if r == 4 or c <= 2 or c >= col_min_idx:
                 cell.fill = header_fill
             else:
                 cell.fill = sup_header_fill
+
+    # Список колонок с ценами для формул MIN и AVERAGE
+    price_col_letters = [get_column_letter(3 + (s - 1) * 2) for s in range(1, max_suppliers + 1)]
 
     # Заполняем строки данными
     current_row = 5
@@ -265,9 +367,23 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                     cell_price.number_format = "#,##0.00"
                     cell_price.font = font_price_outlier if q.is_outlier else font_price_bold
 
-                    # В ячейку источника выводим ТОЛЬКО компактную кликабельную ссылку!
+                    # В ячейку источника выводим реквизиты поставщика, контакты через запятую и ссылку
+                    c_name = q.company_name.strip()
+                    if not any(c_name.startswith(p) for p in ("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
+                        clean_c = c_name.strip(" '\"")
+                        if clean_c != format_short_url(q.url) and "." not in clean_c:
+                            c_display = f'ООО "{clean_c}"'
+                        else:
+                            c_display = clean_c
+                    else:
+                        c_display = c_name
+
+                    line1 = c_display + (f" | ИНН {q.inn}" if q.inn else "")
+                    line2 = _format_contacts_compact(q.contacts)
                     short_link_display = format_short_url(q.url)
-                    cell_link.value = short_link_display
+                    line3 = short_link_display
+
+                    cell_link.value = f"{line1}\n{line2}\n{line3}"
                     if q.url.startswith("http"):
                         cell_link.hyperlink = q.url
                         cell_link.font = font_link
@@ -288,16 +404,32 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                 cell_price.value = ""
                 cell_link.value = ""
 
+        # Формулы Мин. цена и Средняя цена
+        cell_min = ws.cell(row=current_row, column=col_min_idx)
+        cell_min.border = thin_border
+        cell_min.alignment = align_right
+        cell_min.number_format = "#,##0.00"
+        cell_min.font = font_price_bold
+        args_str = ",".join(f"{col_let}{current_row}" for col_let in price_col_letters)
+        cell_min.value = f"=MIN({args_str})"
+
+        cell_avg = ws.cell(row=current_row, column=col_avg_idx)
+        cell_avg.border = thin_border
+        cell_avg.alignment = align_right
+        cell_avg.number_format = "#,##0.00"
+        cell_avg.font = font_calibri_bold
+        cell_avg.value = f"=AVERAGE({args_str})"
+
         current_row += 1
 
     # Настройка высоты строк шапки и данных Листа 1 (предотвращает схлопывание контактов и названий)
-    ws.row_dimensions[1].height = 28  # Поставщик N (ООО "Наименование")
+    ws.row_dimensions[1].height = 28  # Поставщик N
     ws.row_dimensions[2].height = 22  # ИНН / КПП
-    ws.row_dimensions[3].height = 56  # Контакты (телефоны, email, город) - свободно на 2-3 строки
+    ws.row_dimensions[3].height = 36  # Контакты
     ws.row_dimensions[4].height = 24  # Заголовки колонок "Цена руб./ед.", "источник (ссылка)"
 
     for r in range(5, current_row):
-        ws.row_dimensions[r].height = 28  # Строки номенклатуры
+        ws.row_dimensions[r].height = 54  # Строки номенклатуры (3 строки с реквизитами и ссылкой)
 
     # Настройка ширины колонок Листа 1
     ws.column_dimensions["A"].width = 48
@@ -305,8 +437,11 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
     for s_idx in range(1, max_suppliers + 1):
         col_start_let = get_column_letter(3 + (s_idx - 1) * 2)
         col_end_let = get_column_letter(4 + (s_idx - 1) * 2)
-        ws.column_dimensions[col_start_let].width = 18
-        ws.column_dimensions[col_end_let].width = 32
+        ws.column_dimensions[col_start_let].width = 16
+        ws.column_dimensions[col_end_let].width = 42
+
+    ws.column_dimensions[col_min_let].width = 18
+    ws.column_dimensions[col_avg_let].width = 18
 
     # --- ЛИСТ 2: Подробный детализированный реестр для закупщика/1С ---
     ws2 = wb.create_sheet(title="Детализированный реестр")

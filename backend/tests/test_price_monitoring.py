@@ -290,9 +290,11 @@ def test_excel_report_structure_and_links(tmp_path):
     assert "7724521481" in str(ws1["C2"].value)
     assert "+7 (495) 228-20-11" in str(ws1["C3"].value)
 
-    # Check cell D5 (link cell): MUST be shortened link and have hyperlink!
+    # Check cell D5 (link cell): contains company, contacts, shortened link and has hyperlink!
     cell_d5 = ws1["D5"]
-    assert cell_d5.value == "foroffice.ru/.../1129.html"
+    assert "foroffice.ru/.../1129.html" in str(cell_d5.value)
+    assert "ForOffice" in str(cell_d5.value)
+    assert "7724521481" in str(cell_d5.value)
     assert cell_d5.hyperlink.target == "https://www.foroffice.ru/products/description/1129.html"
     assert cell_d5.comment is not None
     assert "ForOffice" in cell_d5.comment.text
@@ -303,6 +305,12 @@ def test_excel_report_structure_and_links(tmp_path):
     assert cell_c5.value == 723.0
     assert cell_c5.hyperlink.target == "https://www.foroffice.ru/products/description/1129.html"
     assert cell_c5.comment is not None
+
+    # Check summary formula columns (M: Мин. цена, N: Средняя цена)
+    assert ws1["M1"].value == "Мин. цена, руб."
+    assert ws1["N1"].value == "Средняя цена, руб."
+    assert "=MIN(" in str(ws1["M5"].value)
+    assert "=AVERAGE(" in str(ws1["N5"].value)
 
 
 @pytest.mark.asyncio

@@ -88,7 +88,7 @@ def extract_package_hints(raw_name: str, target_unit: str) -> dict:
 
 
 def build_commercial_search_queries(clean_name: str, unit: str) -> list[str]:
-    """Генерирует поисковые запросы для коммерческой выдачи с ценами."""
+    """Генерирует поисковые запросы для широкой выдачи с ценами (розница, опт, каталоги, интернет-магазины)."""
     queries: list[str] = []
     norm_u = normalize_unit(unit)
 
@@ -98,6 +98,12 @@ def build_commercial_search_queries(clean_name: str, unit: str) -> list[str]:
     else:
         queries.append(f"{clean_name} купить цена в наличии")
 
-    # 2. Прайс-лист / каталог
+    # 2. Интернет-магазины / розница
+    queries.append(f"{clean_name} купить в интернет магазине цена")
+
+    # 3. Прайс-лист / каталог
     queries.append(f"{clean_name} стоимость каталог поставщики")
+
+    # 4. В наличии с доставкой
+    queries.append(f"{clean_name} прайс лист купить со склада")
     return queries

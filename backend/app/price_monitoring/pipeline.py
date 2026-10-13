@@ -161,15 +161,15 @@ async def process_single_item(
     candidate_urls: list[str] = []
 
     async with search_semaphore:
-        for q in queries[:2]:
+        for q in queries[:4]:
             try:
-                results = await engine.search(q, max_results=8, enrich_query=False)
+                results = await engine.search(q, max_results=8, enrich_query=False, filter_marketplaces=False)
                 for r in results:
                     if r.url and is_valid_domain(r.url) and r.url not in candidate_urls:
                         candidate_urls.append(r.url)
             except Exception as e:
                 logger.warning("Search query error for %s: %s", q, e)
-            if len(candidate_urls) >= 12:
+            if len(candidate_urls) >= 15:
                 break
 
     # Сбор и извлечение цен с найденных страниц

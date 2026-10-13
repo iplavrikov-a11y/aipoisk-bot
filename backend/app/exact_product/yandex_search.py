@@ -16,15 +16,8 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# Excluded domains (marketplaces and irrelevant component pinout catalogs)
-EXCLUDED_DOMAINS = [
-    "ozon.ru",
-    "wildberries.ru",
-    "avito.ru",
-    "aliexpress.ru",
-    "aliexpress.com",
-    "market.yandex.ru",
-    "sbermegamarket.ru",
+# Non-commercial domains (social, video, encyclopedias, search engines, datasheets)
+NON_COMMERCIAL_DOMAINS = [
     "yandex.ru",
     "google.com",
     "wikipedia.org",
@@ -46,6 +39,17 @@ EXCLUDED_DOMAINS = [
     "pikabu.ru",
     "drive2.ru",
     "avto.ru",
+]
+
+# Marketplaces and retail chains excluded in exact_product analog search, but allowed in general price monitoring
+MARKETPLACE_DOMAINS = [
+    "ozon.ru",
+    "wildberries.ru",
+    "avito.ru",
+    "aliexpress.ru",
+    "aliexpress.com",
+    "market.yandex.ru",
+    "sbermegamarket.ru",
     "vseinstrumenti.ru",
     "dns-shop.ru",
     "citilink.ru",
@@ -53,6 +57,9 @@ EXCLUDED_DOMAINS = [
     "lemanapro.ru",
     "megamarket.ru",
 ]
+
+EXCLUDED_DOMAINS = NON_COMMERCIAL_DOMAINS + MARKETPLACE_DOMAINS
+
 
 
 @dataclass
@@ -100,12 +107,17 @@ class YandexSearchEngine:
             return f"{query} производитель"
 
     async def search(
-        self, query: str, max_results: int = 10, enrich_query: bool = True, max_pages: int = 1
+        self,
+        query: str,
+        max_results: int = 10,
+        enrich_query: bool = True,
+        max_pages: int = 1,
+        filter_marketplaces: bool = True,
     ) -> list[YandexSearchResult]:
         """
         Search using Yandex API. Tries v2 first, falls back to v1.
         """
-        logger.info("yandex_search_start", query=query[:80], max_pages=max_pages)
+        logger.info("yandex_search_start", query=query[:80], max_pages=max_pages, filter_marketplaces=filter_marketplaces)
 
         if not self.folder_id or not self.api_key:
             logger.warning("yandex_api_not_configured")
@@ -119,8 +131,9 @@ class YandexSearchEngine:
             logger.info("yandex_fallback_v1")
             results = await self._search_v1(query, max_results, enrich_query)
 
-        # Filter excluded domains
-        filtered = [r for r in results if r.domain not in EXCLUDED_DOMAINS]
+        # Filter excluded domains (filter marketplaces only if requested)
+        excluded = EXCLUDED_DOMAINS if filter_marketplaces else NON_COMMERCIAL_DOMAINS
+        filtered = [r for r in results if r.domain not in excluded]
         logger.info(
             "yandex_search_complete", query=query[:80], results_count=len(filtered)
         )
