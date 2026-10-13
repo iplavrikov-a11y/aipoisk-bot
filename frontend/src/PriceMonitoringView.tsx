@@ -14,10 +14,12 @@ import {
   Users,
   Sliders,
   ShieldCheck,
-  Layers,
-  Cpu,
   BarChart2,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
 } from 'lucide-react'
+
 
 type ClientItem = {
   id: string
@@ -62,16 +64,20 @@ export function PriceMonitoringView() {
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
 
-  // Clients State & Tabs
+  // Clients State & Tabs & Pagination
   const [clients, setClients] = useState<ClientItem[]>([])
   const [clientSearch, setClientSearch] = useState('')
   const [clientFilterTab, setClientFilterTab] = useState<'all' | 'allowed' | 'custom'>('all')
+  const [clientPage, setClientPage] = useState<number>(1)
+  const [clientPageSize, setClientPageSize] = useState<number>(10)
   const [savingClientId, setSavingClientId] = useState<string | null>(null)
   const [clientEdits, setClientEdits] = useState<Record<string, { allowed: boolean; custom_price_rub: string }>>({})
   const [savedClientId, setSavedClientId] = useState<string | null>(null)
 
-  // Jobs History State
+  // Jobs History State & Pagination
   const [jobs, setJobs] = useState<JobItem[]>([])
+  const [jobPage, setJobPage] = useState<number>(1)
+  const [jobPageSize, setJobPageSize] = useState<number>(10)
 
   const loadData = useCallback(async () => {
     try {
@@ -197,6 +203,20 @@ export function PriceMonitoringView() {
     )
   })
 
+  const totalClientPages = Math.max(1, Math.ceil(filteredClients.length / clientPageSize))
+  const safeClientPage = Math.min(clientPage, totalClientPages)
+  const pagedClients = filteredClients.slice(
+    (safeClientPage - 1) * clientPageSize,
+    safeClientPage * clientPageSize
+  )
+
+  const totalJobPages = Math.max(1, Math.ceil(jobs.length / jobPageSize))
+  const safeJobPage = Math.min(jobPage, totalJobPages)
+  const pagedJobs = jobs.slice(
+    (safeJobPage - 1) * jobPageSize,
+    safeJobPage * jobPageSize
+  )
+
   const countAllowed = clients.filter((c) => (clientEdits[c.id] ? clientEdits[c.id].allowed : c.allowed)).length
   const countCustom = clients.filter((c) =>
     clientEdits[c.id] ? clientEdits[c.id].custom_price_rub.trim() !== '' : c.has_override
@@ -205,6 +225,7 @@ export function PriceMonitoringView() {
   const totalPositionsSum = jobs.reduce((acc, j) => acc + (j.total_positions || 0), 0)
   const totalFoundSum = jobs.reduce((acc, j) => acc + (j.found_positions || 0), 0)
   const totalRevenueRub = jobs.reduce((acc, j) => acc + (j.charged_rub || 0), 0)
+
 
   if (loading) {
     return (
@@ -426,7 +447,10 @@ export function PriceMonitoringView() {
             <div style={{ display: 'flex', gap: '4px', background: '#f1f5f9', padding: '3px', borderRadius: '6px' }}>
               <button
                 type="button"
-                onClick={() => setClientFilterTab('all')}
+                onClick={() => {
+                  setClientFilterTab('all')
+                  setClientPage(1)
+                }}
                 style={{
                   padding: '3px 8px',
                   fontSize: '12px',
@@ -443,7 +467,10 @@ export function PriceMonitoringView() {
               </button>
               <button
                 type="button"
-                onClick={() => setClientFilterTab('allowed')}
+                onClick={() => {
+                  setClientFilterTab('allowed')
+                  setClientPage(1)
+                }}
                 style={{
                   padding: '3px 8px',
                   fontSize: '12px',
@@ -460,7 +487,10 @@ export function PriceMonitoringView() {
               </button>
               <button
                 type="button"
-                onClick={() => setClientFilterTab('custom')}
+                onClick={() => {
+                  setClientFilterTab('custom')
+                  setClientPage(1)
+                }}
                 style={{
                   padding: '3px 8px',
                   fontSize: '12px',
@@ -484,7 +514,10 @@ export function PriceMonitoringView() {
               type="text"
               placeholder="Поиск клиента..."
               value={clientSearch}
-              onChange={(e) => setClientSearch(e.target.value)}
+              onChange={(e) => {
+                setClientSearch(e.target.value)
+                setClientPage(1)
+              }}
               className="form-input"
               style={{ paddingLeft: '30px', paddingRight: '10px', paddingTop: '5px', paddingBottom: '5px', width: '100%', fontSize: '13px' }}
             />
@@ -503,7 +536,7 @@ export function PriceMonitoringView() {
               </tr>
             </thead>
             <tbody>
-              {filteredClients.map((client) => {
+              {pagedClients.map((client) => {
                 const edit = clientEdits[client.id] || { allowed: client.allowed, custom_price_rub: '' }
                 const isSaving = savingClientId === client.id
                 const isSaved = savedClientId === client.id
@@ -578,13 +611,62 @@ export function PriceMonitoringView() {
             </tbody>
           </table>
         </div>
+
+        {/* Client Pagination Controls */}
+        {filteredClients.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #f1f5f9', fontSize: '12px', color: '#64748b' }}>
+            <div>
+              Показано {(safeClientPage - 1) * clientPageSize + 1}–{Math.min(safeClientPage * clientPageSize, filteredClients.length)} из {filteredClients.length} клиентов
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <select
+                value={clientPageSize}
+                onChange={(e) => {
+                  setClientPageSize(Number(e.target.value))
+                  setClientPage(1)
+                }}
+                className="form-input"
+                style={{ padding: '2px 6px', fontSize: '11px', height: '26px' }}
+              >
+                <option value={5}>5 на стр.</option>
+                <option value={10}>10 на стр.</option>
+                <option value={20}>20 на стр.</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setClientPage((p) => Math.max(1, p - 1))}
+                disabled={safeClientPage <= 1}
+                className="btn btn-secondary"
+                style={{ padding: '2px 6px', height: '26px', display: 'flex', alignItems: 'center' }}
+                title="Предыдущая страница"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span style={{ fontWeight: 500, fontSize: '11px' }}>
+                {safeClientPage} / {totalClientPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setClientPage((p) => Math.min(totalClientPages, p + 1))}
+                disabled={safeClientPage >= totalClientPages}
+                className="btn btn-secondary"
+                style={{ padding: '2px 6px', height: '26px', display: 'flex', alignItems: 'center' }}
+                title="Следующая страница"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Jobs History Table */}
       <div className="card" style={{ padding: '16px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '15px', marginBottom: '14px' }}>
-          <FileSpreadsheet size={18} color="#0284c7" />
-          История запусков
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '15px' }}>
+            <FileSpreadsheet size={18} color="#0284c7" />
+            История запусков ({jobs.length})
+          </div>
         </div>
 
         <div style={{ overflowX: 'auto' }}>
@@ -602,7 +684,7 @@ export function PriceMonitoringView() {
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job) => (
+              {pagedJobs.map((job) => (
                 <tr key={job.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                   <td style={{ padding: '10px 12px' }}>
                     <span style={{ fontWeight: 600, color: '#334155' }}>#{job.job_number || job.id.slice(0, 6)}</span>
@@ -667,7 +749,56 @@ export function PriceMonitoringView() {
             </tbody>
           </table>
         </div>
+
+        {/* Jobs Pagination Controls */}
+        {jobs.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #f1f5f9', fontSize: '12px', color: '#64748b' }}>
+            <div>
+              Показано {(safeJobPage - 1) * jobPageSize + 1}–{Math.min(safeJobPage * jobPageSize, jobs.length)} из {jobs.length} задач
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <select
+                value={jobPageSize}
+                onChange={(e) => {
+                  setJobPageSize(Number(e.target.value))
+                  setJobPage(1)
+                }}
+                className="form-input"
+                style={{ padding: '2px 6px', fontSize: '11px', height: '26px' }}
+              >
+                <option value={5}>5 на стр.</option>
+                <option value={10}>10 на стр.</option>
+                <option value={20}>20 на стр.</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setJobPage((p) => Math.max(1, p - 1))}
+                disabled={safeJobPage <= 1}
+                className="btn btn-secondary"
+                style={{ padding: '2px 6px', height: '26px', display: 'flex', alignItems: 'center' }}
+                title="Предыдущая страница"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span style={{ fontWeight: 500, fontSize: '11px' }}>
+                {safeJobPage} / {totalJobPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setJobPage((p) => Math.min(totalJobPages, p + 1))}
+                disabled={safeJobPage >= totalJobPages}
+                className="btn btn-secondary"
+                style={{ padding: '2px 6px', height: '26px', display: 'flex', alignItems: 'center' }}
+                title="Следующая страница"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
 }
+
+
