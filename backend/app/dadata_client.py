@@ -13,7 +13,16 @@ _DADATA_SUGGEST_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/sugg
 
 
 def _get_dadata_api_key() -> str:
-    return os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
+    key = os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
+    if not key:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv("/root/projects/tenderlex/.env")
+            load_dotenv()
+            key = os.getenv("DADATA_API_KEY", "").strip() or os.getenv("DADATA_TOKEN", "").strip()
+        except Exception:
+            pass
+    return key
 
 
 def _parse_dadata_suggestion(item: dict[str, Any]) -> dict[str, Any]:
