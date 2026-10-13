@@ -14,15 +14,17 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
-- Custom Price Monitoring Module, Rule 14 Semantic Validation & Excel Outlier Protection (2026-10-13):
-  - Dedicated architecture in `backend/app/price_monitoring/`: `cleaner.py` (query normalization and packaging detection), `extractor.py` (HTML crawler + footer preservation + regex INN/KPP extraction + Rule 14 Chain-of-Thought unit conversion), `excel_report.py` (2-sheet Excel report strictly following client template: rows 1-3 supplier requisites, shortened clickable links, rich hover comments, and extended register), and `pipeline.py` (parallel execution with cross-supplier unit reconciliation and outlier detection).
-  - Strict Rule 14 Semantic Matching: eliminates homonyms, false positives, and trivial substring matching via mandatory Chain-of-Thought (`nomenclature_class`, `site_product_name`, `semantic_match_reason` before `is_relevant`). Rejects military armor for industrial crushers, automotive pistons for crane pins, and marine sensors for industrial codes.
-  - Excel Formula Outlier Protection: `=MIN(...)` and `=AVERAGE(...)` formulas dynamically reference only clean quotes (`clean_col_letters`), isolating anomalous or retail pricing from procurement summaries while preserving full transparency via colored cells and explanatory comments.
-  - Intelligent unit conversion & tare packaging reconciliation: automatically converts cylinder gas prices (50L propane -> 21 kg gas, 40L oxygen -> 6.3 m³ gas), metric weight (tons <-> kg), and packs/pieces, eliminating unit price discrepancies.
-  - Zero-cost guarantee for unfound items: clients are charged strictly for positions where confirmed public prices were found (`charge_price_monitoring_job`), charging 0 ₽ for missing/custom-cast positions.
-  - Granular pricing controls: default 50 ₽ per item configurable globally via `SystemSettings`, with per-client tariff overrides in admin panel.
-  - Customer cabinet integration: conditional 5th tab «Мониторинг цен» in Next.js web cabinet with Excel drag-and-drop, real-time balance transparency, and direct `.xlsx` download.
-  - Verified on live tasks #877 (20 positions, 100%), #878 (6 positions, 100%), #879 (5 positions, 100%), 839 backend tests passing (100%), and live production deployment.
+- Custom Price Monitoring Module: Consensus Clustering, Outlier Pruning, Pagination & Live Verification (2026-10-13):
+  - Consensus Clustering Algorithm (`pipeline.py`, `excel_report.py`): sliding-window density clustering identifies the dominant consensus cluster within `cluster_ratio` (default $\le 2.2x$). Quotes outside the consensus cluster are pruned as outliers (`is_outlier = True`), completely excluded from Excel report columns and `=MIN`/`=AVERAGE` formulas. If all quotes diverge without consensus, cells are marked «разброс цен» with an explanatory tooltip to safeguard procurement.
+  - Quorum Guarantee (>= 3 Sources per Item): adaptive 2-wave search architecture. Wave 1 queries commercial wholesale and retail sources; if valid quotes $< 3$, Wave 2 fires industry-specific broad queries across up to 45 candidate URLs. Snippet harvesting ensures price extraction even when vendor sites block automated crawlers (HTTP 401/403/444/503).
+  - Admin Panel Usability & Pagination (`PriceMonitoringView.tsx`): full client and job history pagination (5 / 10 / 20 items per page) with page position counters, compact Prev/Next controls, quick filter tabs («Все», «С доступом», «С индив. ценой»), and settings grid (base price, 3/4/5 suppliers, position limit, concurrency, cluster ratio, marketplace exclusion toggle).
+  - Fresh Live Verification on 4 New Industrial Goods (`scripts/test_live_new_products.py`):
+    * Манометр МП3-У 0-1.0 МПа [ШТ]: 4 consensus sources [600, 725, 725, 929] ₽ (spread 1.55x, 2306 ₽ outlier pruned).
+    * Кран шаровой 1/2" [ШТ]: 4 consensus sources [284, 353, 482, 482] ₽ (spread 1.70x, 851 ₽ outlier pruned).
+    * Автоматический выключатель ВА47-29 16А [ШТ]: 5 consensus sources [136, 140, 155, 193, 240] ₽ (spread 1.76x).
+    * Перчатки х/б с ПВХ 4 нити [ПАР]: 5 consensus sources [13.13, 14.5, 20.75, 22, 23] ₽ (spread 1.75x).
+    * 100% quorum achieved ($\ge 3$ sources per item), tight pricing consensus, zero wild price spreads in report columns.
+  - Full test suite passing: 840 backend tests and 54 subtests (100%), verified production deployment on `202.71.13.57`.
 - Large Specification Scaling & Anti-Hang Guardrails for 1,000+ Items (2026-10-11):
   - Linear Excel matching optimization (`backend/app/report_builder.py`): eliminated $O(N^2 \times M)$ nested matching hang, reducing 1,000-item Excel generation time to 4.7s (2.2ms match step) via dictionary lookup.
   - Excel cell character limit protection: capped cell A3 summary breakdown to top 20 items + explicit continuation counter, strictly preventing 32,767 OpenXML corruption in Microsoft Excel.
