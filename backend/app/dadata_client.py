@@ -160,23 +160,53 @@ async def suggest_company_by_query(query: str, *, count: int = 1, api_key: str |
 async def enrich_company_by_inn_or_query(
     inn: str | None = None,
     query: str | None = None,
+    domain: str | None = None,
+    city: str | None = None,
     *,
     api_key: str | None = None,
 ) -> dict[str, Any]:
     """
-    Flexible enrichment: tries INN first, falls back to company name query.
+    Flexible enrichment with multi-tier waterfall resolution:
+    1. Direct INN lookup (findById)
+    2. Domain lookup via DaData Suggest (e.g. dealmed.ru, evroballon.ru, fortland.ru)
+    3. Query + City lookup (e.g. "Атон Калуга", "Офисмаг Воронеж")
+    4. Clean Query lookup (e.g. "Автопитер", "Деалмед")
     """
+    # 1. Прямой поиск по ИНН
     if inn:
         cleaned_inn = re.sub(r"\D+", "", str(inn))
         if len(cleaned_inn) in (10, 12):
             res = await enrich_company_by_inn(cleaned_inn, api_key=api_key)
-            if res:
+            if res and res.get("inn"):
                 return res
 
+    # 2. Поиск по чистому домену (многие компании зарегистрированы по сайту)
+    if domain:
+        clean_d = domain.lower().replace("https://", "").replace("http://", "").split("/")[0]
+        if clean_d.startswith("www."):
+            clean_d = clean_d[4:]
+        if "." in clean_d and len(clean_d) >= 4:
+            sugs = await suggest_company_by_query(clean_d, count=1, api_key=api_key)
+            if sugs and sugs[0].get("inn"):
+                return sugs[0]
+
+    # 3. Поиск по связке: Название + Город/Регион
+    if query and city:
+        clean_q = re.sub(r'["«»]', '', query).strip()
+        clean_c = re.sub(r'(г\.|город|\s)', '', city).strip()
+        if len(clean_q) >= 3 and len(clean_c) >= 3:
+            sugs = await suggest_company_by_query(f"{clean_q} {clean_c}", count=1, api_key=api_key)
+            if sugs and sugs[0].get("inn"):
+                return sugs[0]
+
+    # 4. Поиск по названию компании / бренда
     if query:
-        suggestions = await suggest_company_by_query(query, count=1, api_key=api_key)
-        if suggestions:
-            return suggestions[0]
+        clean_q = re.sub(r'["«»]', '', query).strip()
+        if len(clean_q) >= 3:
+            sugs = await suggest_company_by_query(clean_q, count=1, api_key=api_key)
+            if sugs and sugs[0].get("inn"):
+                return sugs[0]
 
     return {}
+
 

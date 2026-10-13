@@ -42,6 +42,17 @@ def format_short_url(url: str) -> str:
         return url[:35]
 
 
+def _format_contacts_multiline(contacts: Optional[str]) -> str:
+    """Форматирует контакты с переносами строк (телефон, email, город) для предотвращения обрезания."""
+    if not contacts:
+        return "контакты на сайте"
+    parts = [p.strip() for p in contacts.split(",") if p.strip()]
+    if len(parts) <= 1:
+        return contacts
+    return "\n".join(parts)
+
+
+
 def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
     """Формирует всплывающую подсказку (комментарий Excel) с реквизитами поставщика и пересчетом."""
     lines = [
@@ -146,14 +157,20 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
         contacts_text = "контакты"
 
         if sup_quote:
-            sup_name_text = f"Поставщик {s_idx} ({sup_quote.company_name})"
+            c_name = sup_quote.company_name.strip()
+            if not any(c_name.startswith(p) for p in ("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
+                c_display = f'ООО "{c_name}"'
+            else:
+                c_display = c_name
+
+            sup_name_text = f"Поставщик {s_idx} ({c_display})"
             inn_parts = []
             if sup_quote.inn:
                 inn_parts.append(f"ИНН {sup_quote.inn}")
             if sup_quote.kpp:
                 inn_parts.append(f"КПП {sup_quote.kpp}")
-            inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: на сайте"
-            contacts_text = sup_quote.contacts or "контакты на сайте"
+            inn_kpp_text = " / ".join(inn_parts) if inn_parts else "ИНН: уточняется"
+            contacts_text = _format_contacts_multiline(sup_quote.contacts)
 
         # Строка 1: Поставщик N (наименование)
         ws.merge_cells(f"{col_start_let}1:{col_end_let}1")
@@ -259,14 +276,23 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
 
         current_row += 1
 
-    # Настройка ширины колонок
-    ws.column_dimensions["A"].width = 38
-    ws.column_dimensions["B"].width = 10
+    # Настройка высоты строк шапки и данных Листа 1 (предотвращает схлопывание контактов и названий)
+    ws.row_dimensions[1].height = 28  # Поставщик N (ООО "Наименование")
+    ws.row_dimensions[2].height = 22  # ИНН / КПП
+    ws.row_dimensions[3].height = 56  # Контакты (телефоны, email, город) - свободно на 2-3 строки
+    ws.row_dimensions[4].height = 24  # Заголовки колонок "Цена руб./ед.", "источник (ссылка)"
+
+    for r in range(5, current_row):
+        ws.row_dimensions[r].height = 28  # Строки номенклатуры
+
+    # Настройка ширины колонок Листа 1
+    ws.column_dimensions["A"].width = 48
+    ws.column_dimensions["B"].width = 12
     for s_idx in range(1, max_suppliers + 1):
         col_start_let = get_column_letter(3 + (s_idx - 1) * 2)
         col_end_let = get_column_letter(4 + (s_idx - 1) * 2)
-        ws.column_dimensions[col_start_let].width = 16
-        ws.column_dimensions[col_end_let].width = 28
+        ws.column_dimensions[col_start_let].width = 18
+        ws.column_dimensions[col_end_let].width = 32
 
     # --- ЛИСТ 2: Подробный детализированный реестр для закупщика/1С ---
     ws2 = wb.create_sheet(title="Детализированный реестр")
@@ -331,12 +357,15 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                     cell.font = font_link
         row_num += 1
 
-    # Ширина колонок листа 2
+    # Высота и ширина колонок листа 2
+    ws2.row_dimensions[1].height = 26
+    for r in range(2, row_num):
+        ws2.row_dimensions[r].height = 24
     ws2.column_dimensions["A"].width = 6
-    ws2.column_dimensions["B"].width = 38
-    ws2.column_dimensions["C"].width = 12
+    ws2.column_dimensions["B"].width = 46
+    ws2.column_dimensions["C"].width = 14
     ws2.column_dimensions["D"].width = 12
-    ws2.column_dimensions["E"].width = 14
+    ws2.column_dimensions["E"].width = 18
 
     wb.save(output_path)
     logger.info("Saved price monitoring excel to %s", output_path)

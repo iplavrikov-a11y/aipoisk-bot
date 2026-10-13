@@ -368,9 +368,17 @@ URL страницы: {url}
 
         # Обогащение реквизитами через DaData (ИНН, КПП, официальное наименование, статус)
         try:
+            detected_city = None
+            if contacts:
+                city_match = re.search(r'(?:г\.|город)\s*([А-Яа-я\-]{3,25})', contacts)
+                if city_match:
+                    detected_city = city_match.group(1)
+
             dadata_info = await enrich_company_by_inn_or_query(
                 inn=quote.inn,
-                query=quote.company_name if quote.company_name != domain else None,
+                query=quote.company_name,
+                domain=domain,
+                city=detected_city,
             )
             if dadata_info:
                 if not quote.inn and dadata_info.get("inn"):
@@ -378,11 +386,17 @@ URL страницы: {url}
                 if not quote.kpp and dadata_info.get("kpp"):
                     quote.kpp = dadata_info["kpp"]
                 official_name = dadata_info.get("company_name")
-                if official_name and (quote.company_name == domain or not quote.company_name.startswith(("ООО", "АО", "ЗАО", "ПАО", "ИП"))):
+                if official_name:
                     quote.company_name = official_name
                 city_or_addr = dadata_info.get("city") or dadata_info.get("legal_address")
                 if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
                     quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
+
+            # Гарантируем форму собственности (ООО/АО/ИП), если поставщик корпоративный
+            if not quote.company_name.startswith(("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
+                clean_c = quote.company_name.strip(" '\"")
+                if clean_c != domain and "." not in clean_c:
+                    quote.company_name = f'ООО "{clean_c}"'
         except Exception as d_exc:
             logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)
 
