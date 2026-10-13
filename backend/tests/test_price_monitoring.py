@@ -423,4 +423,113 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     assert ws["N5"].value in (None, "")
 
 
+def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):
+    import openpyxl
+    from app.price_monitoring.excel_report import generate_price_monitoring_excel
+
+    # 5 quotes, but max_suppliers=3: column I (col 9) is Min price, column J (col 10) is Avg price!
+    item = ItemPriceResult(
+        row_number=1,
+        raw_name="Лента диаграммная 0-100 120мм Р1763 с длинным наименованием для проверки переноса строк",
+        clean_name="Лента диаграммная 0-100 120мм Р1763",
+        unit="М2",
+        quotes=[
+            SupplierQuote(
+                company_name="ООО Бумага",
+                inn="7701234567",
+                contacts="Тел: +7 (495) 123-45-67, Email: info@bumaga.ru, г. Москва, ул. Ленина, д. 5",
+                url="https://bumaga.ru/lenta",
+                price_rub=230.0,
+                is_price_found=True,
+            ),
+            SupplierQuote(
+                company_name="ООО Фортланд",
+                inn="7814109659",
+                contacts="+7 495 799-02-12, sales@fortland.ru, г. Санкт-Петербург",
+                url="https://fortland.ru/item",
+                price_rub=297.0,
+                is_price_found=True,
+            ),
+            SupplierQuote(
+                company_name="ООО ОФСИ",
+                inn="5047123720",
+                contacts="8 (800) 200-00-00, ofsi@mail.ru",
+                url="https://ofsi.ru/p19",
+                price_rub=310.0,
+                is_price_found=True,
+            ),
+            SupplierQuote(
+                company_name="ООО Спецбумага",
+                inn="6670000000",
+                contacts="8 800 111-22-33",
+                url="https://specbumaga.ru/p",
+                price_rub=320.0,
+                is_price_found=True,
+            ),
+            SupplierQuote(
+                company_name="ООО Полиграф",
+                inn="5401000000",
+                contacts="poly@nsk.ru",
+                url="https://poligraph.ru/p",
+                price_rub=330.0,
+                is_price_found=True,
+            ),
+        ],
+    )
+
+    out_file = tmp_path / "test_no_circular.xlsx"
+    generate_price_monitoring_excel([item], str(out_file), max_suppliers=3)
+
+    wb = openpyxl.load_workbook(str(out_file), data_only=False)
+    ws = wb["Пример отчета"]
+
+    # Header check: columns C, E, G are suppliers 1, 2, 3; Column I is Min, Column J is Avg
+    assert ws["I1"].value == "Мин. цена, руб."
+    assert ws["J1"].value == "Средняя цена, руб."
+
+    # Cell I5 formula: MUST strictly reference C5,E5,G5 and MUST NOT reference I5 or K5!
+    min_formula = str(ws["I5"].value)
+    avg_formula = str(ws["J5"].value)
+    assert min_formula == "=MIN(C5,E5,G5)"
+    assert avg_formula == "=AVERAGE(C5,E5,G5)"
+    assert "I5" not in min_formula
+    assert "K5" not in min_formula
+
+    # Check cell D5 value: company and phone present, email present, NO address!
+    d5_val = str(ws["D5"].value)
+    assert "Бумага" in d5_val
+    assert "7701234567" in d5_val
+    assert "+7 (495) 123-45-67" in d5_val
+    assert "info@bumaga.ru" in d5_val
+    assert "Москва" not in d5_val
+    assert "Ленина" not in d5_val
+
+    # Check hyperlink is preserved
+    assert ws["D5"].hyperlink is not None
+    assert ws["D5"].hyperlink.target == "https://bumaga.ru/lenta"
+
+    # Dynamic row height check: row 5 has multiple lines of text -> height must be >= 60
+    assert ws.row_dimensions[5].height >= 60
+
+
+def test_fallback_queries_short_names():
+    from app.price_monitoring.cleaner import build_fallback_broad_queries, build_commercial_search_queries
+
+    q_wheel = build_fallback_broad_queries("Колесо Л-04.524", "шт")
+    assert len(q_wheel) >= 2
+    assert any("Л-04.524" in q or "л-04.524" in q.lower() for q in q_wheel)
+
+    q_rag = build_fallback_broad_queries("Ветошь х/б", "кг")
+    assert len(q_rag) >= 2
+    assert any("ветошь" in q.lower() for q in q_rag)
+
+    q_pin = build_fallback_broad_queries("Палец К4-79", "шт")
+    assert len(q_pin) >= 2
+    assert any("к4-79" in q.lower() for q in q_pin)
+
+    comm_wheel = build_commercial_search_queries("Колесо Л-04.524", "шт")
+    assert len(comm_wheel) >= 3
+
+
+
 

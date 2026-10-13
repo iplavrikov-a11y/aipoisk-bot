@@ -98,25 +98,42 @@ def build_commercial_search_queries(clean_name: str, unit: str) -> list[str]:
     else:
         queries.append(f"{clean_name} купить цена в наличии")
 
-    # 2. Интернет-магазины / розница
-    queries.append(f"{clean_name} купить в интернет магазине цена")
-
-    # 3. Прайс-лист / каталог
-    queries.append(f"{clean_name} стоимость каталог поставщики")
-
-    # 4. В наличии с доставкой
+    # 2. Поставщики и прайс-листы со склада
     queries.append(f"{clean_name} прайс лист купить со склада")
-    return queries
+    queries.append(f"{clean_name} стоимость каталог поставщики")
+    queries.append(f"{clean_name} купить цена от производителя")
+
+    # 3. Выделение артикула или маркировки (например, Л-04.524, ВАТИ-202, Р1763, К4-79, ВА47-29)
+    art_match = re.search(r'([а-яa-z]?[\s\-]?\d+[\.\-\/]\d+[\.\-\/]?\d*|[а-яa-z]{2,}[\s\-]?\d+)', clean_name, flags=re.IGNORECASE)
+    if art_match:
+        art_code = art_match.group(1).strip()
+        if len(art_code) >= 3 and any(c.isdigit() for c in art_code):
+            tokens = clean_name.split()
+            noun = tokens[0] if tokens else ""
+            queries.append(f"{noun} {art_code} купить цена".strip())
+            queries.append(f'"{art_code}" цена в наличии')
+
+    # Убираем дубли
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_cln = " ".join(q.split())
+        if q_cln and q_cln.lower() not in seen:
+            seen.add(q_cln.lower())
+            unique_queries.append(q_cln)
+
+    return unique_queries
 
 
 def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
     """
-    Генерирует расширенные адаптивные запросы для 2-й волны поиска,
-    когда по жестким первоначальным запросам найдено < 3 подтвержденных цен.
-    Снимает жесткие ограничения и добавляет отраслевой контекст (дробилки, сальники, бумага, муфты).
+    Генерирует расширенные адаптивные запросы для волн добора поставщиков,
+    когда по первоначальным запросам найдено < 3 подтвержденных цен согласованного кластера.
+    Снимает жесткие ограничения, выделяет ключевые артикулы и добавляет отраслевой контекст.
     """
     queries: list[str] = []
     text_lower = clean_name.lower()
+    norm_u = normalize_unit(unit)
 
     # 1. Диаграммная бумага и ленты (Р-1763, 0-100, 120мм)
     if "диаграммн" in text_lower:
@@ -124,6 +141,7 @@ def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
         if r_num:
             queries.append(f"Лента диаграммная Р{r_num.group(1)} купить цена")
             queries.append(f"Диаграммная бумага Р-{r_num.group(1)} прайс лист")
+            queries.append(f"Бумага диаграммная рулонная Р{r_num.group(1)} поставщики")
         else:
             queries.append("Лента диаграммная реестровая купить цена")
 
@@ -136,19 +154,24 @@ def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
             if dim_match:
                 queries.append(f"{base_q} {dim_match.group(1)} купить цена")
             queries.append(f"{base_q} цена за кг в наличии")
+            queries.append(f"{base_q} прайс лист от производителя")
         else:
             queries.append("Набивка сальниковая купить цена за кг")
 
-    # 3. Дробильно-размольное оборудование (Било, Билодержатель, Броня, Футеровка)
-    elif any(w in text_lower for w in ("било", "билодержател", "броня", "футеровк")):
+    # 3. Дробильно-размольное оборудование и литье (Било, Билодержатель, Броня, Футеровка, Колесо)
+    elif any(w in text_lower for w in ("било", "билодержател", "броня", "футеровк", "колесо")):
         art_match = re.search(r'([а-яa-z]?[\s\-]?\d+[\.\-\/]\d+[\.\-\/]?\d*)', text_lower)
         art_str = art_match.group(1).replace(" ", "") if art_match else ""
         if "билодержател" in text_lower:
             queries.append(f"Билодержатель {art_str} дробилка купить цена".strip())
             queries.append(f"Билодержатель молотковой дробилки {art_str} производитель".strip())
         elif "било" in text_lower:
-            queries.append(f"Било молотковой дробилки {art_str} купить цена".strip())
-            queries.append(f"Било {art_str} запасные части мельниц цена".strip())
+            queries.append(f"Било {art_str} купить цена".strip())
+            queries.append(f"Било молотковой дробилки {art_str} цена".strip())
+            queries.append(f"Било стальное {art_str} литейное производство".strip())
+        elif "колесо" in text_lower:
+            queries.append(f"Колесо {art_str} крановое купить цена".strip())
+            queries.append(f"Колесо {art_str} цена в наличии".strip())
         elif "броня" in text_lower or "футеровк" in text_lower:
             queries.append(f"Броня радиальная {art_str} бетоносмеситель купить цена".strip())
             queries.append(f"Броня {art_str} литье запчасти цена".strip())
@@ -159,8 +182,23 @@ def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
         art_str = art_match.group(1).replace(" ", "") if art_match else ""
         queries.append(f"Палец {art_str} крановый муфта купить цена".strip())
         queries.append(f"Палец муфты МУВП {art_str} цена в наличии".strip())
+        queries.append(f"Палец в сборе {art_str} кольца мувп производитель".strip())
 
-    # 5. Сложные датчики и контроллеры (Rosemount, GT13E2, Danfoss, Wika)
+    # 5. Ветошь и обтирочные материалы
+    elif "ветошь" in text_lower:
+        queries.append("Ветошь обтирочная х/б купить цена")
+        queries.append("Ветошь обтирочная хлопчатобумажная купить за кг")
+        queries.append("Ветошь х б прайс лист от производителя")
+        queries.append("Ветошь трикотаж х б оптом цена")
+
+    # 6. Пружины и канцелярские/переплетные расходники
+    elif "пружин" in text_lower and ("пластик" in text_lower or "переплет" in text_lower or "брошюр" in text_lower):
+        m_diam = re.search(r'(\d+)\s*мм', text_lower)
+        d_str = f"{m_diam.group(1)} мм" if m_diam else ""
+        queries.append(f"Пружины пластиковые для переплета {d_str} купить цена".strip())
+        queries.append(f"Пружина пластиковая для брошюрования {d_str} оптом".strip())
+
+    # 7. Сложные датчики и контроллеры (Rosemount, GT13E2, Danfoss, Wika)
     elif any(b in text_lower for b in ("rosemount", "gt13e2", "danfoss", "wika", "endress", "siemens")):
         words = clean_name.split()
         brand = words[0]
@@ -168,11 +206,21 @@ def build_fallback_broad_queries(clean_name: str, unit: str) -> list[str]:
         queries.append(f"Датчик {brand} {model_part} купить цена")
         queries.append(f"{brand} {model_part} стоимость в наличии поставщики")
 
-    # 6. Общее упрощение: берем главное существительное + марку/ГОСТ без лишних параметров
+    # 8. Газы (пропан, кислород, аргон, ацетилен)
+    elif any(g in text_lower for g in ("пропан", "кислород", "аргон", "ацетилен", "углекислот")):
+        gas_word = next(g for g in ("пропан", "кислород", "аргон", "ацетилен", "углекислот") if g in text_lower)
+        queries.append(f"{gas_word.capitalize()} технический в баллонах заправка цена")
+        queries.append(f"Купить {gas_word} заправка баллонов поставщики")
+
+    # 9. Базовый универсальный добор для любых позиций (даже из 1-3 слов!):
+    clean_no_punct = re.sub(r'[,;:()]+', ' ', clean_name).strip()
+    queries.append(f"{clean_no_punct} цена руб")
+    queries.append(f"{clean_no_punct} купить у поставщика")
+    queries.append(f"{clean_no_punct} прайс лист в наличии")
+
     tokens = clean_name.split()
-    if len(tokens) > 3:
-        # Укороченный запрос из первых 3-4 ключевых слов
-        short_name = " ".join(tokens[:4])
+    if len(tokens) >= 2:
+        short_name = " ".join(tokens[:3])
         queries.append(f"{short_name} купить цена")
         queries.append(f"{short_name} прайс лист в наличии")
 

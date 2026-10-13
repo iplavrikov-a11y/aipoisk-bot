@@ -327,8 +327,8 @@ async def process_single_item(
     # Сбор и извлечение цен с найденных страниц
     seen_domains: set[str] = set()
 
-    # Оцениваем до (max_suppliers + 2) котировок, чтобы алгоритм кластеризации имел запас для отсева выбросов
-    target_eval_quotes = max(4, max_suppliers + 2)
+    # Оцениваем до (max_suppliers + 3) котировок, чтобы алгоритм кластеризации имел достаточный запас для отсева выбросов
+    target_eval_quotes = max(6, max_suppliers + 3)
 
     async def _evaluate_candidates(urls: list[str]) -> None:
         for url in urls:
@@ -393,15 +393,21 @@ async def process_single_item(
 
     await _evaluate_candidates(candidate_urls)
 
+    def _get_consensus_count() -> int:
+        valid_qs = [q for q in item_res.quotes if q.is_price_found and q.price_rub > 0]
+        if not valid_qs:
+            return 0
+        cluster_and_reconcile_item_quotes(item_res, cluster_ratio=cluster_ratio)
+        return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
+
     # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ КВОРУМА):
-    # Если найдено менее min_target_suppliers подтвержденных цен,
-    # запускаем расширенные запросы без жестких ограничений и с отраслевым контекстом
-    valid_count = len([q for q in item_res.quotes if q.is_price_found and q.price_rub > 0])
-    if valid_count < min_target_suppliers:
+    # Проверяем не просто число котировок, а размер подтвержденного согласованного кластера!
+    consensus_count = _get_consensus_count()
+    if consensus_count < min_target_suppliers:
         fallback_queries = build_fallback_broad_queries(clean, unit)
         wave2_urls: list[str] = []
         async with search_semaphore:
-            for bq in fallback_queries[:4]:
+            for bq in fallback_queries[:5]:
                 try:
                     b_results = await engine.search(
                         bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
@@ -413,13 +419,45 @@ async def process_single_item(
                                 wave2_urls.append(r.url)
                 except Exception as b_exc:
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
-                if len(candidate_urls) + len(wave2_urls) >= 45:
+                if len(candidate_urls) + len(wave2_urls) >= 50:
                     break
 
         if wave2_urls:
             await _evaluate_candidates(wave2_urls)
+            consensus_count = _get_consensus_count()
 
-    # Кластеризация цен и жесткая отсечка выбросов
+    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ПРИ НЕХВАТКЕ ДО 3 ПОСТАВЩИКОВ):
+    # Если все еще меньше min_target_suppliers, подключаем широкие коммерческие запросы и каталоги
+    if consensus_count < min_target_suppliers:
+        tokens = clean.split()
+        wave3_queries = [
+            f"{clean} цена поставщики",
+            f"{clean} прайс каталог склад",
+        ]
+        if len(tokens) >= 2:
+            wave3_queries.append(f"{tokens[0]} {tokens[1]} купить цена")
+
+        wave3_urls: list[str] = []
+        async with search_semaphore:
+            for wq in wave3_queries:
+                try:
+                    w_results = await engine.search(
+                        wq, max_results=20, enrich_query=False, filter_marketplaces=False
+                    )
+                    for r in w_results:
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=False):
+                            url_to_meta[r.url] = r
+                            if r.url not in candidate_urls and r.url not in wave2_urls and r.url not in wave3_urls:
+                                wave3_urls.append(r.url)
+                except Exception as w_exc:
+                    logger.warning("Wave 3 search query error for %s: %s", wq, w_exc)
+                if len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 65:
+                    break
+
+        if wave3_urls:
+            await _evaluate_candidates(wave3_urls)
+
+    # Итоговая кластеризация цен и жесткая отсечка выбросов
     cluster_and_reconcile_item_quotes(item_res, cluster_ratio=cluster_ratio)
 
     item_res.status = "found" if item_res.has_prices else ("divergent" if any(q.price_rub > 0 for q in item_res.quotes) else "not_found")
