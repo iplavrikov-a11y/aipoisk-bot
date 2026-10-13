@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Optional
-from urllib.parse import urlparse
+from typing import Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from ..ai import call_llm, parse_json_object
 from ..models import SystemSettings
+from .cleaner import extract_package_hints, normalize_unit
 from .models import SupplierQuote
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,49 @@ def is_valid_domain(url: str) -> bool:
         return False
 
 
-async def fetch_page_content(client: httpx.AsyncClient, url: str) -> Optional[str]:
+def _extract_inn_kpp_contacts(html: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Извлекает ИНН, КПП и базовые контакты из HTML регулярными выражениями."""
+    inn: Optional[str] = None
+    kpp: Optional[str] = None
+    contacts_list: list[str] = []
+
+    # ИНН (10 цифр для юрлиц, 12 для ИП)
+    m_inn = re.findall(r'(?:ИНН|инн|taxid|inn)[\s:№#«"\'\xa0]{0,10}(\d{10}|\d{12})\b', html)
+    if m_inn:
+        inn = m_inn[0]
+
+    # КПП (9 цифр)
+    m_kpp = re.findall(r'(?:КПП|кпп)[\s:№#«"\'\xa0]{0,10}(\d{9})\b', html)
+    if m_kpp:
+        kpp = m_kpp[0]
+
+    # Телефоны РФ
+    phones = re.findall(r'(?:(?:\+7|8)[\s\-\(]{0,2}\d{3,4}[\s\-\)]{0,2}\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2})', html)
+    if phones:
+        # фильтруем слишком короткие/длинные или явно мусорные
+        valid_phones = [p.strip() for p in phones if len(re.sub(r'\D', '', p)) in (11, 10)]
+        if valid_phones:
+            contacts_list.append(valid_phones[0])
+
+    # Email
+    emails = re.findall(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', html)
+    if emails:
+        clean_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
+        if clean_emails:
+            contacts_list.append(clean_emails[0])
+
+    contacts_str = ", ".join(contacts_list) if contacts_list else None
+    return inn, kpp, contacts_str
+
+
+async def fetch_page_content_and_meta(
+    client: httpx.AsyncClient,
+    url: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Скачивает страницу, извлекает текст, ИНН, КПП и контакты (включая подвал).
+    Возвращает (текст_страницы, inn, kpp, contacts).
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -41,14 +84,160 @@ async def fetch_page_content(client: httpx.AsyncClient, url: str) -> Optional[st
     try:
         resp = await client.get(url, headers=headers, timeout=8.0)
         if resp.status_code != 200 or not resp.text:
-            return None
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "iframe", "noscript"]):
+            return None, None, None, None
+
+        raw_html = resp.text
+        inn, kpp, contacts = _extract_inn_kpp_contacts(raw_html)
+
+        soup = BeautifulSoup(raw_html, "html.parser")
+
+        # Находим ссылку на страницу контактов/реквизитов, если ИНН не найден в теле страницы
+        contacts_suburl: Optional[str] = None
+        if not inn:
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"].strip()
+                if re.search(r'(?:contacts|kontakty|rekvizit|requisites|about|o-kompanii)', href, re.I):
+                    full_c_url = urljoin(url, href)
+                    if urlparse(full_c_url).netloc == urlparse(url).netloc:
+                        contacts_suburl = full_c_url
+                        break
+
+        # Извлекаем отдельно текст футера (реквизиты, телефоны)
+        footer_text = ""
+        footer_tag = soup.find("footer")
+        if footer_tag:
+            footer_text = " ".join(footer_tag.stripped_strings)
+
+        # Удаляем скрипты и стили
+        for tag in soup(["script", "style", "iframe", "noscript"]):
             tag.decompose()
-        text = " ".join(soup.stripped_strings)
-        return text[:4000] if text else None
+
+        main_text = " ".join(soup.stripped_strings)
+
+        # Объединяем основной текст и реквизиты подвала
+        combined_text = main_text[:3500]
+        if footer_text:
+            combined_text += "\n\n[РЕКВИЗИТЫ И ПОДВАЛ САЙТА]:\n" + footer_text[:1000]
+
+        # Если ИНН всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
+        if not inn and contacts_suburl:
+            try:
+                c_resp = await client.get(contacts_suburl, headers=headers, timeout=4.0)
+                if c_resp.status_code == 200:
+                    c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
+                    if c_inn:
+                        inn = c_inn
+                    if c_kpp and not kpp:
+                        kpp = c_kpp
+                    if c_contacts and not contacts:
+                        contacts = c_contacts
+            except Exception:
+                pass
+
+        return combined_text, inn, kpp, contacts
     except Exception:
-        return None
+        return None, None, None, None
+
+
+async def fetch_page_content(client: httpx.AsyncClient, url: str) -> Optional[str]:
+    """Обратная совместимость: возвращает только текст страницы."""
+    text, _, _, _ = await fetch_page_content_and_meta(client, url)
+    return text
+
+
+def reconcile_quote_unit(
+    quote: SupplierQuote,
+    target_item_name: str,
+    target_unit: str,
+) -> SupplierQuote:
+    """
+    Приводит цену к единице измерения заказчика (КГ, М3, Т, УП, ШТ)
+    и формирует прозрачный понятный комментарий.
+    """
+    norm_target = normalize_unit(target_unit)
+    hints = extract_package_hints(target_item_name, target_unit)
+    price = quote.raw_price_rub if quote.raw_price_rub > 0 else quote.price_rub
+    site_u = normalize_unit(quote.site_unit or quote.unit or "")
+
+    # 1. Газ в баллонах (Пропан, Кислород, Азот, Аргон, Углекислота)
+    gas_type = hints.get("gas_type")
+    cyl_vol = hints.get("cylinder_volume_l")
+
+    # ПРОПАН: при запросе в КГ (баллон 50л содержит ~21 кг газа)
+    if gas_type == "propane" or "пропан" in target_item_name.lower():
+        if norm_target in ("кг", "к-г"):
+            # Если цена указана за баллон 50л целиком (обычно 1800 - 3500 руб), а нужна за кг (~80-130 руб)
+            if price > 400 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 50):
+                converted_p = round(price / 21.0, 2)
+                quote.price_rub = converted_p
+                quote.unit = norm_target
+                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 50л (21 кг газа). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
+                return quote
+
+    # КИСЛОРОД: при запросе в М3 (баллон 40л содержит ~6.3 м³ газа при 150 атм)
+    if gas_type == "oxygen" or "кислород" in target_item_name.lower():
+        if norm_target in ("м3", "куб"):
+            # Если цена указана за баллон целиком (обычно 700 - 1800 руб), а нужна за м³ (~80-160 руб)
+            if price > 250 or "баллон" in (quote.site_unit or "").lower() or (cyl_vol == 40):
+                converted_p = round(price / 6.3, 2)
+                quote.price_rub = converted_p
+                quote.unit = norm_target
+                quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за баллон 40л (6.3 м³ газа). Пересчитано в м³: {converted_p:,.2f} ₽/м³"
+                return quote
+
+    # 2. МЕТАЛЛОПРОКАТ / ВЕС: Тонна <-> Килограмм
+    if norm_target in ("т", "тонна"):
+        if site_u in ("кг", "килограмм") and price < 5000:
+            converted_p = round(price * 1000.0, 2)
+            quote.price_rub = converted_p
+            quote.unit = norm_target
+            quote.conversion_comment = f"На сайте: {price:,.2f} ₽/кг. Пересчитано в тонны: {converted_p:,.0f} ₽/т"
+            return quote
+    elif norm_target in ("кг", "килограмм"):
+        if (site_u in ("т", "тонна") or price > 20000) and any(kw in target_item_name.lower() for kw in ("лист", "полоса", "круг", "труба", "арматура", "сталь", "уголок")):
+            converted_p = round(price / 1000.0, 2)
+            quote.price_rub = converted_p
+            quote.unit = norm_target
+            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за тонну. Пересчитано в кг: {converted_p:,.2f} ₽/кг"
+            return quote
+
+    # 3. ЭЛЕКТРОДЫ СВАРОЧНЫЕ (часто фасовка 5 кг или 5.5 кг)
+    if "электрод" in target_item_name.lower() and norm_target == "кг":
+        # Если цена свыше 500 руб (пачка 5.5 кг)
+        pack_kg = hints.get("pack_weight_kg") or 5.0
+        if price > 500 and ("пач" in (quote.site_unit or "").lower() or "уп" in (quote.site_unit or "").lower() or price > 600):
+            converted_p = round(price / pack_kg, 2)
+            quote.price_rub = converted_p
+            quote.unit = norm_target
+            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за пачку ({pack_kg} кг). Пересчитано в кг: {converted_p:,.2f} ₽/кг"
+            return quote
+
+    # 4. ШТУКИ И УПАКОВКИ: УП <-> ШТ
+    pack_pcs = hints.get("pack_pieces")
+    if pack_pcs and pack_pcs > 1:
+        if norm_target == "шт" and site_u == "уп" and price > 100:
+            converted_p = round(price / pack_pcs, 2)
+            quote.price_rub = converted_p
+            quote.unit = norm_target
+            quote.conversion_comment = f"На сайте: {price:,.0f} ₽ за уп ({pack_pcs} шт). Пересчитано в шт: {converted_p:,.2f} ₽/шт"
+            return quote
+        elif norm_target == "уп" and site_u == "шт" and price < 50:
+            converted_p = round(price * pack_pcs, 2)
+            quote.price_rub = converted_p
+            quote.unit = norm_target
+            quote.conversion_comment = f"На сайте: {price:,.2f} ₽/шт. Пересчитано в уп ({pack_pcs} шт): {converted_p:,.2f} ₽/уп"
+            return quote
+
+    # Единица совпала или стандартная
+    quote.price_rub = price
+    quote.unit = norm_target
+    if not quote.conversion_comment:
+        if quote.site_unit and quote.site_unit != norm_target:
+            quote.conversion_comment = f"Цена на сайте указана за {quote.site_unit}"
+        else:
+            quote.conversion_comment = f"Цена за 1 {norm_target}"
+
+    return quote
 
 
 async def extract_supplier_quote(
@@ -57,33 +246,59 @@ async def extract_supplier_quote(
     target_unit: str,
     url: str,
     page_text: str,
+    pre_inn: Optional[str] = None,
+    pre_kpp: Optional[str] = None,
+    pre_contacts: Optional[str] = None,
 ) -> Optional[SupplierQuote]:
-    """Анализирует текст страницы и извлекает цену, название поставщика, ИНН и контакты."""
+    """Анализирует текст страницы и извлекает цену, название поставщика, ИНН, КПП и контакты."""
     domain = urlparse(url).netloc
+    norm_unit = normalize_unit(target_unit)
 
-    prompt = f'''Ты эксперт по закупкам и мониторингу цен. Проанализируй текст веб-страницы поставщика.
-Искомый товар: "{target_item_name}" (единица измерения: {target_unit})
+    prompt = f'''Ты ведущий эксперт по закупкам и коммерческому анализу цен. Твоя задача — внимательно изучить страницу поставщика и извлечь актуальную цену с точной привязкой к единицам измерения.
+
+Искомый товар: "{target_item_name}"
+Требуемая единица измерения заказчика: "{norm_unit}"
 URL страницы: {url}
+Предварительно обнаруженные данные с сайта:
+- ИНН: {pre_inn or "не обнаружен"}
+- КПП: {pre_kpp or "не обнаружен"}
+- Контакты: {pre_contacts or "не обнаружены"}
 
-Текст страницы:
+Текст страницы товара и реквизитов:
 {page_text}
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
-1. РЕЛЕВАНТНОСТЬ: Убедись, что на странице продается именно этот товар или его прямой точный аналог/марка (например, если ищем подшипник — это должен быть подшипник, если электрод — электрод, если деталь крана — деталь крана). Если на странице совсем другой товар (например, лекарство, косметика, статья или новость) — ответь is_price_found: false, price_rub: null.
-2. ЦЕНА: Ищи РЕАЛЬНУЮ числовую цену в рублях. Если цена указана "по запросу", "уточняйте цену", 0 руб или "нет в наличии" — ответь is_price_found: false, price_rub: null.
-3. ПОСТАВЩИК: Укажи краткое официальное наименование компании/интернет-магазина (например, "ВсеИнструменты.ру", "ООО Металлсервис", "ЭТМ", "ПромСнаб").
-4. ИНН: Укажи ИНН организации (10 или 12 цифр), если он указан в тексте, на странице или в реквизитах. Если нет — null.
-5. КОНТАКТЫ: Телефон, email или город компании.
+1. РЕЛЕВАНТНОСТЬ:
+   - Проверь, что на странице продается именно этот товар (или точная марка/ГОСТ).
+   - Если товар другой (лекарство, косметика, новостная статья, общая услуга) — ответь is_price_found: false.
+2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
+   - Найди реальную цену в рублях.
+   - Определи, за какую ИМЕННО единицу/фасовку она указана на сайте (например: "за баллон 50л", "за баллон 40л", "за 1 тонну", "за 1 кг", "за упаковку 100 шт", "за 1 шт").
+   - Если цена "по запросу", "уточняйте", 0 или "нет в наличии" — ответь is_price_found: false.
+3. ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА:
+   - Если единица совпадает с "{norm_unit}", price_rub = raw_price_rub.
+   - Если отличается (например, пропан 50л по 2400 руб за баллон, а заказчик просит "кг"): баллон 50л содержит 21 кг газа, значит 2400 / 21 = 114.29 руб/кг.
+   - Если кислород по 900 руб за баллон 40л, а заказчик просит "м3": баллон содержит 6.3 м³ газа, значит 900 / 6.3 = 142.86 руб/м³.
+   - Если металлопрокат за тонну (60 000 руб), а заказчик просит "кг": 60 000 / 1000 = 60 руб/кг.
+4. РЕКВИЗИТЫ ПОСТАВЩИКА:
+   - company_name: Официальное название (например, ООО "Металлсервис", ForOffice, Завод Уралтехгаз).
+   - inn: ИНН организации (10 цифр для юрлиц, 12 для ИП). Если найден в тексте или предварительно — укажи обязательно!
+   - kpp: КПП организации (9 цифр), если есть.
+   - contacts: Телефон(ы), email, город поставщика.
 
 Ответь СТРОГО JSON-объектом:
 {{
   "is_relevant": true,
   "is_price_found": true,
-  "company_name": "ООО Металлсервис",
-  "inn": "7701234567",
-  "contacts": "+7 (495) 123-45-67, info@site.ru",
-  "price_rub": 4500.0,
-  "unit": "{target_unit}"
+  "company_name": "ООО Название",
+  "inn": "{pre_inn or ''}",
+  "kpp": "{pre_kpp or ''}",
+  "contacts": "{pre_contacts or ''}",
+  "raw_price_rub": 2400.0,
+  "site_unit": "баллон 50л",
+  "price_rub": 114.29,
+  "unit": "{norm_unit}",
+  "conversion_comment": "На сайте: 2400 ₽ за баллон 50л (21 кг газа). Пересчитано в кг: 114.29 ₽/кг"
 }}
 '''
     try:
@@ -95,28 +310,53 @@ URL страницы: {url}
         if not parsed.get("is_relevant") or not parsed.get("is_price_found"):
             return None
 
-        price = parsed.get("price_rub")
-        if price is None:
+        # Исходная цена
+        raw_p = parsed.get("raw_price_rub") or parsed.get("price_rub")
+        if raw_p is None:
             return None
-        price_val = float(price)
-        if price_val <= 0 or price_val > 500_000_000:
+        raw_price_val = float(raw_p)
+        if raw_price_val <= 0 or raw_price_val > 500_000_000:
             return None
 
+        # Итоговая цена (с учетом возможного пересчета LLM)
+        p_val = parsed.get("price_rub")
+        final_price_val = float(p_val) if p_val is not None else raw_price_val
+
+        # Реквизиты
         comp_name = str(parsed.get("company_name") or "").strip() or domain
-        inn = str(parsed.get("inn") or "").strip() or None
-        if inn and not re.match(r'^\d{10,12}$', inn):
-            inn = None
-        contacts = str(parsed.get("contacts") or "").strip() or None
+        inn = str(parsed.get("inn") or pre_inn or "").strip() or None
+        if inn:
+            inn = re.sub(r'\D', '', inn)
+            if len(inn) not in (10, 12):
+                inn = None
 
-        return SupplierQuote(
+        kpp = str(parsed.get("kpp") or pre_kpp or "").strip() or None
+        if kpp:
+            kpp = re.sub(r'\D', '', kpp)
+            if len(kpp) != 9:
+                kpp = None
+
+        contacts = str(parsed.get("contacts") or pre_contacts or "").strip() or None
+        site_unit = str(parsed.get("site_unit") or "").strip()
+        conv_comment = str(parsed.get("conversion_comment") or "").strip()
+
+        quote = SupplierQuote(
             company_name=comp_name,
             inn=inn,
+            kpp=kpp,
             contacts=contacts,
-            price_rub=round(price_val, 2),
-            unit=str(parsed.get("unit") or target_unit).strip(),
+            price_rub=round(final_price_val, 2),
+            raw_price_rub=round(raw_price_val, 2),
+            unit=norm_unit,
+            site_unit=site_unit,
             url=url,
             is_price_found=True,
+            conversion_comment=conv_comment,
+            comment="",
         )
+
+        # Применяем детерминированную проверку и до-пересчет единиц
+        return reconcile_quote_unit(quote, target_item_name, target_unit)
     except Exception as exc:
         logger.debug("Quote extraction failed for %s: %s", url, exc)
         return None

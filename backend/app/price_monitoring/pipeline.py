@@ -4,15 +4,18 @@ import asyncio
 import io
 import logging
 import os
+import statistics
 from typing import Any, Callable, List, Optional
+from urllib.parse import urlparse
+
 import httpx
 import openpyxl
 
 from ..exact_product.yandex_search import YandexSearchEngine
 from ..models import SystemSettings
-from .cleaner import build_commercial_search_queries, clean_nomenclature_name
+from .cleaner import build_commercial_search_queries, clean_nomenclature_name, normalize_unit
 from .excel_report import generate_price_monitoring_excel
-from .extractor import extract_supplier_quote, fetch_page_content, is_valid_domain
+from .extractor import extract_supplier_quote, fetch_page_content_and_meta, is_valid_domain
 from .models import BatchMonitoringResult, ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,74 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     return items
 
 
+def validate_and_reconcile_item_quotes(item_res: ItemPriceResult) -> None:
+    """
+    Кросс-валидация котировок по одной позиции:
+    1. Обнаружение расхождений в кратности (баллоны, тонны/кг, упаковки/штуки).
+    2. Авто-приведение к единице заказчика, если какой-то поставщик указал цену за всю тару.
+    3. Выявление и маркировка экстремальных статистических выбросов.
+    """
+    valid_quotes = [q for q in item_res.quotes if q.price_rub > 0]
+    if len(valid_quotes) < 2:
+        return
+
+    prices = [q.price_rub for q in valid_quotes]
+    min_p = min(prices)
+    max_p = max(prices)
+    ratio = max_p / min_p if min_p > 0 else 1.0
+
+    # Если цены разнятся более чем в 3 раза, проверяем типовые кратности фасовок
+    if ratio >= 3.0:
+        item_lower = item_res.clean_name.lower()
+        norm_u = normalize_unit(item_res.unit)
+
+        for q in valid_quotes:
+            q_ratio = q.price_rub / min_p
+
+            # 1. Пропан (баллон 50л vs кг, коэффициент 21)
+            if "пропан" in item_lower and norm_u in ("кг", "к-г"):
+                if 14.0 <= q_ratio <= 35.0:
+                    converted = round(q.price_rub / 21.0, 2)
+                    q.price_rub = converted
+                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за баллон 50л -> {converted:,.2f} ₽/кг"
+
+            # 2. Кислород (баллон 40л vs м3, коэффициент 6.3)
+            elif "кислород" in item_lower and norm_u in ("м3", "куб"):
+                if 4.5 <= q_ratio <= 14.0:
+                    converted = round(q.price_rub / 6.3, 2)
+                    q.price_rub = converted
+                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за баллон 40л -> {converted:,.2f} ₽/м³"
+
+            # 3. Металлопрокат (тонна vs кг, коэффициент 1000)
+            elif any(kw in item_lower for kw in ("лист", "полоса", "круг", "труба", "сталь", "арматура")):
+                if norm_u in ("кг", "к-г") and q_ratio >= 400.0:
+                    converted = round(q.price_rub / 1000.0, 2)
+                    q.price_rub = converted
+                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за тонну -> {converted:,.2f} ₽/кг"
+                elif norm_u in ("т", "тонна") and (min_p / q.price_rub) >= 400.0:
+                    converted = round(q.price_rub * 1000.0, 2)
+                    q.price_rub = converted
+                    q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.2f} ₽/кг -> {converted:,.0f} ₽/т"
+
+            # 4. Упаковки по 100 шт vs штука
+            elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and "100" in item_lower:
+                converted = round(q.price_rub / 100.0, 2)
+                q.price_rub = converted
+                q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за уп (100 шт) -> {converted:,.2f} ₽/шт"
+
+        # Проверка статистических выбросов по медиане после пересчета
+        updated_prices = [q.price_rub for q in valid_quotes]
+        med_p = statistics.median(updated_prices)
+        for q in valid_quotes:
+            if q.price_rub > med_p * 3.5 or (med_p > 0 and q.price_rub < med_p / 3.5):
+                q.is_outlier = True
+                warning_note = f"⚠️ Цена {q.price_rub:,.2f} ₽ существенно отличается от среднерыночной ({med_p:,.2f} ₽). Рекомендуется проверить фасовку."
+                q.comment = f"{q.comment} | {warning_note}".strip(" |")
+
+    # Сортируем: сначала подтвержденные цены без статуса выброса
+    item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
+
+
 async def process_single_item(
     item_tuple: tuple[int, str, str],
     engine: YandexSearchEngine,
@@ -91,12 +162,11 @@ async def process_single_item(
         if len(item_res.quotes) >= max_suppliers:
             break
         try:
-            from urllib.parse import urlparse
             domain = urlparse(url).netloc.lower()
             if domain in seen_domains:
                 continue
 
-            page_text = await fetch_page_content(http_client, url)
+            page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
             if not page_text or len(page_text) < 60:
                 continue
 
@@ -106,12 +176,18 @@ async def process_single_item(
                 target_unit=unit,
                 url=url,
                 page_text=page_text,
+                pre_inn=inn,
+                pre_kpp=kpp,
+                pre_contacts=contacts,
             )
             if quote and quote.is_price_found and quote.price_rub > 0:
                 seen_domains.add(domain)
                 item_res.quotes.append(quote)
         except Exception as exc:
             logger.debug("Error processing url %s: %s", url, exc)
+
+    # Кросс-проверка и устранение аномалий между поставщиками
+    validate_and_reconcile_item_quotes(item_res)
 
     item_res.status = "found" if item_res.has_prices else "not_found"
     return item_res

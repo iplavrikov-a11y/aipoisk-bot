@@ -10,11 +10,15 @@ class SupplierQuote:
     inn: Optional[str] = None
     kpp: Optional[str] = None
     contacts: Optional[str] = None
-    price_rub: float = 0.0
-    unit: str = "шт"
+    price_rub: float = 0.0              # Итоговая нормализованная цена в единицах заказчика
+    raw_price_rub: float = 0.0          # Исходная цена на сайте до пересчета
+    unit: str = "шт"                   # Единица измерения заказчика
+    site_unit: str = ""                # Исходная единица измерения на сайте
     url: str = ""
     is_price_found: bool = True
+    conversion_comment: str = ""        # Пояснение перерасчета (например, "2400 ₽ за баллон 50л -> 114.29 ₽/кг")
     comment: str = ""
+    is_outlier: bool = False           # Флаг сильного расхождения цены
 
 
 @dataclass
