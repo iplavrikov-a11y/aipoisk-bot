@@ -344,8 +344,11 @@ URL страницы: {url}
    - kpp: КПП организации (9 цифр), если есть.
    - contacts: Телефон(ы), email, город поставщика.
 
-Ответь СТРОГО JSON-объектом:
+Ответь СТРОГО JSON-объектом (ПРАВИЛО 14: СНАЧАЛА СЕМАНТИЧЕСКИЙ АНАЛИЗ, ЗАТЕМ ВЕРДИКТ):
 {{
+  "nomenclature_class": "Класс и назначение искомого товара (например: промышленная деталь бетоносмесителя / муфта крановая / датчик автоматики)",
+  "site_product_name": "Точное наименование товара на найденной странице",
+  "semantic_match_reason": "Семантическое обоснование: почему товар полностью совпадает по назначению, типу и артикулу (или почему отвергнут)",
   "is_relevant": true,
   "is_price_found": true,
   "company_name": "ООО Название",
@@ -397,6 +400,7 @@ URL страницы: {url}
         contacts = str(parsed.get("contacts") or pre_contacts or "").strip() or None
         site_unit = str(parsed.get("site_unit") or "").strip()
         conv_comment = str(parsed.get("conversion_comment") or "").strip()
+        match_reason = str(parsed.get("semantic_match_reason") or "").strip()
 
         quote = SupplierQuote(
             company_name=comp_name,
@@ -410,7 +414,7 @@ URL страницы: {url}
             url=url,
             is_price_found=True,
             conversion_comment=conv_comment,
-            comment="",
+            comment=match_reason,
         )
 
         # Обогащение реквизитами через DaData (ИНН, КПП, официальное наименование, статус)
