@@ -19,6 +19,7 @@ import {
   Layers,
   Sparkles,
   ArrowRight,
+  X,
 } from 'lucide-react'
 
 export type CookieCatalogItem = {
@@ -273,152 +274,117 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ShieldCheck size={22} color="#059669" />
-            Куки площадок и защита от WAF
-          </h1>
-          <div style={{ fontSize: '13px', color: '#64748b', marginTop: '2px' }}>
-            Управление сессионными cookies для прямого сбора цен с маркетплейсов и каталогов поставщиков
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {onNavigateToMonitoring && (
-            <button
-              onClick={onNavigateToMonitoring}
-              className="btn btn-secondary"
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
-            >
-              <span>В мониторинг цен</span>
-              <ArrowRight size={14} />
-            </button>
-          )}
+    <div className="cookies-container">
+      {/* Top Action Bar */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+        {onNavigateToMonitoring && (
           <button
-            onClick={loadCookies}
-            disabled={refreshing}
-            className="btn btn-secondary"
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
+            type="button"
+            onClick={onNavigateToMonitoring}
+            className="cookies-btn-secondary"
+            style={{ fontSize: '12.5px', padding: '0 12px', minHeight: '34px' }}
           >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            Обновить
+            <span>В мониторинг цен</span>
+            <ArrowRight size={14} />
           </button>
-          <button
-            onClick={handleOpenAddCustom}
-            className="btn btn-primary"
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', fontSize: '13px' }}
-          >
-            <Plus size={15} />
-            Добавить сайт
-          </button>
-        </div>
+        )}
+        <button
+          type="button"
+          onClick={loadCookies}
+          disabled={refreshing}
+          className="cookies-btn-secondary"
+          style={{ fontSize: '12.5px', padding: '0 12px', minHeight: '34px' }}
+        >
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+          <span>Обновить</span>
+        </button>
+        <button
+          type="button"
+          onClick={handleOpenAddCustom}
+          className="cookies-btn-primary"
+          style={{ fontSize: '12.5px', padding: '0 14px', minHeight: '34px' }}
+        >
+          <Plus size={15} />
+          <span>Добавить сайт</span>
+        </button>
       </div>
 
       {/* KPI Stats Strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <CheckCircle2 size={22} color="#059669" />
+      <div className="cookies-kpi-grid">
+        <div className="cookies-kpi-card">
+          <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <CheckCircle2 size={20} color="#059669" />
           </div>
           <div>
             <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Активных cookies</div>
-            <div style={{ fontSize: '22px', fontWeight: 700, color: '#059669' }}>
+            <div style={{ fontSize: '20px', fontWeight: 700, color: '#059669', marginTop: '1px' }}>
               {totalWithCookies}{' '}
-              <span style={{ fontSize: '13px', fontWeight: 500, color: '#64748b' }}>из {totalDomains} сайтов</span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#64748b' }}>из {totalDomains} сайтов</span>
             </div>
           </div>
         </div>
 
-        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Layers size={22} color="#2563eb" />
+        <div className="cookies-kpi-card">
+          <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Layers size={20} color="#2563eb" />
           </div>
           <div>
             <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Маркетплейсы</div>
-            <div style={{ fontSize: '22px', fontWeight: 700, color: '#1e293b' }}>
+            <div style={{ fontSize: '20px', fontWeight: 700, color: '#1e293b', marginTop: '1px' }}>
               {catalog.filter((c) => c.category === 'Маркетплейсы' && c.has_cookie).length}{' '}
-              <span style={{ fontSize: '13px', fontWeight: 500, color: '#64748b' }}>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#64748b' }}>
                 из {catalog.filter((c) => c.category === 'Маркетплейсы').length}
               </span>
             </div>
           </div>
         </div>
 
-        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Lock size={22} color="#d97706" />
+        <div className="cookies-kpi-card">
+          <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Lock size={20} color="#d97706" />
           </div>
           <div>
-            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Защита от WAF</div>
-            <div style={{ fontSize: '14px', fontWeight: 600, color: '#b45309', marginTop: '4px' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Защита WAF</div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: '#b45309', marginTop: '2px' }}>
               Cloudflare, Qrator, WBAAS
             </div>
           </div>
         </div>
 
-        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Sparkles size={22} color="#475569" />
+        <div className="cookies-kpi-card">
+          <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Sparkles size={20} color="#475569" />
           </div>
           <div>
             <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Форматы ввода</div>
             <div style={{ fontSize: '13px', fontWeight: 600, color: '#334155', marginTop: '2px' }}>
-              JSON, DevTools, Text
+              JSON, DevTools, Raw
             </div>
           </div>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="card" style={{ padding: '12px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="cookies-filter-strip">
+        <div className="cookies-filter-pills">
           <button
             type="button"
             onClick={() => setCategoryFilter('all')}
-            style={{
-              padding: '5px 10px',
-              fontSize: '12px',
-              fontWeight: 500,
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
-              background: categoryFilter === 'all' ? '#0f172a' : '#f1f5f9',
-              color: categoryFilter === 'all' ? '#ffffff' : '#475569',
-            }}
+            className={`cookies-pill-btn ${categoryFilter === 'all' ? 'active' : ''}`}
           >
             Все ({totalDomains})
           </button>
           <button
             type="button"
             onClick={() => setCategoryFilter('active')}
-            style={{
-              padding: '5px 10px',
-              fontSize: '12px',
-              fontWeight: 500,
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
-              background: categoryFilter === 'active' ? '#059669' : '#ecfdf5',
-              color: categoryFilter === 'active' ? '#ffffff' : '#059669',
-            }}
+            className={`cookies-pill-btn ${categoryFilter === 'active' ? 'active-green' : ''}`}
           >
-            ✓ Активны с куками ({totalWithCookies})
+            ✓ Активны ({totalWithCookies})
           </button>
           <button
             type="button"
             onClick={() => setCategoryFilter('missing')}
-            style={{
-              padding: '5px 10px',
-              fontSize: '12px',
-              fontWeight: 500,
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
-              background: categoryFilter === 'missing' ? '#475569' : '#f1f5f9',
-              color: categoryFilter === 'missing' ? '#ffffff' : '#64748b',
-            }}
+            className={`cookies-pill-btn ${categoryFilter === 'missing' ? 'active' : ''}`}
           >
             Без кук ({totalDomains - totalWithCookies})
           </button>
@@ -427,16 +393,7 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
               key={c.name}
               type="button"
               onClick={() => setCategoryFilter(c.name)}
-              style={{
-                padding: '5px 10px',
-                fontSize: '12px',
-                fontWeight: 500,
-                borderRadius: '6px',
-                border: 'none',
-                cursor: 'pointer',
-                background: categoryFilter === c.name ? '#2563eb' : '#f1f5f9',
-                color: categoryFilter === c.name ? '#ffffff' : '#475569',
-              }}
+              className={`cookies-pill-btn ${categoryFilter === c.name ? 'active' : ''}`}
             >
               {c.name} ({c.count})
             </button>
@@ -444,20 +401,20 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
         </div>
 
         <div style={{ position: 'relative', width: '260px' }}>
-          <Search size={14} style={{ position: 'absolute', left: '10px', top: '9px', color: '#94a3b8' }} />
+          <Search size={14} style={{ position: 'absolute', left: '10px', top: '10px', color: '#94a3b8' }} />
           <input
             type="text"
-            placeholder="Поиск по домену или названию..."
+            placeholder="Поиск по домену..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="form-input"
-            style={{ paddingLeft: '30px', paddingRight: '10px', paddingTop: '5px', paddingBottom: '5px', width: '100%', fontSize: '13px' }}
+            className="cookies-input-text"
+            style={{ paddingLeft: '32px', minHeight: '34px', fontSize: '12.5px' }}
           />
         </div>
       </div>
 
       {/* Catalog Cards Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '14px' }}>
+      <div className="cookies-grid">
         {filteredCatalog.map((item) => {
           const testState = testStates[item.domain]
           const isTesting = Boolean(testState?.testing)
@@ -467,60 +424,29 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
           return (
             <div
               key={item.domain}
-              className="card"
-              style={{
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-                border: item.has_cookie ? '1px solid #bbf7d0' : '1px solid #e2e8f0',
-                background: item.has_cookie ? '#fcfdfd' : '#ffffff',
-                boxShadow: item.has_cookie ? '0 1px 3px rgba(5, 150, 105, 0.08)' : '0 1px 3px rgba(0, 0, 0, 0.04)',
-                position: 'relative',
-              }}
+              className={`cookies-card ${item.has_cookie ? 'has-cookie' : ''}`}
             >
               <div>
                 {/* Top Row: Title, Domain, Status */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+                <div className="cookies-card-header">
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: '15px', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Globe size={16} color={item.has_cookie ? '#059669' : '#64748b'} />
-                      {item.name}
+                    <div className="cookies-card-title">
+                      <Globe size={15} color={item.has_cookie ? '#059669' : '#64748b'} />
+                      <span>{item.name}</span>
                     </div>
-                    <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
-                      <code>{item.domain}</code>
+                    <div className="cookies-card-domain">
+                      {item.domain}
                     </div>
                   </div>
                   <div>
                     {item.has_cookie ? (
-                      <span
-                        style={{
-                          background: '#dcfce7',
-                          color: '#15803d',
-                          border: '1px solid #bbf7d0',
-                          padding: '3px 8px',
-                          borderRadius: '6px',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                        }}
-                      >
+                      <span className="cookies-badge-active">
                         <Check size={12} />
                         Активны ({item.cookie_length} зн.)
                       </span>
                     ) : (
                       <span
-                        style={{
-                          background: '#f1f5f9',
-                          color: '#64748b',
-                          border: '1px solid #e2e8f0',
-                          padding: '3px 8px',
-                          borderRadius: '6px',
-                          fontSize: '11px',
-                          fontWeight: 500,
-                        }}
+                        className="cookies-badge-snippet"
                         title="Цены с этого домена собираются через сниппеты Яндекса"
                       >
                         Сниппеты Яндекса
@@ -529,47 +455,39 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
                   </div>
                 </div>
 
-                {/* Description & WAF info */}
-                <div style={{ fontSize: '12px', color: '#475569', marginBottom: '10px', lineHeight: 1.4 }}>
+                {/* Description */}
+                <div className="cookies-card-desc">
                   {item.description}
                 </div>
 
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                  <span style={{ fontSize: '11px', background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', padding: '2px 6px', borderRadius: '4px' }}>
+                {/* Tags */}
+                <div className="cookies-card-tags">
+                  <span className="cookies-tag">
                     Категория: <strong>{item.category}</strong>
                   </span>
-                  <span style={{ fontSize: '11px', background: '#f8fafc', border: '1px solid #e2e8f0', color: '#64748b', padding: '2px 6px', borderRadius: '4px' }}>
+                  <span className="cookies-tag">
                     WAF: {item.waf_type}
                   </span>
                 </div>
 
                 {/* Quick Test Result Display */}
                 {testRes && (
-                  <div
-                    style={{
-                      background: testRes.accessible ? '#ecfdf5' : '#fef2f2',
-                      border: `1px solid ${testRes.accessible ? '#a7f3d0' : '#fecaca'}`,
-                      borderRadius: '6px',
-                      padding: '8px 10px',
-                      marginBottom: '12px',
-                      fontSize: '11px',
-                    }}
-                  >
+                  <div className={`cookies-test-result ${testRes.accessible ? 'success' : 'fail'}`}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600 }}>
-                      <span style={{ color: testRes.accessible ? '#065f46' : '#991b1b', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        {testRes.accessible ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        {testRes.accessible ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
                         {testRes.status_text}
                       </span>
                       <span style={{ color: '#64748b' }}>{testRes.duration_ms} мс</span>
                     </div>
                     {testRes.title && (
-                      <div style={{ color: '#475569', marginTop: '3px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                        Заголовок: «{testRes.title}»
+                      <div style={{ marginTop: '3px', color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        «{testRes.title}»
                       </div>
                     )}
                     {testRes.response_size > 0 && (
                       <div style={{ color: '#64748b', marginTop: '2px' }}>
-                        Размер ответа: {(testRes.response_size / 1024).toFixed(1)} КБ {testRes.has_cookie_applied ? '• с куками' : '• без кук'}
+                        Размер: {(testRes.response_size / 1024).toFixed(1)} КБ {testRes.has_cookie_applied ? '• с куками' : '• без кук'}
                       </div>
                     )}
                   </div>
@@ -577,40 +495,26 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
               </div>
 
               {/* Bottom Actions Row */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: '10px', marginTop: '6px' }}>
+              <div className="cookies-card-actions">
                 <button
                   type="button"
                   onClick={() => handleQuickTest(item.domain)}
                   disabled={isTesting}
-                  className="btn btn-secondary"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '4px 10px',
-                    fontSize: '12px',
-                  }}
+                  className="cookies-card-btn"
                   title="Отправить проверочный HTTP GET-запрос с сервера с текущими cookies"
                 >
                   {isTesting ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} color="#2563eb" />}
-                  {isTesting ? 'Проверка...' : 'Тест соединения'}
+                  <span>{isTesting ? 'Проверка...' : 'Тест соединения'}</span>
                 </button>
 
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <button
                     type="button"
                     onClick={() => handleOpenEdit(item)}
-                    className="btn btn-secondary"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      padding: '4px 10px',
-                      fontSize: '12px',
-                    }}
+                    className="cookies-card-btn"
                   >
                     <Edit3 size={13} />
-                    {item.has_cookie ? 'Изменить' : 'Вставить куки'}
+                    <span>{item.has_cookie ? 'Изменить' : 'Вставить куки'}</span>
                   </button>
 
                   {item.has_cookie && (
@@ -680,49 +584,29 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
       {/* Edit / Add Modal */}
       {modalOpen && (
         <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(15, 23, 42, 0.65)',
-            backdropFilter: 'blur(3px)',
-            zIndex: 9999,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '20px',
-          }}
+          className="cookies-modal-backdrop"
           onClick={() => setModalOpen(false)}
         >
           <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: '680px',
-              padding: '24px',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            }}
+            className="cookies-modal-card"
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #e2e8f0', paddingBottom: '12px' }}>
+            <div className="cookies-modal-header">
               <div>
-                <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 700, color: '#0f172a' }}>
+                <h3 className="cookies-modal-title">
                   {modalName ? `${modalName} (${modalDomain})` : 'Добавить сайт и cookies'}
                 </h3>
-                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                <div className="cookies-modal-sub">
                   Вставьте сессионные куки в любом формате: текст, JSON-массив из расширений или таблица DevTools
                 </div>
               </div>
               <button
                 type="button"
+                className="cookies-modal-close-btn"
                 onClick={() => setModalOpen(false)}
-                style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '18px', color: '#94a3b8' }}
+                title="Закрыть"
               >
-                ✕
+                <X size={18} />
               </button>
             </div>
 
@@ -734,7 +618,7 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
 
             {/* Domain input if adding custom */}
             <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+              <label className="cookies-field-label">
                 Домен сайта (без https:// и www) *
               </label>
               <input
@@ -742,15 +626,14 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
                 value={modalDomain}
                 onChange={(e) => setModalDomain(e.target.value.toLowerCase().trim())}
                 placeholder="например: ozon.ru или petrovich.ru"
-                className="form-input"
-                style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                className="cookies-input-text"
               />
             </div>
 
             {/* Cookies Textarea */}
             <div style={{ marginBottom: '14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: '#334155' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                <label className="cookies-field-label" style={{ marginBottom: 0 }}>
                   Содержимое Cookies (raw-строка, JSON или таблица из DevTools) *
                 </label>
                 {modalCookieInput && (
@@ -760,29 +643,22 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
                 )}
               </div>
               <textarea
-                rows={8}
+                rows={7}
                 value={modalCookieInput}
                 onChange={(e) => setModalCookieInput(e.target.value)}
                 placeholder={'Примеры поддерживаемых форматов:\n1. Строка: "name=val; name2=val2; __Secure-access-token=..."\n2. JSON из Cookie-Editor: [{"name": "..", "value": ".."}]\n3. Таблица из вкладки DevTools Application -> Storage -> Cookies'}
-                className="form-input"
-                style={{ width: '100%', padding: '10px', fontSize: '12px', fontFamily: 'monospace', lineHeight: 1.4 }}
+                className="cookies-textarea"
               />
             </div>
 
             {/* Test result inside modal */}
             {modalTestResult && (
               <div
-                style={{
-                  background: modalTestResult.accessible ? '#ecfdf5' : '#fef2f2',
-                  border: `1px solid ${modalTestResult.accessible ? '#a7f3d0' : '#fecaca'}`,
-                  borderRadius: '6px',
-                  padding: '10px 12px',
-                  marginBottom: '14px',
-                  fontSize: '12px',
-                }}
+                className={`cookies-test-result ${modalTestResult.accessible ? 'success' : 'fail'}`}
+                style={{ marginBottom: '14px', padding: '10px 12px', fontSize: '12px' }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 700 }}>
-                  <span style={{ color: modalTestResult.accessible ? '#065f46' : '#991b1b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {modalTestResult.accessible ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
                     {modalTestResult.status_text}
                   </span>
@@ -800,34 +676,32 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
             )}
 
             {/* Quick helper tip */}
-            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '10px 14px', fontSize: '11px', color: '#475569', marginBottom: '16px', lineHeight: 1.4 }}>
-              <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <div className="cookies-helper-box">
+              <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '5px' }}>
                 <HelpCircle size={13} color="#2563eb" />
-                Как быстро скопировать cookies:
+                <span>Как быстро скопировать cookies:</span>
               </div>
-              • <strong>DevTools:</strong> на странице сайта нажать <code>F12</code> → вкладка <strong>Application</strong> → слева <strong>Cookies</strong> → выделить все строки (<code>Ctrl+A</code>) и вставить сюда.<br />
-              • <strong>Расширение Cookie-Editor:</strong> нажать значок расширения на вкладке сайта → <strong>Export</strong> → <strong>JSON</strong> → вставить сюда.
+              <div>• <strong>DevTools:</strong> на странице сайта нажать <code>F12</code> → вкладка <strong>Application</strong> → слева <strong>Cookies</strong> → выделить все строки (<code>Ctrl+A</code>) и вставить сюда.</div>
+              <div style={{ marginTop: '2px' }}>• <strong>Расширение Cookie-Editor:</strong> нажать значок расширения на вкладке сайта → <strong>Export</strong> → <strong>JSON</strong> → вставить сюда.</div>
             </div>
 
-            {/* Modal Actions */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #e2e8f0', paddingTop: '14px' }}>
+            {/* Modal Actions Footer */}
+            <div className="cookies-modal-footer">
               <button
                 type="button"
                 onClick={handleTestModalCookie}
                 disabled={modalTesting || !modalCookieInput.trim()}
-                className="btn btn-secondary"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}
+                className="cookies-btn-test-action"
               >
                 {modalTesting ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} color="#2563eb" />}
-                {modalTesting ? 'Проверяю...' : 'Проверить без сохранения'}
+                <span>{modalTesting ? 'Проверяю...' : 'Проверить без сохранения'}</span>
               </button>
 
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}
-                  className="btn btn-secondary"
-                  style={{ fontSize: '13px' }}
+                  className="cookies-btn-secondary"
                 >
                   Отмена
                 </button>
@@ -835,11 +709,10 @@ export function CookiesView({ onNavigateToMonitoring }: { onNavigateToMonitoring
                   type="button"
                   onClick={handleSaveModal}
                   disabled={modalSaving}
-                  className="btn btn-primary"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}
+                  className="cookies-btn-primary"
                 >
                   {modalSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                  {modalSaving ? 'Сохранение...' : 'Сохранить и применить'}
+                  <span>{modalSaving ? 'Сохранение...' : 'Сохранить и применить'}</span>
                 </button>
               </div>
             </div>
