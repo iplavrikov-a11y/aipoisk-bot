@@ -50,7 +50,7 @@ type JobItem = {
   download_url: string | null
 }
 
-export function PriceMonitoringView() {
+export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCookies?: () => void } = {}) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -248,15 +248,28 @@ export function PriceMonitoringView() {
             Пакетный поиск цен поставщиков по спецификациям • Консенсусная кластеризация • Чекпоинты
           </div>
         </div>
-        <button
-          onClick={loadData}
-          disabled={refreshing}
-          className="btn btn-secondary"
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
-        >
-          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-          Обновить
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {onNavigateToCookies && (
+            <button
+              onClick={onNavigateToCookies}
+              className="btn btn-secondary"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
+              title="Перейти к управлению сессионными cookies площадок"
+            >
+              <ShieldCheck size={15} color="#059669" />
+              <span>Куки площадок (WAF)</span>
+            </button>
+          )}
+          <button
+            onClick={loadData}
+            disabled={refreshing}
+            className="btn btn-secondary"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '13px' }}
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            Обновить
+          </button>
+        </div>
       </div>
 
       {/* KPI Stats Strip */}

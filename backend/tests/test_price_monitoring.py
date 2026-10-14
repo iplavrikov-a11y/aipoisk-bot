@@ -572,3 +572,30 @@ def test_strict_cluster_ratio_and_marketplaces():
     assert KNOWN_MAJOR_RETAILERS["ozon.ru"]["inn"] == "7704217370"
     assert "wildberries.ru" in KNOWN_MAJOR_RETAILERS
     assert "avito.ru" in KNOWN_MAJOR_RETAILERS
+
+
+def test_cookie_management_api(admin_client):
+    # 1. List cookies catalog
+    resp = admin_client.get("/api/cookies")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "catalog" in data
+    assert "total_configured" in data
+    assert any(item["domain"] == "ozon.ru" for item in data["catalog"])
+
+    # 2. Set cookie for test domain
+    set_resp = admin_client.post("/api/cookies/testdomain.ru", json={"cookie": "test_sid=12345; auth=abc"})
+    assert set_resp.status_code == 200
+    assert set_resp.json()["success"] is True
+
+    # 3. Verify it appears
+    resp2 = admin_client.get("/api/cookies")
+    test_item = next(it for it in resp2.json()["catalog"] if it["domain"] == "testdomain.ru")
+    assert test_item["has_cookie"] is True
+    assert test_item["cookie_length"] > 0
+
+    # 4. Clean up / Delete cookie
+    del_resp = admin_client.delete("/api/cookies/testdomain.ru")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["success"] is True
+

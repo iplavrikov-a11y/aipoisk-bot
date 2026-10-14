@@ -113,6 +113,7 @@ from .jobs import (
     write_dobor_context,
     write_supplier_exclusions,
 )
+from .price_monitoring.cookie_manager import cookie_manager
 from .models import (
     AccountLinkToken,
     ApiKey,
@@ -1732,6 +1733,40 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
+
+
+@app.get("/api/cookies", dependencies=[Depends(require_admin)])
+def admin_list_cookies() -> dict:
+    catalog = cookie_manager.get_catalog_with_status()
+    total = len(cookie_manager.list_domains())
+    return {"catalog": catalog, "total_configured": total}
+
+
+@app.post("/api/cookies/{domain}", dependencies=[Depends(require_admin)])
+def admin_set_cookie(domain: str, payload: dict) -> dict:
+    raw_val = payload.get("cookie") or payload.get("cookie_value") or payload.get("cookies") or ""
+    clean_val = cookie_manager.set_cookie(domain, raw_val)
+    return {
+        "success": True,
+        "domain": domain,
+        "cookie_length": len(clean_val),
+        "cookie_preview": (clean_val[:60] + "...") if len(clean_val) > 60 else clean_val,
+    }
+
+
+@app.delete("/api/cookies/{domain}", dependencies=[Depends(require_admin)])
+def admin_delete_cookie(domain: str) -> dict:
+    deleted = cookie_manager.delete_cookie(domain)
+    return {"success": deleted, "domain": domain}
+
+
+@app.post("/api/cookies/{domain}/test", dependencies=[Depends(require_admin)])
+async def admin_test_cookie(domain: str, payload: Optional[dict] = None) -> dict:
+    custom_cookie = None
+    if payload and ("cookie" in payload or "cookie_value" in payload):
+        custom_cookie = payload.get("cookie") or payload.get("cookie_value")
+    res = await cookie_manager.test_domain(domain, custom_cookie=custom_cookie)
+    return res
 
 
 @app.get("/api/price-monitoring/clients", dependencies=[Depends(require_admin)])

@@ -54,8 +54,9 @@ import {
 import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
 import { PriceMonitoringView } from './PriceMonitoringView'
+import { CookiesView } from './CookiesView'
 
-type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring'
+type View = 'dashboard' | 'seo' | 'clients' | 'jobs' | 'billing' | 'settings' | 'ai' | 'outreach' | 'mcp' | 'price_monitoring' | 'cookies'
 
 type Dashboard = {
   clients: number
@@ -711,6 +712,10 @@ const viewCopy: Record<View, { title: string; description: string }> = {
     title: 'Мониторинг цен',
     description: 'Закрытый модуль мониторинга цен поставщиков по спецификациям: настройки тарификации, доступ клиентов и история запусков.',
   },
+  cookies: {
+    title: 'Куки площадок (WAF)',
+    description: 'Управление сессионными cookies для прямого сбора цен с Ozon, Wildberries, Яндекс Маркета, ВсеИнструменты и B2B каталогов.',
+  },
 }
 
 const modeLabels: Record<string, string> = {
@@ -1154,7 +1159,7 @@ function ToastContainer({
   )
 }
 
-const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring'] as const
+const VALID_VIEWS: readonly View[] = ['dashboard', 'seo', 'clients', 'jobs', 'outreach', 'billing', 'settings', 'ai', 'mcp', 'price_monitoring', 'cookies'] as const
 
 function getInitialView(): View {
   if (typeof window === 'undefined') return 'dashboard'
@@ -1565,6 +1570,7 @@ export function App() {
     { id: 'billing' as const, label: 'Тарифы', icon: CreditCard },
     { id: 'settings' as const, label: 'Настройки', icon: SlidersHorizontal },
     { id: 'price_monitoring' as const, label: 'Мониторинг цен', icon: Coins },
+    { id: 'cookies' as const, label: 'Куки площадок', icon: ShieldCheck },
     { id: 'ai' as const, label: 'ИИ', icon: BrainCircuit },
     { id: 'mcp' as const, label: 'MCP & API', icon: KeyRound },
   ]
@@ -1702,7 +1708,8 @@ export function App() {
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
-        {isReady && view === 'price_monitoring' && <PriceMonitoringView />}
+        {isReady && view === 'price_monitoring' && <PriceMonitoringView onNavigateToCookies={() => setView('cookies')} />}
+        {isReady && view === 'cookies' && <CookiesView onNavigateToMonitoring={() => setView('price_monitoring')} />}
 
         {showServerModal && opsStatus && (
           <div className="server-modal-backdrop" onClick={() => setShowServerModal(false)}>
