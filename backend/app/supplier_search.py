@@ -3445,12 +3445,11 @@ async def ai_rerank_candidates(
         )
         if fallback_candidates:
             logger.warning(
-                "supplier_candidate_reranker_fallback job_id=%s input_count=%s selected_count=%s sources=%s error=%s",
+                "supplier_candidate_reranker_fallback job_id=%s input_count=%s selected_count=%s sources=%s (empty AI keep)",
                 _supplier_search_job_id_context.get(),
                 len(candidates),
                 len(fallback_candidates),
                 _source_counts(fallback_candidates),
-                detail,
             )
             return CandidateRerank(
                 fallback_candidates,
@@ -3550,12 +3549,9 @@ def _validate_candidate_rerank_response(
     seen_domains: set[str] | None = None,
 ) -> None:
     parsed = parse_json_object(raw)
-    ranked = parsed.get("ranked", [])
+    ranked = parsed.get("ranked")
     if not isinstance(ranked, list):
         raise RuntimeError("AI candidate reranker returned invalid ranked list")
-    kept, _, _ = _ranked_candidates_from_ai(ranked, by_id, seen_domains=seen_domains)
-    if not kept:
-        raise RuntimeError("AI candidate reranker did not keep any candidates")
 
 
 async def _expand_candidate_rerank_with_ai(

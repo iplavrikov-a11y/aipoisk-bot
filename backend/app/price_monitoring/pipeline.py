@@ -444,9 +444,15 @@ async def process_single_item(
 
     # Оцениваем до (max_suppliers + 3) котировок, чтобы алгоритм кластеризации имел достаточный запас для отсева выбросов
     target_eval_quotes = max(6, max_suppliers + 3)
+    MAX_LLM_EXTRACTIONS_PER_ITEM = 10
+    llm_extractions_done = 0
 
     async def _evaluate_candidates(urls: list[str]) -> None:
+        nonlocal llm_extractions_done
         for url in urls:
+            if llm_extractions_done >= MAX_LLM_EXTRACTIONS_PER_ITEM:
+                logger.debug("LLM extraction budget reached (%d) for '%s'", MAX_LLM_EXTRACTIONS_PER_ITEM, clean)
+                break
             valid_found = len([q for q in item_res.quotes if q.is_price_found and q.price_rub > 0])
             if valid_found >= target_eval_quotes:
                 break
@@ -474,6 +480,7 @@ async def process_single_item(
                 if not page_text or len(page_text) < 30:
                     continue
 
+                llm_extractions_done += 1
                 # Реестр федеральных сетей
                 for kd, kdata in KNOWN_MAJOR_RETAILERS.items():
                     if kd in domain:
@@ -516,9 +523,11 @@ async def process_single_item(
         return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
 
     # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ КВОРУМА):
-    # Проверяем не просто число котировок, а размер подтвержденного согласованного кластера!
+    # Запускаем Волну 2 только если:
+    # 1) Кластер меньше целевого
+    # 2) Бюджет ИИ-экстракций не исчерпан
     consensus_count = _get_consensus_count()
-    if consensus_count < min_target_suppliers:
+    if consensus_count < min_target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2)
@@ -526,7 +535,7 @@ async def process_single_item(
             fallback_queries = build_fallback_broad_queries(clean, unit)
         wave2_urls: list[str] = []
         async with search_semaphore:
-            for bq in fallback_queries[:5]:
+            for bq in fallback_queries[:4]:
                 try:
                     b_results = await engine.search(
                         bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
@@ -538,16 +547,26 @@ async def process_single_item(
                                 wave2_urls.append(r.url)
                 except Exception as b_exc:
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
-                if len(candidate_urls) + len(wave2_urls) >= 50:
+                if len(candidate_urls) + len(wave2_urls) >= 40:
                     break
 
         if wave2_urls:
             await _evaluate_candidates(wave2_urls)
             consensus_count = _get_consensus_count()
 
-    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ПРИ НЕХВАТКЕ ДО 3 ПОСТАВЩИКОВ):
-    # Если все еще меньше min_target_suppliers, подключаем широкие коммерческие запросы и каталоги
-    if consensus_count < min_target_suppliers:
+    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР):
+    # Страховой контур:
+    # 1. Если уже найдено >= 2 подтвержденных поставщиков в кластере — добор завершен успешно (не сжигать ресурсы ради 3-го).
+    # 2. Если за волны 1 и 2 не найдено вообще ни одной цены — товар непубличный/заказной, Волна 3 принесет только спам.
+    # 3. Бюджет ИИ-экстракций не исчерпан.
+    has_any_price = any(q.price_rub > 0 for q in item_res.quotes)
+    should_run_wave3 = (
+        consensus_count < min_target_suppliers
+        and consensus_count < 2
+        and has_any_price
+        and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
+    )
+    if should_run_wave3:
         wave3_queries: list[str] = []
         if settings.has_active_ai_provider:
             wave3_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=3)
@@ -575,7 +594,7 @@ async def process_single_item(
                                 wave3_urls.append(r.url)
                 except Exception as w_exc:
                     logger.warning("Wave 3 search query error for %s: %s", wq, w_exc)
-                if len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 65:
+                if len(candidate_urls) + len(wave2_urls) + len(wave3_urls) >= 55:
                     break
 
         if wave3_urls:

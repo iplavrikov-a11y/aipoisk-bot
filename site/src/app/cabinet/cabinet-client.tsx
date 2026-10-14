@@ -377,11 +377,11 @@ const modeCopy: Record<Scenario, {
     mode: "supplier_search",
     formSubtitle: "Выберите тип работы и загрузите техническое задание (файл/архив) или вставьте текст.",
     uploadTitle: "Загрузить техническое задание",
-    uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, ZIP)",
+    uploadText: "Перетащите файлы ТЗ сюда или нажмите для выбора (PDF, DOCX, XLSX, ZIP, RAR)",
     multipleFiles: true,
     textLabel: "Или вставьте техническое задание текстом",
     textPlaceholder: "Например: сотовый поликарбонат 10 мм, прозрачный, лист 2,1 x 6 м, количество 120 листов. Нужны поставщики с контактами для запроса коммерческого предложения.",
-    hint: "Если одно техническое задание состоит из нескольких файлов, объедините их в архив и загрузите одним файлом. Разные технические задания загружайте отдельными файлами.",
+    hint: "Можно загружать сразу несколько файлов закупки (смету, ведомость материалов, проект контракта) или архив (ZIP, RAR). Сервис автоматически объединит их в единую задачу с попозиционным анализом.",
     submit: "Запустить поиск поставщиков",
   },
   procurement_report: {
@@ -2845,7 +2845,7 @@ export function CabinetClient() {
                 className="hidden"
                 type="file"
                 multiple
-                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip"
+                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.zip,.rar,.7z"
                 onChange={handleFileInput}
               />
               <div className="flex items-center gap-2.5 min-w-0">
@@ -2857,7 +2857,7 @@ export function CabinetClient() {
 
               <div className="flex items-center gap-2.5 text-xs text-slate-600 font-medium ml-auto">
                 <span className="hidden md:inline">{selectedCopy.uploadText}</span>
-                <span className="md:hidden text-[11px]">Нажмите для выбора (PDF, DOCX, XLSX, ZIP)</span>
+                <span className="md:hidden text-[11px]">Нажмите для выбора (PDF, DOCX, XLSX, ZIP, RAR)</span>
                 <span className="px-2.5 py-1 bg-white border border-teal-300 text-teal-800 rounded-lg text-xs font-bold shadow-2xs shrink-0">
                   Выбрать файл
                 </span>

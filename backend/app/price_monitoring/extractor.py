@@ -310,6 +310,24 @@ def reconcile_quote_unit(
     return quote
 
 
+# Быстрый фильтр наличия ценовых сигналов на странице перед вызовом дорогостоящей LLM
+PRICE_SIGNAL_PATTERN = re.compile(
+    r'(?:'
+    r'\d+[\s\xa0]*(?:[.,]\d{1,2})?[\s\xa0]*(?:₽|руб\.?|рублей|rur|rub)\b|'
+    r'(?:цена|стоимость|прайс|от)[\s:№#«"\'\xa0]{1,10}\d+[\s\xa0]*(?:[.,]\d{1,2})?|'
+    r'\b(?:купить|в\s+корзину|заказать|в\s+наличии|прайс-лист|розница|опт)\b'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def has_price_signals(text: str) -> bool:
+    """Быстрая детерминированная проверка наличия признаков цен без вызова LLM."""
+    if not text or len(text) < 20:
+        return False
+    return bool(PRICE_SIGNAL_PATTERN.search(text))
+
+
 async def extract_supplier_quote(
     settings: SystemSettings,
     target_item_name: str,
@@ -321,6 +339,10 @@ async def extract_supplier_quote(
     pre_contacts: Optional[str] = None,
 ) -> Optional[SupplierQuote]:
     """Анализирует текст страницы и извлекает цену, название поставщика, ИНН, КПП и контакты."""
+    if not has_price_signals(page_text):
+        logger.debug("Skip LLM extraction for %s: no price signals found on page", url)
+        return None
+
     domain = urlparse(url).netloc
     norm_unit = normalize_unit(target_unit)
 

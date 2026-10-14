@@ -4302,9 +4302,9 @@ async def _customer_upload_payload(files: list[UploadFile], settings: SystemSett
 
 
 def _customer_supplier_job_specs(mode: str, payload: list[tuple[str, bytes]]) -> list[tuple[str, list[tuple[str, bytes]]]]:
-    if mode != MODE_SUPPLIER_SEARCH:
-        return []
-    return [(_clean_customer_job_subject(Path(filename).stem) or "ТЗ", [(filename, content)]) for filename, content in payload]
+    # Все файлы (смета, ведомость материалов, проект контракта, архивы) объединяются
+    # в один комплект закупки и обрабатываются единой задачей с попозиционным анализом.
+    return []
 
 
 def _normalize_supplier_search_policy_for_job(mode: str, policy: str) -> str:

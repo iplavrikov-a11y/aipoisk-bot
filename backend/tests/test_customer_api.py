@@ -832,9 +832,11 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 db=db,
             )
 
-            self.assertTrue(payload["batch"])
-            self.assertEqual(payload["count"], 2)
-            self.assertEqual(db.query(Job).filter(Job.client_id == "client-1").count(), 2)
+            self.assertFalse(payload["batch"])
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(db.query(Job).filter(Job.client_id == "client-1").count(), 1)
+            created_job = db.query(Job).filter(Job.client_id == "client-1").first()
+            self.assertEqual(len(created_job.files), 2)
         finally:
             db.close()
 

@@ -2013,6 +2013,17 @@ class SupplierDiscoveryFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("after retry", str(raised.exception))
         self.assertIn("TimeoutError", str(raised.exception))
 
+    def test_validate_candidate_rerank_response_allows_empty_keep(self) -> None:
+        raw_json = '{"ranked": [{"id": "0", "keep": false, "confidence": 10, "reason": "not matching"}]}'
+        candidates = [Candidate(url="https://supplier.example", domain="supplier.example", title="поставщик")]
+        by_id = {"0": candidates[0]}
+        # Should not raise exception
+        supplier_search._validate_candidate_rerank_response(raw_json, by_id)
+
+        # Invalid json / non-list should raise
+        with self.assertRaises(RuntimeError):
+            supplier_search._validate_candidate_rerank_response('{"ranked": "not-a-list"}', by_id)
+
 
 if __name__ == "__main__":
     unittest.main()
