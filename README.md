@@ -14,6 +14,17 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Yandex Search API Cost Tracking, Zero-Cost AI Analysis Badges & Admin Usability (2026-10-14):
+  - Yandex Search API Cost Accounting (`yandex_search.py`, `pipeline.py`, `jobs.py`, `models.py`): integrated dynamic request counter `total_requests` across synchronous and asynchronous Yandex Cloud Search API v1/v2 query builders. Added `yandex_requests_count` and `yandex_cost_rub` tracking to batch price monitoring data structures, durable job rows, and `evidence.json` artifacts at the standard rate of 0.04 ₽ per request.
+  - Checkpoint Durability: checkpoints save cumulative Yandex requests, preventing counter resets when resuming interrupted tasks.
+  - Historical DB Backfill: retroactively backfilled all completed price monitoring jobs in SQLite with actual search request volumes and ruble costs.
+  - Admin Panel Clarity (`App.tsx`, `PriceMonitoringView.tsx`):
+    * Job task strip displays accurate Yandex cost badges (`🔍 X запр. · Y.YY ₽`) for price monitoring tasks, included in the header search expenditure aggregate.
+    * Documentation analysis (`procurement_report`) displays an explicit `⚡ 0.00 ₽ (ИИ)` badge explaining that analysis is performed solely by LLMs without paid external search requests.
+    * Fixed nomenclature count label on price monitoring cards to display positions (`N поз.`) instead of incorrect suppliers (`N пост.`).
+    * Price monitoring management table shows actual Yandex API expenses beneath the customer charged sum.
+  - WAF Cookies Management (`CookiesView.tsx`): dedicated interface for controlling session cookies across e-commerce and wholesale platforms.
+  - Verified with 845 passing backend tests and 54 subtests (100%), full Next.js/Vite builds, and safe live deploy on `202.71.13.57`.
 - Custom Price Monitoring Module: Consensus Clustering, Outlier Pruning, Pagination & Live Verification (2026-10-13):
   - Consensus Clustering Algorithm (`pipeline.py`, `excel_report.py`): sliding-window density clustering identifies the dominant consensus cluster within `cluster_ratio` (default $\le 2.2x$). Quotes outside the consensus cluster are pruned as outliers (`is_outlier = True`), completely excluded from Excel report columns and `=MIN`/`=AVERAGE` formulas. If all quotes diverge without consensus, cells are marked «разброс цен» with an explanatory tooltip to safeguard procurement.
   - Quorum Guarantee (>= 3 Sources per Item): adaptive 2-wave search architecture. Wave 1 queries commercial wholesale and retail sources; if valid quotes $< 3$, Wave 2 fires industry-specific broad queries across up to 45 candidate URLs. Snippet harvesting ensures price extraction even when vendor sites block automated crawlers (HTTP 401/403/444/503).
