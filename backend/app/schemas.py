@@ -13,6 +13,7 @@ class SettingsPatch(BaseModel):
     default_supplier_target: int | None = Field(default=None, ge=1, le=100)
     allow_partial_supplier_reports: bool | None = None
     logistics_enabled: bool | None = None
+    geo_radius_search_enabled_global: bool | None = None
     trial_enabled: bool | None = None
     trial_supplier_search_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_procurement_report_limit: int | None = Field(default=None, ge=0, le=10000)
@@ -125,6 +126,7 @@ class ClientPatch(BaseModel):
     allowed_supplier_search: bool | None = None
     allowed_procurement_report: bool | None = None
     allowed_exact_product: bool | None = None
+    allowed_geo_radius: bool | None = None
     monthly_job_limit: int | None = Field(default=None, ge=0)
     monthly_supplier_search_limit: int | None = Field(default=None, ge=0)
     monthly_procurement_report_limit: int | None = Field(default=None, ge=0)

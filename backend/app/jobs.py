@@ -158,6 +158,8 @@ def create_job(
     supplier_search_run_type: str = SUPPLIER_RUN_INITIAL,
     multi_item_mode: str = "balanced",
     initial_status: str = "pending",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> Job:
     normalized_sources = _normalized_job_sources(sources or [])
     if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
@@ -182,6 +184,8 @@ def create_job(
         supplier_search_policy=normalized_policy,
         supplier_search_run_type=normalized_run_type,
         multi_item_mode=normalized_multi_item_mode,
+        delivery_city=str(delivery_city or "").strip()[:255],
+        geo_radius_km=int(geo_radius_km) if geo_radius_km and int(geo_radius_km) > 0 else None,
         title=title,
         target_suppliers=target_suppliers,
         status="draft" if initial_status == "draft" else "pending",
@@ -959,6 +963,8 @@ def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
                 contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
                 ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
                 ai_rank_reason=row.get("ai_rank_reason", ""),
+                supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
+                supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
             )
         )
     db.commit()
@@ -1304,6 +1310,8 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             is_extend=is_extend,
             wave_index=wave_idx,
             multi_item_mode=multi_item_mode,
+            delivery_city=getattr(job, "delivery_city", "") or "",
+            geo_radius_km=getattr(job, "geo_radius_km", None),
         )
     except TypeError:
         discovery_coro = discover_suppliers(
@@ -1824,6 +1832,8 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
             cached_procurement_profile=active_profile_dict,
             multi_item_mode=multi_item_mode,
+            delivery_city=getattr(job, "delivery_city", "") or "",
+            geo_radius_km=getattr(job, "geo_radius_km", None),
         )
     except TypeError:
         discovery_coro = discover_suppliers(

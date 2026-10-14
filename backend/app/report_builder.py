@@ -768,6 +768,15 @@ def _client_supplier_comment(row: dict, *, is_multi_item: bool = False) -> str:
     product = _clean_comment_text(row.get("product") or item_name or "")
     raw_comment = _clean_comment_text(row.get("comments") or "").replace("ИИ", "Проверка").replace("AI", "Проверка")
     detail = _short_product_or_comment(product, raw_comment)
+    loc_part = ""
+    city = str(row.get("supplier_city") or row.get("city") or "").strip()
+    dist = row.get("supplier_distance_km")
+    if city and dist is not None:
+        loc_part = f"Локация: {city} (~{dist} км)."
+    elif city:
+        loc_part = f"Локация: {city}."
+    if loc_part:
+        detail = f"{detail} {loc_part}" if detail else loc_part
     if is_multi_item and item_name:
         detail = f"Позиция: {item_name} | {detail}" if detail else f"Позиция: {item_name}"
     registry_note = _supplier_registry_note(row)

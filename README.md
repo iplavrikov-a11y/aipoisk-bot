@@ -14,6 +14,15 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Geo-Radius Supplier Search & Logistics Regional Optimization (2026-10-14):
+  - Geo Distance Engine & City Database (`supplier_locations.py`): Haversine distance algorithm with 1.15 road curvature factor covering 150+ Russian cities (including Kamensk-Shakhtinsky, Shakhty, Rostov-on-Don, Bataysk, Aksay, etc.), city name normalization, and location extraction from candidate addresses and snippets.
+  - Geo Query Generator & Prioritization (`supplier_search.py`): generates localized queries for manufacturers, wholesale bases, official dealers, and distributors within `geo_radius_km` (default 300 km) of `delivery_city`. Prioritizes verified suppliers within delivery radius at top of results and Excel report.
+  - Excel & Client Reports Integration (`report_builder.py`): supplier comments automatically enriched with location and road distance (e.g., `Локация: Шахты (~65 км)`).
+  - Flexible Rollout Architecture (`models.py`, `schemas.py`, `main.py`, `cabinet-client.tsx`):
+    * Enabled per-account via `Client.allowed_geo_radius` (active for admin account `edeefa9da6e44803a6b264c250e91251`).
+    * Master global rollout switch via `SystemSettings.geo_radius_search_enabled_global`: setting to True immediately enables the feature for 100% of platform users without code redeploy.
+    * Cabinet UI displays interactive `📍 Поиск в радиусе доставки` toggle with city input, radius selection (150, 300, 500, 1000 km), and logistics optimization notice (+40% task value add-on).
+  - 853 backend tests passing (100%), full Next.js/Vite builds passing, live deploy verified on `202.71.13.57`.
 - Yandex Search API Cost Tracking, Zero-Cost AI Analysis Badges & Admin Usability (2026-10-14):
   - Yandex Search API Cost Accounting (`yandex_search.py`, `pipeline.py`, `jobs.py`, `models.py`): integrated dynamic request counter `total_requests` across synchronous and asynchronous Yandex Cloud Search API v1/v2 query builders. Added `yandex_requests_count` and `yandex_cost_rub` tracking to batch price monitoring data structures, durable job rows, and `evidence.json` artifacts at the standard rate of 0.04 ₽ per request.
   - Checkpoint Durability: checkpoints save cumulative Yandex requests, preventing counter resets when resuming interrupted tasks.

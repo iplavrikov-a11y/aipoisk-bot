@@ -1132,6 +1132,8 @@ async def customer_create_job_route(
     mode: str = Form(default=MODE_SUPPLIER_SEARCH),
     supplier_search_policy: str = Form(default=SUPPLIER_POLICY_NORMAL),
     multi_item_mode: str = Form(default="balanced"),
+    delivery_city: str = Form(default=""),
+    geo_radius_km: int | None = Form(default=None),
     text: str = Form(default=""),
     source_urls: str = Form(default=""),
     target_suppliers: int = Form(default=0),
@@ -1144,6 +1146,8 @@ async def customer_create_job_route(
         mode=mode,
         supplier_search_policy=supplier_search_policy,
         multi_item_mode=multi_item_mode,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
         text=text,
         source_urls=source_urls,
         target_suppliers=target_suppliers,
@@ -3973,6 +3977,11 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
 
 
 def customer_user_to_dict(db: Session, user: WebUser) -> dict:
+    settings = get_or_create_settings(db)
+    is_geo_allowed = bool(
+        getattr(settings, "geo_radius_search_enabled_global", False)
+        or (user.client and getattr(user.client, "allowed_geo_radius", False))
+    )
     return {
         "id": user.id,
         "email": user.email,
@@ -3981,6 +3990,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "is_email_verified": bool(user.is_email_verified),
         "client_id": user.client_id,
         "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
+        "allowed_geo_radius": is_geo_allowed,
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
@@ -4090,6 +4100,8 @@ def customer_job_to_dict(job: Job, include_files: bool = False, *, db: Session |
         "supplier_search_policy": getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
         "supplier_search_run_type": getattr(job, "supplier_search_run_type", "initial"),
         "multi_item_mode": getattr(job, "multi_item_mode", "balanced"),
+        "delivery_city": getattr(job, "delivery_city", "") or "",
+        "geo_radius_km": getattr(job, "geo_radius_km", None),
         "confirmation_kind": confirmation_kind,
         "multi_item_details": multi_item_details,
         "status": job.status,
@@ -4183,6 +4195,8 @@ async def create_customer_job_api(
     mode: str,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     multi_item_mode: str = "balanced",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
     text: str = "",
     source_urls: str = "",
     target_suppliers: int = 0,
@@ -4197,6 +4211,14 @@ async def create_customer_job_api(
     normalized_policy = _normalize_supplier_search_policy_for_job(mode, supplier_search_policy)
     normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     settings = get_or_create_settings(db)
+    delivery_city = str(delivery_city or "").strip()
+    if delivery_city:
+        is_geo_allowed = bool(
+            getattr(settings, "geo_radius_search_enabled_global", False)
+            or (context.user.client and getattr(context.user.client, "allowed_geo_radius", False))
+        )
+        if not is_geo_allowed:
+            raise HTTPException(status_code=403, detail="Поиск в радиусе доставки пока не активирован для вашего аккаунта.")
     sources = source_payloads_from_text(source_urls)
     if sources and mode == MODE_SUPPLIER_SEARCH:
         raise HTTPException(
@@ -4243,6 +4265,8 @@ async def create_customer_job_api(
                     sources=[],
                     supplier_search_policy=normalized_policy,
                     multi_item_mode=normalized_multi_item_mode,
+                    delivery_city=delivery_city,
+                    geo_radius_km=geo_radius_km,
                 )
                 reserve_job_units(db, client, job)
                 enqueue_job(job.id)
@@ -4261,6 +4285,8 @@ async def create_customer_job_api(
             sources=sources,
             supplier_search_policy=normalized_policy,
             multi_item_mode=normalized_multi_item_mode,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
         reserve_job_units(db, client, job, supplier_search_count=supplier_search_count)
         enqueue_job(job.id)
@@ -5907,4 +5933,6 @@ def supplier_to_dict(item: SupplierResult) -> dict:
         "contact_evidence_snippet": getattr(item, "contact_evidence_snippet", ""),
         "ai_rank_confidence": getattr(item, "ai_rank_confidence", 0),
         "ai_rank_reason": getattr(item, "ai_rank_reason", ""),
+        "supplier_city": getattr(item, "supplier_city", "") or "",
+        "supplier_distance_km": getattr(item, "supplier_distance_km", None),
     }

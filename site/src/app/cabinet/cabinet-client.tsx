@@ -160,6 +160,7 @@ type SessionPayload = {
     is_trial: boolean;
     is_email_verified: boolean;
     allowed_price_monitoring?: boolean;
+    allowed_geo_radius?: boolean;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -223,6 +224,8 @@ type CustomerJob = {
   mode_label: string;
   supplier_search_policy?: string;
   multi_item_mode?: string;
+  delivery_city?: string;
+  geo_radius_km?: number | null;
   status: string;
   status_label: string;
   progress: number;
@@ -1006,6 +1009,9 @@ export function CabinetClient() {
   const [scenario, setScenario] = useState<Scenario>("procurement_report");
   const [supplierSearchPolicy, setSupplierSearchPolicy] = useState<SupplierSearchPolicy>("normal");
   const [multiItemMode, setMultiItemMode] = useState<"balanced" | "per_item">("balanced");
+  const [geoRadiusEnabled, setGeoRadiusEnabled] = useState(false);
+  const [deliveryCity, setDeliveryCity] = useState("");
+  const [geoRadiusKm, setGeoRadiusKm] = useState<number>(300);
   const [text, setText] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -1720,6 +1726,10 @@ export function CabinetClient() {
       form.append("mode", selectedMode);
       form.append("supplier_search_policy", selectedMode === "procurement_report" ? "normal" : supplierSearchPolicy);
       form.append("multi_item_mode", multiItemMode);
+      if (geoRadiusEnabled && deliveryCity.trim()) {
+        form.append("delivery_city", deliveryCity.trim());
+        form.append("geo_radius_km", String(geoRadiusKm));
+      }
       form.append("text", acceptsText ? text : "");
       form.append("source_urls", acceptsSources ? sourceUrls : "");
       form.append("target_suppliers", "0");
@@ -1734,6 +1744,8 @@ export function CabinetClient() {
       trackGoal("task_started", { module: selectedMode });
       setText("");
       setSourceUrls("");
+      setDeliveryCity("");
+      setGeoRadiusEnabled(false);
       clearSelectedFiles();
       setMessage(payload.batch ? `Запущено задач: ${payload.count}.` : "Задача запущена.");
       setJobsPage(1);
@@ -2823,6 +2835,62 @@ export function CabinetClient() {
             </div>
           ) : null}
 
+          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers") && session?.user?.allowed_geo_radius ? (
+            <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={geoRadiusEnabled}
+                    onChange={(e) => setGeoRadiusEnabled(e.target.checked)}
+                    className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
+                  />
+                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <span>📍</span> Поиск в радиусе доставки
+                  </span>
+                </label>
+                <span className="text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
+                  ⚡ Логистический фильтр (+40%)
+                </span>
+              </div>
+
+              {geoRadiusEnabled ? (
+                <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Город объекта / поставки:
+                    </label>
+                    <input
+                      type="text"
+                      value={deliveryCity}
+                      onChange={(e) => setDeliveryCity(e.target.value)}
+                      placeholder="например, Каменск-Шахтинский или Ростов-на-Дону"
+                      className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder:text-slate-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Радиус поиска:
+                    </label>
+                    <select
+                      value={geoRadiusKm}
+                      onChange={(e) => setGeoRadiusKm(Number(e.target.value))}
+                      className="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-semibold text-slate-800"
+                    >
+                      <option value={150}>до 150 км</option>
+                      <option value={300}>до 300 км (рекомендуется)</option>
+                      <option value={500}>до 500 км</option>
+                      <option value={1000}>до 1000 км</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-3 text-[11px] text-slate-500 leading-tight">
+                    Включает поиск заводов-производителей, оптовых складов, а также официальных дилеров и дистрибьюторов в радиусе доставки.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="space-y-2">
             <div
               className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
@@ -3125,8 +3193,13 @@ export function CabinetClient() {
                     </span>
                   </div>
 
-                  <div className="col-span-6 md:col-span-2 text-xs font-semibold text-slate-700">
-                    {modeDisplayName(job)}
+                  <div className="col-span-6 md:col-span-2 text-xs font-semibold text-slate-700 flex flex-col items-start gap-1">
+                    <span>{modeDisplayName(job)}</span>
+                    {job.delivery_city ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-800 bg-teal-50 border border-teal-200/90 px-1.5 py-0.5 rounded-md">
+                        📍 {job.delivery_city}{job.geo_radius_km ? ` (до ${job.geo_radius_km} км)` : ""}
+                      </span>
+                    ) : null}
                   </div>
 
                   <div className="col-span-6 md:col-span-2 flex flex-col gap-1">

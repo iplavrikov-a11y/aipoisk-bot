@@ -36,6 +36,12 @@ from .ai import call_llm, parse_json_object
 from .config import config
 from .dadata_client import enrich_company_by_inn
 from .models import SystemSettings
+from .supplier_locations import (
+    calculate_city_distance_fast,
+    extract_city_from_text,
+    get_cities_within_radius,
+    annotate_contacts_radius_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1603,11 +1609,21 @@ async def build_supplier_queries(
     executed_queries: set[str] | list[str] | None = None,
     additional_prompt: str = "",
     multi_item_mode: str = "balanced",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> list[str]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search query generation")
     profile = profile or await build_procurement_profile(settings, context)
     
+    geo_prompt = ""
+    if delivery_city:
+        rad_str = f" в радиусе {geo_radius_km} км" if geo_radius_km else ""
+        geo_prompt = (
+            f"\n- КРИТИЧНО ДЛЯ РЕГИОНАЛЬНОЙ ЛОГИСТИКИ: объект/поставка в городе {delivery_city}{rad_str}."
+            f" Обязательно добавь запросы с указанием города '{delivery_city}', официальных дилеров, дистрибьюторов, региональных оптовых складов и производителей в этом регионе!"
+        )
+
     if is_extend or wave_index > 1:
         refine_extra = f"\nДополнительные критерии добора: {additional_prompt.strip()}" if additional_prompt else ""
         system_prompt = (
@@ -1617,7 +1633,7 @@ async def build_supplier_queries(
             "Используй отрицательные операторы Яндекса: -\"банковская гарантия\" -\"обучение\" -\"семинар\" -\"эцп\" -\"агрегатор\" -\"курсы\"."
         )
         prompt = f"""На основе профиля закупки сформируй поисковые запросы для ДОБОРА поставщиков (Волна #{wave_index}).
-Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}
+Нужно искать альтернативных поставщиков: региональные торговые дома, склады, дистрибьюторы, дилеры по номенклатуре закупки.{refine_extra}{geo_prompt}
 Сформируй 18-28 поисковых запросов для поиска по регионам РФ и специализированным каналам сбыта.
 Включай в запросы минус-слова (-"банковская гарантия" -"обучение" -семинар -эцп -агрегатор -курсы).
 Если позиций несколько, распредели запросы для добора по каждой позиции ТЗ, уделяя внимание позициям с возможным дефицитом.
@@ -1641,7 +1657,7 @@ async def build_supplier_queries(
 
 КРИТИЧНО: Для КАЖДОЙ из перечисленных позиций составь от 8 до 12 самостоятельных, качественных поисковых запросов (производитель, завод, дилер, дистрибьютор, оптовые поставки, точные параметры из ТЗ).
 Не смешивай разные позиции в один запрос!
-Всего сформируй от {8 * len(profile.items)} до {12 * len(profile.items)} запросов с равномерным охватом всех позиций.{neg_line}
+Всего сформируй от {8 * len(profile.items)} до {12 * len(profile.items)} запросов с равномерным охватом всех позиций.{neg_line}{geo_prompt}
 Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
 Ответ строго JSON:
 {{"queries": ["..."]}}
@@ -1660,7 +1676,7 @@ async def build_supplier_queries(
 - 40-60% запросов широкие по товарной группе/номенклатуре без точного размера, ГОСТ, марки или артикула;
 - 20-40% запросов с точными характеристиками из ТЗ;
 - отдельные запросы по "производитель", "завод", "поставщик", "дилер", "дистрибьютор", "оптом", "каталог";
-- если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.{neg_line}
+- если задана фиксированная торговая марка/модель, добавь брендовые запросы, но всё равно ищи официальных дилеров и профильных производителей категории.{neg_line}{geo_prompt}
 - СТРОГО соблюдай функциональное и технологическое назначение товара: не подменяй предмет закупки смежными процессами, сопутствующей инфраструктурой или расходными материалами.
 Не добавляй агрегаторы, маркетплейсы, реестры, тендерные площадки, справочники, статьи, видео и учебные страницы.
 Если позиций несколько, обязательно распредели запросы пропорционально между всеми позициями (не менее 3-5 целевых запросов на каждую самостоятельную позицию, не концентрируй все запросы только на первой).
@@ -1694,7 +1710,21 @@ async def build_supplier_queries(
                 revised = await _revise_supplier_queries_with_ai(settings, context, profile, queries, target)
                 if revised:
                     queries = revised
+            if delivery_city:
+                nearby = get_cities_within_radius(delivery_city, geo_radius_km or 300)
+                target_items = [it.name for it in profile.items[:3]] if (profile and profile.items) else [_clean_query_item(context[:100])]
+                geo_injections = []
+                for item_name in target_items:
+                    clean_it = " ".join(item_name.split()[:4])
+                    geo_injections.append(f"{clean_it} {delivery_city} официальный дилер")
+                    geo_injections.append(f"{clean_it} {delivery_city} купить оптом склад")
+                    for n_city in nearby[:2]:
+                        if n_city != delivery_city.lower():
+                            geo_injections.append(f"{clean_it} {n_city} поставщик опт")
+                queries = _clean_supplier_queries(geo_injections + queries)
             max_queries = max(28, 12 * len(profile.items)) if (profile and len(profile.items) > 1 and multi_item_mode == "per_item") else 28
+            if delivery_city:
+                max_queries += 6
             return queries[:max_queries]
         except Exception as exc:
             last_error = exc
@@ -1721,6 +1751,8 @@ async def discover_suppliers(
     is_extend: bool = False,
     wave_index: int = 1,
     multi_item_mode: str = "balanced",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> tuple[list[dict], dict]:
     async with _browser_pool_session():
         return await _discover_suppliers_impl(
@@ -1737,6 +1769,8 @@ async def discover_suppliers(
             is_extend=is_extend,
             wave_index=wave_index,
             multi_item_mode=multi_item_mode,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
 
 
@@ -1755,6 +1789,8 @@ async def _discover_suppliers_impl(
     is_extend: bool = False,
     wave_index: int = 1,
     multi_item_mode: str = "balanced",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> tuple[list[dict], dict]:
     if not settings.has_active_ai_provider:
         raise RuntimeError("AI provider is required for supplier search")
@@ -1896,6 +1932,8 @@ async def _discover_suppliers_impl(
                     executed_queries=executed_queries,
                     additional_prompt=additional_prompt,
                     multi_item_mode=multi_item_mode,
+                    delivery_city=delivery_city,
+                    geo_radius_km=geo_radius_km,
                 )
             except TypeError:
                 general_queries = await build_supplier_queries(
@@ -1948,6 +1986,8 @@ async def _discover_suppliers_impl(
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
         progress_callback=progress_callback,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     recovery_rounds: list[dict] = []
     max_recovery_rounds = 0 if policy == SUPPLIER_POLICY_MINPROM_ONLY else 1
@@ -1986,6 +2026,8 @@ async def _discover_suppliers_impl(
                 excluded_domains=excluded_domains,
                 excluded_company_keys=excluded_company_keys,
                 progress_callback=progress_callback,
+                delivery_city=delivery_city,
+                geo_radius_km=geo_radius_km,
             )
             reviewed.extend(fp_reviewed)
             accepted = _accepted_supplier_results(
@@ -1997,6 +2039,8 @@ async def _discover_suppliers_impl(
                 limit_to_target=False,
                 excluded_domains=excluded_domains,
                 excluded_company_keys=excluded_company_keys,
+                delivery_city=delivery_city,
+                geo_radius_km=geo_radius_km,
             )
             recovery_rounds.append({
                 "status": "ok_fast_path",
@@ -2070,6 +2114,8 @@ async def _discover_suppliers_impl(
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
                     progress_callback=progress_callback,
+                    delivery_city=delivery_city,
+                    geo_radius_km=geo_radius_km,
                 )
                 reviewed.extend(recovery_reviewed)
                 accepted = _accepted_supplier_results(
@@ -2081,6 +2127,8 @@ async def _discover_suppliers_impl(
                     limit_to_target=False,
                     excluded_domains=excluded_domains,
                     excluded_company_keys=excluded_company_keys,
+                    delivery_city=delivery_city,
+                    geo_radius_km=geo_radius_km,
                 )
                 recovery_round = {
                     "status": "ok",
@@ -2119,6 +2167,15 @@ async def _discover_suppliers_impl(
 
     # Enrich general accepted suppliers with missing region/director
     accepted = await _enrich_accepted_suppliers_with_dadata(accepted)
+
+    if delivery_city and geo_radius_km:
+        annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
+        def _final_geo_sort(item: dict):
+            within = item.get("supplier_distance_within_radius")
+            rad_rank = 0 if within is True else (1 if within is None else 2)
+            base_key = _supplier_result_sort_key(item)
+            return (rad_rank, base_key[0], base_key[1], base_key[2])
+        accepted.sort(key=_final_geo_sort)
 
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:
         accepted.sort(key=lambda item: 0 if (item.get("minprom_registry_match") or {}).get("matched") else 1)
@@ -3745,6 +3802,8 @@ async def _review_candidates_until_target(
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     reviewed: list[dict] = []
     batch_size = _candidate_review_batch_size(target)
@@ -3760,6 +3819,19 @@ async def _review_candidates_until_target(
         )
         if result:
             result["_source_rank"] = index
+            raw_city = str(result.get("region") or result.get("supplier_city") or result.get("city") or "").strip()
+            detected = extract_city_from_text(f"{raw_city} {result.get('company_name', '')} {result.get('comments', '')} {candidate.snippet} {result.get('contact_evidence_snippet', '')}")
+            supplier_city = detected or raw_city
+            if supplier_city and supplier_city.lower() not in {"россия", "рф"}:
+                result["supplier_city"] = supplier_city.capitalize()
+                if delivery_city:
+                    dist = calculate_city_distance_fast(delivery_city, supplier_city)
+                    if dist is not None:
+                        result["supplier_distance_km"] = dist
+                        if geo_radius_km and geo_radius_km > 0:
+                            within = dist <= geo_radius_km
+                            result["supplier_distance_within_radius"] = within
+                            result["supplier_distance_radius_status"] = "within_radius" if within else "outside_radius"
         return result
 
     effective_target = target
@@ -3774,6 +3846,8 @@ async def _review_candidates_until_target(
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
         # Early stop: skip batch entirely if we already have enough
         if len(already_accepted) >= effective_target:
@@ -3812,6 +3886,8 @@ async def _review_candidates_until_target(
             limit_to_target=False,
             excluded_domains=excluded_domains,
             excluded_company_keys=excluded_company_keys,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
         review_progress = 74 + int(18 * min(stopped_after, len(candidates)) / max(1, len(candidates)))
         await _emit_progress(
@@ -3837,6 +3913,8 @@ async def _review_candidates_until_target(
         limit_to_target=False,
         excluded_domains=excluded_domains,
         excluded_company_keys=excluded_company_keys,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     ), reviewed, {
         "batch_size": batch_size,
         "reviewed_count": len(reviewed),
@@ -3860,6 +3938,8 @@ def _accepted_supplier_results(
     limit_to_target: bool = True,
     excluded_domains: set[str] | None = None,
     excluded_company_keys: set[str] | None = None,
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> list[dict]:
     accepted: list[dict] = []
     seen_domains: set[str] = set(excluded_domains or set())
@@ -3867,7 +3947,16 @@ def _accepted_supplier_results(
     verified = [item for item in reviewed if item.get("evidence_status") == "verified"]
     if policy == SUPPLIER_POLICY_MINPROM_ONLY:
         verified = [item for item in verified if str(item.get("product_fit") or "").strip().lower() in {"exact", "analog"}]
-    sorted_verified = sorted(verified, key=_supplier_result_sort_key)
+    if delivery_city and geo_radius_km:
+        annotate_contacts_radius_status(verified, delivery_city, geo_radius_km)
+        def _geo_sort_key(item: dict):
+            within = item.get("supplier_distance_within_radius")
+            rad_rank = 0 if within is True else (1 if within is None else 2)
+            base_key = _supplier_result_sort_key(item)
+            return (rad_rank, base_key[0], base_key[1], base_key[2])
+        sorted_verified = sorted(verified, key=_geo_sort_key)
+    else:
+        sorted_verified = sorted(verified, key=_supplier_result_sort_key)
 
     def add_result(result: dict) -> bool:
         if result.get("evidence_status") != "registry_only" and _supplier_quality_score(result) < MIN_VERIFIED_SUPPLIER_SCORE:
