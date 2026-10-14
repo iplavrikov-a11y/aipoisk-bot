@@ -163,6 +163,20 @@ CITY_COORDINATES: dict[str, tuple[float, float]] = {
     "щербинка": (55.5000, 37.5500),
 }
 
+def _load_city_coordinates() -> dict[str, tuple[float, float]]:
+    coords: dict[str, tuple[float, float]] = dict(CITY_COORDINATES)
+    json_path = os.path.join(os.path.dirname(__file__), "data", "city_coordinates.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if isinstance(v, (list, tuple)) and len(v) == 2:
+                        coords[normalize_city_name(k)] = (float(v[0]), float(v[1]))
+        except Exception as e:
+            logger.warning("failed_to_load_city_coordinates_json", error=str(e))
+    return coords
+
 ROAD_DISTANCE_FACTOR: float = 1.15  # Average road curvature coefficient on Russian highways
 
 
@@ -172,6 +186,10 @@ def normalize_city_name(value: str | None) -> str:
     city = re.sub(r"[^0-9a-zа-я\s.-]+", " ", city, flags=re.IGNORECASE)
     city = re.sub(r"\s+", " ", city)
     return city.strip(" .-")
+
+
+# Merge full Russian cities coordinates into CITY_COORDINATES
+CITY_COORDINATES.update(_load_city_coordinates())
 
 
 def haversine_distance_km(
@@ -194,11 +212,46 @@ def haversine_distance_km(
     return int(round(direct_km))
 
 
+def geocode_city_dadata_sync(city_or_address: str) -> tuple[float, float] | None:
+    """Geocode any Russian settlement or address via DaData Suggestions API (instant fallback)."""
+    norm = normalize_city_name(city_or_address)
+    if not norm:
+        return None
+    if norm in CITY_COORDINATES:
+        return CITY_COORDINATES[norm]
+
+    try:
+        from .dadata_client import _get_dadata_api_key
+        token = _get_dadata_api_key()
+        if not token:
+            return None
+        import httpx
+        url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address"
+        headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+        with httpx.Client(timeout=3.5) as client:
+            resp = client.post(url, json={"query": city_or_address, "count": 1}, headers=headers)
+            if resp.status_code == 200:
+                payload = resp.json()
+                suggestions = payload.get("suggestions", [])
+                if suggestions:
+                    data = suggestions[0].get("data", {}) or {}
+                    lat = data.get("geo_lat")
+                    lon = data.get("geo_lon")
+                    if lat is not None and lon is not None:
+                        coords = (float(lat), float(lon))
+                        CITY_COORDINATES[norm] = coords
+                        return coords
+    except Exception as exc:
+        logger.debug("dadata_sync_geocoding_failed", query=city_or_address, error=str(exc))
+    return None
+
+
 def calculate_city_distance_fast(
     from_city: str,
     to_city: str,
     *,
     apply_road_factor: bool = True,
+    allow_dadata_fallback: bool = False,
 ) -> int | None:
     from_norm = normalize_city_name(from_city)
     to_norm = normalize_city_name(to_city)
@@ -208,6 +261,10 @@ def calculate_city_distance_fast(
         return 0
     c1 = CITY_COORDINATES.get(from_norm)
     c2 = CITY_COORDINATES.get(to_norm)
+    if not c1 and allow_dadata_fallback:
+        c1 = geocode_city_dadata_sync(from_city)
+    if not c2 and allow_dadata_fallback:
+        c2 = geocode_city_dadata_sync(to_city)
     if c1 and c2:
         return haversine_distance_km(c1[0], c1[1], c2[0], c2[1], apply_road_factor=apply_road_factor)
     return None
@@ -327,6 +384,14 @@ def annotate_contacts_radius_status(
         return stats
     for item in contacts:
         supplier_city = str(item.get("supplier_city") or item.get("city") or "").strip()
+        if not supplier_city:
+            extracted = extract_city_from_text(
+                f"{item.get('address') or ''} {item.get('legal_address') or ''} {item.get('region') or ''} {item.get('comments') or ''}"
+            )
+            if extracted:
+                supplier_city = extracted
+                item["supplier_city"] = extracted
+
         distance = item.get("supplier_distance_km")
         if distance is None and supplier_city and delivery_city:
             distance = calculate_city_distance_fast(delivery_city, supplier_city)
@@ -360,12 +425,16 @@ def extract_city_from_text(text: str) -> str:
         candidate = normalize_city_name(m.group(1))
         if candidate in CITY_COORDINATES:
             return candidate
-    # 2. Check known cities in CITY_COORDINATES (longest first to avoid substring false positives)
-    text_lower = text.lower()
-    for city in sorted(CITY_COORDINATES.keys(), key=len, reverse=True):
-        pattern = r'(?<![а-яё0-9])' + re.escape(city) + r'(?![а-яё0-9])'
-        if re.search(pattern, text_lower):
-            return city
+    # 2. Fast O(1) dictionary lookup on word n-grams (3-word, 2-word, 1-word)
+    clean = re.sub(r'[^\w\s-]', ' ', text.lower().replace('ё', 'е'))
+    words = clean.split()
+    if not words:
+        return ""
+    for n in (3, 2, 1):
+        for i in range(len(words) - n + 1):
+            cand = normalize_city_name(" ".join(words[i : i + n]))
+            if cand in CITY_COORDINATES:
+                return cand
     return ""
 
 

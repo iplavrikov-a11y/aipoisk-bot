@@ -1181,10 +1181,13 @@ def _build_registry_fallback_supplier_outputs(
     supplier_billing_kind: str,
     quote_billing_kind: str,
 ) -> tuple[Path, list[dict]]:
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     quote_markdown = build_quote_request_markdown(
         context,
         subject=subject,
         procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+        delivery_city=delivery_city,
     )
     quote_markdown = f"{quote_markdown.rstrip()}\n\n## Важно: реестр Минпромторга\n\n{REGISTRY_FALLBACK_QUOTE_WARNING}\n"
     xlsx_path = write_supplier_xlsx(
@@ -1195,6 +1198,8 @@ def _build_registry_fallback_supplier_outputs(
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
         profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else None,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1419,12 +1424,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         return
 
     stem = _result_stem(job, subject)
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     quote_markdown = asyncio.run(
         build_quote_request_markdown_with_ai(
             settings,
             context,
             subject=subject,
             procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+            delivery_city=delivery_city,
         )
     )
     xlsx_path = write_supplier_xlsx(
@@ -1435,6 +1443,8 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
         profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else None,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1920,6 +1930,8 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         "ai_required": True,
         "ai_used": bool(report.ai_used and supplier_evidence.get("ai_used")),
     }
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     if accepted:
         xlsx_path = write_supplier_xlsx(
             out_dir / _result_filename("suppliers", stem, ".xlsx"),
@@ -1929,6 +1941,8 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             target=job.target_suppliers,
             policy=getattr(job, "supplier_search_policy", "") or "",
             profile=supplier_evidence.get("procurement_profile") if isinstance(supplier_evidence, dict) else None,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
     output_files = [_output_artifact("analysis", "Анализ", docx_path, KIND_PROCUREMENT_REPORT)]
     if xlsx_path:

@@ -2872,19 +2872,27 @@ export function CabinetClient() {
                     <label className="block text-[11px] font-bold text-slate-700 mb-1">
                       Радиус поиска:
                     </label>
-                    <select
-                      value={geoRadiusKm}
-                      onChange={(e) => setGeoRadiusKm(Number(e.target.value))}
-                      className="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-semibold text-slate-800"
-                    >
-                      <option value={150}>до 150 км</option>
-                      <option value={300}>до 300 км (рекомендуется)</option>
-                      <option value={500}>до 500 км</option>
-                      <option value={1000}>до 1000 км</option>
-                    </select>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={10}
+                        max={5000}
+                        step={25}
+                        value={geoRadiusKm || ""}
+                        onChange={(e) => {
+                          const val = e.target.value === "" ? 0 : Number(e.target.value);
+                          setGeoRadiusKm(val);
+                        }}
+                        placeholder="300"
+                        className="w-full text-xs px-3 py-2 pr-9 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-semibold text-slate-800"
+                      />
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 pointer-events-none">
+                        км
+                      </span>
+                    </div>
                   </div>
                   <div className="sm:col-span-3 text-[11px] text-slate-500 leading-tight">
-                    Включает поиск заводов-производителей, оптовых складов, а также официальных дилеров и дистрибьюторов в радиусе доставки.
+                    Поиск заводов-производителей, оптовых складов, а также официальных дилеров и дистрибьюторов в радиусе доставки. База охватывает все 1 100+ городов и населенных пунктов РФ.
                   </div>
                 </div>
               ) : null}

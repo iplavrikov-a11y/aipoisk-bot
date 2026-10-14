@@ -601,6 +601,8 @@ def write_supplier_xlsx(
     subject: str = "",
     policy: str = "normal",
     profile: dict | None = None,
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -668,9 +670,25 @@ def write_supplier_xlsx(
     item_title = clean_xml_compatible(_clean_comment_text(subject) or _clean_comment_text(title) or "Спецификация")
     is_fallback = _is_registry_fallback_report(rows)
 
+    geo_subtitle = ""
+    geo_summary = ""
+    if delivery_city:
+        clean_city = str(delivery_city).strip()
+        rad_info = f"в радиусе до {geo_radius_km} км" if geo_radius_km else "по городу поставки"
+        geo_subtitle = f"Локация / доставка: г. {clean_city} ({rad_info})"
+        geo_summary = (
+            f" Логистический фильтр: отбор поставщиков в радиусе до {geo_radius_km} км от г. {clean_city}."
+            if geo_radius_km
+            else f" Логистический фильтр: г. {clean_city}."
+        )
+
     if is_multi and item_sections:
         ws.title = "Сводный реестр"
-        subtitle = clean_xml_compatible(f"Сводный перечень проверенных поставщиков по всем позициям ТЗ | {policy_label}")
+        sub_parts = ["Сводный перечень проверенных поставщиков по всем позициям ТЗ"]
+        if geo_subtitle:
+            sub_parts.append(geo_subtitle)
+        sub_parts.append(policy_label)
+        subtitle = clean_xml_compatible(" | ".join(sub_parts))
         if len(item_sections) > 20:
             displayed = item_sections[:20]
             remaining = len(item_sections) - 20
@@ -686,7 +704,7 @@ def write_supplier_xlsx(
             else "💡 Как управлять: нажимайте значки [-] / [+] слева от номеров строк или кнопки [1] (свернуть всё) / [2] (развернуть всё) в верхнем левом углу над таблицей."
         )
         summary_text = (
-            f"Сводный реестр по всем позициям ТЗ со структурой группировки (+ / -). Всего проверено уникальных компаний: {len(rows)}.\n"
+            f"Сводный реестр по всем позициям ТЗ со структурой группировки (+ / -). Всего проверено уникальных компаний: {len(rows)}.{geo_summary}\n"
             f"{control_guide}\n"
             f"Позиции ТЗ: {breakdown_text}"
         )
@@ -705,8 +723,13 @@ def write_supplier_xlsx(
         summary = clean_xml_compatible(summary_text)
     else:
         ws.title = "Поставщики"
-        subtitle = clean_xml_compatible(f"Предмет закупки / ТЗ: {item_title} | {policy_label}")
-        summary = clean_xml_compatible(_supplier_count_summary(rows, target))
+        sub_parts = [f"Предмет закупки / ТЗ: {item_title}"]
+        if geo_subtitle:
+            sub_parts.append(geo_subtitle)
+        sub_parts.append(policy_label)
+        subtitle = clean_xml_compatible(" | ".join(sub_parts))
+        base_summary = _supplier_count_summary(rows, target)
+        summary = clean_xml_compatible(f"{base_summary}{geo_summary}")
 
     if is_fallback:
         summary = clean_xml_compatible(f"{REGISTRY_FALLBACK_REPORT_DISCLAIMER}\n\n{summary}")

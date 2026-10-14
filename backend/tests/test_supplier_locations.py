@@ -103,6 +103,52 @@ class SupplierLocationsTests(unittest.TestCase):
         self.assertIn("ростов-на-дону", cities)
         self.assertNotIn("москва", cities)
 
+    def test_russian_cities_database_count(self) -> None:
+        from app.supplier_locations import CITY_COORDINATES
+        self.assertGreater(len(CITY_COORDINATES), 1000, "Must contain over 1000 Russian cities")
+        # Check smaller towns that were previously missing
+        for town in ["зверево", "гуково", "белая калитва", "миллерово", "новошахтинск"]:
+            self.assertIn(town, CITY_COORDINATES, f"Town {town} must be in database")
+
+    def test_write_supplier_xlsx_with_delivery_city_and_radius(self) -> None:
+        import tempfile
+        from pathlib import Path
+        import openpyxl
+        from app.report_builder import write_supplier_xlsx
+
+        rows = [
+            {
+                "company_name": "ООО ДонТрубПоставка",
+                "site": "dontrub.ru",
+                "phone": "+7 863 200-00-00",
+                "email": "sale@dontrub.ru",
+                "supplier_city": "Шахты",
+                "supplier_distance_km": 78,
+                "comments": "Трубы водоводные Ду 150 мм в наличии",
+                "product_fit": "exact",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out_file = Path(td) / "test_report.xlsx"
+            write_supplier_xlsx(
+                out_file,
+                rows,
+                title="Реконструкция водовода",
+                delivery_city="Каменск-Шахтинский",
+                geo_radius_km=300,
+            )
+            wb = openpyxl.load_workbook(out_file)
+            ws = wb.active
+            subtitle_val = str(ws.cell(row=2, column=1).value or "")
+            summary_val = str(ws.cell(row=3, column=1).value or "")
+            comment_val = str(ws.cell(row=6, column=5).value or "")
+
+            self.assertIn("Каменск-Шахтинский", subtitle_val)
+            self.assertIn("300", subtitle_val)
+            self.assertIn("Логистический фильтр", summary_val)
+            self.assertIn("Шахты", comment_val)
+            self.assertIn("78 км", comment_val)
+
 
 if __name__ == "__main__":
     unittest.main()

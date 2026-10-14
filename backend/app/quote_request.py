@@ -52,6 +52,7 @@ async def build_quote_request_markdown_with_ai(
     *,
     subject: str = "",
     procurement_profile: dict | None = None,
+    delivery_city: str = "",
 ) -> str:
     """Build supplier-facing quote request text, prioritizing AI extraction when active."""
     has_ai = getattr(settings, "has_active_ai_provider", False)
@@ -63,6 +64,9 @@ async def build_quote_request_markdown_with_ai(
                 subject=subject,
             )
             if _extract_table_from_text(ai_markdown):
+                if delivery_city and "Город поставки" in ai_markdown:
+                    # ensure delivery city is mentioned if placeholder was left
+                    ai_markdown = ai_markdown.replace(f"**Город поставки:** {MISSING_VALUE}", f"**Город поставки:** г. {delivery_city.strip()}")
                 return ai_markdown
         except Exception:
             pass
@@ -71,6 +75,7 @@ async def build_quote_request_markdown_with_ai(
         source_text,
         subject=subject,
         procurement_profile=procurement_profile,
+        delivery_city=delivery_city,
     )
 
 
@@ -79,10 +84,13 @@ def build_quote_request_markdown(
     *,
     subject: str = "",
     procurement_profile: dict | None = None,
+    delivery_city: str = "",
 ) -> str:
     title = _quote_subject(source_text, subject=subject, procurement_profile=procurement_profile)
     table = _extract_table_from_text(source_text) or _table_from_profile(procurement_profile, title)
     conditions = _extract_conditions(source_text)
+    if delivery_city and not conditions.get("Город поставки"):
+        conditions["Город поставки"] = f"г. {delivery_city.strip()}"
     return _compose_quote_request(title, table, conditions)
 
 
