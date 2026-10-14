@@ -45,6 +45,8 @@ type JobItem = {
   total_positions: number
   found_positions: number
   charged_rub: number
+  yandex_requests_count?: number
+  yandex_cost_rub?: number
   created_at: string | null
   completed_at: string | null
   download_url: string | null
@@ -717,8 +719,15 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
                   <td style={{ padding: '10px 12px', fontWeight: 600, color: job.found_positions > 0 ? '#059669' : '#64748b' }}>
                     {job.found_positions}
                   </td>
-                  <td style={{ padding: '10px 12px', fontWeight: 600, color: job.charged_rub > 0 ? '#2563eb' : '#64748b' }}>
-                    {job.charged_rub.toLocaleString('ru-RU')} ₽
+                  <td style={{ padding: '10px 12px' }}>
+                    <div style={{ fontWeight: 600, color: job.charged_rub > 0 ? '#2563eb' : '#64748b' }}>
+                      {job.charged_rub.toLocaleString('ru-RU')} ₽
+                    </div>
+                    {Boolean(job.yandex_cost_rub && job.yandex_cost_rub > 0) && (
+                      <div style={{ fontSize: '11px', color: '#d97706', display: 'flex', alignItems: 'center', gap: '3px' }} title={`Запросов Яндекс: ${job.yandex_requests_count || 0}`}>
+                        🔍 {(job.yandex_cost_rub || 0).toFixed(2)} ₽
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '10px 12px' }}>
                     {job.status === 'completed' ? (

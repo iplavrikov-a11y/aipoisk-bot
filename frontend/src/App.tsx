@@ -4185,6 +4185,8 @@ function JobsView({
                       ? 'Анализ ТЗ'
                       : job.mode === 'exact_product'
                       ? `${job.verified_count || 1} тов.`
+                      : job.mode === 'price_monitoring'
+                      ? `${job.verified_count || 0} поз.`
                       : `${supplierCountLabel(job)} пост.`}
                   </span>
 
@@ -4200,6 +4202,13 @@ function JobsView({
                       <span className="meta-sep">·</span>
                       <span className="meta-item cost-free" title="Подбор товара выполнен без платных запросов к Яндекс Поиску">
                         ⚡ 0.00 ₽
+                      </span>
+                    </>
+                  ) : job.mode === 'procurement_report' ? (
+                    <>
+                      <span className="meta-sep">·</span>
+                      <span className="meta-item cost-free" title="Анализ документации выполняется нейросетью без платных запросов к Яндекс Поиску">
+                        ⚡ 0.00 ₽ (ИИ)
                       </span>
                     </>
                   ) : null}

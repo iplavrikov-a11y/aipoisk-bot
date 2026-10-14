@@ -1716,6 +1716,8 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
         "found_positions": batch_res.found_positions,
         "price_per_position_rub": price_rub,
         "charged_rub": round(charged_kopeks / 100, 2),
+        "yandex_requests_count": batch_res.yandex_requests_count,
+        "yandex_cost_rub": batch_res.yandex_cost_rub,
         "output_files": output_files,
     }
     evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
@@ -1723,6 +1725,8 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     job.result_path = str(out_file)
     job.verified_count = batch_res.found_positions
     job.file_count = batch_res.total_positions
+    job.yandex_requests_count = batch_res.yandex_requests_count
+    job.yandex_cost_rub = batch_res.yandex_cost_rub
 
     msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций. Списано: {round(charged_kopeks / 100, 2)} ₽"
     _set_job(db, job, status="completed", progress=100, message=msg)

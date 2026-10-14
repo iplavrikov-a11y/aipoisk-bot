@@ -53,3 +53,5 @@ class BatchMonitoringResult:
     total_charged_rub: float
     items: List[ItemPriceResult] = field(default_factory=list)
     output_excel_path: str = ""
+    yandex_requests_count: int = 0
+    yandex_cost_rub: float = 0.0

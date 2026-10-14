@@ -1877,6 +1877,8 @@ def admin_list_price_monitoring_jobs(db: Session = Depends(db_session)) -> dict:
             "total_positions": j.file_count,
             "found_positions": j.verified_count,
             "charged_rub": charged_rub,
+            "yandex_requests_count": getattr(j, "yandex_requests_count", 0) or 0,
+            "yandex_cost_rub": getattr(j, "yandex_cost_rub", 0.0) or 0.0,
             "created_at": j.created_at.isoformat() if j.created_at else None,
             "completed_at": j.completed_at.isoformat() if j.completed_at else None,
             "download_url": f"/api/jobs/{j.id}/download" if j.result_path else None,

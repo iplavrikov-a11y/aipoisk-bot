@@ -280,13 +280,14 @@ def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: 
 validate_and_reconcile_item_quotes = cluster_and_reconcile_item_quotes
 
 
-def _save_checkpoint(checkpoint_path: str, results: list[ItemPriceResult], total: int) -> None:
+def _save_checkpoint(checkpoint_path: str, results: list[ItemPriceResult], total: int, yandex_requests: int = 0) -> None:
     """Атомарно сохраняет промежуточный прогресс для защиты от сбоев и перезапусков."""
     try:
         tmp_path = checkpoint_path + ".tmp"
         payload = {
             "total": total,
             "completed": len(results),
+            "yandex_requests": yandex_requests,
             "items": [
                 {
                     "row_number": r.row_number,
@@ -306,14 +307,16 @@ def _save_checkpoint(checkpoint_path: str, results: list[ItemPriceResult], total
         logger.warning("Checkpoint save error: %s", exc)
 
 
-def _load_checkpoint(checkpoint_path: str) -> list[ItemPriceResult]:
+def _load_checkpoint(checkpoint_path: str) -> tuple[list[ItemPriceResult], int]:
     """Загружает сохраненные результаты, если задача была прервана."""
     results: list[ItemPriceResult] = []
+    yandex_requests: int = 0
     if not os.path.exists(checkpoint_path):
-        return results
+        return results, yandex_requests
     try:
         with open(checkpoint_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+            yandex_requests = int(data.get("yandex_requests", 0) or 0)
             for it in data.get("items", []):
                 quotes = [SupplierQuote(**q) for q in it.get("quotes", [])]
                 item_obj = ItemPriceResult(
@@ -325,10 +328,10 @@ def _load_checkpoint(checkpoint_path: str) -> list[ItemPriceResult]:
                     status=it.get("status", "found"),
                 )
                 results.append(item_obj)
-        logger.info("Loaded %d completed items from checkpoint %s", len(results), checkpoint_path)
+        logger.info("Loaded %d completed items from checkpoint %s (yandex reqs=%d)", len(results), checkpoint_path, yandex_requests)
     except Exception as exc:
         logger.warning("Checkpoint load error %s: %s", checkpoint_path, exc)
-    return results
+    return results, yandex_requests
 
 
 async def generate_monitoring_queries_ai(
@@ -622,7 +625,8 @@ async def run_price_monitoring_pipeline(
 
     # Восстановление из чекпоинта при наличии
     if checkpoint_path and os.path.exists(checkpoint_path):
-        results = _load_checkpoint(checkpoint_path)
+        results, prev_yandex_reqs = _load_checkpoint(checkpoint_path)
+        engine.total_requests += prev_yandex_reqs
         completed_rows = {r.row_number for r in results}
         if completed_rows and progress_callback:
             progress_callback(
@@ -662,7 +666,7 @@ async def run_price_monitoring_pipeline(
 
                 # Сохраняем промежуточный чекпоинт каждые batch_size строк
                 if checkpoint_path:
-                    _save_checkpoint(checkpoint_path, results, total)
+                    _save_checkpoint(checkpoint_path, results, total, getattr(engine, "total_requests", 0))
 
             pct = 10 + int((len(completed_rows) / total) * 80)
             if progress_callback:
@@ -687,6 +691,10 @@ async def run_price_monitoring_pipeline(
     not_found_count = total - found_count
     total_charged_rub = round(found_count * price_per_position_rub, 2)
 
+    unit_price = float(getattr(settings, "yandex_search_price_per_request", 0.04) or 0.04)
+    yandex_requests = int(getattr(engine, "total_requests", 0) or 0)
+    yandex_cost = round(yandex_requests * unit_price, 2)
+
     if progress_callback:
         progress_callback(100, f"Готово! Найдено подтвержденных цен для {found_count} из {total} позиций")
 
@@ -699,5 +707,7 @@ async def run_price_monitoring_pipeline(
         total_charged_rub=total_charged_rub,
         items=results,
         output_excel_path=output_excel_path,
+        yandex_requests_count=yandex_requests,
+        yandex_cost_rub=yandex_cost,
     )
 

@@ -86,6 +86,7 @@ class YandexSearchEngine:
         self.folder_id = folder_id
         self.api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
+        self.total_requests: int = 0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -164,6 +165,7 @@ class YandexSearchEngine:
                 groups_on_page = 70
 
             for page in range(max_pages):
+                self.total_requests += 1
                 body = {
                     "query": {"searchType": "SEARCH_TYPE_RU", "queryText": search_query, "page": str(page)},
                     "folderId": self.folder_id,
@@ -297,6 +299,7 @@ class YandexSearchEngine:
             }
 
             client = await self._get_client()
+            self.total_requests += 1
             response = await client.get(self.V1_API_URL, params=params)
 
             if response.status_code != 200:
