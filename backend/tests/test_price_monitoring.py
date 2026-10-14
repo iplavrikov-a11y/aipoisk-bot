@@ -405,9 +405,9 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
 
     cluster_and_reconcile_item_quotes(item, cluster_ratio=2.2)
 
-    # Both must be marked as outliers because no consensus cluster of >= 2 close prices exists
-    assert all(q.is_outlier for q in item.quotes)
-    assert item.has_prices is False
+    # The wild outlier (1950.0) is marked as outlier, while best confirmed base quote (14.4) is kept
+    assert any(q.is_outlier for q in item.quotes)
+    assert item.has_prices is True
 
     out_file = tmp_path / "test_divergence.xlsx"
     generate_price_monitoring_excel([item], str(out_file))
@@ -415,12 +415,10 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     wb = openpyxl.load_workbook(str(out_file))
     ws = wb["Пример отчета"]
 
-    # Price cell must state "разброс цен" and suppress faulty sources
-    assert ws["C5"].value == "разброс цен"
-    assert "разброс цен" in str(ws["D5"].value)
-    # Min and Average cells must be empty (no false math on wild numbers)
-    assert ws["M5"].value in (None, "")
-    assert ws["N5"].value in (None, "")
+    # Price cell displays the best confirmed quote, never "разброс цен"
+    assert ws["C5"].value == 14.4
+    assert ws["C5"].value != "разброс цен"
+    assert "разброс цен" not in str(ws["D5"].value)
 
 
 def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):
@@ -598,4 +596,51 @@ def test_cookie_management_api(admin_client):
     del_resp = admin_client.delete("/api/cookies/testdomain.ru")
     assert del_resp.status_code == 200
     assert del_resp.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_rule_14_ai_and_generic_query_generation(monkeypatch):
+    from app.price_monitoring.cleaner import (
+        extract_generic_nomenclature_codes,
+        build_commercial_search_queries,
+        build_fallback_broad_queries,
+    )
+    from app.price_monitoring.pipeline import generate_monitoring_queries_ai
+    from app.models import SystemSettings
+
+    # 1. Generic code extraction without hardcoded word dictionaries (Rule 14)
+    codes_sensor = extract_generic_nomenclature_codes("Датчик давления 0065C21J1 GT13E2")
+    assert "0065c21j1" in [c.lower() for c in codes_sensor]
+    assert "gt13e2" in [c.lower() for c in codes_sensor]
+
+    codes_crusher = extract_generic_nomenclature_codes("Билодержатель К4-15-01")
+    assert "к4-15-01" in [c.lower() for c in codes_crusher]
+
+    codes_tape = extract_generic_nomenclature_codes("Лента диаграммная Р-1763")
+    assert "р-1763" in [c.lower() for c in codes_tape]
+
+    # 2. Generic fallback queries work for any item
+    broad_q = build_fallback_broad_queries("Датчик давления GT13E2", "шт")
+    assert len(broad_q) >= 2
+    assert any("gt13e2" in q.lower() for q in broad_q)
+
+    # 3. AI query generation (Rule 14) parses LLM response
+    settings = SystemSettings(
+        custom_ai_providers_json='[{"id":"test","apiKey":"test-key","baseUrl":"https://api.example.com"}]'
+    )
+
+    async def fake_call_llm(s, prompt, **kwargs):
+        return '["Датчик давления GT13E2 купить цена", "GT13E2 датчик в наличии склад", "Датчик GT13E2 цена руб"]'
+
+    monkeypatch.setattr("app.price_monitoring.pipeline.call_llm", fake_call_llm)
+
+    ai_queries = await generate_monitoring_queries_ai(
+        clean_name="Датчик давления GT13E2",
+        unit="шт",
+        settings=settings,
+        wave=1,
+    )
+    assert len(ai_queries) == 3
+    assert "Датчик давления GT13E2 купить цена" in ai_queries
+
 

@@ -13,8 +13,9 @@ from urllib.parse import urlparse
 import httpx
 import openpyxl
 
+from ..ai import call_llm
 from ..exact_product.yandex_search import YandexSearchEngine, YandexSearchResult
-from ..models import SystemSettings
+from ..models import SystemSettings, parse_json_list
 from .cleaner import (
     build_commercial_search_queries,
     build_fallback_broad_queries,
@@ -208,38 +209,51 @@ def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: 
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за уп (100 шт) -> {converted:,.2f} ₽/шт"
 
     # 2. Кластеризация цен (Price Clustering)
+    # Сбрасываем флаги выбросов перед кластеризацией, кроме явных ошибок фасовки пиломатериалов
+    for q in item_res.quotes:
+        if not (q.is_outlier and "штуку, а не за м³" in q.comment):
+            q.is_outlier = False
+            q.comment = ""
+
     valid_quotes = [q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier]
     if len(valid_quotes) <= 1:
         return
 
     valid_quotes.sort(key=lambda q: q.price_rub)
-    k = len(valid_quotes)
 
-    # Ищем все возможные непрерывные кластеры цен, где p_max / p_min <= cluster_ratio
-    clusters: list[list[SupplierQuote]] = []
-    for i in range(k):
-        for j in range(i, k):
-            p_min = valid_quotes[i].price_rub
-            p_max = valid_quotes[j].price_rub
-            if p_min > 0 and (p_max / p_min) <= cluster_ratio:
-                clusters.append(valid_quotes[i : j + 1])
-
-    if not clusters:
-        return
-
-    max_size = max(len(c) for c in clusters)
-    candidate_clusters = [c for c in clusters if len(c) == max_size]
-
-    best_cluster = candidate_clusters[0]
-    if len(candidate_clusters) > 1:
+    def _find_best_cluster(quotes_list: list[SupplierQuote], ratio: float) -> list[SupplierQuote]:
+        cl_list: list[list[SupplierQuote]] = []
+        n = len(quotes_list)
+        for i in range(n):
+            for j in range(i, n):
+                p_min = quotes_list[i].price_rub
+                p_max = quotes_list[j].price_rub
+                if p_min > 0 and (p_max / p_min) <= ratio:
+                    cl_list.append(quotes_list[i : j + 1])
+        if not cl_list:
+            return []
+        m_size = max(len(c) for c in cl_list)
+        cand = [c for c in cl_list if len(c) == m_size]
+        if len(cand) == 1:
+            return cand[0]
         def _rel_spread(cl: list[SupplierQuote]) -> float:
             p_vals = [q.price_rub for q in cl]
             return (max(p_vals) - min(p_vals)) / (statistics.mean(p_vals) or 1.0)
-        best_cluster = min(candidate_clusters, key=_rel_spread)
+        return min(cand, key=_rel_spread)
+
+    # Ищем согласованный кластер в пределах заданного cluster_ratio (например, 1.4x - 1.5x)
+    best_cluster = _find_best_cluster(valid_quotes, cluster_ratio)
+
+    # Если в пределах cluster_ratio нет кластера из >= 2 источников, пробуем расширенный диапазон до 2.0x
+    fallback_ratio = max(cluster_ratio, min(2.0, cluster_ratio * 1.4))
+    if len(best_cluster) < 2 and fallback_ratio > cluster_ratio:
+        wider_cluster = _find_best_cluster(valid_quotes, fallback_ratio)
+        if len(wider_cluster) >= 2:
+            best_cluster = wider_cluster
 
     best_ids = {id(q) for q in best_cluster}
 
-    if max_size >= 2:
+    if len(best_cluster) >= 2:
         # Сформирован согласованный кластер из >= 2 источников
         min_cp = min(q.price_rub for q in best_cluster)
         max_cp = max(q.price_rub for q in best_cluster)
@@ -248,11 +262,15 @@ def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: 
                 q.is_outlier = True
                 q.comment = f"⚠️ Исключена: цена {q.price_rub:,.2f} ₽ вне согласованного кластера ({min_cp:,.2f} - {max_cp:,.2f} ₽)"
     else:
-        # max_size == 1: все цены разрознены более чем в cluster_ratio раз
-        # Пользовательское правило: если сильно разнятся, источники в отчет не выводить
+        # Если цены отличаются сильнее 2.0x, не скрываем все позиции:
+        # выбираем наиболее релевантную базовую котировку (минимальная адекватная цена),
+        # чтобы строка не оставалась пустой
+        best_single = min(valid_quotes, key=lambda q: q.price_rub)
+        best_ids = {id(best_single)}
         for q in item_res.quotes:
-            q.is_outlier = True
-            q.comment = f"⚠️ Цены поставщиков имеют сильный разброс (>{cluster_ratio}x). Единый ценовой кластер не сформирован."
+            if id(q) not in best_ids:
+                q.is_outlier = True
+                q.comment = f"⚠️ Цена {q.price_rub:,.2f} ₽ существенно отличается от базовой ({best_single.price_rub:,.2f} ₽)"
 
     # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем исключенные
     item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
@@ -313,6 +331,65 @@ def _load_checkpoint(checkpoint_path: str) -> list[ItemPriceResult]:
     return results
 
 
+async def generate_monitoring_queries_ai(
+    clean_name: str,
+    unit: str,
+    settings: SystemSettings,
+    wave: int = 1,
+) -> list[str]:
+    """
+    Генерирует поисковые запросы через ИИ (Правило 14: семантический анализ без жестких шаблонов).
+    ИИ самостоятельно анализирует класс изделия, марку, артикул, технические параметры и коммерческий контекст.
+    """
+    if not settings or not getattr(settings, "has_active_ai_provider", False):
+        return []
+
+    wave_descriptions = {
+        1: "первичный поиск прямых коммерческих предложений с ценами",
+        2: "адаптивный добор альтернативных поставщиков, складов и дилеров",
+        3: "широкий поиск по каталогам производителей и оптовым прайс-листам",
+    }
+    wave_desc = wave_descriptions.get(wave, "поиск коммерческих цен")
+
+    prompt = f"""Ты — ведущий эксперт по корпоративным закупкам и поисковой оптимизации (ПРАВИЛО 14: СЕМАНТИЧЕСКИЙ АНАЛИЗ И ФОРМИРОВАНИЕ ПОИСКОВЫХ ЗАПРОСОВ БЕЗ ЖЕСТКИХ СЛОВАРЕЙ).
+Твоя задача — составить 3-5 естественных, высокоточных поисковых запросов для поисковой системы (Яндекс), чтобы найти актуальные коммерческие цены поставщиков и прайс-листы.
+
+Наименование позиции: "{clean_name}"
+Требуемая единица измерения: "{unit}"
+Цель запросов: {wave_desc} (волна #{wave})
+
+ТРЕБОВАНИЯ (ПРАВИЛО 14):
+1. Семантически определи физическую суть товара, класс оборудования/материала, точную марку, артикул, ГОСТ или чертеж.
+2. Составь запросы естественной длины (3-6 слов) для нахождения страниц с реальными коммерческими ценами:
+   - Прямой коммерческий запрос по целевому названию и марке со словами 'купить цена'
+   - Запрос по точной марке/артикулу у поставщиков и дилеров со склада
+   - Запрос по производителю, каталогу или оптовому прайс-листу
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО включать стоп-слова ('не менее', 'в соответствии с', 'требуется'), мусор 1С и лишние служебные знаки.
+4. Запросы должны приводить на коммерческие страницы реальных компаний, складов и производителей в РФ.
+
+Ответь СТРОГО JSON-массивом строк:
+["запрос 1", "запрос 2", "запрос 3"]
+"""
+    try:
+        raw_response = await call_llm(settings, prompt, tier="light", json_mode=True)
+        parsed = parse_json_list(raw_response)
+        if isinstance(parsed, list):
+            res: list[str] = []
+            seen: set[str] = set()
+            for q in parsed:
+                if isinstance(q, str):
+                    q_str = " ".join(q.strip(" \"'\t\r\n").split())
+                    if q_str and len(q_str) >= 5 and q_str.lower() not in seen:
+                        seen.add(q_str.lower())
+                        res.append(q_str)
+            if res:
+                return res[:5]
+    except Exception as exc:
+        logger.debug("generate_monitoring_queries_ai error for '%s': %s", clean_name, exc)
+
+    return []
+
+
 async def process_single_item(
     item_tuple: tuple[int, str, str],
     engine: YandexSearchEngine,
@@ -336,8 +413,13 @@ async def process_single_item(
     candidate_urls: list[str] = []
     url_to_meta: dict[str, YandexSearchResult] = {}
 
-    # ВОЛНА 1: Первичные коммерческие запросы (розница, опт, склады, каталоги)
-    queries = build_commercial_search_queries(clean, unit)
+    # ВОЛНА 1: Первичные коммерческие запросы (ИИ по Правилу 14 с алгоритмическим фоллбэком)
+    queries: list[str] = []
+    if settings.has_active_ai_provider:
+        queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=1)
+    if not queries:
+        queries = build_commercial_search_queries(clean, unit)
+
     async with search_semaphore:
         for q in queries[:4]:
             try:
@@ -434,7 +516,11 @@ async def process_single_item(
     # Проверяем не просто число котировок, а размер подтвержденного согласованного кластера!
     consensus_count = _get_consensus_count()
     if consensus_count < min_target_suppliers:
-        fallback_queries = build_fallback_broad_queries(clean, unit)
+        fallback_queries: list[str] = []
+        if settings.has_active_ai_provider:
+            fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2)
+        if not fallback_queries:
+            fallback_queries = build_fallback_broad_queries(clean, unit)
         wave2_urls: list[str] = []
         async with search_semaphore:
             for bq in fallback_queries[:5]:
@@ -459,13 +545,18 @@ async def process_single_item(
     # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ПРИ НЕХВАТКЕ ДО 3 ПОСТАВЩИКОВ):
     # Если все еще меньше min_target_suppliers, подключаем широкие коммерческие запросы и каталоги
     if consensus_count < min_target_suppliers:
-        tokens = clean.split()
-        wave3_queries = [
-            f"{clean} цена поставщики",
-            f"{clean} прайс каталог склад",
-        ]
-        if len(tokens) >= 2:
-            wave3_queries.append(f"{tokens[0]} {tokens[1]} купить цена")
+        wave3_queries: list[str] = []
+        if settings.has_active_ai_provider:
+            wave3_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=3)
+        if not wave3_queries:
+            tokens = clean.split()
+            wave3_queries = [
+                f"{clean} цена поставщики",
+                f"{clean} прайс каталог склад",
+            ]
+            if len(tokens) >= 2:
+                short_clean = " ".join(dict.fromkeys(tokens[:3]))
+                wave3_queries.append(f"{short_clean} купить цена")
 
         wave3_urls: list[str] = []
         async with search_semaphore:

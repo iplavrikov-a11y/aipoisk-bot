@@ -422,9 +422,11 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
               style={{ width: '100%', padding: '6px 10px', fontSize: '13px' }}
             >
               <option value={1.3}>до +30% (строгий консенсус)</option>
-              <option value={1.4}>до +40% (оптимальный, по умолчанию)</option>
-              <option value={1.5}>до +50% (умеренный)</option>
+              <option value={1.4}>до +40% (оптимальный)</option>
+              <option value={1.5}>до +50% (в 1.5 раза)</option>
               <option value={1.6}>до +60% (расширенный)</option>
+              <option value={1.8}>до +80% (мягкий)</option>
+              <option value={2.0}>до 2.0x (в 2 раза, максимум)</option>
             </select>
             <span style={{ fontSize: '11px', color: '#94a3b8' }}>Отсекает выбросы выше порога от мин.</span>
           </div>

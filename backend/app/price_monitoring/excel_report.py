@@ -305,7 +305,10 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
         cell_unit.border = thin_border
 
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        has_divergent = any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
+        if not display_quotes and item.quotes:
+            valid_all = [q for q in item.quotes if q.price_rub > 0]
+            if valid_all:
+                display_quotes = valid_all[:max_suppliers]
 
         # Заполняем котировки поставщиков (СТРОГО согласованный кластер цен)
         for s_idx in range(1, max_suppliers + 1):
@@ -363,18 +366,6 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
                 comment_obj = _build_cell_comment(q, item.unit)
                 cell_link.comment = comment_obj
                 cell_price.comment = comment_obj
-            elif s_idx == 1 and not display_quotes and has_divergent:
-                # Если найденные цены разнятся в разы и единый кластер не найден — скрываем источники и предупреждаем
-                cell_price.value = "разброс цен"
-                cell_price.font = font_price_outlier
-                cell_link.value = "Источники скрыты: разброс цен >2.2x"
-                cell_link.font = font_calibri_regular
-                comm_text = "⚠️ Найденные в сети цены имеют критический разброс (>2.2x). Достоверный ценовой кластер не подтвержден. Ошибочные источники скрыты для защиты от дезинформации."
-                c_comm = Comment(comm_text, "TenderLex")
-                c_comm.width = 320
-                c_comm.height = 90
-                cell_price.comment = c_comm
-                cell_link.comment = c_comm
             else:
                 cell_price.value = ""
                 cell_link.value = ""
@@ -473,8 +464,11 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
     row_num = 2
     for idx, item in enumerate(items, 1):
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        has_divergent = any(q.price_rub > 0 and q.is_outlier for q in item.quotes)
-        status_text = "Подтверждено" if display_quotes else ("Разброс цен" if has_divergent else "Не найдено")
+        if not display_quotes and item.quotes:
+            valid_all = [q for q in item.quotes if q.price_rub > 0]
+            if valid_all:
+                display_quotes = valid_all[:max_suppliers]
+        status_text = "Подтверждено" if display_quotes else "Не найдено"
         best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
 
         row_vals = [
