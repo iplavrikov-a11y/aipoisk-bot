@@ -100,7 +100,17 @@ KNOWN_MAJOR_RETAILERS: dict[str, dict[str, str]] = {
 
 def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     """Читает загруженный Excel-файл и извлекает кортежи (номенклатура, единица_измерения)."""
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        logger.warning("parse_input_excel: not a valid excel workbook (%s), falling back to text parsing", exc)
+        try:
+            from .cleaner import parse_items_from_text
+            text = file_bytes.decode("utf-8", errors="ignore")
+            return parse_items_from_text(text)
+        except Exception:
+            return []
+
     ws = wb.active
     items: List[tuple[str, str]] = []
 
@@ -339,6 +349,7 @@ async def generate_monitoring_queries_ai(
     unit: str,
     settings: SystemSettings,
     wave: int = 1,
+    city: str = "",
 ) -> list[str]:
     """
     Генерирует поисковые запросы через ИИ (Правило 14: семантический анализ без жестких шаблонов).
@@ -353,13 +364,15 @@ async def generate_monitoring_queries_ai(
         3: "широкий поиск по каталогам производителей и оптовым прайс-листам",
     }
     wave_desc = wave_descriptions.get(wave, "поиск коммерческих цен")
+    clean_city = str(city or "").strip()
+    city_context = f'\nРегион/город объекта поставки: "{clean_city}" (приоритет поставщикам, дилерам и складам с наличием или доставкой в этом регионе)' if clean_city else ""
 
     prompt = f"""Ты — ведущий эксперт по корпоративным закупкам и поисковой оптимизации (ПРАВИЛО 14: СЕМАНТИЧЕСКИЙ АНАЛИЗ И ФОРМИРОВАНИЕ ПОИСКОВЫХ ЗАПРОСОВ БЕЗ ЖЕСТКИХ СЛОВАРЕЙ).
 Твоя задача — составить 3-5 естественных, высокоточных поисковых запросов для поисковой системы (Яндекс), чтобы найти актуальные коммерческие цены поставщиков и прайс-листы.
 
 Наименование позиции: "{clean_name}"
 Требуемая единица измерения: "{unit}"
-Цель запросов: {wave_desc} (волна #{wave})
+Цель запросов: {wave_desc} (волна #{wave}){city_context}
 
 ТРЕБОВАНИЯ (ПРАВИЛО 14):
 1. Семантически определи физическую суть товара, класс оборудования/материала, точную марку, артикул, ГОСТ или чертеж.
@@ -403,6 +416,7 @@ async def process_single_item(
     min_target_suppliers: int = 3,
     cluster_ratio: float = 1.4,
     filter_marketplaces: bool = False,
+    city: str = "",
 ) -> ItemPriceResult:
     row_idx, raw_name, unit = item_tuple
     clean = clean_nomenclature_name(raw_name)
@@ -419,9 +433,9 @@ async def process_single_item(
     # ВОЛНА 1: Первичные коммерческие запросы (ИИ по Правилу 14 с алгоритмическим фоллбэком)
     queries: list[str] = []
     if settings.has_active_ai_provider:
-        queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=1)
+        queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=1, city=city)
     if not queries:
-        queries = build_commercial_search_queries(clean, unit)
+        queries = build_commercial_search_queries(clean, unit, city=city)
 
     async with search_semaphore:
         for q in queries[:4]:
@@ -530,9 +544,9 @@ async def process_single_item(
     if consensus_count < min_target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
-            fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2)
+            fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
         if not fallback_queries:
-            fallback_queries = build_fallback_broad_queries(clean, unit)
+            fallback_queries = build_fallback_broad_queries(clean, unit, city=city)
         wave2_urls: list[str] = []
         async with search_semaphore:
             for bq in fallback_queries[:4]:
@@ -618,9 +632,15 @@ async def run_price_monitoring_pipeline(
     checkpoint_path: Optional[str] = None,
     cluster_ratio: float = 1.4,
     filter_marketplaces: bool = False,
+    items: Optional[List[tuple[str, str]]] = None,
+    delivery_city: str = "",
+    geo_radius_km: Optional[int] = None,
 ) -> BatchMonitoringResult:
     """Полный пайплайн мониторинга цен с защитой от сбоев (чекпоинты) и кластеризацией цен."""
-    parsed_items = parse_input_excel(file_bytes)
+    if items is not None and len(items) > 0:
+        parsed_items = items
+    else:
+        parsed_items = parse_input_excel(file_bytes)
     total = len(parsed_items)
     if total == 0:
         raise ValueError("В загруженном файле не найдено строк с номенклатурой.")
@@ -672,6 +692,7 @@ async def run_price_monitoring_pipeline(
                         min_target_suppliers=max_suppliers,
                         cluster_ratio=cluster_ratio,
                         filter_marketplaces=filter_marketplaces,
+                        city=delivery_city,
                     )
                     for item in chunk_to_process
                 ]
@@ -697,7 +718,13 @@ async def run_price_monitoring_pipeline(
     results.sort(key=lambda it: it.row_number)
 
     # Генерация результирующего Excel-файла
-    generate_price_monitoring_excel(results, output_excel_path, max_suppliers=max_suppliers)
+    generate_price_monitoring_excel(
+        results,
+        output_excel_path,
+        max_suppliers=max_suppliers,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
+    )
 
     # Очистка файла чекпоинта после успешного завершения
     if checkpoint_path and os.path.exists(checkpoint_path):

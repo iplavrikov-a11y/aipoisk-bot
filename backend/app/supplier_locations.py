@@ -179,13 +179,130 @@ def _load_city_coordinates() -> dict[str, tuple[float, float]]:
 
 ROAD_DISTANCE_FACTOR: float = 1.15  # Average road curvature coefficient on Russian highways
 
+RUSSIAN_REGION_CAPITALS: dict[str, str] = {
+    "вологодская область": "вологда",
+    "вологодская обл": "вологда",
+    "московская область": "москва",
+    "московская обл": "москва",
+    "подмосковье": "москва",
+    "ленинградская область": "санкт-петербург",
+    "ленинградская обл": "санкт-петербург",
+    "свердловская область": "екатеринбург",
+    "свердловская обл": "екатеринбург",
+    "новосибирская область": "новосибирск",
+    "новосибирская обл": "новосибирск",
+    "красноярский край": "красноярск",
+    "нижегородская область": "нижний новгород",
+    "нижегородская обл": "нижний новгород",
+    "ярославская область": "ярославль",
+    "ярославская обл": "ярославль",
+    "костромская область": "кострома",
+    "костромская обл": "кострома",
+    "тверская область": "тверь",
+    "тверская обл": "тверь",
+    "архангельская область": "архангельск",
+    "архангельская обл": "архангельск",
+    "республика татарстан": "казань",
+    "татарстан": "казань",
+    "республика башкортостан": "уфа",
+    "башкортостан": "уфа",
+    "самарская область": "самара",
+    "самарская обл": "самара",
+    "пензенская область": "пенза",
+    "пензенская обл": "пенза",
+    "краснодарский край": "краснодар",
+    "иркутская область": "иркутск",
+    "иркутская обл": "иркутск",
+    "ростовская область": "ростов-на-дону",
+    "ростовская обл": "ростов-на-дону",
+    "челябинская область": "челябинск",
+    "челябинская обл": "челябинск",
+    "воронежская область": "воронеж",
+    "воронежская обл": "воронеж",
+    "пермский край": "пермь",
+    "волгоградская область": "волгоград",
+    "волгоградская обл": "волгоград",
+    "саратовская область": "саратов",
+    "саратовская обл": "саратов",
+    "тюменская область": "тюмень",
+    "тюменская обл": "тюмень",
+    "алтайский край": "барнаул",
+    "удмуртская республика": "ижевск",
+    "удмуртия": "ижевск",
+    "ульяновская область": "ульяновск",
+    "ульяновская обл": "ульяновск",
+    "хабаровский край": "хабаровск",
+    "приморский край": "владивосток",
+    "томская область": "томск",
+    "томская обл": "томск",
+    "оренбургская область": "оренбург",
+    "оренбургская обл": "оренбург",
+    "кемеровская область": "кемерово",
+    "кемеровская обл": "кемерово",
+    "кузбасс": "кемерово",
+    "рязанская область": "рязань",
+    "рязанская обл": "рязань",
+    "астраханская область": "астрахань",
+    "астраханская обл": "астрахань",
+    "липецкая область": "липецк",
+    "липецкая обл": "липецк",
+    "тульская область": "тула",
+    "тульская обл": "тула",
+    "кировская область": "киров",
+    "кировская обл": "киров",
+    "чувашская республика": "чебоксары",
+    "чувашия": "чебоксары",
+    "калининградская область": "калининград",
+    "калининградская обл": "калининград",
+    "брянская область": "брянск",
+    "брянская обл": "брянск",
+    "курская область": "курск",
+    "курская обл": "курск",
+    "ивановская область": "иваново",
+    "ивановская обл": "иваново",
+    "ставропольский край": "ставрополь",
+    "белгородская область": "белгород",
+    "белгородская обл": "белгород",
+    "владимирская область": "владимир",
+    "владимирская обл": "владимир",
+    "курганская область": "курган",
+    "курганская обл": "курган",
+    "смоленская область": "смоленск",
+    "смоленская обл": "смоленск",
+    "калужская область": "калуга",
+    "калужская обл": "калуга",
+    "орловская область": "орел",
+    "орловская обл": "орел",
+    "мурманская область": "мурманск",
+    "мурманская обл": "мурманск",
+    "тамбовская область": "тамбов",
+    "тамбовская обл": "тамбов",
+    "республика карелия": "петрозаводск",
+    "карелия": "петрозаводск",
+    "республика коми": "сыктывкар",
+    "коми": "сыктывкар",
+    "республика марий эл": "йошкар-ола",
+    "марий эл": "йошкар-ола",
+    "республика мордовия": "саранск",
+    "мордовия": "саранск",
+    "новгородская область": "великий новгород",
+    "новгородская обл": "великий новгород",
+    "псковская область": "псков",
+    "псковская обл": "псков",
+    "ханты-мансийский автономный округ": "сургут",
+    "хмао": "сургут",
+    "ямало-ненецкий автономный округ": "новый уренгой",
+    "янао": "новый уренгой",
+}
+
 
 def normalize_city_name(value: str | None) -> str:
     city = str(value or "").strip().lower().replace("ё", "е")
     city = re.sub(r"^(?:г\.?|город)\s+", "", city, flags=re.IGNORECASE)
     city = re.sub(r"[^0-9a-zа-я\s.-]+", " ", city, flags=re.IGNORECASE)
     city = re.sub(r"\s+", " ", city)
-    return city.strip(" .-")
+    norm = city.strip(" .-")
+    return norm
 
 
 # Merge full Russian cities coordinates into CITY_COORDINATES
@@ -215,6 +332,7 @@ def haversine_distance_km(
 def geocode_city_dadata_sync(city_or_address: str) -> tuple[float, float] | None:
     """Geocode any Russian settlement or address via DaData Suggestions API (instant fallback)."""
     norm = normalize_city_name(city_or_address)
+    norm = RUSSIAN_REGION_CAPITALS.get(norm, norm)
     if not norm:
         return None
     if norm in CITY_COORDINATES:
@@ -255,6 +373,8 @@ def calculate_city_distance_fast(
 ) -> int | None:
     from_norm = normalize_city_name(from_city)
     to_norm = normalize_city_name(to_city)
+    from_norm = RUSSIAN_REGION_CAPITALS.get(from_norm, from_norm)
+    to_norm = RUSSIAN_REGION_CAPITALS.get(to_norm, to_norm)
     if not from_norm or not to_norm:
         return None
     if from_norm == to_norm:
@@ -382,21 +502,41 @@ def annotate_contacts_radius_status(
     }
     if not radius_km or radius_km <= 0 or not delivery_city:
         return stats
+    norm_deliv = normalize_city_name(delivery_city)
+    norm_deliv_cap = RUSSIAN_REGION_CAPITALS.get(norm_deliv, norm_deliv)
+
     for item in contacts:
         supplier_city = str(item.get("supplier_city") or item.get("city") or "").strip()
+        region_str = str(item.get("region") or "").strip()
         if not supplier_city:
             extracted = extract_city_from_text(
-                f"{item.get('address') or ''} {item.get('legal_address') or ''} {item.get('region') or ''} {item.get('comments') or ''}"
+                f"{item.get('address') or ''} {item.get('legal_address') or ''} {region_str} {item.get('comments') or ''}"
             )
             if extracted:
                 supplier_city = extracted
                 item["supplier_city"] = extracted
+
+        # If supplier_city is a region name, resolve to capital
+        norm_sc = normalize_city_name(supplier_city)
+        if norm_sc in RUSSIAN_REGION_CAPITALS:
+            resolved = RUSSIAN_REGION_CAPITALS[norm_sc]
+            item["supplier_city"] = resolved.capitalize()
+            supplier_city = resolved
 
         distance = item.get("supplier_distance_km")
         if distance is None and supplier_city and delivery_city:
             distance = calculate_city_distance_fast(delivery_city, supplier_city)
             if distance is not None:
                 item["supplier_distance_km"] = distance
+
+        # Special check: if supplier region matches delivery_city's region/capital
+        if distance is None and region_str:
+            norm_reg = normalize_city_name(region_str)
+            reg_cap = RUSSIAN_REGION_CAPITALS.get(norm_reg)
+            if reg_cap and (reg_cap == norm_deliv or reg_cap == norm_deliv_cap):
+                distance = 0
+                item["supplier_distance_km"] = 0
+                item["supplier_city"] = delivery_city.capitalize()
 
         item["supplier_distance_radius_km"] = radius_km
         if distance is None:
@@ -416,15 +556,15 @@ def annotate_contacts_radius_status(
 
 
 def extract_city_from_text(text: str) -> str:
-    """Find known Russian city in text, address, or comment string."""
+    """Find known Russian city or region in text, address, or comment string."""
     if not text:
         return ""
     # 1. Match explicit city prefixes: г. Москва, город Ростов-на-Дону, гор. Шахты
     m = re.search(r'(?:г\.|город|гор\.)\s*([А-Яа-яЁё0-9\-]+)', text, re.IGNORECASE)
     if m:
         candidate = normalize_city_name(m.group(1))
-        if candidate in CITY_COORDINATES:
-            return candidate
+        if candidate in CITY_COORDINATES or candidate in RUSSIAN_REGION_CAPITALS:
+            return RUSSIAN_REGION_CAPITALS.get(candidate, candidate)
     # 2. Fast O(1) dictionary lookup on word n-grams (3-word, 2-word, 1-word)
     clean = re.sub(r'[^\w\s-]', ' ', text.lower().replace('ё', 'е'))
     words = clean.split()
@@ -435,21 +575,27 @@ def extract_city_from_text(text: str) -> str:
             cand = normalize_city_name(" ".join(words[i : i + n]))
             if cand in CITY_COORDINATES:
                 return cand
+            if cand in RUSSIAN_REGION_CAPITALS:
+                return RUSSIAN_REGION_CAPITALS[cand]
     return ""
 
 
 def get_cities_within_radius(center_city: str, radius_km: int) -> list[str]:
-    """Return all known cities within given radius km from center city."""
+    """Return all known cities within given radius km from center city, sorted by distance ascending."""
     norm_center = normalize_city_name(center_city)
+    norm_center = RUSSIAN_REGION_CAPITALS.get(norm_center, norm_center)
     if not norm_center or norm_center not in CITY_COORDINATES:
         return []
-    res = []
-    seen = set()
+    candidates: list[tuple[int, str]] = []
+    seen: set[str] = set()
     for city in CITY_COORDINATES:
-        dist = calculate_city_distance_fast(norm_center, city)
+        norm = normalize_city_name(city)
+        if norm in seen or norm in RUSSIAN_REGION_CAPITALS:
+            continue
+        dist = calculate_city_distance_fast(norm_center, norm)
         if dist is not None and dist <= radius_km:
-            norm = normalize_city_name(city)
-            if norm not in seen:
-                seen.add(norm)
-                res.append(norm)
-    return res
+            seen.add(norm)
+            candidates.append((dist, norm))
+    # Sort strictly by distance ascending so closest major cities come first
+    candidates.sort(key=lambda x: x[0])
+    return [c[1] for c in candidates]

@@ -2172,9 +2172,11 @@ async def _discover_suppliers_impl(
         annotate_contacts_radius_status(accepted, delivery_city, geo_radius_km)
         def _final_geo_sort(item: dict):
             within = item.get("supplier_distance_within_radius")
-            rad_rank = 0 if within is True else (1 if within is None else 2)
+            rad_rank = 0 if within is True else (1 if within is False else 2)
+            dist = item.get("supplier_distance_km")
+            effective_dist = dist if (dist is not None and dist > 0) else 999999
             base_key = _supplier_result_sort_key(item)
-            return (rad_rank, base_key[0], base_key[1], base_key[2])
+            return (rad_rank, effective_dist, base_key[0], base_key[1], base_key[2])
         accepted.sort(key=_final_geo_sort)
 
     if policy == SUPPLIER_POLICY_MINPROM_PRIORITY:

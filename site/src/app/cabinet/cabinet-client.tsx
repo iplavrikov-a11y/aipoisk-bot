@@ -411,12 +411,12 @@ const modeCopy: Record<Scenario, {
   },
   price_monitoring: {
     mode: "price_monitoring",
-    formSubtitle: "Загрузите файл спецификации (XLSX) с наименованиями и единицами измерения для поиска актуальных цен поставщиков.",
-    uploadTitle: "Загрузить спецификацию",
-    uploadText: "Перетащите файл спецификации сюда или нажмите для выбора (.xlsx)",
-    multipleFiles: false,
+    formSubtitle: "Загрузите файл спецификации или ТЗ (XLSX, DOCX, PDF) либо вставьте список позиций текстом для поиска актуальных цен поставщиков.",
+    uploadTitle: "Загрузить спецификацию или ТЗ",
+    uploadText: "Перетащите файлы сюда или нажмите для выбора (XLSX, DOCX, PDF, TXT, ZIP)",
+    multipleFiles: true,
     textLabel: "Или вставьте список позиций текстом",
-    textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Сталь листовая горячекатаная 10мм, т",
+    textPlaceholder: "Например:\n1. Кислород газообразный технический, м3\n2. Подшипник 13630, шт\n3. Печь для бани Атмосфера М",
     hint: "ИИ найдёт до 5 реальных поставщиков с актуальными ценами, контактами, ИНН и ссылками на товар. Списание баланса происходит ТОЛЬКО за реально найденные позиции.",
     submit: "Запустить мониторинг цен",
   },
@@ -2835,7 +2835,7 @@ export function CabinetClient() {
             </div>
           ) : null}
 
-          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers") && session?.user?.allowed_geo_radius ? (
+          {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
             <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 cursor-pointer select-none">

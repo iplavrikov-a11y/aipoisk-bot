@@ -118,7 +118,13 @@ def _build_cell_comment(q: SupplierQuote, item_unit: str) -> Comment:
     return comm
 
 
-def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: str, max_suppliers: int = 5) -> str:
+def generate_price_monitoring_excel(
+    items: List[ItemPriceResult],
+    output_path: str,
+    max_suppliers: int = 5,
+    delivery_city: str = "",
+    geo_radius_km: Optional[int] = None,
+) -> str:
     """
     Генерирует Excel-файл со структурой и стилями, в точности соответствующими шаблону заказчика.
     Лист 1: 'Пример отчета' (сводная матрица с реквизитами в шапке, компактными ссылками и всплывающими подсказками).
@@ -160,6 +166,13 @@ def generate_price_monitoring_excel(items: List[ItemPriceResult], output_path: s
     cell_a.value = "Номенклатура"
     cell_a.font = font_calibri_bold
     cell_a.alignment = align_center
+    if delivery_city:
+        clean_city = str(delivery_city).strip()
+        rad_info = f" (в радиусе до {geo_radius_km} км)" if geo_radius_km else ""
+        comm_loc = Comment(f"Локация / поставка: г. {clean_city}{rad_info}", "TenderLex")
+        comm_loc.width = 280
+        comm_loc.height = 60
+        cell_a.comment = comm_loc
 
     ws.merge_cells("B1:B4")
     cell_b = ws["B1"]

@@ -676,11 +676,14 @@ def write_supplier_xlsx(
         clean_city = str(delivery_city).strip()
         rad_info = f"в радиусе до {geo_radius_km} км" if geo_radius_km else "по городу поставки"
         geo_subtitle = f"Локация / доставка: г. {clean_city} ({rad_info})"
-        geo_summary = (
-            f" Логистический фильтр: отбор поставщиков в радиусе до {geo_radius_km} км от г. {clean_city}."
-            if geo_radius_km
-            else f" Логистический фильтр: г. {clean_city}."
-        )
+        within_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is True)
+        outside_cnt = sum(1 for r in rows if r.get("supplier_distance_within_radius") is False)
+        if geo_radius_km and outside_cnt > 0:
+            geo_summary = f" Логистический фильтр: приоритет поставщиков в радиусе до {geo_radius_km} км от г. {clean_city} (в радиусе: {within_cnt}, добор по РФ: {outside_cnt})."
+        elif geo_radius_km:
+            geo_summary = f" Логистический фильтр: отбор поставщиков в радиусе до {geo_radius_km} км от г. {clean_city}."
+        else:
+            geo_summary = f" Логистический фильтр: г. {clean_city}."
 
     if is_multi and item_sections:
         ws.title = "Сводный реестр"

@@ -1644,38 +1644,36 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     _set_job(db, job, progress=10, message="Загружаю спецификацию для мониторинга цен...")
 
     input_dir = job_dir(job.id) / "input"
-    file_bytes = b""
-    if input_dir.exists():
-        for p in input_dir.iterdir():
-            if p.is_file() and p.suffix.lower() in {".xlsx", ".xls"}:
-                file_bytes = p.read_bytes()
-                break
-            elif p.is_file() and not file_bytes:
-                file_bytes = p.read_bytes()
+    input_files = list(input_dir.iterdir()) if input_dir.exists() else []
 
-    if not file_bytes and context:
-        import io
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.append(["Номенклатура", "Ед. изм."])
-        for line in context.splitlines():
-            line_str = line.strip()
-            if line_str:
-                parts = [p.strip() for p in line_str.split("\t") if p.strip()]
-                if len(parts) >= 2:
-                    ws.append([parts[0], parts[1]])
-                else:
-                    ws.append([line_str, "шт"])
-        buf = io.BytesIO()
-        wb.save(buf)
-        file_bytes = buf.getvalue()
+    from .price_monitoring.cleaner import extract_items_from_files_or_text
+    items = extract_items_from_files_or_text(input_files, context=context, settings=settings)
 
-    if not file_bytes:
-        _set_job(db, job, status="failed", progress=100, message="Файл со спецификацией не найден или пуст", error="No input file")
+    if not items:
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В загруженных документах или тексте не найдено позиций номенклатуры",
+            error="В файле или тексте не найдено строк с номенклатурой. Проверьте формат.",
+        )
         job.completed_at = now_utc()
         db.commit()
         return
+
+    # Always generate a valid openpyxl Excel bytes in-memory for the pipeline
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Спецификация"
+    ws.append(["Номенклатура", "Ед. изм."])
+    for nom, unit in items:
+        ws.append([nom, unit])
+    buf = io.BytesIO()
+    wb.save(buf)
+    file_bytes = buf.getvalue()
 
     price_kopeks = effective_price_kopeks(db, job.client, KIND_PRICE_MONITORING)
     price_rub = round(price_kopeks / 100, 2)
@@ -1693,6 +1691,8 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     concurrency = int(getattr(settings, "price_monitoring_concurrency", 4) or 4)
     cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
     filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", False))
+    delivery_city = str(getattr(job, "delivery_city", "") or "").strip()
+    geo_radius_km = getattr(job, "geo_radius_km", None)
 
     try:
         batch_res = asyncio.run(
@@ -1707,6 +1707,9 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                 checkpoint_path=str(checkpoint_file),
                 cluster_ratio=cluster_ratio,
                 filter_marketplaces=filter_marketplaces,
+                items=items,
+                delivery_city=delivery_city,
+                geo_radius_km=geo_radius_km,
             )
         )
     except Exception as exc:
