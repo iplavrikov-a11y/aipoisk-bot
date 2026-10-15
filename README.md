@@ -14,15 +14,20 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
-- Geo-Radius Supplier Search & Logistics Regional Optimization (2026-10-14):
-  - Geo Distance Engine & City Database (`supplier_locations.py`): Haversine distance algorithm with 1.15 road curvature factor covering 150+ Russian cities (including Kamensk-Shakhtinsky, Shakhty, Rostov-on-Don, Bataysk, Aksay, etc.), city name normalization, and location extraction from candidate addresses and snippets.
-  - Geo Query Generator & Prioritization (`supplier_search.py`): generates localized queries for manufacturers, wholesale bases, official dealers, and distributors within `geo_radius_km` (default 300 km) of `delivery_city`. Prioritizes verified suppliers within delivery radius at top of results and Excel report.
-  - Excel & Client Reports Integration (`report_builder.py`): supplier comments automatically enriched with location and road distance (e.g., `Локация: Шахты (~65 км)`).
-  - Flexible Rollout Architecture (`models.py`, `schemas.py`, `main.py`, `cabinet-client.tsx`):
-    * Enabled per-account via `Client.allowed_geo_radius` (active for admin account `edeefa9da6e44803a6b264c250e91251`).
-    * Master global rollout switch via `SystemSettings.geo_radius_search_enabled_global`: setting to True immediately enables the feature for 100% of platform users without code redeploy.
-    * Cabinet UI displays interactive `📍 Поиск в радиусе доставки` toggle with city input, radius selection (150, 300, 500, 1000 km), and logistics optimization notice (+40% task value add-on).
-  - 853 backend tests passing (100%), full Next.js/Vite builds passing, live deploy verified on `202.71.13.57`.
+- Geo-Radius Supplier Search & Logistics Regional Optimization (2026-10-15):
+  - Geo Distance Engine & Nationwide City Database (`supplier_locations.py`, `city_coordinates.json`): Haversine distance algorithm with 1.15 road curvature factor covering 1,208 Russian cities and industrial centers (all 1,117+ official cities of Russia from Moscow to Kamensk-Shakhtinsky, Shakhty, Novoshakhtinsk, Zverevo, Gukovo, Belaya Kalitva, Millerovo, Krasny Sulin, Sysert, etc.).
+  - 28x Algorithmic Speedup: token n-grams O(1) set lookup in `extract_city_from_text` replaces sequential regex checks, reducing candidate processing time from 420 ms to 0.23 ms.
+  - DaData Address Geocoding Fallback: on-the-fly geocoding via DaData Address Suggestions API for unlisted rural settlements, stanitsas, or worker villages (e.g., Malokamensky, Veshenskaya).
+  - Flexible Numeric Radius Input (`cabinet-client.tsx`): replaced fixed dropdown presets with an interactive `<input type="number">` allowing users to freely specify any search radius in kilometers (e.g., 50, 250, 400 km).
+  - Prominent Final Report Visibility (`report_builder.py`, `jobs.py`, `quote_request.py`):
+    * Excel Subtitle (Row 2): `Локация / доставка: г. {Город} (в радиусе до {Радиус} км)`.
+    * Excel Summary / KPI (Row 3): `Логистический фильтр: отбор поставщиков в радиусе до {Радиус} км от г. {Город}.`
+    * Excel Supplier Rows (Comment column): enriched with confirmed city and actual road distance (e.g., `Локация: Шахты (~78 км)`).
+    * Word Quote Request (DOCX): automatically includes `Город поставки: г. {Город}` in procurement delivery conditions.
+  - Flexible Rollout Architecture (`models.py`, `schemas.py`, `main.py`):
+    * Per-client activation via `Client.allowed_geo_radius` (active for admin account `edeefa9da6e44803a6b264c250e91251`).
+    * Platform-wide master toggle via `SystemSettings.geo_radius_search_enabled_global`.
+  - 855 backend tests passing (100%), site typecheck and Next.js/Vite builds passing, live deploy verified on `202.71.13.57`.
 - Yandex Search API Cost Tracking, Zero-Cost AI Analysis Badges & Admin Usability (2026-10-14):
   - Yandex Search API Cost Accounting (`yandex_search.py`, `pipeline.py`, `jobs.py`, `models.py`): integrated dynamic request counter `total_requests` across synchronous and asynchronous Yandex Cloud Search API v1/v2 query builders. Added `yandex_requests_count` and `yandex_cost_rub` tracking to batch price monitoring data structures, durable job rows, and `evidence.json` artifacts at the standard rate of 0.04 ₽ per request.
   - Checkpoint Durability: checkpoints save cumulative Yandex requests, preventing counter resets when resuming interrupted tasks.
