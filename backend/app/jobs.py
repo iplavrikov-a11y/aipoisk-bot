@@ -749,12 +749,13 @@ def _process_job_sync(job_id: str) -> None:
         is_substantive, validation_err = document_parser.is_substantive_tz_text(context)
         if not is_substantive:
             release_job_reservation(db, job, note=f"Резерв возвращён: {validation_err}")
+            fail_msg = "В файле нет позиций для поиска" if "нет закупаемых позиций" in validation_err else "В документе нет содержимого"
             _set_job(
                 db,
                 job,
                 status="failed",
                 progress=100,
-                message="В документе нет содержимого",
+                message=fail_msg,
                 error=validation_err,
             )
             job.completed_at = now_utc()
@@ -1286,7 +1287,21 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         db.refresh(job)
         return
 
-    if profile is not None and len(profile.items) <= 1 and not is_confirmed:
+    if profile is not None and not profile.items:
+        release_job_reservation(db, job, note="В прикреплённом файле ТЗ нет закупаемых позиций")
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В файле нет позиций для поиска",
+            error="В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    if profile is not None and len(profile.items) == 1 and not is_confirmed:
         # Single item: automatically proceed in balanced mode without interrupting user
         job.multi_item_mode = "balanced"
         dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})
@@ -1814,7 +1829,21 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         db.refresh(job)
         return
 
-    if profile is not None and len(profile.items) <= 1 and not is_confirmed:
+    if profile is not None and not profile.items:
+        release_job_reservation(db, job, note="В прикреплённом файле ТЗ нет закупаемых позиций")
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В файле нет позиций для поиска",
+            error="В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    if profile is not None and len(profile.items) == 1 and not is_confirmed:
         # Single item: automatically proceed in balanced mode without interrupting user
         job.multi_item_mode = "balanced"
         dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})

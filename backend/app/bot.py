@@ -1076,15 +1076,29 @@ def _format_job_progress(snapshot: JobProgressSnapshot, *, now: datetime | None 
     if snapshot.status == "failed":
         err_lower = (snapshot.error or "").lower()
         msg_lower = (snapshot.message or "").lower()
-        if "нет содержимого" in err_lower or "шаблон" in err_lower or "пустой" in err_lower or "нет содержимого" in msg_lower:
+        if (
+            "нет содержимого" in err_lower
+            or "шаблон" in err_lower
+            or "пустой" in err_lower
+            or "нет содержимого" in msg_lower
+            or "нет позиций" in err_lower
+            or "нет позиций" in msg_lower
+            or "пустая форма" in err_lower
+            or "нет закупаемых позиций" in err_lower
+        ):
+            title = (
+                "⚠️ В файле нет позиций для поиска"
+                if ("нет позиций" in msg_lower or "нет позиций" in err_lower or "пустая форма" in err_lower or "нет закупаемых позиций" in err_lower)
+                else "⚠️ В документе нет содержимого"
+            )
             return "\n".join(
                 [
-                    "⚠️ В документе нет содержимого",
+                    title,
                     "",
-                    snapshot.error or "В загруженном файле отсутствует текст ТЗ (обнаружен шаблон «Введите текст технического задания...»).",
+                    snapshot.error or "В загруженном файле отсутствует текст ТЗ или закупаемые позиции.",
                     "",
                     "💳 Баланс не списан (0 ₽).",
-                    "Пожалуйста, загрузите файл с заполненным текстом ТЗ или отправьте характеристики текстом прямо в этот чат.",
+                    "Пожалуйста, загрузите файл со спецификацией/перечнем товаров или отправьте характеристики текстом прямо в этот чат.",
                 ]
             )
         if "реестр" in err_lower or "реестр" in msg_lower:
