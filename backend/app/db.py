@@ -102,6 +102,13 @@ def _ensure_schema() -> None:
             "supplier_ai_model": "VARCHAR(160) DEFAULT ''",
             "ai_analysis_fallback_json": "TEXT DEFAULT '[]'",
             "ai_supplier_fallback_json": "TEXT DEFAULT '[]'",
+            "price_monitoring_default_price_kopeks": "INTEGER DEFAULT 5000",
+            "price_monitoring_max_suppliers": "INTEGER DEFAULT 3",
+            "price_monitoring_max_positions": "INTEGER DEFAULT 1000",
+            "price_monitoring_concurrency": "INTEGER DEFAULT 4",
+            "price_monitoring_cluster_ratio": "REAL DEFAULT 1.4",
+            "price_monitoring_filter_marketplaces": "BOOLEAN DEFAULT 0",
+            "geo_radius_search_enabled_global": "BOOLEAN DEFAULT 0",
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {
@@ -111,6 +118,8 @@ def _ensure_schema() -> None:
             "allowed_supplier_search": "BOOLEAN DEFAULT 1",
             "allowed_procurement_report": "BOOLEAN DEFAULT 0",
             "allowed_exact_product": "BOOLEAN DEFAULT 1",
+            "allowed_price_monitoring": "BOOLEAN DEFAULT 0",
+            "allowed_geo_radius": "BOOLEAN DEFAULT 0",
             "monthly_supplier_search_limit": "INTEGER DEFAULT 100",
             "monthly_procurement_report_limit": "INTEGER DEFAULT 100",
             "money_balance_kopeks": "INTEGER DEFAULT 0",
@@ -129,6 +138,9 @@ def _ensure_schema() -> None:
             "created_by_telegram_id": "VARCHAR(64) DEFAULT ''",
             "supplier_search_policy": "VARCHAR(40) DEFAULT 'normal'",
             "supplier_search_run_type": "VARCHAR(40) DEFAULT 'initial'",
+            "multi_item_mode": "VARCHAR(40) DEFAULT 'balanced'",
+            "delivery_city": "VARCHAR(255) DEFAULT ''",
+            "geo_radius_km": "INTEGER NULL",
             "confirmation_kind": "VARCHAR(40) DEFAULT ''",
             "confirmation_outcome": "VARCHAR(40) DEFAULT ''",
             "confirmation_offered_at": "DATETIME NULL",
@@ -189,6 +201,8 @@ def _ensure_schema() -> None:
             "contact_evidence_snippet": "TEXT DEFAULT ''",
             "ai_rank_confidence": "INTEGER DEFAULT 0",
             "ai_rank_reason": "TEXT DEFAULT ''",
+            "supplier_city": "VARCHAR(255) DEFAULT ''",
+            "supplier_distance_km": "INTEGER NULL",
         }
         outreach_leads_existing = _existing_columns(inspector, "outreach_leads")
         outreach_leads_additions = {
@@ -368,6 +382,14 @@ def _ensure_schema() -> None:
         for column, definition in api_keys_additions.items():
             if api_keys_existing and column not in api_keys_existing:
                 connection.execute(text(f"ALTER TABLE api_keys ADD COLUMN {column} {definition}"))
+        tariff_packages_existing = _existing_columns(inspector, "tariff_packages")
+        tariff_package_additions = {
+            "bonus_kopeks": "INTEGER DEFAULT 0",
+            "badge": "VARCHAR(40) DEFAULT ''",
+        }
+        for column, definition in tariff_package_additions.items():
+            if tariff_packages_existing and column not in tariff_packages_existing:
+                connection.execute(text(f"ALTER TABLE tariff_packages ADD COLUMN {column} {definition}"))
 
 
 def _existing_columns(inspector, table_name: str) -> set[str]:
@@ -471,6 +493,31 @@ def _ensure_default_tariffs() -> None:
                         name=name,
                         units=units,
                         price_kopeks=price,
+                        sort_order=order,
+                        is_active=True,
+                    )
+                )
+            db.commit()
+
+        deposit_exists = db.query(TariffPackage).filter(TariffPackage.kind == "deposit").first()
+        if not deposit_exists:
+            deposit_defaults = [
+                ("Старт", 10, 100000, 0, "", "Для разовых процедур и тестирования в бою", 10),
+                ("Оптимальный", 35, 300000, 50000, "", "Для регулярной работы специалиста", 20),
+                ("Про", 65, 500000, 150000, "Хит", "Для активного отдела закупок (несколько тендеров в неделю)", 30),
+                ("Бизнес", 140, 1000000, 400000, "", "Для дистрибьюторов, интеграторов и работы по API", 40),
+                ("Корпоративный", 375, 2500000, 1250000, "Максимум", "Для масштабных процедур и CRM-интеграций", 50),
+            ]
+            for name, units, price, bonus, badge, desc, order in deposit_defaults:
+                db.add(
+                    TariffPackage(
+                        kind="deposit",
+                        name=name,
+                        units=units,
+                        price_kopeks=price,
+                        bonus_kopeks=bonus,
+                        badge=badge,
+                        description=desc,
                         sort_order=order,
                         is_active=True,
                     )

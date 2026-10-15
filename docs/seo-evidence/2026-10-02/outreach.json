@@ -1,0 +1,41 @@
+{
+  "date_moscow": "2026-10-02",
+  "authorized": true,
+  "sent_count": 4,
+  "channels": [
+    {
+      "channel": "ВикиТендер",
+      "recipient": "redaktor@wikitender.ru",
+      "contact_source": "https://wikitender.ru/o-proekte/",
+      "subject": "Предложение темы: как проверять сопоставимость коммерческих предложений",
+      "gmail_sent_verified": true
+    },
+    {
+      "channel": "Директор по закупкам",
+      "recipient": "info@zdirector.ru",
+      "contact_source": "https://zdirector.ru/publichnaya-oferta/",
+      "subject": "Учебный материал для редакционной оценки: сравнение КП по условиям поставки",
+      "gmail_sent_verified": true
+    },
+    {
+      "channel": "Информационный центр / Groteck",
+      "recipient": "miroshkina@groteck.ru",
+      "contact_source": "https://www.icenter.ru/fullsubject/zic",
+      "subject": "Для выпускающего редактора: учебная методика сопоставления КП и бланки",
+      "gmail_sent_verified": true
+    },
+    {
+      "channel": "CFO Russia",
+      "recipient": "events@cfo-russia.ru",
+      "contact_source": "https://www.cfo-russia.ru/meropriyatiya/zakupki/contacts.php",
+      "subject": "Практический материал о сопоставимости КП для закупочных команд",
+      "gmail_sent_verified": true
+    }
+  ],
+  "paid_agreements": false,
+  "editorial_publications_confirmed": 0,
+  "unsubmitted": {
+    "channel": "Тендеры.ру",
+    "reason": "Official forum only, no verified recipient email; native interactive browser control unavailable in this session"
+  }
+}

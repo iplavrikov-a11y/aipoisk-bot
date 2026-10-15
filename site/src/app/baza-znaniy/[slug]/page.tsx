@@ -122,7 +122,7 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
       subtitle={article.subtitle}
       readTime={article.readTime}
       publishedDate={article.publishedDate}
-      updatedDate={article.updatedDate}
+      updatedDate={article.updatedDate ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(article.updatedDate)) : undefined}
       steps={article.steps}
       faq={article.faq}
       toc={article.toc}
@@ -185,6 +185,40 @@ export default async function KnowledgeArticleDynamicPage({ params }: Props) {
             )}
           </section>
         ))}
+        {article.sources && article.sources.length > 0 && (
+          <section id="sources" className="space-y-4 pt-6 border-t border-[#d8e3e1]">
+            <h2 className="text-xl font-black text-[#172120]">Источники и документы для проверки</h2>
+            <ul className="space-y-3 text-sm leading-relaxed">
+              {article.sources.map((source) => (
+                <li key={source.url}>
+                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-[#075b63] underline underline-offset-4">{source.title}</a>
+                  {source.note && <p className="mt-1 text-[#697a77]">{source.note}</p>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {article.moduleLink && (
+          <aside className="rounded-2xl border border-[#b8c8c5] bg-[#e5f4f3]/60 p-5 sm:p-6">
+            <h2 className="text-lg font-black text-[#172120]">Применить к своей задаче</h2>
+            <p className="mt-2 text-sm leading-relaxed text-[#2f3f3d]">Сопоставьте выводы статьи с исходными документами и проверьте результат перед принятием закупочного решения.</p>
+            <a className="mt-4 inline-flex rounded-xl bg-[#075b63] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#06464c]" href={article.moduleLink.href}>{article.moduleLink.label}</a>
+          </aside>
+        )}
+        {article.downloads && article.downloads.length > 0 && (
+          <section className="rounded-2xl border border-[#d8e3e1] bg-white p-5 sm:p-6">
+            <h2 className="text-lg font-black text-[#172120]">Рабочие материалы</h2>
+            <p className="mt-2 text-sm leading-relaxed text-[#2f3f3d]">Материалы содержат учебные бланки. Перед использованием сверяйте их с вашей спецификацией и условиями закупки.</p>
+            <ul className="mt-4 space-y-3">
+              {article.downloads.map((item) => (
+                <li key={item.href} className="rounded-xl bg-[#f6f8f7] p-4">
+                  <a href={item.href} download className="font-bold text-[#075b63] underline underline-offset-4 hover:text-[#06464c]">{item.label}</a>
+                  <p className="mt-1 text-sm leading-relaxed text-[#2f3f3d]">{item.description}</p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </KnowledgeArticleLayout>
   );

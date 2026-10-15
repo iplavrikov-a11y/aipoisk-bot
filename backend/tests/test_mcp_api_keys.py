@@ -33,6 +33,8 @@ def setup_test_db():
         settings = SystemSettings(id=1)
         db.add(settings)
         db.commit()
+    from app.db import _ensure_default_tariffs
+    _ensure_default_tariffs()
     db.close()
     app.dependency_overrides[db_session] = override_get_db
     yield
@@ -223,5 +225,357 @@ def test_admin_api_test_endpoint():
         _, kwargs = mock_discover.call_args
         assert kwargs.get("context") == "СМЛ панели"
         assert kwargs.get("target") == 3
+
+
+def test_mcp_client_unified_money_balance_consumption():
+    from app.models import Client, BillingTransaction, ClientTariffOverride
+    from app.mcp_api import consume_quota
+    from fastapi import HTTPException
+    db = TestingSessionLocal()
+
+    # Create client with 200 rubles (20000 kopeks)
+    client_obj = Client(
+        name="Denis Weinstein CRM",
+        telegram_id="test_tg_denis_crm",
+        is_active=True,
+        money_balance_kopeks=20000,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    # Set custom price for client: 80 rubles (8000 kopeks) per search
+    override = ClientTariffOverride(
+        client_id=client_obj.id,
+        kind="supplier_search",
+        price_kopeks=8000,
+        is_enabled=True,
+    )
+    db.add(override)
+    db.commit()
+
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="Denis CRM Key",
+        client_id=client_obj.id,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=True,
+        allowed_procurement_report=True,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    # First request: should deduct money from client's balance
+    rem = consume_quota(db, api_key, "supplier_search", count=1)
+    db.refresh(client_obj)
+    db.refresh(api_key)
+
+    assert api_key.spent_supplier_search == 1
+    # Balance should have decreased from 20000 kopeks
+    assert client_obj.money_balance_kopeks < 20000
+    assert rem >= 0
+
+    # Verify billing transaction was created
+    tx = db.query(BillingTransaction).filter(BillingTransaction.client_id == client_obj.id).first()
+    assert tx is not None
+    assert tx.operation == "charge"
+    assert tx.kind == "supplier_search"
+
+    # Set client balance to 0 and verify 402 is raised
+    client_obj.money_balance_kopeks = 0
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        consume_quota(db, api_key, "supplier_search", count=1)
+    assert exc_info.value.status_code == 402
+    assert "Недостаточно средств" in exc_info.value.detail
+
+    db.close()
+
+
+def test_customer_api_keys_flow_and_job_logging():
+    from app.models import Client, WebUser, ApiKey, Job
+    from app.web_auth import create_web_session
+    from app.mcp_api import record_api_job
+    db = TestingSessionLocal()
+    client = TestClient(app)
+
+    # 1. Setup client and web session
+    client_obj = Client(
+        name="API Test Client",
+        telegram_id="test_tg_api_cust",
+        is_active=True,
+        money_balance_kopeks=50000,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    web_user = WebUser(
+        client_id=client_obj.id,
+        email="api_cust@example.com",
+        name="API Customer",
+        is_active=True,
+        is_email_verified=True,
+    )
+    db.add(web_user)
+    db.commit()
+    db.refresh(web_user)
+
+    raw_token, csrf_token, session_obj = create_web_session(db, web_user, request=None)
+
+    cookies = {"tenderlex_customer_session": raw_token}
+    headers = {"X-CSRF-Token": csrf_token}
+
+    # 2. List keys (initially empty)
+    list_resp = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp.status_code == 200
+    assert list_resp.json()["keys"] == []
+    assert list_resp.json()["balance_rub"] == 500.0
+
+    # 3. Create key
+    create_resp = client.post("/api/customer/api-keys", cookies=cookies, headers=headers)
+    assert create_resp.status_code == 200
+    created_data = create_resp.json()
+    assert created_data["ok"] is True
+    assert created_data["raw_key"].startswith("tl_live_")
+    key_id = created_data["id"]
+
+    # 4. List keys again (now has 1 key)
+    list_resp2 = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp2.status_code == 200
+    keys = list_resp2.json()["keys"]
+    assert len(keys) == 1
+    assert keys[0]["id"] == key_id
+    assert keys[0]["raw_key"] == created_data["raw_key"]
+    assert keys[0]["is_active"] is True
+
+    # 5. Test record_api_job for admin audit
+    api_key_db = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    job = record_api_job(
+        db,
+        api_key=api_key_db,
+        mode="supplier_search",
+        title="API: Поиск поставщиков — Кабель ВВГнг",
+        status="completed",
+        target_count=5,
+        verified_count=5,
+    )
+    assert job is not None
+    assert job.client_id == client_obj.id
+    assert job.created_by_telegram_id.startswith("api:")
+    assert job.status == "completed"
+
+    # 6. Revoke key
+    revoke_resp = client.post(f"/api/customer/api-keys/{key_id}/revoke", cookies=cookies, headers=headers)
+    assert revoke_resp.status_code == 200
+    assert revoke_resp.json()["ok"] is True
+
+    # 7. List keys again (revoked key filtered from active)
+    list_resp3 = client.get("/api/customer/api-keys", cookies=cookies)
+    assert list_resp3.status_code == 200
+    assert list_resp3.json()["keys"] == []
+
+    db.close()
+
+
+def test_mcp_two_phase_billing_reservation_and_release():
+    from app.models import Client, ApiKey, Job, BillingTransaction
+    from app.mcp_api import (
+        start_api_job_with_reservation,
+        finalize_api_job_success,
+        release_api_job_reservation,
+    )
+    db = TestingSessionLocal()
+
+    # 1. Setup client with 500 rub balance
+    client_obj = Client(
+        name="Two Phase Client",
+        telegram_id="test_tg_two_phase",
+        is_active=True,
+        money_balance_kopeks=50000,
+        money_reserved_kopeks=0,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    from app.models import ClientTariffOverride
+    override = ClientTariffOverride(
+        client_id=client_obj.id,
+        kind="supplier_search",
+        price_kopeks=8000,
+        is_enabled=True,
+    )
+    db.add(override)
+    db.commit()
+
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="Two Phase Key",
+        client_id=client_obj.id,
+        is_admin=False,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=True,
+        allowed_procurement_report=True,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    # 2. Test start_api_job_with_reservation: creates job and reserves funds
+    job, remaining = start_api_job_with_reservation(
+        db, api_key, "supplier_search", "API: Test Search Job", target_count=5
+    )
+    assert job is not None
+    assert job.status == "running"
+    db.refresh(client_obj)
+    assert client_obj.money_balance_kopeks == 50000
+    assert client_obj.money_reserved_kopeks > 0
+
+    # Verify OP_RESERVE transaction created
+    tx_reserve = db.query(BillingTransaction).filter(
+        BillingTransaction.job_id == job.id,
+        BillingTransaction.operation == "reserve"
+    ).first()
+    assert tx_reserve is not None
+
+    # 3. Test failure: release_api_job_reservation
+    release_api_job_reservation(db, api_key, job, "supplier_search", error="Simulated LLM Timeout")
+    db.refresh(client_obj)
+    assert client_obj.money_balance_kopeks == 50000
+    assert client_obj.money_reserved_kopeks == 0
+    assert job.status == "failed"
+    assert "Simulated LLM Timeout" in job.error
+
+    # Verify OP_RELEASE transaction created
+    tx_release = db.query(BillingTransaction).filter(
+        BillingTransaction.job_id == job.id,
+        BillingTransaction.operation == "release"
+    ).first()
+    assert tx_release is not None
+    assert api_key.spent_supplier_search == 0  # Not incremented on failure!
+
+    # 4. Test success: start second job and finalize success
+    job2, remaining2 = start_api_job_with_reservation(
+        db, api_key, "supplier_search", "API: Test Successful Job", target_count=5
+    )
+    assert job2 is not None
+    db.refresh(client_obj)
+    assert client_obj.money_reserved_kopeks > 0
+
+    finalize_api_job_success(
+        db, api_key, job2, "supplier_search", verified_count=5
+    )
+    db.refresh(client_obj)
+    assert client_obj.money_balance_kopeks < 50000  # Debited!
+    assert client_obj.money_reserved_kopeks == 0  # Released after charge
+    assert job2.status == "completed"
+    assert job2.verified_count == 5
+    assert api_key.spent_supplier_search == 1
+
+    # Verify OP_CHARGE transaction created
+    tx_charge = db.query(BillingTransaction).filter(
+        BillingTransaction.job_id == job2.id,
+        BillingTransaction.operation == "charge"
+    ).first()
+    assert tx_charge is not None
+
+    db.close()
+
+
+def test_mcp_zero_results_and_tool_call_flow():
+    from app.models import Client, ApiKey, BillingTransaction
+    from app.mcp_api import (
+        start_api_job_with_reservation,
+        release_api_job_reservation,
+        generate_api_key,
+    )
+    db = TestingSessionLocal()
+    client = TestClient(app)
+
+    client_obj = Client(
+        name="Zero Result Client",
+        telegram_id="test_tg_zero_res",
+        is_active=True,
+        money_balance_kopeks=40000,
+        money_reserved_kopeks=0,
+    )
+    db.add(client_obj)
+    db.commit()
+    db.refresh(client_obj)
+
+    from app.models import ClientTariffOverride
+    override = ClientTariffOverride(
+        client_id=client_obj.id,
+        kind="supplier_search",
+        price_kopeks=8000,
+        is_enabled=True,
+    )
+    db.add(override)
+    db.commit()
+
+    raw_key, key_hash, key_prefix = generate_api_key(is_admin=False)
+    api_key = ApiKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="Zero Res Key",
+        client_id=client_obj.id,
+        is_admin=False,
+        is_active=True,
+        allowed_supplier_search=True,
+        allowed_exact_product=False,
+        allowed_procurement_report=False,
+    )
+    db.add(api_key)
+    db.commit()
+
+    # 1. Test endpoint call without permission (exact_product disabled for key)
+    auth_header = {"Authorization": f"Bearer {raw_key}"}
+    resp_denied = client.post(
+        "/api/v1/mcp/products/exact-analogs",
+        headers=auth_header,
+        json={"specification_text": "тест"},
+    )
+    assert resp_denied.status_code == 403
+    assert "exact_product" in resp_denied.json()["detail"]
+
+    # 2. Test reservation and zero-results automatic refund
+    job, rem = start_api_job_with_reservation(
+        db, api_key, "supplier_search", "API: Zero Results Test", target_count=5
+    )
+    assert job is not None
+    db.refresh(client_obj)
+    assert client_obj.money_reserved_kopeks > 0
+    assert client_obj.money_balance_kopeks == 40000
+
+    # Simulate zero results found: release reservation with note
+    release_api_job_reservation(
+        db, api_key, job, "supplier_search", note="Резерв возвращён: поставщики не найдены", status_val="completed"
+    )
+    db.refresh(client_obj)
+    assert client_obj.money_reserved_kopeks == 0
+    assert client_obj.money_balance_kopeks == 40000
+    assert job.status == "completed"  # Completed with 0 verified
+    assert job.verified_count == 0
+    assert api_key.spent_supplier_search == 0
+
+    tx_rel = db.query(BillingTransaction).filter(
+        BillingTransaction.job_id == job.id,
+        BillingTransaction.operation == "release"
+    ).first()
+    assert tx_rel is not None
+    assert "поставщики не найдены" in tx_rel.note
+
+    db.close()
+
+
 
 

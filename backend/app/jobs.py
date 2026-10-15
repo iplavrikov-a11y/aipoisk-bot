@@ -16,14 +16,19 @@ from sqlalchemy.orm import Session, aliased
 from . import document_parser
 from .ai import get_model_selection
 from .billing import (
+    KIND_EXACT_PRODUCT,
+    KIND_PRICE_MONITORING,
     KIND_PROCUREMENT_REPORT,
     KIND_SUPPLIER_SEARCH,
     KIND_SUPPLIER_SEARCH_EXTRA,
+    MODE_PRICE_MONITORING,
     STATUS_AWAITING_CUSTOMER_CONFIRMATION,
     STATUS_CONFIRMATION_EXPIRED,
     STATUS_CUSTOMER_DECLINED,
     STATUS_DELIVERY_EXPIRED,
     charge_job_reservation,
+    charge_price_monitoring_job,
+    effective_price_kopeks,
     release_job_kind_reservation,
     release_job_reservation,
     expire_stale_confirmations,
@@ -44,6 +49,7 @@ from .exact_product import (
     write_exact_product_docx,
     ExactProductReport,
 )
+from .price_monitoring import run_price_monitoring_pipeline
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown, build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -56,9 +62,12 @@ from .result_offers import (
     publish_job_result_offer,
 )
 from .supplier_search import (
+    build_procurement_profile,
     discover_suppliers,
     extract_supplier_search_context,
     minprom_registry_preflight_error,
+    normalize_procurement_profile,
+    profile_to_dict,
     supplier_search_job_context,
 )
 from .tenderplan import TenderplanDownloadedFile, fetch_tenderplan_source_sync
@@ -84,12 +93,14 @@ MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 MODE_EXACT_PRODUCT = "exact_product"
+MODE_PRICE_MONITORING = "price_monitoring"
 KIND_EXACT_PRODUCT = "exact_product"
 VALID_JOB_MODES = {
     MODE_SUPPLIER_SEARCH,
     MODE_PROCUREMENT_REPORT,
     MODE_ANALYSIS_AND_SUPPLIERS,
     MODE_EXACT_PRODUCT,
+    MODE_PRICE_MONITORING,
 }
 SUPPLIER_POLICY_NORMAL = "normal"
 SUPPLIER_POLICY_MINPROM_ONLY = "minprom_registry_only"
@@ -145,7 +156,10 @@ def create_job(
     sources: list[dict] | None = None,
     supplier_search_policy: str = SUPPLIER_POLICY_NORMAL,
     supplier_search_run_type: str = SUPPLIER_RUN_INITIAL,
+    multi_item_mode: str = "balanced",
     initial_status: str = "pending",
+    delivery_city: str = "",
+    geo_radius_km: int | None = None,
 ) -> Job:
     normalized_sources = _normalized_job_sources(sources or [])
     if mode == MODE_SUPPLIER_SEARCH and normalized_sources:
@@ -159,6 +173,7 @@ def create_job(
         if registry_error:
             raise ValueError(registry_error)
     normalized_run_type = SUPPLIER_RUN_ADDITIONAL if str(supplier_search_run_type or "") == SUPPLIER_RUN_ADDITIONAL else SUPPLIER_RUN_INITIAL
+    normalized_multi_item_mode = "per_item" if str(multi_item_mode or "").strip().lower() == "per_item" else "balanced"
     work_dir = job_dir("pending")
     work_dir.mkdir(parents=True, exist_ok=True)
     job = Job(
@@ -168,6 +183,9 @@ def create_job(
         mode=mode,
         supplier_search_policy=normalized_policy,
         supplier_search_run_type=normalized_run_type,
+        multi_item_mode=normalized_multi_item_mode,
+        delivery_city=str(delivery_city or "").strip()[:255],
+        geo_radius_km=int(geo_radius_km) if geo_radius_km and int(geo_radius_km) > 0 else None,
         title=title,
         target_suppliers=target_suppliers,
         status="draft" if initial_status == "draft" else "pending",
@@ -306,6 +324,16 @@ def read_dobor_context(job: Job) -> dict:
     if not path.exists():
         return {}
     return parse_json_dict(path.read_text(encoding="utf-8"))
+
+
+def update_dobor_context_dict(job: Job, updates: dict) -> dict:
+    ctx = read_dobor_context(job)
+    ctx.update(updates)
+    input_dir = job_dir(job.id) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    path = input_dir / DOBOR_CONTEXT_FILENAME
+    path.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+    return ctx
 
 
 def should_requeue_stale_job(status: str, updated_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
@@ -721,12 +749,13 @@ def _process_job_sync(job_id: str) -> None:
         is_substantive, validation_err = document_parser.is_substantive_tz_text(context)
         if not is_substantive:
             release_job_reservation(db, job, note=f"Резерв возвращён: {validation_err}")
+            fail_msg = "В файле нет позиций для поиска" if "нет закупаемых позиций" in validation_err else "В документе нет содержимого"
             _set_job(
                 db,
                 job,
                 status="failed",
                 progress=100,
-                message="В документе нет содержимого",
+                message=fail_msg,
                 error=validation_err,
             )
             job.completed_at = now_utc()
@@ -743,6 +772,9 @@ def _process_job_sync(job_id: str) -> None:
         elif job.mode == MODE_EXACT_PRODUCT:
             stage = "exact_product"
             _process_exact_product(db, job, settings, context)
+        elif job.mode == MODE_PRICE_MONITORING:
+            stage = "price_monitoring"
+            _process_price_monitoring(db, job, settings, context)
         else:
             stage = "supplier_search"
             _process_supplier_search(db, job, settings, context)
@@ -932,6 +964,8 @@ def _persist_supplier_rows(db: Session, job: Job, accepted: list[dict]) -> None:
                 contact_evidence_snippet=row.get("contact_evidence_snippet", ""),
                 ai_rank_confidence=int(row.get("ai_rank_confidence") or 0),
                 ai_rank_reason=row.get("ai_rank_reason", ""),
+                supplier_city=str(row.get("supplier_city") or row.get("city") or "")[:255],
+                supplier_distance_km=int(row.get("supplier_distance_km")) if row.get("supplier_distance_km") is not None else None,
             )
         )
     db.commit()
@@ -1148,10 +1182,13 @@ def _build_registry_fallback_supplier_outputs(
     supplier_billing_kind: str,
     quote_billing_kind: str,
 ) -> tuple[Path, list[dict]]:
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     quote_markdown = build_quote_request_markdown(
         context,
         subject=subject,
         procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+        delivery_city=delivery_city,
     )
     quote_markdown = f"{quote_markdown.rstrip()}\n\n## Важно: реестр Минпромторга\n\n{REGISTRY_FALLBACK_QUOTE_WARNING}\n"
     xlsx_path = write_supplier_xlsx(
@@ -1161,6 +1198,9 @@ def _build_registry_fallback_supplier_outputs(
         subject=subject,
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
+        profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else None,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1211,6 +1251,70 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
     dobor_ctx = read_dobor_context(job)
     is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
     wave_idx = int(dobor_ctx.get("wave_index") or (2 if is_extend else 1))
+    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+
+    # Pre-flight specification profile analysis & multi-item decision gate
+    cached_profile_dict = dobor_ctx.get("procurement_profile")
+    profile = None
+    if cached_profile_dict:
+        try:
+            profile = normalize_procurement_profile(cached_profile_dict)
+        except Exception:
+            profile = None
+
+    if profile is None and getattr(settings, "has_active_ai_provider", False) and not is_confirmed:
+        _set_job(db, job, progress=26, message="Анализирую ТЗ и выделяю закупаемые позиции")
+        try:
+            profile = asyncio.run(build_procurement_profile(settings, context))
+            cached_profile_dict = profile_to_dict(profile)
+            dobor_ctx = update_dobor_context_dict(job, {"procurement_profile": cached_profile_dict})
+            if profile.summary and not job.title:
+                job.title = profile.summary[:200]
+                db.commit()
+        except Exception as e:
+            logger.warning("Failed to pre-extract procurement profile for job %s: %s", job.id, e)
+            profile = None
+
+    if profile is not None and len(profile.items) > 1 and not is_confirmed:
+        # Multi-item specification detected! Pause for customer choice.
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "multi_item_strategy"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.progress = 30
+        job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        db.commit()
+        db.refresh(job)
+        return
+
+    if profile is not None and not profile.items:
+        release_job_reservation(db, job, note="В прикреплённом файле ТЗ нет закупаемых позиций")
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В файле нет позиций для поиска",
+            error="В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    if profile is not None and len(profile.items) == 1 and not is_confirmed:
+        # Single item: automatically proceed in balanced mode without interrupting user
+        job.multi_item_mode = "balanced"
+        dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+
+    multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
+    active_profile_dict = dobor_ctx.get("procurement_profile")
+    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
+        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+        items = active_profile_dict.get("items") or []
+        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
+        if filtered_items:
+            active_profile_dict = dict(active_profile_dict, items=filtered_items)
     try:
         discovery_coro = discover_suppliers(
             settings,
@@ -1220,11 +1324,14 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
             excluded_suppliers=excluded_suppliers,
             supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
             preloaded_candidates=dobor_ctx.get("unreviewed_candidates"),
-            cached_procurement_profile=dobor_ctx.get("procurement_profile"),
+            cached_procurement_profile=active_profile_dict,
             executed_queries=dobor_ctx.get("executed_queries"),
             additional_prompt=dobor_ctx.get("additional_prompt", ""),
             is_extend=is_extend,
             wave_index=wave_idx,
+            multi_item_mode=multi_item_mode,
+            delivery_city=getattr(job, "delivery_city", "") or "",
+            geo_radius_km=getattr(job, "geo_radius_km", None),
         )
     except TypeError:
         discovery_coro = discover_suppliers(
@@ -1332,12 +1439,15 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         return
 
     stem = _result_stem(job, subject)
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     quote_markdown = asyncio.run(
         build_quote_request_markdown_with_ai(
             settings,
             context,
             subject=subject,
             procurement_profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else {},
+            delivery_city=delivery_city,
         )
     )
     xlsx_path = write_supplier_xlsx(
@@ -1347,6 +1457,9 @@ def _process_supplier_search(db: Session, job: Job, settings, context: str) -> N
         subject=subject,
         target=job.target_suppliers,
         policy=getattr(job, "supplier_search_policy", "") or "",
+        profile=evidence.get("procurement_profile") if isinstance(evidence, dict) else None,
+        delivery_city=delivery_city,
+        geo_radius_km=geo_radius_km,
     )
     quote_md_path = out_dir / _result_filename("quote_request", stem, ".md")
     quote_md_path.write_text(quote_markdown, encoding="utf-8")
@@ -1540,35 +1653,245 @@ def _process_exact_product(db: Session, job: Job, settings: SystemSettings, cont
     db.commit()
 
 
+def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, context: str) -> None:
+    _check_cancelled(job.id)
+    _populate_job_ai_metadata(job, settings, job.mode)
+    _set_job(db, job, progress=10, message="Загружаю спецификацию для мониторинга цен...")
+
+    input_dir = job_dir(job.id) / "input"
+    input_files = list(input_dir.iterdir()) if input_dir.exists() else []
+
+    from .price_monitoring.cleaner import extract_items_from_files_or_text
+    items = extract_items_from_files_or_text(input_files, context=context, settings=settings)
+
+    if not items:
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В загруженных документах или тексте не найдено позиций номенклатуры",
+            error="В файле или тексте не найдено строк с номенклатурой. Проверьте формат.",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    # Always generate a valid openpyxl Excel bytes in-memory for the pipeline
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Спецификация"
+    ws.append(["Номенклатура", "Ед. изм."])
+    for nom, unit in items:
+        ws.append([nom, unit])
+    buf = io.BytesIO()
+    wb.save(buf)
+    file_bytes = buf.getvalue()
+
+    price_kopeks = effective_price_kopeks(db, job.client, KIND_PRICE_MONITORING)
+    price_rub = round(price_kopeks / 100, 2)
+
+    out_dir = job_dir(job.id) / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / _result_filename("price_monitoring", "Отчет_по_ценам", ".xlsx")
+
+    def _progress_cb(progress: int, message: str) -> None:
+        _check_cancelled(job.id, db=db, job=job)
+        _set_job(db, job, progress=progress, message=message)
+
+    checkpoint_file = out_dir / "checkpoint.json"
+    max_sup = int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3)
+    concurrency = int(getattr(settings, "price_monitoring_concurrency", 4) or 4)
+    cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
+    filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", False))
+    delivery_city = str(getattr(job, "delivery_city", "") or "").strip()
+    geo_radius_km = getattr(job, "geo_radius_km", None)
+
+    try:
+        batch_res = asyncio.run(
+            run_price_monitoring_pipeline(
+                file_bytes=file_bytes,
+                settings=settings,
+                output_excel_path=str(out_file),
+                price_per_position_rub=price_rub,
+                progress_callback=_progress_cb,
+                max_suppliers=max_sup,
+                max_parallel_items=concurrency,
+                checkpoint_path=str(checkpoint_file),
+                cluster_ratio=cluster_ratio,
+                filter_marketplaces=filter_marketplaces,
+                items=items,
+                delivery_city=delivery_city,
+                geo_radius_km=geo_radius_km,
+            )
+        )
+    except Exception as exc:
+        logger.error("Price monitoring failed for job %s: %s", job.id, exc, exc_info=True)
+        _set_job(db, job, status="failed", progress=100, message=f"Ошибка обработки: {exc}", error=str(exc))
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    _check_cancelled(job.id)
+    charged_kopeks = charge_price_monitoring_job(
+        db,
+        job,
+        found_count=batch_res.found_positions,
+        price_per_item_kopeks=price_kopeks,
+    )
+
+    output_files = [
+        _output_artifact("price_monitoring", "Отчет по ценам поставщиков (.xlsx)", out_file, KIND_PRICE_MONITORING),
+    ]
+    evidence_payload = {
+        "mode": job.mode,
+        "subject": job.title or "Мониторинг цен",
+        "total_positions": batch_res.total_positions,
+        "found_positions": batch_res.found_positions,
+        "price_per_position_rub": price_rub,
+        "charged_rub": round(charged_kopeks / 100, 2),
+        "yandex_requests_count": batch_res.yandex_requests_count,
+        "yandex_cost_rub": batch_res.yandex_cost_rub,
+        "output_files": output_files,
+    }
+    evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+    job.evidence_path = str(evidence_path)
+    job.result_path = str(out_file)
+    job.verified_count = batch_res.found_positions
+    job.file_count = batch_res.total_positions
+    job.yandex_requests_count = batch_res.yandex_requests_count
+    job.yandex_cost_rub = batch_res.yandex_cost_rub
+
+    msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций"
+    _set_job(db, job, status="completed", progress=100, message=msg)
+    job.completed_at = now_utc()
+    db.commit()
+
+
+
 def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: str) -> None:
     _check_cancelled(job.id)
     _populate_job_ai_metadata(job, settings, job.mode)
-    _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
-    report = asyncio.run(generate_procurement_report(settings, context))
-    _check_cancelled(job.id)
-    _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
-    supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
-    _check_cancelled(job.id)
+    dobor_ctx = read_dobor_context(job)
+    is_extend = str(getattr(job, "supplier_search_run_type", "") or "") == SUPPLIER_RUN_ADDITIONAL
+    is_confirmed = bool(dobor_ctx.get("multi_item_confirmed")) or is_extend or getattr(job, "is_admin_rerun", False)
+
+    cached_report_text = dobor_ctx.get("analysis_report_text")
+    supplier_context = str(dobor_ctx.get("supplier_context") or "")
+
+    if cached_report_text and supplier_context:
+        report = SimpleNamespace(report=cached_report_text)
+    else:
+        _set_job(db, job, progress=25, message="ИИ готовит анализ документации")
+        report = asyncio.run(generate_procurement_report(settings, context))
+        _check_cancelled(job.id)
+        _set_job(db, job, progress=43, message="Выделяю ТЗ для поиска поставщиков")
+        supplier_context = asyncio.run(extract_supplier_search_context(settings, context))
+        _check_cancelled(job.id)
+        dobor_ctx = update_dobor_context_dict(job, {
+            "analysis_report_text": report.report,
+            "supplier_context": supplier_context,
+        })
+
+    # Pre-flight specification profile analysis & multi-item decision gate
+    cached_profile_dict = dobor_ctx.get("procurement_profile")
+    profile = None
+    if cached_profile_dict:
+        try:
+            profile = normalize_procurement_profile(cached_profile_dict)
+        except Exception:
+            profile = None
+
+    if profile is None and getattr(settings, "has_active_ai_provider", False) and not is_confirmed:
+        _set_job(db, job, progress=44, message="Анализирую позиции для поиска поставщиков")
+        try:
+            profile = asyncio.run(build_procurement_profile(settings, supplier_context))
+            cached_profile_dict = profile_to_dict(profile)
+            dobor_ctx = update_dobor_context_dict(job, {"procurement_profile": cached_profile_dict})
+            if profile.summary and not job.title:
+                job.title = profile.summary[:200]
+                db.commit()
+        except Exception as e:
+            logger.warning("Failed to pre-extract procurement profile for job %s: %s", job.id, e)
+            profile = None
+
+    if profile is not None and len(profile.items) > 1 and not is_confirmed:
+        # Multi-item specification detected! Pause for customer choice.
+        job.status = STATUS_AWAITING_CUSTOMER_CONFIRMATION
+        job.confirmation_kind = "multi_item_strategy"
+        job.confirmation_outcome = "pending"
+        job.confirmation_offered_at = now_utc()
+        job.progress = 45
+        job.message = f"В ТЗ обнаружено {len(profile.items)} позиций. Ожидает выбора стратегии поиска"
+        db.commit()
+        db.refresh(job)
+        return
+
+    if profile is not None and not profile.items:
+        release_job_reservation(db, job, note="В прикреплённом файле ТЗ нет закупаемых позиций")
+        _set_job(
+            db,
+            job,
+            status="failed",
+            progress=100,
+            message="В файле нет позиций для поиска",
+            error="В прикреплённом файле не найдено закупаемых товаров или спецификации (обнаружена пустая форма или инструкция по заполнению). Для поиска поставщиков прикрепите файл с перечнем конкретных товаров, оборудования или материалов.",
+        )
+        job.completed_at = now_utc()
+        db.commit()
+        return
+
+    if profile is not None and len(profile.items) == 1 and not is_confirmed:
+        # Single item: automatically proceed in balanced mode without interrupting user
+        job.multi_item_mode = "balanced"
+        dobor_ctx = update_dobor_context_dict(job, {"multi_item_confirmed": True})
+        db.commit()
+
     _set_job(db, job, progress=45, message="Ищу поставщиков по ТЗ из документации")
+
+    multi_item_mode = getattr(job, "multi_item_mode", "balanced") or "balanced"
+    active_profile_dict = dobor_ctx.get("procurement_profile")
+    if multi_item_mode == "per_item" and active_profile_dict and dobor_ctx.get("selected_item_ids"):
+        selected_ids = set(dobor_ctx.get("selected_item_ids") or [])
+        items = active_profile_dict.get("items") or []
+        filtered_items = [it for it in items if str(it.get("id")) in selected_ids]
+        if filtered_items:
+            active_profile_dict = dict(active_profile_dict, items=filtered_items)
 
     async def progress_callback(progress: int, message: str) -> None:
         _check_cancelled(job.id)
         mapped_progress = 45 + int(max(0, min(100, progress)) * 0.5)
         _set_job(db, job, status="running", progress=mapped_progress, message=message)
 
+    try:
+        discovery_coro = discover_suppliers(
+            settings,
+            supplier_context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+            cached_procurement_profile=active_profile_dict,
+            multi_item_mode=multi_item_mode,
+            delivery_city=getattr(job, "delivery_city", "") or "",
+            geo_radius_km=getattr(job, "geo_radius_km", None),
+        )
+    except TypeError:
+        discovery_coro = discover_suppliers(
+            settings,
+            supplier_context,
+            job.target_suppliers,
+            progress_callback=progress_callback,
+            supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
+        )
     with supplier_search_job_context(job.id):
         accepted, supplier_evidence = asyncio.run(
             _run_supplier_discovery_with_cancellation(
                 job.id,
-                discover_suppliers(
-                    settings,
-                    supplier_context,
-                    job.target_suppliers,
-                    progress_callback=progress_callback,
-                    supplier_search_policy=getattr(job, "supplier_search_policy", SUPPLIER_POLICY_NORMAL),
-                ),
+                discovery_coro,
             )
-    )
+        )
     _check_cancelled(job.id)
     _set_job(db, job, status="running", progress=96, message="Сохраняю анализ и поставщиков")
     fallback_rows = _registry_fallback_rows(supplier_evidence) if not accepted else []
@@ -1639,6 +1962,8 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
         "ai_required": True,
         "ai_used": bool(report.ai_used and supplier_evidence.get("ai_used")),
     }
+    delivery_city = getattr(job, "delivery_city", "") or ""
+    geo_radius_km = getattr(job, "geo_radius_km", None)
     if accepted:
         xlsx_path = write_supplier_xlsx(
             out_dir / _result_filename("suppliers", stem, ".xlsx"),
@@ -1647,6 +1972,9 @@ def _process_analysis_and_suppliers(db: Session, job: Job, settings, context: st
             subject=subject,
             target=job.target_suppliers,
             policy=getattr(job, "supplier_search_policy", "") or "",
+            profile=supplier_evidence.get("procurement_profile") if isinstance(supplier_evidence, dict) else None,
+            delivery_city=delivery_city,
+            geo_radius_km=geo_radius_km,
         )
     output_files = [_output_artifact("analysis", "Анализ", docx_path, KIND_PROCUREMENT_REPORT)]
     if xlsx_path:

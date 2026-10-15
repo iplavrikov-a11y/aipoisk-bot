@@ -1,0 +1,48 @@
+{
+  "verified_on_moscow": "2026-10-02",
+  "site_deploy_verified": true,
+  "public_urls_passed": 89,
+  "live_mobile_markup_present": {
+    "/regiony/moskva": {
+      "status": 200,
+      "mobile_details": true,
+      "main_module_links": true
+    },
+    "/otrasli/kabel-i-provod": {
+      "status": 200,
+      "mobile_details": true,
+      "main_module_links": true
+    },
+    "/baza-znaniy/kak-naiti-postavshchika-po-tz": {
+      "status": 200,
+      "mobile_details": true,
+      "main_module_links": true
+    }
+  },
+  "mobile_ssr_and_real_handlers_passed": true,
+  "mobile_interactive_not_checked": true,
+  "native_browser_control_available": false,
+  "source_checks": [
+    "analytics",
+    "schema",
+    "public contacts actualSSR",
+    "57 knowledge articles",
+    "llms synchronization",
+    "quote Markdown",
+    "mobile menu actualSSR/handlers",
+    "TypeScript",
+    "git diff --check"
+  ],
+  "backend_tests_verified_2026_10_01": 776,
+  "backend_subtests_verified_2026_10_01": 54,
+  "browser_scenarios_verified_prior_to_followup": 9,
+  "full_suite_not_repeated_after_copy_only_followup": true,
+  "services_active": [
+    "api",
+    "bot",
+    "worker",
+    "site",
+    "seo-monitor.timer"
+  ],
+  "manual_oct2_monitor_collection_complete": true
+}

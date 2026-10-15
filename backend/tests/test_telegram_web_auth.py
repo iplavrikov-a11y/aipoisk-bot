@@ -232,8 +232,19 @@ class TelegramWebAuthTests(TestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/cabinet")
+        self.assertEqual(
+            response.headers["location"], "/cabinet#registration_success"
+        )
         self.assertIn(CUSTOMER_COOKIE, response.cookies)
+
+        repeat_response = self.client.get(
+            "/api/customer/auth/telegram/callback",
+            params=payload,
+            follow_redirects=False,
+        )
+        self.assertEqual(
+            repeat_response.headers["location"], "/cabinet#login_success"
+        )
 
     def test_api_telegram_callback_with_tg_auth_result(self) -> None:
         import base64
@@ -254,7 +265,9 @@ class TelegramWebAuthTests(TestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/cabinet")
+        self.assertEqual(
+            response.headers["location"], "/cabinet#registration_success"
+        )
         self.assertIn(CUSTOMER_COOKIE, response.cookies)
 
     def test_api_telegram_login_redirect(self) -> None:

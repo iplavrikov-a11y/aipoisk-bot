@@ -181,7 +181,7 @@ export default async function DemoWorldPage() {
                   </li>
                   <li className="flex items-start text-xs text-slate-700 font-semibold">
                     <CheckCircle2 className="w-4 h-4 text-teal-600 mr-2.5 shrink-0 mt-0.5" />
-                    <span>Авто-генератор готового текста Запроса коммерческого предложения (RFQ)</span>
+                    <span>Авто-генератор готового текста запроса коммерческого предложения (КП)</span>
                   </li>
                 </ul>
               </div>
@@ -291,7 +291,7 @@ export default async function DemoWorldPage() {
               <div>
                 <span className="text-xs font-bold text-teal-700 uppercase tracking-wider">Подбор поставщиков по ТЗ</span>
                 <h3 className="text-2xl font-extrabold text-slate-900 mt-1 mb-2">Контакты поставщиков</h3>
-                <p className="text-xs text-slate-600 mb-4">Извлечение direct email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
+                <p className="text-xs text-slate-600 mb-4">Извлечение прямых email, телефонов отделов продаж и ролей компаний по всей РФ.</p>
                 <div className="space-y-3 border-t border-slate-200 pt-4 mb-6">
                   {supplierTariffs.map((t: PublicTariff) => (
                     <div key={t.id} className="flex justify-between items-center text-xs">

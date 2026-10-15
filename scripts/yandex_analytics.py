@@ -32,8 +32,8 @@ def load_env():
 
 load_env()
 
-WEBMASTER_TOKEN = os.environ.get("YANDEX_WEBMASTER_TOKEN", "y0__wgBELDitkEYs4BIIJaI2uIYMM7MspMI9_BpXJIpkOWGXoXGrtWkS4fQpVU")
-METRIKA_TOKEN = os.environ.get("YANDEX_METRIKA_TOKEN", "y0__wgBELDitkEYsoBIIIiM2uIYMM7MspMIy0zhW9k_nL_p4xuNMOMSrw3v9o0")
+WEBMASTER_TOKEN = os.environ.get("YANDEX_WEBMASTER_TOKEN", "")
+METRIKA_TOKEN = os.environ.get("YANDEX_METRIKA_TOKEN", "")
 METRIKA_COUNTER_ID = os.environ.get("YANDEX_METRIKA_COUNTER_ID", "109753178")
 SITEMAP_URL = "https://tenderlex.ru/sitemap.xml"
 HOST_ID = "https:tenderlex.ru:443"

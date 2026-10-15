@@ -900,6 +900,34 @@ class BillingLedgerTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_client_with_custom_tariffs_receives_zero_bonus(self) -> None:
+        db = self.Session()
+        try:
+            from app.billing import calculate_deposit_bonus_kopeks, client_has_custom_tariffs
+
+            standard_client = Client(id="client-std", telegram_id="101")
+            custom_client = Client(id="client-custom", telegram_id="102")
+            override = ClientTariffOverride(client_id="client-custom", kind=KIND_SUPPLIER_SEARCH, price_kopeks=6_000, is_enabled=True)
+            db.add_all([standard_client, custom_client, override])
+            db.commit()
+
+            self.assertFalse(client_has_custom_tariffs(db, standard_client))
+            self.assertTrue(client_has_custom_tariffs(db, custom_client))
+
+            # 5 000 ₽ (500 000 kopeks): standard bonus is 1 500 ₽ (150 000 kopeks)
+            self.assertEqual(calculate_deposit_bonus_kopeks(500_000, db, standard_client), 150_000)
+            # Custom client gets 0 bonus
+            self.assertEqual(calculate_deposit_bonus_kopeks(500_000, db, custom_client), 0)
+            self.assertEqual(calculate_deposit_bonus_kopeks(600_000, db, custom_client), 0)
+
+            # Check summary has_custom_tariffs flag
+            std_summary = client_service_balance_summary(db, standard_client)
+            custom_summary = client_service_balance_summary(db, custom_client)
+            self.assertFalse(std_summary.get("has_custom_tariffs"))
+            self.assertTrue(custom_summary.get("has_custom_tariffs"))
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

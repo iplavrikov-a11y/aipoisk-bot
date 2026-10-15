@@ -1,0 +1,35 @@
+{
+  "url": "https://telegra.ph/Pochemu-samoe-deshevoe-KP-eshche-nelzya-schitat-vygodnym-proveryaem-usloviya-postavki-10-01",
+  "status": 200,
+  "title_present": true,
+  "tenderlex_links": [
+    {
+      "href": "https://tenderlex.ru/",
+      "rel": "author"
+    },
+    {
+      "href": "https://tenderlex.ru/",
+      "rel": null
+    },
+    {
+      "href": "https://tenderlex.ru/materialy/matrica-sravneniya-kp.csv?utm_source=telegraph&utm_medium=referral&utm_campaign=cp_method_20261002",
+      "rel": "nofollow"
+    },
+    {
+      "href": "https://tenderlex.ru/materialy/shablon-zaprosa-kp.docx?utm_source=telegraph&utm_medium=referral&utm_campaign=cp_method_20261002",
+      "rel": "nofollow"
+    },
+    {
+      "href": "https://tenderlex.ru/materialy/kak-sopostavit-kommercheskie-predlozheniya.md?utm_source=telegraph&utm_medium=referral&utm_campaign=cp_method_20261002",
+      "rel": "nofollow"
+    }
+  ],
+  "meta_robots": [
+    "index, follow"
+  ],
+  "canonical": [
+    "https://telegra.ph/Pochemu-samoe-deshevoe-KP-eshche-nelzya-schitat-vygodnym-proveryaem-usloviya-postavki-10-01"
+  ],
+  "self_published": true,
+  "google_yandex_indexed": null
+}

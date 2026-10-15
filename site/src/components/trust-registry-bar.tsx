@@ -3,27 +3,27 @@ import { Globe, Cpu, Building2, Database, Sparkles, CheckCircle2, ShieldCheck, S
 export function TrustRegistryBar() {
   const pillars = [
     {
-      title: "Живой поиск Яндекс & Google",
+      title: "Поиск по открытым источникам",
       subtitle: "Прямой поиск в интернете",
-      desc: "ИИ формирует точечные поисковые запросы по ГОСТам, маркам и ТЗ без ограничений устаревшими базами.",
+      desc: "Поисковые запросы учитывают характеристики ТЗ, марки и стандарты. Полнота результатов зависит от доступности источников.",
       icon: Search,
-      tag: "Live Web Search",
+      tag: "Поиск в реальном времени",
       highlight: "Яндекс / Google",
     },
     {
-      title: "Глубокий краулинг сайтов",
+      title: "Страницы компаний",
       subtitle: "Сбор со страниц компаний",
-      desc: "Робот переходит на сайт каждого поставщика, парсит разделы контактов, прайсы и извлекает прямые email сбыта.",
+      desc: "Сервис ищет опубликованные контакты на доступных страницах компаний. Контакты, полномочия и наличие товара нужно подтвердить перед заказом.",
       icon: Cpu,
-      tag: "Deep Crawling",
-      highlight: "Direct Email & Тел.",
+      tag: "Углубленный сбор сайтов",
+      highlight: "Опубликованные контакты",
     },
     {
       title: "Реестр Минпромторга (ГИСП)",
       subtitle: "Национальный режим",
-      desc: "Сверка номенклатуры с Реестром российской промышленной продукции по ПП РФ № 616 и № 617.",
+      desc: "Поиск сведений для сверки с ГИСП. Реестровую запись и применимое требование национального режима нужно проверить на дату закупки.",
       icon: Building2,
-      tag: "ПП 616 / 617",
+      tag: "Национальный режим",
       highlight: "ГИСП Минпромторга",
     },
     {
@@ -48,7 +48,7 @@ export function TrustRegistryBar() {
           Как TenderLex находит поставщиков и анализирует риски
         </h3>
         <p className="text-xs sm:text-sm text-slate-600 font-normal max-w-2xl mx-auto leading-relaxed">
-          Вместо статичных справочников сервис сканирует реальные сайты производителей через Яндекс и Google в режиме реального времени, извлекая прямые контакты отделов сбыта.
+          Сервис использует открытые источники для поиска кандидатов и разбора документации. Отчет содержит сведения для проверки; полнота, актуальность контактов и выводы требуют подтверждения.
         </p>
       </div>
 
@@ -91,7 +91,7 @@ export function TrustRegistryBar() {
                 </span>
                 <span className="text-teal-700 font-semibold text-[11px] flex items-center gap-1">
                   <CheckCircle2 size={13} className="text-teal-600 shrink-0" />
-                  Актуально
+                  Для проверки
                 </span>
               </div>
             </div>
@@ -106,17 +106,17 @@ export function TrustRegistryBar() {
             <ShieldCheck size={16} />
           </div>
           <span className="text-slate-200 font-medium text-xs">
-            <strong>100% соответствие 152-ФЗ</strong>: данные защищены, поисковые процессы изолированы, серверы в РФ.
+            Условия обработки данных и ограничения сервиса описаны в правовых документах. Не загружайте сведения, которые не разрешено передавать.
           </span>
         </div>
         <div className="flex items-center gap-4 text-slate-300 font-semibold text-[11px] shrink-0">
           <span className="flex items-center gap-1.5">
             <CheckCircle2 size={13} className="text-emerald-400 shrink-0" />
-            Без скрытых подписок
+            Условия в кабинете
           </span>
           <span className="flex items-center gap-1.5">
             <CheckCircle2 size={13} className="text-emerald-400 shrink-0" />
-            Пробный доступ при регистрации
+            Тарифы перед оплатой
           </span>
         </div>
       </div>

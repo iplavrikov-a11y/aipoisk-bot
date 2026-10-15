@@ -1,5 +1,7 @@
 'use client';
 
+import { PublicSiteLink } from "@/components/public-site-link";
+
 import React, { useState, useEffect, useRef } from 'react';
 import {
   MessageSquare,
@@ -43,6 +45,7 @@ export function ChatWidget() {
   const [savedContact, setSavedContact] = useState('');
   const [showContactModal, setShowContactModal] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -152,6 +155,7 @@ export function ChatWidget() {
     if (!msgText || isSending) return;
 
     setIsSending(true);
+    setSendError('');
 
     const userMsg: Message = {
       id: 'user_' + Date.now(),
@@ -170,7 +174,7 @@ export function ChatWidget() {
     } catch {}
 
     try {
-      await fetch('/api/chat/send', {
+      const response = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -180,8 +184,12 @@ export function ChatWidget() {
           contact: savedContact || contactInput || null,
         }),
       });
+      if (!response.ok) throw new Error('Message delivery failed');
     } catch (err) {
-      console.error('Failed to send message:', err);
+      setSendError('Сообщение не отправлено. Повторите отправку или свяжитесь с нами через контакты на сайте.');
+      setInputText(msgText);
+      setMessages(previous => previous.filter(message => message.id !== userMsg.id));
+      try { localStorage.setItem('tenderlex_chat_history', JSON.stringify(messages)); } catch {}
     } finally {
       setIsSending(false);
     }
@@ -264,15 +272,15 @@ export function ChatWidget() {
             </div>
 
             <div className="flex items-center gap-1">
-              <a
-                href="https://t.me/lexelence"
+              <PublicSiteLink
+                channel="telegram"
                 target="_blank"
                 rel="noopener noreferrer"
                 title="Написать напрямую в Telegram"
                 className="text-teal-200 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors"
               >
                 <ExternalLink className="w-4 h-4" />
-              </a>
+              </PublicSiteLink>
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
@@ -386,6 +394,7 @@ export function ChatWidget() {
             </div>
           )}
 
+          {sendError ? <p role="alert" className="px-3 py-2 text-xs text-rose-700 bg-rose-50">{sendError}</p> : null}
           {/* Footer Input Form */}
           <form
             onSubmit={(e) => {

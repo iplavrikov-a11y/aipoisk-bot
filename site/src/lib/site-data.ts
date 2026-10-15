@@ -1,13 +1,25 @@
 export type PublicTariff = {
   id: string;
-  kind: "supplier_search" | "procurement_report" | string;
+  kind: "supplier_search" | "procurement_report" | "exact_product" | "supplier_search_extra" | "deposit" | string;
   label: string;
   name: string;
   units: number;
   price_kopeks: number;
   price_rub: number;
+  bonus_kopeks?: number;
+  bonus_rub?: number;
+  credit_kopeks?: number;
+  credit_rub?: number;
+  total_kopeks?: number;
+  total_rub?: number;
+  badge?: string;
   description: string;
   sort_order: number;
+};
+
+export type FunctionPriceItem = {
+  price_kopeks: number;
+  price_rub: number;
 };
 
 export type PublicSitePayload = {
@@ -39,7 +51,16 @@ export type PublicSitePayload = {
     file_limit: number;
   };
   tariffs: PublicTariff[];
+  deposit_packages?: PublicTariff[];
+  function_prices?: {
+    supplier_search: FunctionPriceItem;
+    exact_product: FunctionPriceItem;
+    procurement_report: FunctionPriceItem;
+    supplier_search_extra: FunctionPriceItem;
+    analysis_and_suppliers: FunctionPriceItem;
+  };
   tariff_groups: {
+    deposit?: PublicTariff[];
     supplier_search: PublicTariff[];
     exact_product?: PublicTariff[];
     procurement_report: PublicTariff[];
@@ -48,182 +69,87 @@ export type PublicSitePayload = {
   updated_at: string | null;
 };
 
-const fallbackTariffs: PublicTariff[] = [
+
+const defaultDepositPackages: PublicTariff[] = [
   {
-    id: "supplier-1",
-    kind: "supplier_search",
-    label: "Поставщики",
-    name: "1 запрос контактов поставщиков",
-    units: 1,
-    price_kopeks: 9900,
-    price_rub: 99,
-    description: "Разовый подбор релевантных компаний и direct email отделов продаж.",
+    id: "dep-start",
+    kind: "deposit",
+    label: "Пополнение баланса",
+    name: "Старт",
+    units: 10,
+    price_kopeks: 100000,
+    price_rub: 1000,
+    bonus_kopeks: 0,
+    bonus_rub: 0,
+    credit_kopeks: 100000,
+    credit_rub: 1000,
+    badge: "",
+    description: "Для разовых тендеров и тестирования в бою",
     sort_order: 10,
   },
   {
-    id: "supplier-5",
-    kind: "supplier_search",
-    label: "Поставщики",
-    name: "5 запросов контактов поставщиков",
-    units: 5,
-    price_kopeks: 49000,
-    price_rub: 490,
-    description: "Мини-пакет для подбора поставщиков по ключевым позициям (98 ₽/поиск).",
+    id: "dep-optimal",
+    kind: "deposit",
+    label: "Пополнение баланса",
+    name: "Оптимальный",
+    units: 35,
+    price_kopeks: 300000,
+    price_rub: 3000,
+    bonus_kopeks: 50000,
+    bonus_rub: 500,
+    credit_kopeks: 350000,
+    credit_rub: 3500,
+    badge: "",
+    description: "Для регулярной работы тендерного специалиста",
     sort_order: 20,
   },
   {
-    id: "supplier-10",
-    kind: "supplier_search",
-    label: "Поставщики",
-    name: "10 запросов контактов поставщиков",
-    units: 10,
-    price_kopeks: 89000,
-    price_rub: 890,
-    description: "Оптимальный пакет для регулярных запросов КП и снабжения (89 ₽/поиск).",
+    id: "dep-pro",
+    kind: "deposit",
+    label: "Пополнение баланса",
+    name: "Про",
+    units: 65,
+    price_kopeks: 500000,
+    price_rub: 5000,
+    bonus_kopeks: 150000,
+    bonus_rub: 1500,
+    credit_kopeks: 650000,
+    credit_rub: 6500,
+    badge: "Хит",
+    description: "Для активного отдела закупок (несколько тендеров в неделю)",
     sort_order: 30,
   },
   {
-    id: "supplier-25",
-    kind: "supplier_search",
-    label: "Поставщики",
-    name: "25 запросов контактов поставщиков",
-    units: 25,
-    price_kopeks: 199000,
-    price_rub: 1990,
-    description: "Для активной работы со спецификациями и тендерами (79.6 ₽/поиск).",
+    id: "dep-biz",
+    kind: "deposit",
+    label: "Пополнение баланса",
+    name: "Бизнес",
+    units: 140,
+    price_kopeks: 1000000,
+    price_rub: 10000,
+    bonus_kopeks: 400000,
+    bonus_rub: 4000,
+    credit_kopeks: 1400000,
+    credit_rub: 14000,
+    badge: "",
+    description: "Для дистрибьюторов, интеграторов и работы по API",
     sort_order: 40,
   },
   {
-    id: "supplier-50",
-    kind: "supplier_search",
-    label: "Поставщики",
-    name: "50 запросов контактов поставщиков",
-    units: 50,
-    price_kopeks: 379000,
-    price_rub: 3790,
-    description: "Максимальный пакет для снабжения и тендерных отделов (75.8 ₽/поиск).",
+    id: "dep-corp",
+    kind: "deposit",
+    label: "Пополнение баланса",
+    name: "Корпоративный",
+    units: 375,
+    price_kopeks: 2500000,
+    price_rub: 25000,
+    bonus_kopeks: 1250000,
+    bonus_rub: 12500,
+    credit_kopeks: 3750000,
+    credit_rub: 37500,
+    badge: "Максимум",
+    description: "Для масштабных закупок и CRM-интеграций",
     sort_order: 50,
-  },
-  {
-    id: "report-1",
-    kind: "procurement_report",
-    label: "Анализ документации",
-    name: "1 отчёт анализа документации",
-    units: 1,
-    price_kopeks: 9900,
-    price_rub: 99,
-    description: "Экспресс-аудит проекта контракта: проверка скрытых штрафов, сроков и нацрежима.",
-    sort_order: 10,
-  },
-  {
-    id: "report-5",
-    kind: "procurement_report",
-    label: "Анализ документации",
-    name: "5 отчётов анализа документации",
-    units: 5,
-    price_kopeks: 49000,
-    price_rub: 490,
-    description: "Пакет для регулярной проверки условий закупки перед подачей (98 ₽/отчет).",
-    sort_order: 20,
-  },
-  {
-    id: "report-10",
-    kind: "procurement_report",
-    label: "Анализ документации",
-    name: "10 отчётов анализа документации",
-    units: 10,
-    price_kopeks: 89000,
-    price_rub: 890,
-    description: "Оптимальный аудит рисков документации для специалистов (89 ₽/отчет).",
-    sort_order: 30,
-  },
-  {
-    id: "report-25",
-    kind: "procurement_report",
-    label: "Анализ документации",
-    name: "25 отчётов анализа документации",
-    units: 25,
-    price_kopeks: 199000,
-    price_rub: 1990,
-    description: "Пакет проверок проектов контрактов с оценкой рисков и неустоек (79.6 ₽/отчет).",
-    sort_order: 40,
-  },
-  {
-    id: "report-50",
-    kind: "procurement_report",
-    label: "Анализ документации",
-    name: "50 отчётов анализа документации",
-    units: 50,
-    price_kopeks: 379000,
-    price_rub: 3790,
-    description: "Корпоративный аудит закупочной документации на постоянной основе (75.8 ₽/отчет).",
-    sort_order: 50,
-  },
-  {
-    id: "exact-1",
-    kind: "exact_product",
-    label: "Подбор товара и аналогов",
-    name: "1 подбор товара и аналогов",
-    units: 1,
-    price_kopeks: 9900,
-    price_rub: 99,
-    description: "Выявление скрытой модели по ТЗ, конкретные показатели, сверка параметров и подбор 2–4 аналогов.",
-    sort_order: 10,
-  },
-  {
-    id: "exact-5",
-    kind: "exact_product",
-    label: "Подбор товара и аналогов",
-    name: "5 подборов товара и аналогов",
-    units: 5,
-    price_kopeks: 49000,
-    price_rub: 490,
-    description: "Пакет для подбора товаров и эквивалентов по спецификациям (98 ₽/поиск).",
-    sort_order: 20,
-  },
-  {
-    id: "exact-10",
-    kind: "exact_product",
-    label: "Подбор товара и аналогов",
-    name: "10 подборов товара и аналогов",
-    units: 10,
-    price_kopeks: 89000,
-    price_rub: 890,
-    description: "Оптимальный пакет для регулярной подготовки конкретных показателей и подбора аналогов (89 ₽/поиск).",
-    sort_order: 30,
-  },
-  {
-    id: "exact-25",
-    kind: "exact_product",
-    label: "Подбор товара и аналогов",
-    name: "25 подборов товара и аналогов",
-    units: 25,
-    price_kopeks: 199000,
-    price_rub: 1990,
-    description: "Пакет для тендерных специалистов и снабжения (79.6 ₽/поиск).",
-    sort_order: 40,
-  },
-  {
-    id: "exact-50",
-    kind: "exact_product",
-    label: "Подбор товара и аналогов",
-    name: "50 подборов товара и аналогов",
-    units: 50,
-    price_kopeks: 379000,
-    price_rub: 3790,
-    description: "Максимальный пакет для регулярного подбора оборудования и аналогов (75.8 ₽/поиск).",
-    sort_order: 50,
-  },
-  {
-    id: "extra-1",
-    kind: "supplier_search_extra",
-    label: "Добор поставщиков",
-    name: "1 добор поставщиков (по тому же ТЗ)",
-    units: 1,
-    price_kopeks: 4900,
-    price_rub: 49,
-    description: "Дополнительный поиск поставщиков по уже проверенному ТЗ без повтора ранее найденных контактов.",
-    sort_order: 10,
   },
 ];
 
@@ -247,17 +173,26 @@ const fallbackData: PublicSitePayload = {
     telegram_url: "https://t.me/tenderlex_bot",
   },
   trial: {
-    enabled: true,
+    enabled: false,
     supplier_search_limit: 1,
     procurement_report_limit: 1,
     file_limit: 10,
   },
-  tariffs: fallbackTariffs,
+  tariffs: defaultDepositPackages,
+  deposit_packages: defaultDepositPackages,
+  function_prices: {
+    supplier_search: { price_kopeks: 9900, price_rub: 99 },
+    exact_product: { price_kopeks: 9900, price_rub: 99 },
+    procurement_report: { price_kopeks: 9900, price_rub: 99 },
+    supplier_search_extra: { price_kopeks: 4900, price_rub: 49 },
+    analysis_and_suppliers: { price_kopeks: 19800, price_rub: 198 },
+  },
   tariff_groups: {
-    supplier_search: fallbackTariffs.filter((item) => item.kind === "supplier_search"),
-    exact_product: fallbackTariffs.filter((item) => item.kind === "exact_product"),
-    procurement_report: fallbackTariffs.filter((item) => item.kind === "procurement_report"),
-    supplier_search_extra: fallbackTariffs.filter((item) => item.kind === "supplier_search_extra"),
+    deposit: defaultDepositPackages,
+    supplier_search: [],
+    exact_product: [],
+    procurement_report: [],
+    supplier_search_extra: [],
   },
   updated_at: null,
 };

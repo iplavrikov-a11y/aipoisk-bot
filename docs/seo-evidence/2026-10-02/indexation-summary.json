@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-01",
+  "yandex_recrawl_accepted": 9,
+  "yandex_response_status": 202,
+  "indexnow_accepted_urls": 89,
+  "indexnow_response_status": 200,
+  "accepted_is_not_indexed": true,
+  "google_new_indexing_request_sent": false,
+  "google_inspection_previous_indexed_version_pass_count": 89,
+  "yandex_excluded_count": 3,
+  "yandex_priority_last_access": "2026-08-25",
+  "yandex_priority_reason": "LOW_QUALITY"
+}

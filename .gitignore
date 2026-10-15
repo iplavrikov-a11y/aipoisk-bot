@@ -23,4 +23,5 @@ scratch/
 backend/app.db
 *.tsbuildinfo
 skills-lock.json
+*.db
 

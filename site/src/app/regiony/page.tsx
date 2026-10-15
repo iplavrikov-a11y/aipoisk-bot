@@ -7,7 +7,7 @@ import { ContactSection } from "@/components/contact-section";
 import { buildBreadcrumbJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Поиск поставщиков по регионам России — база заводов",
+  title: "Поиск поставщиков по регионам России",
   description:
     "Региональный подбор поставщиков и производителей под технические задания: Москва, Санкт-Петербург, Урал, Сибирь, Поволжье, Юг и другие субъекты РФ.",
   alternates: {
@@ -94,7 +94,7 @@ export default function RegionyHubPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
-              TenderLex учитывает региональную специфику и локацию заводов, помогая находить ближайших производителей для снижения стоимости логистики.
+              TenderLex помогает искать потенциальных поставщиков по номенклатуре и выбранному региону. Адрес отгрузки, наличие и полную стоимость доставки подтвердите в коммерческом предложении.
             </p>
           </div>
         </section>

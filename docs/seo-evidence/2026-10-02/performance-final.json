@@ -1,0 +1,82 @@
+{
+  "kind": "synthetic_lab",
+  "conditions": {
+    "viewport": "390x844",
+    "cpuSlowdown": 4,
+    "downloadBytesPerSecond": 200000,
+    "latencyMs": 150
+  },
+  "limitations": "Three homepage runs and one per other page; analytics blocked; not field CWV or INP; no ranking/causal improvement claim",
+  "pages": [
+    {
+      "url": "https://tenderlex.ru/",
+      "status": 200,
+      "lcpMs": 1708,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 54.5,
+      "domContentLoadedMs": 974.6,
+      "scriptTransferBytes": 186392
+    },
+    {
+      "url": "https://tenderlex.ru/",
+      "status": 200,
+      "lcpMs": 1416,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 29.8,
+      "domContentLoadedMs": 936.2,
+      "scriptTransferBytes": 186392
+    },
+    {
+      "url": "https://tenderlex.ru/",
+      "status": 200,
+      "lcpMs": 1436,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 22.5,
+      "domContentLoadedMs": 950.7,
+      "scriptTransferBytes": 186392
+    },
+    {
+      "url": "https://tenderlex.ru/poisk-postavshchikov-po-tz",
+      "status": 200,
+      "lcpMs": 1272,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 21.5,
+      "domContentLoadedMs": 978.4,
+      "scriptTransferBytes": 186392
+    },
+    {
+      "url": "https://tenderlex.ru/podbor-tovara-i-analogov-po-tz",
+      "status": 200,
+      "lcpMs": 1268,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 19.1,
+      "domContentLoadedMs": 938.1,
+      "scriptTransferBytes": 166067
+    },
+    {
+      "url": "https://tenderlex.ru/analiz-zakupochnoi-dokumentacii",
+      "status": 200,
+      "lcpMs": 1248,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 38.7,
+      "domContentLoadedMs": 937.8,
+      "scriptTransferBytes": 186392
+    },
+    {
+      "url": "https://tenderlex.ru/baza-znaniy/generator-tz-po-gost-44-fz-standarty",
+      "status": 200,
+      "lcpMs": 1260,
+      "cls": 0,
+      "overflow": false,
+      "ttfbMs": 21,
+      "domContentLoadedMs": 926.9,
+      "scriptTransferBytes": 281897
+    }
+  ]
+}

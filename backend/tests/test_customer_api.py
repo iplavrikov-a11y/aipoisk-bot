@@ -832,9 +832,11 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
                 db=db,
             )
 
-            self.assertTrue(payload["batch"])
-            self.assertEqual(payload["count"], 2)
-            self.assertEqual(db.query(Job).filter(Job.client_id == "client-1").count(), 2)
+            self.assertFalse(payload["batch"])
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(db.query(Job).filter(Job.client_id == "client-1").count(), 1)
+            created_job = db.query(Job).filter(Job.client_id == "client-1").first()
+            self.assertEqual(len(created_job.files), 2)
         finally:
             db.close()
 
@@ -1689,6 +1691,51 @@ class CustomerApiTests(unittest.IsolatedAsyncioTestCase):
 
             db.refresh(job)
             self.assertEqual(raised.exception.status_code, 404)
+            self.assertTrue(payload["success"])
+            self.assertEqual(job.status, "cancelled")
+            self.assertEqual(job.progress, 100)
+            self.assertFalse(payload["job"]["can_cancel"])
+            release = (
+                db.query(BillingTransaction)
+                .filter(BillingTransaction.job_id == job.id)
+                .filter(BillingTransaction.operation == OP_RELEASE)
+                .one()
+            )
+            self.assertEqual(release.units, 1)
+        finally:
+            db.close()
+
+    def test_cancel_customer_job_in_awaiting_customer_confirmation(self) -> None:
+        db = self.Session()
+        try:
+            owner = Client(name="Awaiting Confirm Client", telegram_id="web:confirm-client")
+            db.add(owner)
+            db.flush()
+            owner_user = WebUser(client_id=owner.id, email="confirm@example.com", is_active=True)
+            db.add(owner_user)
+            job = Job(
+                id="job-awaiting-confirm-cancel",
+                client_id=owner.id,
+                mode=MODE_SUPPLIER_SEARCH,
+                status=STATUS_AWAITING_CUSTOMER_CONFIRMATION,
+                confirmation_kind="multi_item_strategy",
+                progress=25,
+                title="Многопозиционное ТЗ",
+            )
+            db.add(job)
+            db.add(
+                BillingTransaction(
+                    client_id=owner.id,
+                    job_id=job.id,
+                    kind=KIND_SUPPLIER_SEARCH,
+                    operation=OP_RESERVE,
+                    units=1,
+                )
+            )
+            db.commit()
+
+            payload = cancel_customer_job_api(job.id, context=WebAuthContext(user=owner_user, session=None), db=db)
+            db.refresh(job)
             self.assertTrue(payload["success"])
             self.assertEqual(job.status, "cancelled")
             self.assertEqual(job.progress, 100)

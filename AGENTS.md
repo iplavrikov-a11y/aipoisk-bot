@@ -15,6 +15,11 @@
   1. `Поиск поставщиков`
   2. `Подбор товара и аналогов`
   3. `Анализ документации`
+- **Cabinet Task Launcher & Help Guide Order**: In the authenticated web cabinet task launcher and help modal, the four task types and workflow steps are presented in the order:
+  1. `Анализ документации` (`procurement_report`)
+  2. `Поиск поставщиков` (`supplier_search`)
+  3. `Анализ + поиск` (`analysis_and_suppliers`)
+  4. `Подбор товара и аналогов` (`exact_product`)
 
 ## Strict Prohibition on Caching for Client Tasks
 

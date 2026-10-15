@@ -1,6 +1,7 @@
+import { getSiteData } from "@/lib/site-data";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ShieldAlert, CheckCircle2, FileText, Send, Building2, Sparkles } from "lucide-react";
+import { ShieldAlert, Send } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { ContactSection } from "@/components/contact-section";
@@ -13,9 +14,9 @@ import {
 } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Анализ закупочной документации и рисков контракта | TenderLex",
+  title: { absolute: "Анализ закупочной документации и проекта контракта | TenderLex" },
   description:
-    "ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин. Выявление скрытых штрафов, сжатых сроков и рисков. Проверьте бесплатно!",
+    "Анализ закупочной документации, ТЗ и проекта контракта: сроки, обеспечение, штрафы и вопросы для проверки до подачи заявки.",
   keywords: [
     "анализ закупочной документации",
     "проверка контракта 44-ФЗ 223-ФЗ",
@@ -34,7 +35,7 @@ export const metadata: Metadata = {
     url: "/analiz-zakupochnoi-dokumentacii",
     title: "Анализ закупочной документации и рисков контракта | TenderLex",
     description:
-      "ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин: выявление скрытых штрафов, сжатых сроков и кабальных условий.",
+      "Разберите ТЗ и проект контракта до подачи заявки: сроки, обеспечение, штрафы и вопросы для проверки.",
     siteName: "TenderLex",
     images: [
       {
@@ -49,7 +50,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Анализ закупочной документации и рисков контракта | TenderLex",
     description:
-      "ИИ-аудит проекта контракта и ТЗ в 44-ФЗ, 223-ФЗ и коммерческих торгах за 2 мин: выявление скрытых штрафов, сжатых сроков и кабальных условий.",
+      "Разберите ТЗ и проект контракта до подачи заявки: сроки, обеспечение, штрафы и вопросы для проверки.",
   },
 };
 
@@ -59,26 +60,27 @@ const faqItems: FaqItem[] = [
   {
     question: "Какие закупки и риски анализирует модуль документации?",
     answer:
-      "Сервис анализирует любые процедуры (44-ФЗ, 223-ФЗ, коммерческие торги): несоответствие сроков поставки и приемки, кабальные штрафные санкции (сверка с ПП № 1042), отсутствие аванса, завышенные требования к обеспечению и скрытые ограничения нацрежима.",
+      "Модуль помогает структурировать условия 44-ФЗ, 223-ФЗ и коммерческих закупок: сроки поставки и приемки, обеспечение, штрафы, порядок оплаты, национальный режим и требования к документам. Выводы требуют проверки по извещению, проекту контракта и применимому праву.",
   },
   {
     question: "Помогает ли сервис составить запрос на разъяснение положений извещения?",
     answer:
-      "Да. При обнаружении противоречий TenderLex готовит юридически выверенные формулировки запросов заказчику для публикации в ЕИС или отправки организатору торгов.",
+      "Да. При обнаружении неясного или противоречивого условия можно подготовить черновик вопроса для проверки перед отправкой. Срок, способ подачи и допустимость вопроса участник определяет по правилам конкретной процедуры.",
   },
   {
     question: "Как модуль помогает защититься от попадания в РНП?",
     answer:
-      "ИИ находит скрытые неисполнимые требования заказчика (например, поставка за 3 дня при нормативном сроке производства в 30 дней) еще до подачи заявки, защищая обеспечение и деловую репутацию поставщика.",
+      "Модуль помогает заметить условия, которые стоит отдельно проверить: сроки, обеспечение исполнения, порядок приемки, основания отказа и последствия неисполнения. Он не даёт юридической оценки и не исключает риск включения в РНП.",
   },
   {
     question: "Можно ли рассчитать риски НМЦК по методике сопоставимых цен?",
     answer:
-      "Да. В систему встроен калькулятор закупки по ст. 22 44-ФЗ для экспресс-оценки отклонения НМЦК от реальных рыночных цен поставщиков.",
+      "На странице сервиса не рассчитывается НМЦК как юридически значимый результат. Для обоснования цены используйте отдельный расчёт, запросы КП и документы, предусмотренные процедурой.",
   },
 ];
 
-export default function AnalizZakupochnoiDokumentaciiPage() {
+export default async function AnalizZakupochnoiDokumentaciiPage() {
+  const data = await getSiteData();
   const schemaBreadcrumb = buildBreadcrumbJsonLd([
     { name: "Главная", item: "https://tenderlex.ru" },
     { name: "Анализ закупочной документации", item: "https://tenderlex.ru" + pagePath },
@@ -117,7 +119,7 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
           <div className="container max-w-5xl mx-auto px-4 sm:px-6 text-center space-y-6">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-teal-200 text-teal-900 text-xs font-black uppercase tracking-wider shadow-2xs">
               <ShieldAlert size={14} className="text-teal-600" />
-              <span>Экспресс-аудит проекта контракта за 60 секунд</span>
+              <span>Экспресс-аудит проекта контракта</span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight max-w-4xl mx-auto leading-tight">
@@ -125,7 +127,7 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg max-w-2xl mx-auto font-medium leading-relaxed">
-              Выявите скрытые штрафы, невыполнимые сроки поставки и ловушки заказчика до подачи заявки на участие в торгах.
+              Загрузите извещение, ТЗ или проект контракта. TenderLex выделит условия, которые удобно проверить до подачи заявки: сроки, обеспечение, штрафы, оплату и требования к документам.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
@@ -136,7 +138,7 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
                 <span>Проверить документацию</span>
               </a>
               <a
-                href="https://t.me/tenderlex_bot"
+                href={data.bot.telegram_url}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-extrabold border-2 border-slate-300 shadow-2xs text-sm transition-all hover:border-teal-500"
@@ -153,26 +155,30 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
           <div className="container max-w-6xl mx-auto px-4 sm:px-6">
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
-                <h3 className="text-lg font-black text-slate-900">Защита от РНП</h3>
+                <h3 className="text-lg font-black text-slate-900">Условия, влияющие на исполнение</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Отказ от заведомо неисполнимых контрактов до блокировки средств обеспечения заявки.
+                  Сроки, объём, обеспечение, порядок приемки и основания отказа собраны в рабочую структуру для отдельной правовой и коммерческой проверки.
                 </p>
               </div>
 
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
-                <h3 className="text-lg font-black text-slate-900">Контроль штрафов</h3>
+                <h3 className="text-lg font-black text-slate-900">Штрафы и ответственность</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Проверка соответствия санкций Постановлению № 1042 и выявление незаконных удержаний.
+                  Условия неустоек и удержаний можно сопоставить с документами процедуры. Применимость нормы и расчёт проверяют по действующей редакции и договору.
                 </p>
               </div>
 
               <div className="p-8 rounded-3xl bg-slate-50 border-2 border-slate-200/80 space-y-4 shadow-2xs">
-                <h3 className="text-lg font-black text-slate-900">Запросы заказчику</h3>
+                <h3 className="text-lg font-black text-slate-900">Вопросы для уточнения</h3>
                 <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  Автоматическая подготовка текста запроса на разъяснение положений извещения.
+                  Результат помогает сформулировать вопросы по противоречиям и недостающим условиям перед отправкой через предусмотренный процедурой канал.
                 </p>
               </div>
             </div>
+
+            <p className="mt-8 text-sm text-slate-600">
+              <Link href="/ocenka-riskov-zakupki" className="font-semibold text-teal-700 underline">Как оценить риски закупки перед подачей заявки</Link>: сроки, обеспечение, штрафы и коммерческие условия.
+            </p>
 
             {/* Cross-linking Banner: Заточка в ТЗ? Подберите эквивалент */}
             <div className="mt-12 p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-teal-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-6">
@@ -181,10 +187,10 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
                   Смежный модуль
                 </span>
                 <h3 className="text-xl sm:text-2xl font-extrabold text-white">
-                  Аудит выявил заложенного монопольного производителя?
+                  В документации есть параметры товара, которые требуют отдельной проверки?
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Используйте модуль «Подбор товара и аналогов», чтобы распознать скрытую модель по параметрам, подобрать от 2 до 4 российских аналогов из реестра Минпромторга и выгрузить подробный отчет в Word (DOCX).
+                  Используйте модуль «Подбор товара и аналогов», чтобы сопоставить параметры с документами изготовителя и сформировать список вопросов к возможным вариантам. Решение о соответствии принимает участник закупки.
                 </p>
               </div>
               <Link
@@ -193,6 +199,26 @@ export default function AnalizZakupochnoiDokumentaciiPage() {
               >
                 Подобрать аналоги по ТЗ →
               </Link>
+            </div>
+          </div>
+        </section>
+
+        <section className="py-16 sm:py-20 border-b border-slate-200 bg-slate-50">
+          <div className="container max-w-5xl mx-auto px-4 sm:px-6">
+            <div className="max-w-3xl mb-8">
+              <span className="text-xs font-bold uppercase tracking-wider text-teal-700">Учебный пример</span>
+              <h2 className="mt-3 text-2xl sm:text-3xl font-black text-slate-900">Как использовать результат анализа документации</h2>
+              <p className="mt-3 text-sm sm:text-base text-slate-600 leading-relaxed">Пример показывает последовательность проверки, а не реальную закупку, заключение или юридическую консультацию.</p>
+            </div>
+            <ol className="grid md:grid-cols-3 gap-5 list-none">
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">1. Входные документы</span><p className="mt-3 text-sm text-slate-700">Извещение, ТЗ, проект контракта и приложения: сроки, обеспечение, порядок приемки и оплаты.</p></li>
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">2. Рабочий результат</span><p className="mt-3 text-sm text-slate-700">Список условий и вопросов: например, о сроке поставки, комплектации, документе о происхождении или приемке.</p></li>
+              <li className="rounded-2xl border border-slate-200 bg-white p-6"><span className="text-xs font-bold text-teal-700">3. Проверка клиентом</span><p className="mt-3 text-sm text-slate-700">Сверьте каждый пункт с первичным документом, правилами процедуры и возможностью исполнить обязательство.</p></li>
+            </ol>
+            <div className="mt-8 flex flex-wrap gap-x-5 gap-y-3 text-sm">
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/ai-audit-zakupochnoi-dokumentacii-na-riski">Как разбирать риски в документации</Link>
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/analiz-riskov-zakupki-44-fz-223-fz">Чек-лист рисков закупки</Link>
+              <Link className="text-teal-700 underline underline-offset-4" href="/baza-znaniy/reestr-nedobrosovestnyh-postavshchikov-rnp-proverka">Что проверить при риске РНП</Link>
             </div>
           </div>
         </section>

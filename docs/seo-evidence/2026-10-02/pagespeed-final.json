@@ -1,0 +1,5 @@
+{
+  "status": "unavailable",
+  "http_status": 429,
+  "reason": "PageSpeed API did not provide data; no field CWV conclusion"
+}

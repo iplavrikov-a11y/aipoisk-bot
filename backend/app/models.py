@@ -87,6 +87,13 @@ class SystemSettings(Base):
     yookassa_shop_id: Mapped[str] = mapped_column(String(255), default="")
     yookassa_secret_key: Mapped[str] = mapped_column(Text, default="")
     yookassa_return_url: Mapped[str] = mapped_column(String(255), default="")
+    price_monitoring_default_price_kopeks: Mapped[int] = mapped_column(Integer, default=5000)
+    price_monitoring_max_suppliers: Mapped[int] = mapped_column(Integer, default=3)
+    price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
+    price_monitoring_concurrency: Mapped[int] = mapped_column(Integer, default=4)
+    price_monitoring_cluster_ratio: Mapped[float] = mapped_column(Float, default=1.4)
+    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=False)
+    geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -101,6 +108,7 @@ class SystemSettings(Base):
             "default_supplier_target": self.default_supplier_target,
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
+            "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
@@ -143,6 +151,12 @@ class SystemSettings(Base):
             "yookassa_shop_id": self.yookassa_shop_id,
             "yookassa_secret_key_set": bool(self.yookassa_secret_key),
             "yookassa_return_url": self.yookassa_return_url,
+            "price_monitoring_default_price_kopeks": self.price_monitoring_default_price_kopeks,
+            "price_monitoring_max_suppliers": self.price_monitoring_max_suppliers,
+            "price_monitoring_max_positions": self.price_monitoring_max_positions,
+            "price_monitoring_concurrency": self.price_monitoring_concurrency,
+            "price_monitoring_cluster_ratio": self.price_monitoring_cluster_ratio,
+            "price_monitoring_filter_marketplaces": self.price_monitoring_filter_marketplaces,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -174,6 +188,8 @@ class Client(Base):
     allowed_supplier_search: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_procurement_report: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_exact_product: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_price_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_geo_radius: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_job_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_supplier_search_limit: Mapped[int] = mapped_column(Integer, default=0)
     monthly_procurement_report_limit: Mapped[int] = mapped_column(Integer, default=0)
@@ -204,6 +220,7 @@ class Client(Base):
         cascade="all, delete-orphan",
     )
     billing_transactions: Mapped[list["BillingTransaction"]] = relationship(back_populates="client")
+    api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="client")
 
 
 class ClientTelegramAccount(Base):
@@ -392,6 +409,9 @@ class Job(Base):
     mode: Mapped[str] = mapped_column(String(40), default="supplier_search")
     supplier_search_policy: Mapped[str] = mapped_column(String(40), default="normal")
     supplier_search_run_type: Mapped[str] = mapped_column(String(40), default="initial")
+    multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
+    delivery_city: Mapped[str] = mapped_column(String(255), default="")
+    geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
@@ -446,6 +466,8 @@ class TariffPackage(Base):
     units: Mapped[int] = mapped_column(Integer, default=1)
     price_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
+    bonus_kopeks: Mapped[int] = mapped_column(Integer, default=0)
+    badge: Mapped[str] = mapped_column(String(40), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -558,6 +580,8 @@ class SupplierResult(Base):
     contact_evidence_snippet: Mapped[str] = mapped_column(Text, default="")
     ai_rank_confidence: Mapped[int] = mapped_column(Integer, default=0)
     ai_rank_reason: Mapped[str] = mapped_column(Text, default="")
+    supplier_city: Mapped[str] = mapped_column(String(255), default="")
+    supplier_distance_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     job: Mapped[Job] = relationship(back_populates="suppliers")
@@ -594,7 +618,7 @@ class ApiKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    client: Mapped[Client | None] = relationship(foreign_keys=[client_id])
+    client: Mapped[Client | None] = relationship(back_populates="api_keys", foreign_keys=[client_id])
 
 
 class PartnerPayoutRequest(Base):

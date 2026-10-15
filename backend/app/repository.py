@@ -6,7 +6,15 @@ import re
 from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
-from .billing import OP_GRANT, access_error_for_units, client_uses_trial_access, grant_trial_balance, resolve_requested_billing_kinds
+from .billing import (
+    KIND_PRICE_MONITORING,
+    OP_GRANT,
+    access_error_for_units,
+    client_uses_trial_access,
+    effective_price_kopeks,
+    grant_trial_balance,
+    resolve_requested_billing_kinds,
+)
 from .config import config
 from .models import DEFAULT_PAYMENT_INSTRUCTIONS, BillingTransaction, Client, ClientTelegramAccount, Job, SystemSettings, new_id, now_utc
 
@@ -14,6 +22,7 @@ MODE_SUPPLIER_SEARCH = "supplier_search"
 MODE_PROCUREMENT_REPORT = "procurement_report"
 MODE_ANALYSIS_AND_SUPPLIERS = "analysis_and_suppliers"
 MODE_EXACT_PRODUCT = "exact_product"
+MODE_PRICE_MONITORING = "price_monitoring"
 DEFAULT_SUPPLIER_TARGET = 50
 MAX_SUPPLIER_TARGET = 100
 INTERNAL_JOB_PATTERN = re.compile(
@@ -473,8 +482,15 @@ def client_access_error(
         return "Доступ не подключён. Отправьте администратору ваш Telegram ID через команду /id."
     if not client.is_active:
         return "Доступ отключён. Свяжитесь с администратором."
-    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT}:
+    if mode not in {MODE_SUPPLIER_SEARCH, MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS, MODE_EXACT_PRODUCT, MODE_PRICE_MONITORING}:
         return "Неизвестный режим обработки."
+    if mode == MODE_PRICE_MONITORING:
+        if not getattr(client, "allowed_price_monitoring", False):
+            return "Модуль мониторинга цен не подключён для вашего аккаунта. Обратитесь к администратору."
+        price = effective_price_kopeks(db, client, KIND_PRICE_MONITORING)
+        if int(client.money_balance_kopeks or 0) < price:
+            return f"Недостаточно средств на балансе. Для запуска мониторинга требуется минимум {round(price / 100, 2)} ₽."
+        return ""
     supplier_units, report_units = requested_function_units(mode, supplier_search_count=supplier_search_count)
     uses_trial_access = client_uses_trial_access(db, client)
     if uses_trial_access and mode == MODE_SUPPLIER_SEARCH and supplier_units > 1:

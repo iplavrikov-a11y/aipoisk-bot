@@ -1,0 +1,18 @@
+{
+  "frozen_at": "2026-10-01T14:34:18.697780+00:00",
+  "report_date": "2026-10-01",
+  "compare_on": "2026-10-08",
+  "baseline_release": "published Oct1, before subsequent reassessment/outreach",
+  "git_head": "d26bb79ac030ad081a8015b20500bf9a168443a7",
+  "sha256": {
+    "verification-initial.json": "e5d11cafedd10df1f20785857e26a426ff901a744b40afcebb72d1bdd0dc71bd",
+    "report-initial.md": "3d118be6df37b222e149e52a10c717a5eb5b512085e5fd67a7415df059c6f087",
+    "metrics-initial.json": "b796d81db55a23ff10e529384c130fb4dbca92814bce99ca500568281710e2e4"
+  },
+  "comparison_rules": [
+    "same metric and source coverage",
+    "compare adjacent closed equal-duration windows with matching timezone",
+    "one week after publication cannot establish 28-day conversion uplift",
+    "record publication live status and new Yandex last_access separately"
+  ]
+}

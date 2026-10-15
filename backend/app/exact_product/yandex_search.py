@@ -16,15 +16,8 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# Excluded domains (marketplaces and irrelevant component pinout catalogs)
-EXCLUDED_DOMAINS = [
-    "ozon.ru",
-    "wildberries.ru",
-    "avito.ru",
-    "aliexpress.ru",
-    "aliexpress.com",
-    "market.yandex.ru",
-    "sbermegamarket.ru",
+# Non-commercial domains (social, video, encyclopedias, search engines, datasheets)
+NON_COMMERCIAL_DOMAINS = [
     "yandex.ru",
     "google.com",
     "wikipedia.org",
@@ -46,6 +39,17 @@ EXCLUDED_DOMAINS = [
     "pikabu.ru",
     "drive2.ru",
     "avto.ru",
+]
+
+# Marketplaces and retail chains excluded in exact_product analog search, but allowed in general price monitoring
+MARKETPLACE_DOMAINS = [
+    "ozon.ru",
+    "wildberries.ru",
+    "avito.ru",
+    "aliexpress.ru",
+    "aliexpress.com",
+    "market.yandex.ru",
+    "sbermegamarket.ru",
     "vseinstrumenti.ru",
     "dns-shop.ru",
     "citilink.ru",
@@ -53,6 +57,9 @@ EXCLUDED_DOMAINS = [
     "lemanapro.ru",
     "megamarket.ru",
 ]
+
+EXCLUDED_DOMAINS = NON_COMMERCIAL_DOMAINS + MARKETPLACE_DOMAINS
+
 
 
 @dataclass
@@ -71,13 +78,15 @@ class YandexSearchEngine:
 
     # API endpoints
     V1_API_URL = "https://yandex.ru/search/xml"
-    V2_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
+    V2_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/search"
+    V2_ASYNC_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
     V2_OPERATION_URL = "https://operation.api.cloud.yandex.net/operations"
 
     def __init__(self, folder_id: str, api_key: str):
         self.folder_id = folder_id
         self.api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
+        self.total_requests: int = 0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -99,12 +108,17 @@ class YandexSearchEngine:
             return f"{query} производитель"
 
     async def search(
-        self, query: str, max_results: int = 10, enrich_query: bool = True, max_pages: int = 1
+        self,
+        query: str,
+        max_results: int = 10,
+        enrich_query: bool = True,
+        max_pages: int = 1,
+        filter_marketplaces: bool = True,
     ) -> list[YandexSearchResult]:
         """
         Search using Yandex API. Tries v2 first, falls back to v1.
         """
-        logger.info("yandex_search_start", query=query[:80], max_pages=max_pages)
+        logger.info("yandex_search_start", query=query[:80], max_pages=max_pages, filter_marketplaces=filter_marketplaces)
 
         if not self.folder_id or not self.api_key:
             logger.warning("yandex_api_not_configured")
@@ -118,8 +132,9 @@ class YandexSearchEngine:
             logger.info("yandex_fallback_v1")
             results = await self._search_v1(query, max_results, enrich_query)
 
-        # Filter excluded domains
-        filtered = [r for r in results if r.domain not in EXCLUDED_DOMAINS]
+        # Filter excluded domains (filter marketplaces only if requested)
+        excluded = EXCLUDED_DOMAINS if filter_marketplaces else NON_COMMERCIAL_DOMAINS
+        filtered = [r for r in results if r.domain not in excluded]
         logger.info(
             "yandex_search_complete", query=query[:80], results_count=len(filtered)
         )
@@ -129,7 +144,7 @@ class YandexSearchEngine:
     async def _search_v2(
         self, query: str, max_results: int, enrich_query: bool, max_pages: int = 1
     ) -> list[YandexSearchResult]:
-        """Search using v2 async API with pagination."""
+        """Search using v2 API with pagination, preferring fast synchronous endpoint."""
         try:
             search_query = self._build_query(query) if enrich_query else query
             client = await self._get_client()
@@ -150,6 +165,7 @@ class YandexSearchEngine:
                 groups_on_page = 70
 
             for page in range(max_pages):
+                self.total_requests += 1
                 body = {
                     "query": {"searchType": "SEARCH_TYPE_RU", "queryText": search_query, "page": str(page)},
                     "folderId": self.folder_id,
@@ -157,19 +173,32 @@ class YandexSearchEngine:
                     "groupSpec": {"groupsOnPage": groups_on_page, "docsInGroup": 1},
                 }
 
-                response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                page_results: list[YandexSearchResult] = []
+                # Fast path: Synchronous endpoint (<1s)
+                try:
+                    response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                    if response.status_code == 429:
+                        await asyncio.sleep(2.0)
+                        response = await client.post(self.V2_API_URL, json=body, headers=headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        raw_data = data.get("rawData") or (data.get("response") or {}).get("rawData") or ""
+                        if raw_data:
+                            page_results = self._parse_v2_xml(raw_data)
+                except Exception as sync_exc:
+                    logger.debug("exact_product yandex sync search exception: %s", sync_exc)
 
-                if response.status_code != 200:
-                    logger.warning("yandex_v2_error", status_code=response.status_code, page=page)
-                    break
+                # Slow path fallback: Async operation polling
+                if not page_results:
+                    try:
+                        async_resp = await client.post(self.V2_ASYNC_API_URL, json=body, headers=headers)
+                        if async_resp.status_code == 200:
+                            op_id = async_resp.json().get("id")
+                            if op_id:
+                                page_results = await self._wait_for_v2_operation(op_id, headers)
+                    except Exception as async_exc:
+                        logger.warning("exact_product yandex async fallback error: %s", async_exc)
 
-                data = response.json()
-                operation_id = data.get("id")
-
-                if not operation_id:
-                    break
-
-                page_results = await self._wait_for_v2_operation(operation_id, headers)
                 if not page_results:
                     break
 
@@ -194,7 +223,11 @@ class YandexSearchEngine:
         client = await self._get_client()
 
         # Start at 0.7s to avoid burning rate limits on operations that take ~1-2s anyway
-        poll_delays = [0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.5]
+        poll_delays = [
+            0.7, 0.9, 1.2, 1.5, 1.5, 1.8, 2.0, 2.0, 2.0, 2.0,
+            2.0, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 2.5, 2.5, 3.0,
+            3.0, 3.0, 3.0, 3.0
+        ]
         consecutive_429 = 0
         for attempt in range(len(poll_delays)):
             delay = poll_delays[attempt] + random.uniform(0.1, 0.35)
@@ -225,7 +258,7 @@ class YandexSearchEngine:
                     if "error" in data:
                         return []
 
-                    raw_data = data.get("response", {}).get("rawData", "")
+                    raw_data = (data.get("response") or {}).get("rawData", "")
                     if raw_data:
                         return self._parse_v2_xml(raw_data)
                     return []
@@ -266,6 +299,7 @@ class YandexSearchEngine:
             }
 
             client = await self._get_client()
+            self.total_requests += 1
             response = await client.get(self.V1_API_URL, params=params)
 
             if response.status_code != 200:
@@ -309,8 +343,8 @@ class YandexSearchEngine:
 
                     url = url_elem.text.strip()
                     title = (
-                        title_elem.text.strip()
-                        if title_elem is not None and title_elem.text
+                        "".join(title_elem.itertext()).strip()
+                        if title_elem is not None
                         else ""
                     )
 
@@ -319,12 +353,21 @@ class YandexSearchEngine:
                     except Exception:
                         continue
 
-                    snippet = ""
+                    snippet_parts: list[str] = []
+                    headline = doc.find("headline")
+                    if headline is not None:
+                        hl = "".join(headline.itertext()).strip()
+                        if hl:
+                            snippet_parts.append(hl)
+
                     passages = doc.find("passages")
                     if passages is not None:
-                        passage = passages.find("passage")
-                        if passage is not None and passage.text:
-                            snippet = passage.text.strip()
+                        for p in passages.findall("passage"):
+                            pt = "".join(p.itertext()).strip()
+                            if pt:
+                                snippet_parts.append(pt)
+
+                    snippet = " ".join(snippet_parts)
 
                     position += 1
                     results.append(

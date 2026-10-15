@@ -572,6 +572,142 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertNotIn("Запрос КП", wb.sheetnames)
             wb.close()
 
+    def test_supplier_xlsx_multi_item_canonical_sheets(self) -> None:
+        profile = {
+            "items": [
+                {"id": "item-1", "name": "Резинотехнические изделия (ремни и ленты)", "aliases": ["РТИ", "ленты"]},
+                {"id": "item-2", "name": "Клей и отвердитель для стыковки", "aliases": ["клей", "стыковка"]},
+            ]
+        }
+        rows = [
+            {"company_name": "ООО Лента", "product_fit": "exact", "procurement_item_id": "item-1", "procurement_item": "РТИ и ленты"},
+            {"company_name": "ООО КлейПром", "product_fit": "exact", "procurement_item_id": "item-2", "procurement_item": "Клей и отвердитель"},
+            {"company_name": "ООО Комплект", "product_fit": "exact", "procurement_item_id": "item-1, item-2", "procurement_item": "РТИ и клей"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_multi.xlsx"
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="РТИ и клей",
+                target=3,
+                profile=profile,
+            )
+
+            wb = load_workbook(path)
+            # Unified single sheet with collapsible row outline structure
+            self.assertEqual(len(wb.sheetnames), 1)
+            self.assertEqual(wb.sheetnames[0], "Сводный реестр")
+            ws = wb["Сводный реестр"]
+            self.assertFalse(ws.sheet_properties.outlinePr.summaryBelow)
+            self.assertTrue(ws.sheet_properties.outlinePr.showOutlineSymbols)
+            self.assertIn("Позиция 1: Резинотехнические изделия", str(ws.cell(row=6, column=1).value))
+            self.assertIn("▼", str(ws.cell(row=6, column=1).value))
+            self.assertIn("нажмите [-] слева для сворачивания", str(ws.cell(row=6, column=1).value))
+            self.assertEqual(ws.row_dimensions[7].outlineLevel, 1)
+            self.assertFalse(ws.row_dimensions[7].hidden)
+            self.assertIn("💡 Как управлять", str(ws.cell(row=3, column=1).value))
+            wb.close()
+
+    def test_supplier_xlsx_multi_item_adaptive_collapse_for_many_items(self) -> None:
+        profile = {
+            "items": [
+                {"id": f"item-{i}", "name": f"Позиция {i}", "aliases": []}
+                for i in range(1, 6)
+            ]
+        }
+        rows = [
+            {"company_name": f"ООО Поставщик {i}", "product_fit": "exact", "procurement_item_id": f"item-{i}", "procurement_item": f"Позиция {i}"}
+            for i in range(1, 5)
+        ]
+        # item-5 has 0 suppliers
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_large.xlsx"
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="Многопозиционная закупка",
+                target=5,
+                profile=profile,
+            )
+
+            wb = load_workbook(path)
+            ws = wb["Сводный реестр"]
+            # With > 4 items, initial state must be collapsed (hidden=True)
+            self.assertIn("💡 Как смотреть", str(ws.cell(row=3, column=1).value))
+            # Header of position 1 must show ▶ and [+] action tip
+            self.assertIn("▶ Позиция 1: Позиция 1 (найдено поставщиков: 1 · нажмите [+] слева для раскрытия)", str(ws.cell(row=6, column=1).value))
+            # Data row 7 must be grouped and hidden
+            self.assertEqual(ws.row_dimensions[7].outlineLevel, 1)
+            self.assertTrue(ws.row_dimensions[7].hidden)
+            # Find item-5 header and notice row
+            # Rows:
+            # 6: Header item-1, 7: Data item-1
+            # 8: Header item-2, 9: Data item-2
+            # 10: Header item-3, 11: Data item-3
+            # 12: Header item-4, 13: Data item-4
+            # 14: Header item-5, 15: Notice row item-5
+            self.assertIn("▷ Позиция 5: Позиция 5 (поставщиков не найдено)", str(ws.cell(row=14, column=1).value))
+            self.assertEqual(ws.row_dimensions[15].outlineLevel, 1)
+            self.assertTrue(ws.row_dimensions[15].hidden)
+            wb.close()
+
+    def test_supplier_xlsx_massive_items_performance_and_cell_overflow_protection(self) -> None:
+        import time
+        profile = {
+            "items": [
+                {"id": f"item-{i}", "name": f"Товарная позиция номер {i} в длинной спецификации", "aliases": []}
+                for i in range(1, 101)
+            ]
+        }
+        rows = [
+            {"company_name": f"ООО Поставщик {i}", "product_fit": "exact", "procurement_item_id": f"item-{i % 100 + 1}", "procurement_item": f"Товарная позиция номер {i % 100 + 1}"}
+            for i in range(1, 301)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suppliers_massive.xlsx"
+            start = time.monotonic()
+            write_supplier_xlsx(
+                path,
+                rows,
+                title="Крупная спецификация 100 позиций",
+                target=300,
+                profile=profile,
+            )
+            elapsed = time.monotonic() - start
+            # Must generate in under 3.5 seconds (linear time)
+            self.assertLess(elapsed, 3.5, f"Massive Excel generation took {elapsed:.2f}s")
+
+            wb = load_workbook(path)
+            ws = wb["Сводный реестр"]
+            summary_val = str(ws.cell(row=3, column=1).value)
+            # Cell A3 text must stay safely under 32,767 characters
+            self.assertLess(len(summary_val), 3000)
+            # Must contain the truncation indicator for items beyond 20
+            self.assertIn("...и ещё 80 позиций", summary_val)
+            wb.close()
+
+    def test_write_quote_request_docx_multiline_table_integrity(self) -> None:
+        from docx import Document
+        from app.report_builder import write_quote_request_docx
+
+        md = (
+            "| № | Наименование | Характеристики | Ед.изм. | Кол-во |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1 | Товар 1 | линия 1\nлиния 2 | шт | 10 |\n"
+            "| 2 | Товар 2 | • параметр 1<br>• параметр 2 | к-т | 5 |\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "quote_request.docx"
+            write_quote_request_docx(doc_path, md, title="Запрос КП")
+            doc = Document(str(doc_path))
+            self.assertEqual(len(doc.tables), 1)
+            table = doc.tables[0]
+            self.assertEqual(len(table.rows), 3)
+            self.assertEqual(table.rows[0].cells[1].text.strip(), "Наименование")
+            self.assertEqual(table.rows[1].cells[1].text.strip(), "Товар 1")
+            self.assertEqual(table.rows[2].cells[1].text.strip(), "Товар 2")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,2 @@
+# Procurement CSV templates intentionally use CRLF for spreadsheet compatibility.
+site/public/materialy/*.csv whitespace=cr-at-eol
