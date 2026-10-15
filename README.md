@@ -14,6 +14,18 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Multi-Source Price Monitoring, City-Aware Pricing & Geo-Ranking Calibration (2026-10-15):
+  - Fixed ZIP Container Error on Text Input (`jobs.py`, `pipeline.py`, `cleaner.py`): eliminated `File is not a zip file` error when users enter nomenclature via raw text or lists (Job #903 «Печь для бани Атмосфера М»). Heuristic text parser `parse_items_from_text` intelligently parses numbered lists, delimiters (`\t`, `|`, `;`), model suffixes, and trailing units, generating a valid in-memory Excel workbook for pipeline ingestion.
+  - Multi-File Support for Price Monitoring (`cabinet-client.tsx`, `cleaner.py`): unlocked multi-file upload (`multipleFiles: true`) in cabinet form. Clients can upload 1, 2, or 3 specification files simultaneously (XLSX, XLS, DOCX, PDF, CSV, TXT) combined with optional text items.
+  - City & Regional Delivery Targeting for Price Monitoring (`cabinet-client.tsx`, `cleaner.py`, `pipeline.py`, `excel_report.py`, `jobs.py`):
+    * Enabled «📍 Поиск в радиусе доставки» checkbox for price monitoring in authenticated cabinet.
+    * Integrated `delivery_city` and `geo_radius_km` into price search pipeline (`build_commercial_search_queries`, `generate_monitoring_queries_ai`), prioritizing local suppliers and warehouses (e.g. `«Печь для бани Атмосфера М Вологда купить цена в наличии»`).
+    * Annotated output Excel report cell A1 with delivery location and search radius note.
+  - Regional Capital Mapping & Geo-Ranking Calibration for Job #902 (`supplier_locations.py`, `supplier_search.py`, `report_builder.py`):
+    * Added `RUSSIAN_REGION_CAPITALS` dictionary for automatic geocoding when suppliers provide region names without explicit cities (e.g., «Вологодская область» -> «Вологда»).
+    * Enforced strict ascending distance priority for suppliers inside specified radius (`within_radius=True`) before national fallback.
+    * Excel reports clearly summarize suppliers found inside radius vs national fallback count.
+  - Test Suite & Deployment: created `backend/tests/test_price_monitoring_multisource.py` with 5 comprehensive tests across 12 diverse industrial commodities; 861 backend tests passing (100%), site typecheck and Next.js build passing, live production deployment verified on `202.71.13.57`.
 - Geo-Radius Supplier Search & Logistics Regional Optimization (2026-10-15):
   - Geo Distance Engine & Nationwide City Database (`supplier_locations.py`, `city_coordinates.json`): Haversine distance algorithm with 1.15 road curvature factor covering 1,208 Russian cities and industrial centers (all 1,117+ official cities of Russia from Moscow to Kamensk-Shakhtinsky, Shakhty, Novoshakhtinsk, Zverevo, Gukovo, Belaya Kalitva, Millerovo, Krasny Sulin, Sysert, etc.).
   - 28x Algorithmic Speedup: token n-grams O(1) set lookup in `extract_city_from_text` replaces sequential regex checks, reducing candidate processing time from 420 ms to 0.23 ms.
