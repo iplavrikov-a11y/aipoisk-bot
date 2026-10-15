@@ -1840,18 +1840,11 @@ export function OutreachView() {
     }
   }
 
-  // Toggle Spam on Inbox message
-  const handleToggleSpam = async (msg: IncomingMessage) => {
+  // Restore message from spam
+  const handleRestoreFromSpam = async (msg: IncomingMessage) => {
     try {
-      const res = await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/spam`, { method: 'POST' })
-      if (res.is_spam) {
-        const extra = res.auto_blocked_rule
-          ? ` Домен @${res.auto_blocked_rule.value} добавлен в чёрный список (${res.affected_count} писем перенесено в спам).`
-          : ''
-        showSuccess(`Письмо перемещено в Спам.${extra}`)
-      } else {
-        showSuccess('Письмо возвращено из Спама')
-      }
+      await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/spam`, { method: 'POST' })
+      showSuccess('Письмо восстановлено из спама')
       fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       fetchSettings()
       if (selectedTask) {
@@ -1897,13 +1890,12 @@ export function OutreachView() {
     }
   }
 
-  // Block Sender / Spammer Permanently
+  // Block Sender / Spammer Permanently & Immediately
   const handleBlockSender = async (msg: IncomingMessage) => {
-    const sender = msg.sender_email || msg.sender_name || 'этого отправителя'
-    if (!confirm(`Заблокировать все письма от ${sender} и навсегда внести в чёрный список?`)) return
+    const sender = (msg.sender_email || msg.sender_name || 'этого отправителя').trim()
     try {
       const res = await outreachFetch<any>(`/api/outreach/inbox/${msg.id}/block-sender`, { method: 'POST' })
-      showSuccess(`Спамщик заблокирован! Удалено писем: ${res.deleted_count || 1}. Правило добавлено в чёрный список.`)
+      showSuccess(`Спамщик заблокирован! Адрес «${sender}» добавлен в чёрный список, письма удалены (${res.deleted_count || 1}).`)
       setSelectedMsg(null)
       fetchInbox(inboxTaskFilter || null, inboxFilterRef.current, inboxSearchRef.current, inboxLimitRef.current)
       fetchSettings()
@@ -4573,16 +4565,29 @@ export function OutreachView() {
                       <span>История</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => handleToggleSpam(selectedMsg)}
-                      className="outreach-btn outreach-btn-ghost"
-                      style={{ padding: '4px 8px', fontSize: 11, color: selectedMsg.is_spam ? '#2563eb' : '#64748b' }}
-                      title="Спам"
-                    >
-                      <ShieldAlert size={13} />
-                      <span>{selectedMsg.is_spam ? 'Не спам' : 'В спам'}</span>
-                    </button>
+                    {selectedMsg.is_spam ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreFromSpam(selectedMsg)}
+                        className="outreach-btn outreach-btn-ghost"
+                        style={{ padding: '4px 8px', fontSize: 11, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderColor: '#bfdbfe' }}
+                        title="Восстановить письмо из спама"
+                      >
+                        <CheckCircle2 size={13} style={{ color: '#2563eb' }} />
+                        <span>Восстановить (не спам)</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleBlockSender(selectedMsg)}
+                        className="outreach-btn outreach-btn-ghost"
+                        style={{ padding: '4px 8px', fontSize: 11, color: '#ef4444', fontWeight: 600, background: '#fef2f2', borderColor: '#fecaca' }}
+                        title="Заблокировать спамщика, добавить в чёрный список и удалить письмо"
+                      >
+                        <ShieldAlert size={13} style={{ color: '#ef4444' }} />
+                        <span>Заблокировать спам</span>
+                      </button>
+                    )}
 
                     {Boolean(
                       selectedMsg.is_unsubscribed ||
@@ -4647,33 +4652,6 @@ export function OutreachView() {
 
               {/* Body Text */}
               <div className="outreach-inbox-detail-body">
-                {selectedMsg.is_spam && (
-                  <div style={{ margin: '0 0 14px 0', padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12, color: '#991b1b', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <ShieldAlert size={18} style={{ color: '#ef4444', flexShrink: 0 }} />
-                      <span><strong>Спам-фильтр:</strong> Письмо изолировано от живых ответов и входящих.</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleSpam(selectedMsg)}
-                        className="outreach-btn"
-                        style={{ padding: '2px 8px', fontSize: 11, background: '#fff', border: '1px solid #fca5a5', color: '#b91c1c' }}
-                      >
-                        Восстановить (не спам)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleBlockSender(selectedMsg)}
-                        className="outreach-btn"
-                        style={{ padding: '2px 8px', fontSize: 11, background: '#b91c1c', border: '1px solid #991b1b', color: '#fff', fontWeight: 600 }}
-                        title="Навсегда заблокировать отправителя и его домен, удалить все письма"
-                      >
-                        🚫 Заблокировать спамщика
-                      </button>
-                    </div>
-                  </div>
-                )}
                 <EmailBodyFrame
                   key={selectedMsg.id}
                   html={selectedMsg.body_html}

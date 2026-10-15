@@ -232,10 +232,12 @@ ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
+from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
+app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}

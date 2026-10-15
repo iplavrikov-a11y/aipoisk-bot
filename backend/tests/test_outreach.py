@@ -213,11 +213,64 @@ def test_is_spam_message_detection():
     assert is_sp is False
     assert reason == ""
 
-    # 7. Custom rule matching
-    custom_rules = [{"type": "domain", "value": "customspammer.xyz"}]
+    # 7. Custom rule matching (strict sender matching, not substring of name)
+    custom_rules = [{"type": "domain", "value": "customspammer.xyz"}, {"type": "sender", "value": "spam@spammer.com"}]
     is_sp, reason = is_spam_message("Тест", "Обычный текст", "Менеджер", "info@customspammer.xyz", custom_rules=custom_rules)
     assert is_sp is True
     assert "customspammer.xyz" in reason
+
+    # Rule with sender must not match innocent person whose name contains substring
+    is_sp, reason = is_spam_message("Здравствуйте", "Текст", "Spammer User", "innocent@good.com", custom_rules=custom_rules)
+    assert is_sp is False
+
+    # 8. English cold outreach detection (all inbound English emails are spam for TenderLex)
+    from app.outreach_mail import is_english_spam_message
+    is_en = is_english_spam_message("question about TenderLex daily execution", "Hi Alexey, Reaching out because I've been following TenderLex.")
+    assert is_en is True
+
+    is_sp, reason = is_spam_message(
+        "question about TenderLex daily execution",
+        "Hi Alexey, Reaching out because I've been following TenderLex on Product Hunt.",
+        "Lily",
+        "lapison@dinipay.com",
+    )
+    assert is_sp is True
+    assert "английском языке" in reason
+
+    is_sp, reason = is_spam_message(
+        "Supplier search by spec for TenderLex",
+        "Hi there, Saw TenderLex on Product Hunt after the launch.",
+        "Sophia from Auspia",
+        "sophia@auspiatii.com",
+    )
+    assert is_sp is True
+    assert "английском языке" in reason
+
+    # 9. TekTorg and Russian procurement whitelist (must NEVER be flagged as spam)
+    is_sp, reason = is_spam_message(
+        "Запрос предложения",
+        "Добрый день. Подскажите, есть ли у вас продукты позволяющие решить следующую задачу:\n"
+        "на входе: список товарных позиций (ТМЦ) включающий в себя название, маркировку и ед. измерения\n"
+        "необходимо: найти поставщиков этой номенклатуры с целью получения от них ценового предложения за единицу.\n"
+        "цель: актуализировать рыночные цены на товарные позиции по списку.\n"
+        "-- \nС уважением, Васильев Андрей, АО «ТЭК-Торг»",
+        "Васильев Андрей Анатольевич",
+        "a.vasilyev@tektorg.ru",
+        has_lead_match=False,
+    )
+    assert is_sp is False
+    assert reason == ""
+
+    # Re: Запрос предложения
+    is_sp, reason = is_spam_message(
+        "Re: Запрос предложения",
+        "В продолжении высылаю актуальный номер телефона: 8 987 674 17 53",
+        "Васильев Андрей Анатольевич",
+        "a.vasilyev@tektorg.ru",
+        has_lead_match=False,
+    )
+    assert is_sp is False
+    assert reason == ""
 
 
 def test_task_cost_normalization():
