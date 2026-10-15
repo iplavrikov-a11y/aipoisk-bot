@@ -1749,7 +1749,7 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     job.yandex_requests_count = batch_res.yandex_requests_count
     job.yandex_cost_rub = batch_res.yandex_cost_rub
 
-    msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций. Списано: {round(charged_kopeks / 100, 2)} ₽"
+    msg = f"Готово: найдено цен для {batch_res.found_positions} из {batch_res.total_positions} позиций"
     _set_job(db, job, status="completed", progress=100, message=msg)
     job.completed_at = now_utc()
     db.commit()
