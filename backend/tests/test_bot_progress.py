@@ -6,8 +6,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import ReplyKeyboardRemove
 
 import app.bot as bot_module
 from app.bot import (
@@ -23,6 +25,7 @@ from app.bot import (
     BUTTON_CONTACTS,
     BUTTON_CREATE,
     BUTTON_HELP,
+    BUTTON_LEGAL,
     BUTTON_PROCESSING_STATUS,
     BUTTON_REPORT,
     BUTTON_RUN_BATCH,
@@ -34,11 +37,15 @@ from app.bot import (
     OWNER_ALERT_STATUSES,
     PendingBatch,
     _add_pending_sources,
+    _cabinet_text,
     _contacts_text,
     _edit_or_send_status,
     _find_more_suppliers_confirmation_text,
     _find_more_suppliers_offer_keyboard,
     _find_more_suppliers_offer_text,
+    _download_document_content,
+    _legal_keyboard,
+    _legal_text,
     _format_job_progress,
     _job_eta_text,
     _job_mode_for_scenario,
@@ -47,6 +54,7 @@ from app.bot import (
     _looks_like_supplier_text_tz,
     _mode_label,
     _owner_problem_alert_text,
+    _partial_confirmation_keyboard,
     _partial_confirmation_text,
     _pending_input_count,
     _progress_bar,
@@ -68,15 +76,18 @@ from app.bot import (
     _supplier_multi_job_specs,
     _supplier_text_tz_payload,
     _tariffs_text,
+    batch_inline_keyboard,
     batch_menu,
     configure_bot_profile,
+    create_inline_keyboard,
     create_menu,
+    main_inline_keyboard,
     main_menu,
     processing_menu,
     watch_job_progress,
 )
 from app.jobs import MODE_ANALYSIS_AND_SUPPLIERS, MODE_PROCUREMENT_REPORT, MODE_SUPPLIER_SEARCH
-from app.models import SystemSettings, TariffPackage
+from app.models import Client, SystemSettings, TariffPackage
 
 
 class BotProgressFormattingTests(unittest.TestCase):
@@ -86,11 +97,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertEqual(_progress_bar(100), "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩")
 
     def test_processing_menu_exposes_cancel_button(self) -> None:
-        rows = [[button.text for button in row] for row in processing_menu().keyboard]
-        labels = [text for row in rows for text in row]
-
-        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
-        self.assertIn(BUTTON_CANCEL_PROCESSING, labels)
+        self.assertIsInstance(processing_menu(), ReplyKeyboardRemove)
 
     def test_progress_message_exposes_inline_cancel_button_for_active_job(self) -> None:
         snapshot = JobProgressSnapshot(
@@ -237,9 +244,62 @@ class BotProgressFormattingTests(unittest.TestCase):
         text = _partial_confirmation_text(snapshot)
 
         self.assertIn("Отправить отчёт?", text)
-        self.assertIn("будет списана генерация", text)
+        self.assertIn("будет списана стоимость результата", text)
         self.assertIn("только подтверждённые компании", text)
         self.assertNotIn("target", text.lower())
+
+    def test_registry_fallback_confirmation_distinguishes_registry_and_alternative(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-registry-fallback",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="awaiting_customer_confirmation",
+            progress=100,
+            message="Найдено и проверено 24",
+            error="",
+            created_at=None,
+            confirmation_kind="registry_fallback",
+            registry_verified_count=0,
+            alternative_verified_count=24,
+            offer_charge_text="900 ₽",
+        )
+
+        text = _partial_confirmation_text(snapshot)
+        keyboard = _partial_confirmation_keyboard(snapshot.id, snapshot.confirmation_kind)
+
+        self.assertIn("Подтверждено по реестру: 0", text)
+        self.assertIn("Найдено и проверено вне реестра: 24", text)
+        self.assertIn("после успешной отправки: 900 ₽", text)
+        self.assertIn("При отказе", text)
+        self.assertNotIn("техническ", text.lower())
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "result_offer_yes:job-registry-fallback")
+        self.assertEqual(keyboard.inline_keyboard[1][0].callback_data, "result_offer_no:job-registry-fallback")
+
+    def test_legacy_partial_confirmation_callbacks_remain_compatible(self) -> None:
+        keyboard = _partial_confirmation_keyboard("legacy-job")
+
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "partial_yes:legacy-job")
+        self.assertEqual(keyboard.inline_keyboard[1][0].callback_data, "partial_no:legacy-job")
+
+    def test_delivery_expired_is_not_presented_as_customer_decline(self) -> None:
+        snapshot = JobProgressSnapshot(
+            id="job-delivery-expired",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="delivery_expired",
+            progress=100,
+            message="",
+            error="",
+            created_at=None,
+            confirmation_kind="registry_fallback",
+            confirmation_outcome="accepted",
+            offer_delivery_outcome="expired",
+        )
+
+        text = _format_job_progress(snapshot)
+
+        self.assertEqual(_status_label("delivery_expired"), "срок выдачи истёк")
+        self.assertIn("Вы согласились", text)
+        self.assertIn("списания нет", text)
+        self.assertNotIn("отказались", text)
 
     def test_partial_confirmation_status_is_not_internal_owner_alert(self) -> None:
         self.assertNotIn("awaiting_customer_confirmation", OWNER_ALERT_STATUSES)
@@ -299,11 +359,126 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("Поставщики 20", text)
         self.assertIn("1 500 ₽", text)
+        self.assertIn("1 добор поставщиков", text)
+        self.assertIn("по тому же ТЗ", text)
         self.assertIn(BOT_PAYMENT_INSTRUCTIONS, text)
         self.assertNotIn("MAX", text)
         self.assertIn(INDIVIDUAL_TERMS_NOTE, text)
         self.assertIn(AI_HELP_NOTE, text)
         self.assertNotIn("Как купить пакет:\n🧾 Чтобы купить пакет:", text)
+
+    def test_cabinet_text_does_not_warn_about_extra_supplier_fallback_balance(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            settings = SystemSettings(id=1)
+            client = Client(
+                id="client-1",
+                telegram_id="100",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=9_940_000,
+            )
+            db.add_all([
+                settings,
+                client,
+                TariffPackage(kind="supplier_search", name="Поиск", units=1, price_kopeks=10_000, is_active=True),
+                TariffPackage(kind="procurement_report", name="Анализ", units=1, price_kopeks=10_000, is_active=True),
+            ])
+            db.commit()
+
+            text = _cabinet_text(db, client, settings)
+        finally:
+            db.close()
+
+        self.assertIn("Баланс: 99 400 ₽", text)
+        self.assertIn("Добор поставщиков: 50 ₽", text)
+        self.assertNotIn("Добор поставщиков: доступно 0", text)
+        self.assertNotIn("Заканчивается баланс: Добор поставщиков", text)
+
+    def test_cabinet_warning_uses_money_balance_instead_of_legacy_units(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            settings = SystemSettings(id=1)
+            funded_client = Client(
+                id="funded-client",
+                telegram_id="101",
+                money_balance_kopeks=600_000,
+            )
+            low_money_client = Client(
+                id="low-money-client",
+                telegram_id="102",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=2_000,
+            )
+            db.add_all([
+                settings,
+                funded_client,
+                low_money_client,
+                TariffPackage(kind="supplier_search", name="Поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind="procurement_report", name="Анализ", units=1, price_kopeks=12_000, is_active=True),
+            ])
+            db.commit()
+
+            funded_text = _cabinet_text(db, funded_client, settings)
+            low_money_text = _cabinet_text(db, low_money_client, settings)
+        finally:
+            db.close()
+
+        self.assertNotIn("⚠️", funded_text)
+        self.assertIn("⚠️ Баланс заканчивается.", low_money_text)
+        self.assertNotIn("Поиск поставщиков, Анализ закупки", low_money_text)
+
+    def test_after_delivery_warning_uses_money_balance_instead_of_legacy_units(self) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.db import Base
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db = Session()
+        try:
+            funded_client = Client(id="funded-client", telegram_id="103", money_balance_kopeks=600_000)
+            low_money_client = Client(
+                id="low-money-client",
+                telegram_id="104",
+                monthly_supplier_search_limit=1000,
+                monthly_procurement_report_limit=1000,
+                money_balance_kopeks=2_000,
+            )
+            db.add_all([
+                funded_client,
+                low_money_client,
+                TariffPackage(kind="supplier_search", name="Поиск", units=1, price_kopeks=6_000, is_active=True),
+                TariffPackage(kind="procurement_report", name="Анализ", units=1, price_kopeks=12_000, is_active=True),
+            ])
+            db.commit()
+
+            funded_text = bot_module._after_delivery_balance_text(db, funded_client)
+            low_money_text = bot_module._after_delivery_balance_text(db, low_money_client)
+        finally:
+            db.close()
+
+        self.assertNotIn("⚠️", funded_text)
+        self.assertIn("⚠️ Баланс заканчивается.", low_money_text)
 
     def test_tariffs_text_hides_max_from_custom_bot_payment_instruction(self) -> None:
         from sqlalchemy import create_engine
@@ -335,7 +510,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("Найти ещё", keyboard.inline_keyboard[0][0].text)
         self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "find_more_prompt:job-1")
         self.assertIn("дополнительный поиск", offer_text)
-        self.assertIn("Будет списана 1 генерация", confirmation_text)
+        self.assertIn("Будет списана стоимость добора поставщиков", confirmation_text)
         self.assertIn("исключит уже найденные компании", confirmation_text)
 
     def test_start_text_uses_tenderlex_brand(self) -> None:
@@ -373,33 +548,66 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("проверить настройки модели", text)
 
     def test_main_menu_is_button_driven_and_mobile_readable(self) -> None:
-        keyboard = main_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-        labels = [text for row in rows for text in row]
+        self.assertIsInstance(main_menu(), ReplyKeyboardRemove)
+        inline_kb = main_inline_keyboard()
+        labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in labels))
+        self.assertTrue(any("Анализ закупки" in label for label in labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in labels))
+        self.assertTrue(any("Кабинет" in label for label in labels))
+        self.assertTrue(any("Задачи" in label for label in labels))
+        self.assertTrue(any("Тарифы" in label for label in labels))
+        self.assertTrue(any("Помощь" in label for label in labels))
+        self.assertTrue(any("Контакты" in label for label in labels))
 
-        self.assertEqual(
-            rows,
-            [
-                [BUTTON_CREATE, BUTTON_STATUS],
-                [BUTTON_ACCESS, BUTTON_TARIFFS],
-                [BUTTON_HELP, BUTTON_CONTACTS],
-            ],
+    def test_legal_prompt_is_optional_reference_without_acceptance_actions(self) -> None:
+        keyboard = _legal_keyboard()
+        buttons = [button for row in keyboard.inline_keyboard for button in row]
+        callback_data = {button.callback_data for button in buttons if button.callback_data}
+        urls = {button.url for button in buttons if button.url}
+
+        self.assertEqual(callback_data, set())
+        self.assertTrue(all(str(url).startswith("https://tenderlex.ru/") for url in urls))
+        self.assertIn("Документы TenderLex", _legal_text())
+        self.assertIn("https://tenderlex.ru/legal", _legal_text())
+        self.assertNotIn("Подтвердите", _legal_text())
+        self.assertNotIn("Принимаю", _legal_text())
+
+    def test_start_copy_is_short_value_first_and_has_no_legal_gate(self) -> None:
+        text = _start_text()
+
+        self.assertLessEqual(len(text), 650)
+        self.assertIn("ТЗ", text)
+        self.assertIn("Списание", text)
+        self.assertNotIn("оферт", text.lower())
+        self.assertNotIn("политик", text.lower())
+        self.assertNotIn("согласи", text.lower())
+
+    def test_telegram_download_removes_temporary_file_after_read(self) -> None:
+        class FakeBot:
+            async def get_file(self, _file_id, request_timeout=60):
+                return SimpleNamespace(file_path="remote/document.docx")
+
+            async def download_file(self, _file_path, destination, timeout=120):
+                Path(destination).write_bytes(b"document bytes")
+
+        message = SimpleNamespace(
+            document=SimpleNamespace(file_name="test.docx", file_id="file-1"),
+            chat=SimpleNamespace(id=123),
         )
-        self.assertNotIn("🆔 Мой Telegram ID", labels)
-        self.assertNotIn("/start", " ".join(labels))
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot_module.config, "storage_dir", temp_dir):
+            filename, content = asyncio.run(_download_document_content(message, FakeBot()))
+
+            self.assertEqual(filename, "test.docx")
+            self.assertEqual(content, b"document bytes")
+            self.assertFalse((Path(temp_dir) / "telegram" / "123" / "test.docx").exists())
 
     def test_create_menu_is_compact_two_column_layout(self) -> None:
-        keyboard = create_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-
-        self.assertEqual(
-            rows[:2],
-            [
-                [BUTTON_SUPPLIERS, BUTTON_REPORT],
-                [BUTTON_ANALYSIS_AND_SUPPLIERS],
-            ],
-        )
-        self.assertLessEqual(max(len(label) for row in rows for label in row), 20)
+        keyboard = create_inline_keyboard().inline_keyboard
+        labels = [button.text for row in keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in labels))
+        self.assertTrue(any("Анализ закупки" in label for label in labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in labels))
 
     def test_customer_buttons_use_procurement_language(self) -> None:
         labels = [
@@ -420,26 +628,18 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertNotIn("пач", joined.lower())
 
     def test_batch_menu_keeps_only_current_batch_actions(self) -> None:
-        keyboard = batch_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-
-        self.assertIn([BUTTON_RUN_BATCH, BUTTON_CANCEL_BATCH], rows)
-        self.assertNotIn([BUTTON_SUPPLIERS], rows)
-        self.assertNotIn([BUTTON_REPORT], rows)
-        self.assertNotIn([BUTTON_ANALYSIS_AND_SUPPLIERS], rows)
-        self.assertLessEqual(max(len(label) for row in rows for label in row), 13)
+        pending = PendingBatch(
+            telegram_id="123",
+            mode=MODE_SUPPLIER_SEARCH,
+            files=[("test.docx", b"content")],
+        )
+        keyboard = batch_inline_keyboard(pending).inline_keyboard
+        labels = [button.text for row in keyboard for button in row]
+        self.assertTrue(any("Запустить" in label for label in labels))
+        self.assertTrue(any("Очистить" in label for label in labels))
 
     def test_processing_menu_hides_new_start_actions(self) -> None:
-        keyboard = processing_menu().keyboard
-        rows = [[button.text for button in row] for row in keyboard]
-        labels = [text for row in rows for text in row]
-
-        self.assertIn([BUTTON_PROCESSING_STATUS, BUTTON_STATUS], rows)
-        self.assertNotIn(BUTTON_CREATE, labels)
-        self.assertNotIn(BUTTON_RUN_BATCH, labels)
-        self.assertNotIn(BUTTON_SUPPLIERS, labels)
-        self.assertNotIn(BUTTON_REPORT, labels)
-        self.assertNotIn(BUTTON_ANALYSIS_AND_SUPPLIERS, labels)
+        self.assertIsInstance(processing_menu(), ReplyKeyboardRemove)
 
     def test_menu_for_chat_uses_processing_state_from_database(self) -> None:
         class FakeQuery:
@@ -467,15 +667,13 @@ class BotProgressFormattingTests(unittest.TestCase):
             bot_module.SessionLocal = lambda: fake_db
 
             self.assertTrue(_chat_has_processing_job(777))
-            labels = [button.text for row in _menu_for_chat(777).keyboard for button in row]
+            self.assertIsInstance(_menu_for_chat(777), ReplyKeyboardRemove)
         finally:
             bot_module.SessionLocal = original_session
             bot_module.BATCH_RUNNING_CHATS.clear()
             bot_module.BATCH_RUNNING_CHATS.update(running_chats)
 
         self.assertTrue(fake_db.closed)
-        self.assertIn(BUTTON_PROCESSING_STATUS, labels)
-        self.assertNotIn(BUTTON_CREATE, labels)
 
     def test_early_job_eta_does_not_show_zero_seconds(self) -> None:
         now = datetime(2026, 6, 2, 12, 10, tzinfo=timezone.utc)
@@ -550,7 +748,7 @@ class BotProgressFormattingTests(unittest.TestCase):
         self.assertIn("В комплекте: 2/20", text)
         self.assertIn("разные ТЗ", text)
         self.assertIn("одним архивом", text)
-        self.assertIn(f"нажмите «{BUTTON_RUN_BATCH}»", text)
+        self.assertIn("Запустить поиск", text)
 
     def test_batch_running_text_hides_add_document_buttons_intent(self) -> None:
         text = _batch_running_text()
@@ -700,7 +898,7 @@ class BotProgressFormattingTests(unittest.TestCase):
 
         self.assertIn("📎 Источник добавлен", text)
         self.assertIn("Источников: 1", text)
-        self.assertIn(BUTTON_RUN_BATCH, text)
+        self.assertIn("Запустить", text)
         self.assertNotIn("Tenderplan", text)
 
     def test_supplier_multi_specs_split_each_tz_into_separate_job_payload(self) -> None:
@@ -1221,7 +1419,8 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(delivered)
         self.assertEqual(charges, ["job-1"])
-        self.assertEqual(message.answers, [])
+        self.assertEqual(len(message.answers), 1)
+        self.assertIn("Что хотите сделать дальше", message.answers[0][0])
         self.assertEqual(len(message.documents), 1)
         self.assertIn("Анализ документации во вложении.", message.documents[0].caption)
         self.assertIn("✅ Результат отправлен. Баланс обновлён.", message.documents[0].caption)
@@ -1286,6 +1485,208 @@ class BotOutputDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(charges, [])
         self.assertEqual(message.answers, [])
         self.assertEqual(message.documents, [])
+
+    async def test_send_job_outputs_does_not_reopen_expired_registry_fallback(self) -> None:
+        done_job = SimpleNamespace(
+            id="job-delivery-expired",
+            mode=MODE_SUPPLIER_SEARCH,
+            status="delivery_expired",
+            confirmation_kind="registry_fallback",
+            confirmation_outcome="accepted",
+            offer_delivery_outcome="expired",
+            evidence_path="/tmp/should-not-read.json",
+            result_path="/tmp/should-not-send.xlsx",
+            client=SimpleNamespace(id="client-1"),
+        )
+        package_calls: list[str] = []
+
+        class FakeDb:
+            def get(self, _model, job_id: str):
+                assert job_id == done_job.id
+                return done_job
+
+            def close(self) -> None:
+                return None
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.documents: list[object] = []
+
+            async def answer_document(self, *_args, **_kwargs):
+                self.documents.append((_args, _kwargs))
+                return self
+
+        message = FakeMessage()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "package_job_output_items": bot_module.package_job_output_items,
+            "package_job_output_files": bot_module.package_job_output_files,
+        }
+        try:
+            bot_module.SessionLocal = lambda: FakeDb()
+            bot_module.package_job_output_items = lambda job: package_calls.append(job.id) or []
+            bot_module.package_job_output_files = lambda job: package_calls.append(job.id) or []
+
+            delivered = await _send_job_outputs(message, done_job.id)
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+
+        self.assertFalse(delivered)
+        self.assertEqual(package_calls, [])
+        self.assertEqual(message.documents, [])
+
+    async def test_registry_fallback_delivery_settles_only_after_all_files_are_sent_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "fallback.xlsx"
+            output.write_bytes(b"xlsx")
+            job = SimpleNamespace(
+                id="job-registry-delivery",
+                mode=MODE_SUPPLIER_SEARCH,
+                confirmation_kind="registry_fallback",
+                confirmation_outcome="pending",
+                offer_delivery_outcome="",
+                client=None,
+            )
+            calls: list[tuple[str, object]] = []
+
+            class FakeDb:
+                def get(self, _model, job_id: str):
+                    assert job_id == job.id
+                    return job
+
+                def close(self) -> None:
+                    return None
+
+            class FakeMessage:
+                def __init__(self) -> None:
+                    self.documents: list[str] = []
+
+                async def answer_document(self, document, *, caption: str, reply_markup=None):
+                    self.documents.append(str(document.path))
+                    return SimpleNamespace()
+
+            def fake_accept(_db, accepted_job, *, channel: str):
+                calls.append(("accept", channel))
+                accepted_job.confirmation_outcome = "accepted"
+                accepted_job.offer_delivery_outcome = "pending"
+                return accepted_job
+
+            def fake_complete(_db, completed_job, token: str, *, billing_kinds, channel: str, note: str):
+                self.assertEqual(completed_job, job)
+                self.assertEqual(token, "delivery-token")
+                calls.append(("complete", (tuple(billing_kinds), channel, note)))
+                completed_job.offer_delivery_outcome = "delivered"
+                return True
+
+            message = FakeMessage()
+            originals = {
+                "SessionLocal": bot_module.SessionLocal,
+                "accept_job_result_offer": bot_module.accept_job_result_offer,
+                "claim_job_result_offer_delivery": bot_module.claim_job_result_offer_delivery,
+                "active_result_offer_output_items": bot_module.active_result_offer_output_items,
+                "billing_kinds_for_result_delivery": bot_module.billing_kinds_for_result_delivery,
+                "complete_job_result_offer_delivery": bot_module.complete_job_result_offer_delivery,
+                "fail_job_result_offer_delivery": bot_module.fail_job_result_offer_delivery,
+                "job_can_find_more_suppliers": bot_module.job_can_find_more_suppliers,
+                "charge_job_reservation": bot_module.charge_job_reservation,
+            }
+            delivered_before = set(bot_module.DELIVERED_JOB_IDS)
+            try:
+                bot_module.DELIVERED_JOB_IDS.discard(job.id)
+                bot_module.SessionLocal = lambda: FakeDb()
+                bot_module.accept_job_result_offer = fake_accept
+                bot_module.claim_job_result_offer_delivery = (
+                    lambda _db, _job, *, channel: calls.append(("claim", channel)) or "delivery-token"
+                )
+                bot_module.active_result_offer_output_items = (
+                    lambda _job: [{"kind": "suppliers", "path": str(output), "billing_kind": "supplier_search"}]
+                )
+                bot_module.billing_kinds_for_result_delivery = lambda _job: ["supplier_search"]
+                bot_module.complete_job_result_offer_delivery = fake_complete
+                bot_module.fail_job_result_offer_delivery = (
+                    lambda *_args, **_kwargs: calls.append(("fail", None))
+                )
+                bot_module.job_can_find_more_suppliers = lambda _job: False
+                bot_module.charge_job_reservation = lambda *_args, **_kwargs: self.fail("legacy charge must not run")
+
+                delivered = await bot_module._send_result_offer_outputs(
+                    message,
+                    job.id,
+                    accept_if_pending=True,
+                )
+                repeated = await bot_module._send_result_offer_outputs(
+                    message,
+                    job.id,
+                    accept_if_pending=True,
+                )
+            finally:
+                for name, value in originals.items():
+                    setattr(bot_module, name, value)
+                bot_module.DELIVERED_JOB_IDS.clear()
+                bot_module.DELIVERED_JOB_IDS.update(delivered_before)
+
+        self.assertTrue(delivered)
+        self.assertFalse(repeated)
+        self.assertEqual(len(message.documents), 1)
+        self.assertEqual([name for name, _value in calls], ["accept", "claim", "complete"])
+
+    async def test_registry_fallback_send_failure_releases_claim_without_charge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "fallback.xlsx"
+            output.write_bytes(b"xlsx")
+            job = SimpleNamespace(
+                id="job-registry-send-failure",
+                mode=MODE_SUPPLIER_SEARCH,
+                confirmation_kind="registry_fallback",
+                confirmation_outcome="accepted",
+                offer_delivery_outcome="pending",
+                client=None,
+            )
+            failed_tokens: list[str] = []
+            completed: list[str] = []
+
+            class FakeDb:
+                def get(self, _model, _job_id: str):
+                    return job
+
+                def close(self) -> None:
+                    return None
+
+            class FakeMessage:
+                async def answer_document(self, *_args, **_kwargs):
+                    raise RuntimeError("telegram unavailable")
+
+            originals = {
+                "SessionLocal": bot_module.SessionLocal,
+                "claim_job_result_offer_delivery": bot_module.claim_job_result_offer_delivery,
+                "active_result_offer_output_items": bot_module.active_result_offer_output_items,
+                "complete_job_result_offer_delivery": bot_module.complete_job_result_offer_delivery,
+                "fail_job_result_offer_delivery": bot_module.fail_job_result_offer_delivery,
+            }
+            try:
+                bot_module.SessionLocal = lambda: FakeDb()
+                bot_module.claim_job_result_offer_delivery = lambda *_args, **_kwargs: "failed-token"
+                bot_module.active_result_offer_output_items = lambda _job: [{"kind": "suppliers", "path": str(output)}]
+                bot_module.complete_job_result_offer_delivery = (
+                    lambda *_args, **_kwargs: completed.append("charged") or True
+                )
+                bot_module.fail_job_result_offer_delivery = (
+                    lambda _db, _job, token: failed_tokens.append(token)
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "telegram unavailable"):
+                    await bot_module._send_result_offer_outputs(
+                        FakeMessage(),
+                        job.id,
+                        accept_if_pending=False,
+                    )
+            finally:
+                for name, value in originals.items():
+                    setattr(bot_module, name, value)
+
+        self.assertEqual(failed_tokens, ["failed-token"])
+        self.assertEqual(completed, [])
 
     async def test_send_job_outputs_offers_find_more_for_supplier_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1429,10 +1830,409 @@ class SupplierTextTzHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pending.files[0][0].endswith(".txt"))
         self.assertIn("Поставка насосов", pending.files[0][1].decode("utf-8"))
         self.assertIn("✅ ТЗ добавлено", message.answers[0][0])
-        rows = [[button.text for button in row] for row in message.answers[0][1].keyboard]
-        labels = [text for row in rows for text in row]
-        self.assertIn(BUTTON_RUN_BATCH, labels)
-        self.assertNotIn(BUTTON_CREATE, labels)
+        inline_kb = message.answers[0][1]
+        labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Запустить" in label for label in labels))
+        self.assertTrue(any("Очистить" in label for label in labels))
+
+
+class TelegramButtonHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
+    class FakeDb:
+        def __init__(self) -> None:
+            self.rolled_back = False
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+        def close(self) -> None:
+            return None
+
+    class FakeMessage:
+        def __init__(self, chat_id: int = 991) -> None:
+            self.chat = SimpleNamespace(id=chat_id)
+            self.from_user = SimpleNamespace(id=123456, username="buyer", first_name="Ivan", last_name="")
+            self.answers: list[tuple[str, object]] = []
+
+        async def answer(self, value: str, reply_markup=None, **_kwargs):
+            self.answers.append((value, reply_markup))
+            return self
+
+    async def test_journey_helper_unpacks_repository_contract(self) -> None:
+        db = self.FakeDb()
+        message = self.FakeMessage()
+        recorded: list[tuple[str, str]] = []
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "get_client_by_telegram_id": bot_module.get_client_by_telegram_id,
+            "record_journey_event": bot_module.record_journey_event,
+        }
+        try:
+            bot_module.SessionLocal = lambda: db
+            bot_module.get_client_by_telegram_id = lambda _db, _telegram_id: (SimpleNamespace(id="client-1"), "")
+            bot_module.record_journey_event = lambda _db, client_id, **kwargs: recorded.append((client_id, kwargs["event_name"]))
+
+            bot_module._record_telegram_event(message, "create_opened")
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+
+        self.assertEqual(recorded, [("client-1", "create_opened")])
+
+    async def test_start_opens_scenarios_without_requesting_legal_acceptance(self) -> None:
+        class FakeQuery:
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def first(self):
+                return None
+
+        class StartDb(self.FakeDb):
+            def query(self, *_args, **_kwargs):
+                return FakeQuery()
+
+        message = self.FakeMessage(chat_id=9876)
+        db = StartDb()
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "get_or_create_trial_client_by_telegram_id": bot_module.get_or_create_trial_client_by_telegram_id,
+            "record_journey_event": bot_module.record_journey_event,
+        }
+        had_accepted_helper = hasattr(bot_module, "accepted_legal_documents")
+        original_accepted_helper = getattr(bot_module, "accepted_legal_documents", None)
+        try:
+            bot_module.SessionLocal = lambda: db
+            bot_module.get_or_create_trial_client_by_telegram_id = (
+                lambda *_args, **_kwargs: (SimpleNamespace(id="client-start"), "")
+            )
+            bot_module.accepted_legal_documents = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("/start must not query or gate on legal acceptance")
+            )
+            bot_module.record_journey_event = lambda *_args, **_kwargs: None
+
+            await bot_module.start(message, SimpleNamespace(args=""))
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            if had_accepted_helper:
+                bot_module.accepted_legal_documents = original_accepted_helper
+            else:
+                delattr(bot_module, "accepted_legal_documents")
+
+        self.assertEqual(len(message.answers), 1)
+        start_text, inline_kb = message.answers[0]
+        self.assertIn("TenderLex", start_text)
+        self.assertNotIn("подтвердите документы", start_text.lower())
+        inline_labels = [button.text for row in inline_kb.inline_keyboard for button in row]
+        self.assertTrue(any("Поставщики по ТЗ" in label for label in inline_labels))
+        self.assertTrue(any("Анализ закупки" in label for label in inline_labels))
+        self.assertTrue(any("Анализ + поиск" in label for label in inline_labels))
+        self.assertTrue(any("Кабинет" in label for label in inline_labels))
+        self.assertTrue(any("Задачи" in label for label in inline_labels))
+        self.assertTrue(any("Тарифы" in label for label in inline_labels))
+        self.assertTrue(any("Помощь" in label for label in inline_labels))
+        self.assertTrue(any("Контакты" in label for label in inline_labels))
+
+    def test_telegram_launch_acceptance_records_only_current_terms(self) -> None:
+        recorded: list[dict] = []
+        original = bot_module.record_legal_acceptance
+        try:
+            bot_module.record_legal_acceptance = lambda _db, **kwargs: recorded.append(kwargs)
+            bot_module._record_telegram_terms_acceptance(object(), "123456")
+        finally:
+            bot_module.record_legal_acceptance = original
+
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["subject_type"], "telegram")
+        self.assertEqual(recorded[0]["subject_id"], "123456")
+        self.assertEqual(recorded[0]["document_type"], bot_module.LEGAL_DOCUMENT_TERMS)
+        self.assertEqual(recorded[0]["document_version"], bot_module.LEGAL_VERSION)
+        self.assertEqual(recorded[0]["source"], "telegram_job_launch")
+        self.assertNotEqual(recorded[0]["document_type"], bot_module.LEGAL_DOCUMENT_PERSONAL_DATA)
+
+    async def test_legacy_legal_callback_does_not_accept_current_document_version(self) -> None:
+        class LegacyMessage(self.FakeMessage):
+            async def edit_text(self, value: str, reply_markup=None, **_kwargs):
+                self.answers.append((value, reply_markup))
+
+        class LegacyCallback:
+            def __init__(self) -> None:
+                self.data = "legal_accept:terms"
+                self.message = LegacyMessage()
+                self.from_user = self.message.from_user
+                self.answers: list[str] = []
+
+            async def answer(self, value: str, **_kwargs):
+                self.answers.append(value)
+
+        callback = LegacyCallback()
+        original = bot_module.record_legal_acceptance
+        try:
+            bot_module.record_legal_acceptance = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("legacy callbacks must not accept the current document version")
+            )
+            await bot_module.legal_acceptance_callback(callback)
+        finally:
+            bot_module.record_legal_acceptance = original
+
+        self.assertIn("Порядок обновлён", callback.answers[0])
+        self.assertIn("Документы TenderLex", callback.message.answers[0][0])
+
+    async def test_run_batch_records_terms_only_after_successful_launch(self) -> None:
+        class LaunchDb(self.FakeDb):
+            def commit(self) -> None:
+                return None
+
+        message = self.FakeMessage(chat_id=9880)
+        pending = bot_module.PendingBatch(
+            telegram_id="123456",
+            mode=MODE_PROCUREMENT_REPORT,
+            files=[("purchase.pdf", b"content")],
+        )
+        job = SimpleNamespace(id="job-launch", status="draft", message="")
+        recorded: list[str] = []
+
+        async def fake_watch(*_args, **_kwargs):
+            return None
+
+        async def fake_send(*_args, **_kwargs):
+            return False
+
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "_record_telegram_event": bot_module._record_telegram_event,
+            "get_or_create_trial_client_by_telegram_id": bot_module.get_or_create_trial_client_by_telegram_id,
+            "client_access_error": bot_module.client_access_error,
+            "get_or_create_settings": bot_module.get_or_create_settings,
+            "supplier_target_for_client": bot_module.supplier_target_for_client,
+            "create_job": bot_module.create_job,
+            "_reserve_created_job": bot_module._reserve_created_job,
+            "_record_telegram_terms_acceptance": bot_module._record_telegram_terms_acceptance,
+            "record_journey_event": bot_module.record_journey_event,
+            "_job_snapshot": bot_module._job_snapshot,
+            "_format_launch_progress": bot_module._format_launch_progress,
+            "watch_job_progress": bot_module.watch_job_progress,
+            "_send_job_outputs": bot_module._send_job_outputs,
+        }
+        saved_uploads = dict(bot_module.PENDING_UPLOADS)
+        saved_running = set(bot_module.BATCH_RUNNING_CHATS)
+        try:
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS[message.chat.id] = pending
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.SessionLocal = LaunchDb
+            bot_module._record_telegram_event = lambda *_args, **_kwargs: None
+            bot_module.get_or_create_trial_client_by_telegram_id = (
+                lambda *_args, **_kwargs: (SimpleNamespace(id="client-launch"), "")
+            )
+            bot_module.client_access_error = lambda *_args, **_kwargs: ""
+            bot_module.get_or_create_settings = lambda _db: SimpleNamespace()
+            bot_module.supplier_target_for_client = lambda *_args, **_kwargs: 10
+            bot_module.create_job = lambda *_args, **_kwargs: job
+            bot_module._reserve_created_job = lambda *_args, **_kwargs: ""
+            bot_module._record_telegram_terms_acceptance = lambda _db, telegram_id: recorded.append(telegram_id)
+            bot_module.record_journey_event = lambda *_args, **_kwargs: None
+            bot_module._job_snapshot = lambda _job: SimpleNamespace()
+            bot_module._format_launch_progress = lambda *_args, **_kwargs: "Обработка запущена"
+            bot_module.watch_job_progress = fake_watch
+            bot_module._send_job_outputs = fake_send
+
+            await bot_module.run_batch_button(message)
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS.update(saved_uploads)
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.BATCH_RUNNING_CHATS.update(saved_running)
+
+        self.assertEqual(recorded, ["123456"])
+        self.assertEqual(job.status, "pending")
+
+    async def test_run_batch_does_not_record_terms_for_empty_blocked_or_failed_launch(self) -> None:
+        class LaunchDb(self.FakeDb):
+            def commit(self) -> None:
+                return None
+
+        recorded: list[str] = []
+        original_recorder = bot_module._record_telegram_terms_acceptance
+        original_event = bot_module._record_telegram_event
+        original_session = bot_module.SessionLocal
+        original_get_client = bot_module.get_or_create_trial_client_by_telegram_id
+        original_access = bot_module.client_access_error
+        original_settings = bot_module.get_or_create_settings
+        original_target = bot_module.supplier_target_for_client
+        original_create = bot_module.create_job
+        original_reserve = bot_module._reserve_created_job
+        original_discard = bot_module._discard_unlaunched_jobs
+        saved_uploads = dict(bot_module.PENDING_UPLOADS)
+        saved_running = set(bot_module.BATCH_RUNNING_CHATS)
+        try:
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module._record_telegram_terms_acceptance = lambda _db, telegram_id: recorded.append(telegram_id)
+            bot_module._record_telegram_event = lambda *_args, **_kwargs: None
+            bot_module.SessionLocal = LaunchDb
+
+            await bot_module.run_batch_button(self.FakeMessage(chat_id=9881))
+
+            blocked = self.FakeMessage(chat_id=9882)
+            bot_module.PENDING_UPLOADS[blocked.chat.id] = bot_module.PendingBatch(
+                telegram_id="blocked",
+                mode=MODE_PROCUREMENT_REPORT,
+                files=[("blocked.pdf", b"content")],
+            )
+            bot_module.get_or_create_trial_client_by_telegram_id = (
+                lambda *_args, **_kwargs: (SimpleNamespace(id="blocked-client"), "")
+            )
+            bot_module.client_access_error = lambda *_args, **_kwargs: "Доступ закрыт"
+            await bot_module.run_batch_button(blocked)
+
+            failed = self.FakeMessage(chat_id=9883)
+            bot_module.PENDING_UPLOADS[failed.chat.id] = bot_module.PendingBatch(
+                telegram_id="failed",
+                mode=MODE_PROCUREMENT_REPORT,
+                files=[("failed.pdf", b"content")],
+            )
+            bot_module.client_access_error = lambda *_args, **_kwargs: ""
+            bot_module.get_or_create_settings = lambda _db: SimpleNamespace()
+            bot_module.supplier_target_for_client = lambda *_args, **_kwargs: 10
+            bot_module.create_job = lambda *_args, **_kwargs: SimpleNamespace(id="failed-job")
+            bot_module._reserve_created_job = lambda *_args, **_kwargs: "Недостаточно средств"
+            bot_module._discard_unlaunched_jobs = lambda *_args, **_kwargs: None
+            await bot_module.run_batch_button(failed)
+        finally:
+            bot_module._record_telegram_terms_acceptance = original_recorder
+            bot_module._record_telegram_event = original_event
+            bot_module.SessionLocal = original_session
+            bot_module.get_or_create_trial_client_by_telegram_id = original_get_client
+            bot_module.client_access_error = original_access
+            bot_module.get_or_create_settings = original_settings
+            bot_module.supplier_target_for_client = original_target
+            bot_module.create_job = original_create
+            bot_module._reserve_created_job = original_reserve
+            bot_module._discard_unlaunched_jobs = original_discard
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS.update(saved_uploads)
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.BATCH_RUNNING_CHATS.update(saved_running)
+
+        self.assertEqual(recorded, [])
+
+    def test_onboarding_reminder_leads_with_trial_and_supplier_scenario(self) -> None:
+        text = bot_module.ONBOARDING_REMINDER_TEXT
+
+        self.assertIn("открыт пробный доступ", text)
+        self.assertIn("🔎 Поставщики по ТЗ", text)
+        self.assertIn("🚀 Создать", text)
+        self.assertIn("https://tenderlex.ru", text)
+        self.assertIn("📞 Контакты", text)
+        self.assertNotIn("http://tenderlex.ru", text)
+
+    async def test_telemetry_failure_does_not_break_create_or_mode_buttons(self) -> None:
+        originals = {
+            "SessionLocal": bot_module.SessionLocal,
+            "get_client_by_telegram_id": bot_module.get_client_by_telegram_id,
+        }
+        pending_modes = dict(bot_module.PENDING_MODES)
+        pending_policies = dict(bot_module.PENDING_SUPPLIER_POLICIES)
+        running_chats = set(bot_module.BATCH_RUNNING_CHATS)
+        try:
+            bot_module.SessionLocal = self.FakeDb
+            bot_module.get_client_by_telegram_id = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("telemetry unavailable"))
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_SUPPLIER_POLICIES.clear()
+            bot_module.BATCH_RUNNING_CHATS.clear()
+
+            cases = [
+                (bot_module.create_button, 1, "Выберите сценарий"),
+                (bot_module.supplier_mode, 1, "Поставщики по ТЗ"),
+                (bot_module.report_mode, 1, "Анализ закупки"),
+                (bot_module.analysis_and_suppliers_button, 1, "Анализ + поиск"),
+            ]
+            for index, (handler, answer_count, expected_text) in enumerate(cases):
+                message = self.FakeMessage(chat_id=991 + index)
+                await handler(message)
+                self.assertEqual(len(message.answers), answer_count)
+                self.assertTrue(any(expected_text in answer[0] for answer in message.answers))
+        finally:
+            for name, value in originals.items():
+                setattr(bot_module, name, value)
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_MODES.update(pending_modes)
+            bot_module.PENDING_SUPPLIER_POLICIES.clear()
+            bot_module.PENDING_SUPPLIER_POLICIES.update(pending_policies)
+            bot_module.BATCH_RUNNING_CHATS.clear()
+            bot_module.BATCH_RUNNING_CHATS.update(running_chats)
+
+    async def test_unhandled_error_handler_never_leaves_message_without_feedback(self) -> None:
+        message = self.FakeMessage()
+        event = SimpleNamespace(
+            exception=RuntimeError("unexpected"),
+            update=SimpleNamespace(message=message, callback_query=None),
+        )
+
+        handled = await bot_module.unhandled_bot_error(event)
+
+        self.assertTrue(handled)
+        self.assertEqual(len(message.answers), 1)
+        self.assertIn("Не удалось выполнить действие", message.answers[0][0])
+
+    async def test_switching_scenario_clears_only_incompatible_materials(self) -> None:
+        chat_id = 991
+        original_uploads = dict(bot_module.PENDING_UPLOADS)
+        original_modes = dict(bot_module.PENDING_MODES)
+        original_policies = dict(bot_module.PENDING_SUPPLIER_POLICIES)
+        try:
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_SUPPLIER_POLICIES.clear()
+            bot_module.PENDING_UPLOADS[chat_id] = bot_module.PendingBatch(
+                telegram_id="123",
+                mode=MODE_SUPPLIER_SEARCH,
+                files=[("tz.txt", b"one")],
+            )
+
+            self.assertFalse(bot_module._select_scenario(chat_id, bot_module.SCENARIO_SUPPLIERS))
+            self.assertIn(chat_id, bot_module.PENDING_UPLOADS)
+            self.assertTrue(bot_module._select_scenario(chat_id, bot_module.SCENARIO_REPORT))
+            self.assertNotIn(chat_id, bot_module.PENDING_UPLOADS)
+            self.assertNotIn(chat_id, bot_module.PENDING_SUPPLIER_POLICIES)
+        finally:
+            bot_module.PENDING_UPLOADS.clear()
+            bot_module.PENDING_UPLOADS.update(original_uploads)
+            bot_module.PENDING_MODES.clear()
+            bot_module.PENDING_MODES.update(original_modes)
+            bot_module.PENDING_SUPPLIER_POLICIES.clear()
+            bot_module.PENDING_SUPPLIER_POLICIES.update(original_policies)
+
+    async def test_menu_clear_removes_all_pending_state(self) -> None:
+        message = self.FakeMessage()
+        chat_id = message.chat.id
+        originals = (dict(bot_module.PENDING_UPLOADS), dict(bot_module.PENDING_MODES), dict(bot_module.PENDING_SUPPLIER_POLICIES))
+        try:
+            bot_module.PENDING_UPLOADS[chat_id] = bot_module.PendingBatch("123", MODE_SUPPLIER_SEARCH, [("tz.txt", b"one")])
+            bot_module.PENDING_MODES[chat_id] = bot_module.SCENARIO_SUPPLIERS
+            bot_module.PENDING_SUPPLIER_POLICIES[chat_id] = bot_module.SUPPLIER_POLICY_MINPROM_ONLY
+            await bot_module.back_main_button(message)
+            self.assertNotIn(chat_id, bot_module.PENDING_UPLOADS)
+            self.assertNotIn(chat_id, bot_module.PENDING_MODES)
+            self.assertNotIn(chat_id, bot_module.PENDING_SUPPLIER_POLICIES)
+        finally:
+            for state, saved in zip(
+                (bot_module.PENDING_UPLOADS, bot_module.PENDING_MODES, bot_module.PENDING_SUPPLIER_POLICIES), originals
+            ):
+                state.clear()
+                state.update(saved)
+
+    async def test_unsupported_and_group_messages_receive_feedback(self) -> None:
+        unsupported = self.FakeMessage(chat_id=992)
+        group = self.FakeMessage(chat_id=-100123)
+
+        await bot_module.unsupported_message(unsupported)
+        await bot_module.reject_group_message(group)
+
+        self.assertIn("не поддерживается", unsupported.answers[0][0])
+        self.assertIn("только в личном чате", group.answers[0][0])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="TenderLex">
+  <rect width="120" height="120" rx="28" fill="#00666b"/>
+  <circle cx="55" cy="53" r="29" fill="#e7f6f4"/>
+  <circle cx="55" cy="53" r="20" fill="none" stroke="#00666b" stroke-width="8"/>
+  <path d="M74 74l19 19" stroke="#d6f071" stroke-width="11" stroke-linecap="round"/>
+  <path d="M43 43h25M43 54h18M43 65h13" stroke="#00666b" stroke-width="6" stroke-linecap="round"/>
+</svg>

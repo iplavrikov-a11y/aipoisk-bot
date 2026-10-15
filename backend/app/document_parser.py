@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -12,24 +13,139 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+logger = logging.getLogger(__name__)
+
 
 TEXT_EXTENSIONS = {".txt", ".md", ".json", ".yaml", ".yml", ".ini", ".log"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 DEFAULT_DOCUMENT_OPTIONS = {
     "ocr_enabled": True,
-    "pdf_ocr_pages": 3,
+    "pdf_ocr_pages": 12,
+    "docx_ocr_images": 20,
     "archive_max_files": 80,
     "archive_max_mb": 250,
     "archive_depth": 2,
 }
 
 
+def clean_surrogates(text: str) -> str:
+    """
+    Remove or recover surrogate code points from text.
+    Handles CP866 / CP1251 legacy byte sequences decoded as surrogateescape
+    (common in Russian government archives and zip members), and strips or
+    replaces any remaining lone surrogates so UTF-8 encoding never fails.
+    """
+    if not text:
+        return ""
+    if not any(0xD800 <= ord(c) <= 0xDFFF for c in text):
+        return text
+
+    def _replace_surrogateescape_run(match: re.Match) -> str:
+        s = match.group(0)
+        raw_bytes = bytes([ord(c) - 0xDC00 for c in s])
+        for enc in ("utf-8", "cp866", "cp1251"):
+            try:
+                decoded = raw_bytes.decode(enc)
+                if not any(0xD800 <= ord(c) <= 0xDFFF for c in decoded):
+                    return decoded
+            except UnicodeDecodeError:
+                pass
+        return ""
+
+    text = re.sub(r"[\udc80-\udcff]+", _replace_surrogateescape_run, text)
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in text):
+        text = re.sub(r"[\ud800-\udfff]+", "", text)
+    return text
+
+
+XML_ILLEGAL_CHARACTERS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
+)
+
+
+def clean_xml_compatible(value: object) -> str:
+    """
+    Sanitize text to guarantee valid XML 1.0 content (required by docx and openpyxl).
+    Converts formfeed/vertical tabs to whitespace/newlines, strips null bytes, surrogates,
+    and control characters that break docx and openpyxl serialization.
+    """
+    if value is None:
+        return ""
+    text = clean_surrogates(str(value))
+    text = text.replace("\x0c", "\n").replace("\x0b", "\n")
+    return XML_ILLEGAL_CHARACTERS_RE.sub("", text)
+
+
+def fix_archive_filename(filename: str) -> str:
+    """
+    Restore legible filename from archives: cleans surrogates, and fixes
+    CP866/CP1251 Cyrillic filenames mistakenly decoded from CP437 or Latin-1.
+    """
+    if not filename:
+        return ""
+    cleaned = clean_surrogates(filename)
+    if any(0x0400 <= ord(c) <= 0x04FF for c in cleaned):
+        return cleaned
+    for source_enc in ("cp437", "latin1"):
+        try:
+            raw = cleaned.encode(source_enc)
+            for target_enc in ("cp866", "cp1251"):
+                try:
+                    candidate = raw.decode(target_enc)
+                    if any(0x0400 <= ord(c) <= 0x04FF for c in candidate):
+                        return candidate
+                except UnicodeDecodeError:
+                    pass
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return cleaned
+
+
+def _clean_text(value: str) -> str:
+    cleaned = clean_xml_compatible(str(value or ""))
+    return cleaned.replace("\ufeff", "").replace("\u200b", "").strip()
+
+
+def _natural_sort_key(s: str) -> list[int | str]:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(s))]
+
+
+
 def sanitize_filename(value: str) -> str:
-    value = re.sub(r"[^\wА-Яа-яЁё ._-]+", "_", str(value or ""), flags=re.UNICODE).strip(" ._")
-    return _truncate_utf8(value, 180, fallback="upload")
+    raw_val = clean_surrogates(str(value or "")).strip()
+    if not raw_val:
+        return "upload"
+    p = Path(raw_val)
+    ext = p.suffix
+    stem = p.stem if ext else raw_val
+    clean_ext = re.sub(r"[^\w.-]+", "_", ext, flags=re.UNICODE)
+    clean_stem = re.sub(r"[^\w?-??-??? ._-]+", "_", stem, flags=re.UNICODE).strip(" ._")
+    ext_bytes = len(clean_ext.encode("utf-8"))
+    max_stem_bytes = max(10, 180 - ext_bytes)
+    truncated_stem = _truncate_utf8(clean_stem, max_stem_bytes, fallback="upload")
+    return f"{truncated_stem}{clean_ext}"
 
 
+def _is_xlsx_package(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
+    return "[Content_Types].xml" in names and any(name.startswith("xl/") for name in names)
+
+
+def _is_pdf_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as f:
+            return f.read(5).startswith(b"%PDF-")
+    except Exception:
+        return False
 def _truncate_utf8(value: str, max_bytes: int, *, fallback: str) -> str:
     value = str(value or "").strip()
     if len(value.encode("utf-8")) <= max_bytes:
@@ -43,6 +159,20 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
     depth = int(options.get("archive_depth") or 0) if _depth is None else _depth
     file_path = Path(path)
     suffix = file_path.suffix.lower()
+    if not suffix or suffix not in (
+        TEXT_EXTENSIONS
+        | IMAGE_EXTENSIONS
+        | ARCHIVE_EXTENSIONS
+        | {".csv", ".tsv", ".html", ".htm", ".xml", ".docx", ".doc", ".xlsx", ".xls", ".pdf"}
+    ):
+        if _is_docx_package(file_path):
+            suffix = ".docx"
+        elif _is_xlsx_package(file_path):
+            suffix = ".xlsx"
+        elif _is_pdf_file(file_path):
+            suffix = ".pdf"
+        elif zipfile.is_zipfile(file_path) and depth > 0:
+            suffix = ".zip"
     try:
         if suffix in TEXT_EXTENSIONS:
             return file_path.read_text(encoding="utf-8", errors="ignore"), "ok"
@@ -51,23 +181,89 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
         if suffix in {".html", ".htm", ".xml"}:
             return _extract_html(file_path), "ok"
         if suffix == ".docx":
+            status = "ok"
             try:
-                return _extract_docx(file_path), "ok"
+                text = _extract_docx(file_path)
             except Exception:
-                if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
-                    text, status = _extract_archive(file_path, options, depth)
-                    if text.strip():
-                        return text, f"docx_archive_{status}"
-                raise
+                text = ""
+
+            cleaned = _clean_text(text)
+            has_empty_table_marker = bool(re.search(r"===\s*TABLE[^\n]*\s*$", cleaned)) or (
+                "\n=== TABLE" in cleaned and not any("|" in line for line in cleaned.splitlines())
+            )
+            needs_fallback = len(cleaned) < 80 or has_empty_table_marker
+
+            if needs_fallback:
+                fallback_lo = _extract_via_libreoffice(
+                    file_path,
+                    ".txt",
+                    lambda converted: converted.read_text(encoding="utf-8", errors="ignore"),
+                )
+                if len(_clean_text(fallback_lo)) > len(cleaned):
+                    text = fallback_lo
+                    cleaned = _clean_text(text)
+                    status = "docx_libreoffice_ok"
+
+            if len(cleaned) < 80 or has_empty_table_marker:
+                fallback_xml = _extract_docx_xml(file_path)
+                if len(_clean_text(fallback_xml)) > len(cleaned):
+                    text = fallback_xml
+                    cleaned = _clean_text(text)
+                    status = "docx_xml_ok"
+
+            if not needs_fallback and len(cleaned) < 5000:
+                try:
+                    fallback_xml = _extract_docx_xml(file_path)
+                    if len(_clean_text(fallback_xml)) > len(cleaned) * 1.4 and len(_clean_text(fallback_xml)) - len(cleaned) > 200:
+                        text = fallback_xml
+                        cleaned = _clean_text(text)
+                        status = "docx_xml_ok"
+                except Exception:
+                    pass
+
+            if len(cleaned) < 80 and options.get("ocr_enabled"):
+                docx_ocr_images = int(options.get("docx_ocr_images") or 20)
+                media_ocr = _extract_docx_media_ocr(file_path, docx_ocr_images)
+                if media_ocr.strip():
+                    text = f"{text.strip()}\n\n{media_ocr}".strip() if cleaned else media_ocr
+                    return text, "docx_ocr_ok"
+
+                if not cleaned:
+                    pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                    lo_pdf_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
+                    if lo_pdf_ocr.strip():
+                        return lo_pdf_ocr, "docx_pdf_ocr_ok"
+
+            if _clean_text(text):
+                return text, status
+
+            if zipfile.is_zipfile(file_path) and not _is_docx_package(file_path) and depth > 0:
+                text, archive_status = _extract_archive(file_path, options, depth)
+                if _clean_text(text):
+                    return text, f"docx_archive_{archive_status}"
+
+            return "", "docx_empty"
         if suffix == ".xlsx":
-            return _extract_xlsx(file_path), "ok"
+            try:
+                text = _extract_xlsx(file_path)
+                if text.strip():
+                    return text, "ok"
+            except Exception:
+                text = ""
+            fallback = _extract_via_libreoffice(file_path, ".csv", _extract_csv)
+            if fallback.strip():
+                return fallback, "xlsx_libreoffice_ok"
+            return text, "ok" if text.strip() else "xlsx_empty"
         if suffix == ".xls":
             text = _extract_via_libreoffice(file_path, ".xlsx", _extract_xlsx)
+            if not text.strip():
+                text = _extract_via_libreoffice(file_path, ".csv", _extract_csv)
             return text, "ok" if text.strip() else "parser_not_connected_yet"
         if suffix == ".pdf":
             text = _extract_pdf(file_path)
-            if len(text.strip()) < 80 and options.get("ocr_enabled"):
-                ocr_text = _extract_pdf_ocr(file_path, int(options.get("pdf_ocr_pages") or 0))
+            if _pdf_needs_ocr(file_path, text) and options.get("ocr_enabled"):
+                max_pages = max(int(options.get("pdf_ocr_pages") or 20), 20)
+                ocr_text = _extract_pdf_ocr(file_path, max_pages)
                 if ocr_text.strip():
                     return ocr_text, "pdf_ocr_ok"
             return text, "ok"
@@ -77,8 +273,21 @@ def extract_text(path: str | Path, options: dict | None = None, _depth: int | No
                 return text, "image_ocr_ok" if text.strip() else "image_ocr_empty"
             return "", "image_ocr_disabled"
         if suffix == ".doc":
+            if zipfile.is_zipfile(file_path):
+                try:
+                    text = _extract_docx(file_path)
+                    if _clean_text(text):
+                        return text, "ok"
+                except Exception:
+                    pass
             text = _extract_doc(file_path)
-            return text, "ok" if text.strip() else "parser_not_connected_yet"
+            cleaned = _clean_text(text)
+            if len(cleaned) < 80 and options.get("ocr_enabled"):
+                pdf_pages = int(options.get("pdf_ocr_pages") or 12)
+                doc_ocr = _extract_office_via_pdf_ocr(file_path, pdf_pages)
+                if doc_ocr.strip():
+                    return doc_ocr, "doc_ocr_ok"
+            return text, "ok" if _clean_text(text) else "parser_not_connected_yet"
         if suffix in {".rtf", ".odt", ".pptx"}:
             text = _extract_via_pandoc(file_path) or _extract_via_libreoffice(
                 file_path,
@@ -111,25 +320,154 @@ def _extract_html(path: Path) -> str:
     return html.unescape(soup.get_text("\n", strip=True))
 
 
+def _extract_table_rows(table) -> list[str]:
+    rows_text: list[str] = []
+    for row in table.rows:
+        seen_tc = set()
+        cells: list[str] = []
+        nested_tables: list = []
+        for cell in row.cells:
+            tc_elem = getattr(cell, "_tc", None)
+            if tc_elem in seen_tc:
+                continue
+            if tc_elem is not None:
+                seen_tc.add(tc_elem)
+            cell_txt = " ".join(cell.text.split())
+            cells.append(cell_txt)
+            if getattr(cell, "tables", None):
+                nested_tables.extend(cell.tables)
+        while cells and not cells[-1]:
+            cells.pop()
+        if any(cells):
+            rows_text.append(" | ".join(cells))
+        for nt in nested_tables:
+            sub_rows = _extract_table_rows(nt)
+            if sub_rows:
+                rows_text.append("\n=== TABLE ===")
+                rows_text.extend(sub_rows)
+    return rows_text
+
+
 def _extract_docx(path: Path) -> str:
     from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     doc = Document(str(path))
     blocks: list[str] = []
+
+    # Document-order traversal via body elements
+    try:
+        body = getattr(doc.element, "body", None)
+        if body is not None:
+            tbl_counter = [0]
+
+            def _traverse_container(container) -> None:
+                for child in container:
+                    tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if tag == "p":
+                        text = Paragraph(child, doc).text.strip()
+                        if text:
+                            blocks.append(text)
+                    elif tag == "tbl":
+                        tbl_counter[0] += 1
+                        t = Table(child, doc)
+                        t_rows = _extract_table_rows(t)
+                        if t_rows:
+                            blocks.append(f"\n=== TABLE {tbl_counter[0]} ===")
+                            blocks.extend(t_rows)
+                    elif tag == "sdt":
+                        sdt_content = child.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sdtContent")
+                        if sdt_content is not None:
+                            _traverse_container(sdt_content)
+
+            _traverse_container(body)
+            if blocks:
+                return "\n".join(blocks)
+    except Exception:
+        pass
+
+    # Fallback to separate paragraphs and tables traversal
+    blocks.clear()
     for paragraph in doc.paragraphs:
         text = paragraph.text.strip()
         if text:
             blocks.append(text)
     for table_index, table in enumerate(doc.tables, start=1):
-        blocks.append(f"\n=== TABLE {table_index} ===")
-        for row in table.rows:
-            cells = [" ".join(cell.text.split()) for cell in row.cells]
-            if any(cells):
-                blocks.append(" | ".join(cells))
+        t_rows = _extract_table_rows(table)
+        if t_rows:
+            blocks.append(f"\n=== TABLE {table_index} ===")
+            blocks.extend(t_rows)
     return "\n".join(blocks)
 
 
+def _extract_docx_xml(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        with zipfile.ZipFile(path) as z:
+            if "word/document.xml" not in z.namelist():
+                return ""
+            xml_data = z.read("word/document.xml")
+        soup = BeautifulSoup(xml_data, "xml")
+        body = soup.find(["w:body", "body"])
+        if not body:
+            return ""
+        blocks: list[str] = []
+
+        def _parse_xml_table(tbl_node) -> list[str]:
+            table_rows: list[str] = []
+            for tr in tbl_node.find_all(lambda tag: tag and tag.name and tag.name.endswith("tr"), recursive=False):
+                cells = []
+                nested_tables = []
+                for tc in tr.find_all(lambda tag: tag and tag.name and tag.name.endswith("tc"), recursive=False):
+                    for sub_tbl in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("tbl"), recursive=False):
+                        nested_tables.append(sub_tbl)
+                    cell_text_parts = []
+                    for p in tc.find_all(lambda tag: tag and tag.name and tag.name.endswith("p"), recursive=False):
+                        pt = "".join(t.get_text() for t in p.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
+                        if pt.strip():
+                            cell_text_parts.append(pt.strip())
+                    cells.append(" ".join(" ".join(cell_text_parts).split()))
+                while cells and not cells[-1]:
+                    cells.pop()
+                if any(cells):
+                    table_rows.append(" | ".join(cells))
+                for sub_tbl in nested_tables:
+                    sub_rows = _parse_xml_table(sub_tbl)
+                    if sub_rows:
+                        table_rows.append("\n=== TABLE ===")
+                        table_rows.extend(sub_rows)
+            return table_rows
+
+        def _traverse_xml_container(container) -> None:
+            for child in container.children:
+                name = getattr(child, "name", "")
+                if not name:
+                    continue
+                if name.endswith("p"):
+                    text = "".join(t.get_text() for t in child.find_all(lambda tag: tag and tag.name and tag.name.endswith("t")))
+                    if text.strip():
+                        blocks.append(text.strip())
+                elif name.endswith("tbl"):
+                    t_rows = _parse_xml_table(child)
+                    if t_rows:
+                        blocks.append("\n=== TABLE ===")
+                        blocks.extend(t_rows)
+                elif name.endswith("sdt"):
+                    sdt_content = child.find(lambda tag: tag and tag.name and tag.name.endswith("sdtContent"))
+                    if sdt_content:
+                        _traverse_xml_container(sdt_content)
+
+        _traverse_xml_container(body)
+        return "\n".join(blocks)
+    except Exception:
+        return ""
+
+
 def _is_docx_package(path: Path) -> bool:
+    if not path.is_file():
+        return False
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
@@ -152,7 +490,60 @@ def _extract_xlsx(path: Path) -> str:
     return "\n".join(blocks)
 
 
+SIGNATURE_AND_STAMP_PATTERNS = (
+    r"ДОКУМЕНТ\s+ПОДПИСАН(?:\s+УКЭП)?(?:\s+ЭЛЕКТРОННОЙ\s+ПОДПИСЬЮ)?",
+    r"СВЕДЕНИЯ\s+О\s+СЕРТИФИКАТЕ(?:\s+ЭП)?",
+    r"Сертификат:\s*[0-9A-Fa-f\s]+",
+    r"Владелец:\s*[^\n]+",
+    r"Срок\s+действия(?:\s+с\s+[0-9.]+\s+по\s+[0-9.]+)?",
+    r"Акционерное\s+общество\s+[\"«]Гринатом[\"»]",
+    r"Федеральное\s+казначейство",
+    r"Квалифицированный\s+сертификат",
+)
+
+
+def _strip_signatures_and_stamps(text: str) -> str:
+    cleaned = str(text or "")
+    for pat in SIGNATURE_AND_STAMP_PATTERNS:
+        cleaned = re.sub(pat, " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _pdf_needs_ocr(path: Path, text: str) -> bool:
+    clean_substantive = _clean_text(_strip_signatures_and_stamps(text))
+    if len(clean_substantive) < 80:
+        return True
+    try:
+        import fitz
+
+        doc = fitz.open(str(path))
+        total_pages = len(doc)
+        if total_pages >= 2:
+            scanned_pages = 0
+            for page in doc:
+                p_text = _clean_text(_strip_signatures_and_stamps(page.get_text("text")))
+                if len(p_text) < 50 and len(page.get_images()) > 0:
+                    scanned_pages += 1
+            if scanned_pages / total_pages >= 0.3:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _extract_pdf(path: Path) -> str:
+    try:
+        import pdf_inspector
+
+        res = pdf_inspector.process_pdf(str(path))
+        if res and res.markdown and not res.has_encoding_issues and res.pdf_type != "scanned":
+            text = str(res.markdown or "").strip()
+            # If markdown is only digital signature metadata, do not treat as complete text
+            if len(_clean_text(_strip_signatures_and_stamps(text))) > 80:
+                return text
+    except Exception:
+        pass
+
     try:
         import fitz
 
@@ -186,7 +577,10 @@ def _extract_via_pandoc(path: Path) -> str:
     pandoc = shutil.which("pandoc")
     if not pandoc:
         return ""
-    result = subprocess.run([pandoc, str(path), "-t", "plain"], check=False, capture_output=True, text=True, timeout=80)
+    try:
+        result = subprocess.run([pandoc, str(path), "-t", "plain"], check=False, capture_output=True, text=True, timeout=80)
+    except (OSError, subprocess.SubprocessError):
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -243,15 +637,83 @@ def _extract_pdf_ocr(path: Path, max_pages: int) -> str:
         with tempfile.TemporaryDirectory(prefix="aipoisk-pdf-ocr-") as tmp:
             for page_index in range(min(max_pages, len(doc))):
                 page = doc[page_index]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                image_path = Path(tmp) / f"page-{page_index + 1}.png"
-                pix.save(str(image_path))
-                page_text = _extract_image_ocr(image_path)
-                if page_text.strip():
-                    texts.append(f"\n=== OCR PAGE {page_index + 1} ===\n{page_text}")
+                page_raw = page.get_text("text").strip()
+                substantive = _clean_text(_strip_signatures_and_stamps(page_raw))
+                images = page.get_images()
+
+                # If page already has rich digital text or has no images, keep it directly
+                if (not images and page_raw) or len(substantive) >= 80:
+                    texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
+                    continue
+
+                # If page is empty scan or has images with negligible text, OCR the page
+                if images or not page_raw:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image_path = Path(tmp) / f"page-{page_index + 1}.png"
+                    pix.save(str(image_path))
+                    page_text = _extract_image_ocr(image_path)
+                    if page_text.strip():
+                        texts.append(f"\n=== OCR PAGE {page_index + 1} ===\n{page_text.strip()}")
+                    elif page_raw:
+                        texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
+                elif page_raw:
+                    texts.append(f"\n=== PAGE {page_index + 1} ===\n{page_raw}")
         return "\n".join(texts)
     except Exception:
         return ""
+
+
+def _extract_docx_media_ocr(path: Path, max_images: int = 20) -> str:
+    if not path.is_file() or max_images <= 0 or not shutil.which("tesseract"):
+        return ""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = [
+                n for n in z.namelist()
+                if n.startswith("word/media/") and Path(n).suffix.lower() in IMAGE_EXTENSIONS
+            ]
+            if not names:
+                return ""
+            names = sorted(names, key=_natural_sort_key)
+            blocks: list[str] = []
+            with tempfile.TemporaryDirectory(prefix="aipoisk-docx-ocr-") as tmp:
+                for idx, name in enumerate(names[:max_images], start=1):
+                    ext = Path(name).suffix.lower()
+                    img_file = Path(tmp) / f"img_{idx}{ext}"
+                    img_file.write_bytes(z.read(name))
+                    img_text = _extract_image_ocr(img_file)
+                    if _clean_text(img_text):
+                        blocks.append(f"\n=== OCR IMAGE {idx}: {Path(name).name} ===\n{img_text.strip()}")
+            return "\n\n".join(blocks).strip()
+    except Exception:
+        return ""
+
+
+def _extract_office_via_pdf_ocr(path: Path, max_pages: int = 12) -> str:
+    if not shutil.which("libreoffice") or not shutil.which("tesseract") or max_pages <= 0:
+        return ""
+    with tempfile.TemporaryDirectory(prefix="aipoisk-doc-pdf-") as tmp:
+        result = subprocess.run(
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp,
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return ""
+        candidates = sorted(Path(tmp).glob("*.pdf"))
+        if not candidates:
+            return ""
+        return _extract_pdf_ocr(candidates[0], max_pages)
 
 
 def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
@@ -261,7 +723,7 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
         return "", "archive_too_large"
     with tempfile.TemporaryDirectory(prefix="aipoisk-archive-") as tmp:
         tmp_path = Path(tmp)
-        if path.suffix.lower() == ".zip":
+        if zipfile.is_zipfile(path):
             extracted = _extract_zip_members(path, tmp_path, max_files)
         else:
             extracted = _extract_external_archive(path, tmp_path, max_files)
@@ -275,7 +737,7 @@ def _extract_archive(path: Path, options: dict, depth: int) -> tuple[str, str]:
             text, status = extract_text(item, options, _depth=depth - 1)
             statuses.append(status)
             if text.strip():
-                rel = item.relative_to(tmp_path)
+                rel = clean_surrogates(str(item.relative_to(tmp_path)))
                 parts.append(f"\n\n=== ARCHIVE FILE: {rel} ===\n{text}")
         if parts:
             status = "archive_ok" if all(item == "ok" for item in statuses) else "archive_partial"
@@ -291,7 +753,8 @@ def _extract_zip_members(path: Path, destination: Path, max_files: int) -> list[
                 break
             if member.is_dir():
                 continue
-            safe_name = sanitize_filename(Path(member.filename).name)
+            filename = fix_archive_filename(member.filename)
+            safe_name = sanitize_filename(Path(filename).name)
             if not safe_name:
                 continue
             target = destination / f"{len(extracted) + 1:03d}_{safe_name}"
@@ -311,15 +774,196 @@ def _extract_external_archive(path: Path, destination: Path, max_files: int) -> 
     if result.returncode != 0:
         return []
     files = [item for item in destination.rglob("*") if item.is_file()]
-    return files[: max_files or len(files)]
+    clean_files: list[Path] = []
+    for item in files:
+        raw_name = item.name
+        cleaned_name = fix_archive_filename(raw_name)
+        if cleaned_name != raw_name:
+            safe_name = sanitize_filename(cleaned_name)
+            new_target = item.parent / safe_name
+            try:
+                item.rename(new_target)
+                item = new_target
+            except Exception:
+                pass
+        clean_files.append(item)
+    return clean_files[: max_files or len(clean_files)]
+
+
+
+async def organize_procurement_documents_ai(
+    items: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], str]:
+    """
+    Семантическая классификация и приоритизация комплекта документов закупки (Правило 14).
+    Анализирует смысл и роль каждого файла через ИИ без жестких шаблонов слов и регулярных выражений.
+
+    Расставляет документы в порядке важности для анализа и подбора товаров:
+    1. technical_spec (ТЗ, описание объекта закупки, спецификации, Форма 2) — всегда первыми.
+    2. procurement_notice (извещение, общие параметры процедуры) — вторыми.
+    3. pricing_nmck (обоснование цены, сметы, КП) — третьими.
+    4. contract_draft (проект договора/контракта, юридические статьи) — в конец.
+    5. instructions_and_other (инструкции, регламенты) — в конец.
+
+    Возвращает:
+      (reordered_items, detected_procurement_subject)
+    """
+    if len(items) <= 1:
+        return items, ""
+
+    docs_info = []
+    for idx, (fname, text) in enumerate(items):
+        t_clean = str(text or "").strip()
+        sample = t_clean[:1200].replace("\n", " ")
+        docs_info.append({
+            "index": idx,
+            "filename": fname,
+            "length_chars": len(t_clean),
+            "sample": sample[:1000],
+        })
+
+    prompt = f"""Ты — ведущий эксперт по государственным закупкам (44-ФЗ / 223-ФЗ).
+Пользователь прикрепил комплект документов к закупке.
+Выполни семантическую классификацию каждого документа (Правило 14: семантический анализ смысла документов без жестких шаблонов слов и регулярных выражений) и определи их приоритет для анализа объекта закупки и подбора товаров.
+
+Документы комплекта:
+{json.dumps(docs_info, ensure_ascii=False, indent=2)}
+
+КАТЕГОРИИ:
+- "technical_spec" (приоритет 1): Описание объекта закупки, ТЗ, спецификация товаров, таблица характеристик, Форма 2, дефектная ведомость. Это ГЛАВНЫЙ документ для подбора товаров и параметров.
+- "procurement_notice" (приоритет 2): Извещение, карточка закупки, общие сведения о процедуре, сроки, заказчик.
+- "pricing_nmck" (приоритет 3): Обоснование НМЦК, сметный расчет, коммерческие предложения.
+- "contract_draft" (приоритет 4): Проект контракта / договора, общие юридические условия, порядок оплаты, штрафы, форс-мажор.
+- "instructions_and_other" (приоритет 5): Инструкции по заполнению заявок, регламенты, выписки.
+
+Ответь СТРОГО в формате JSON:
+{{
+  "procurement_subject": "Краткое точное наименование объекта закупки (например: 'Поставка матрасов')",
+  "documents": [
+    {{
+      "index": 0,
+      "category": "technical_spec" | "procurement_notice" | "pricing_nmck" | "contract_draft" | "instructions_and_other",
+      "priority": 1,
+      "reasoning": "краткое пояснение роли документа"
+    }}
+  ]
+}}"""
+
+    try:
+        from .exact_product.llm_bridge import call_llm
+        raw = await call_llm(
+            prompt=prompt,
+            system_prompt="Ты эксперт по госзакупкам. Анализируй семантическую роль каждого документа в закупке. Отвечай только валидным JSON.",
+            json_mode=True,
+            model_tier="light",
+            routing_key="procurement_brand_detection",
+        )
+        data = json.loads(raw)
+        doc_priorities = {}
+        for d in data.get("documents", []):
+            idx = d.get("index")
+            prio = d.get("priority", 5)
+            if idx is not None and 0 <= idx < len(items):
+                doc_priorities[idx] = prio
+
+        sorted_indices = sorted(range(len(items)), key=lambda i: doc_priorities.get(i, 5))
+        reordered = [items[i] for i in sorted_indices]
+        subject = str(data.get("procurement_subject") or "").strip()
+        return reordered, subject
+    except Exception as exc:
+        logger.debug("organize_procurement_documents_ai_failed: %s", exc)
+        return items, ""
+
+
+def organize_procurement_documents(
+    items: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], str]:
+    """Синхронный запуск семантической классификации документов (Правило 14)."""
+    if len(items) <= 1:
+        return items, ""
+    try:
+        import asyncio
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, organize_procurement_documents_ai(items)).result(timeout=25)
+        else:
+            return asyncio.run(organize_procurement_documents_ai(items))
+    except Exception as exc:
+        logger.debug("organize_procurement_documents_sync_failed: %s", exc)
+        return items, ""
 
 
 def combined_document_context(items: list[tuple[str, str]]) -> str:
     parts = []
     for filename, text in items:
-        if text.strip():
-            parts.append(f"\n\n=== FILE: {filename} ===\n{text[:500000]}")
+        clean_body = clean_xml_compatible(text).strip()
+        if clean_body:
+            clean_name = clean_xml_compatible(filename).strip() or "document"
+            parts.append(f"\n\n=== FILE: {clean_name} ===\n{clean_body[:500000]}")
     return "\n".join(parts).strip()
+
+
+
+PLACEHOLDER_TZ_PATTERNS = (
+    r"введите\s+текст\s+технического\s+задания",
+    r"введите\s+текст(?:\s+задания)?",
+    r"вставьте\s+текст(?:\s+задания)?",
+    r"текст\s+технического\s+задания",
+    r"шаблон\s+(?:технического\s+задания|тз)",
+    r"в\s+документе\s+нет\s+содержимого",
+    r"образец\s+технического\s+задания",
+    r"заполните\s+спецификацию",
+    r"\[\s*введите\s+текст[^\]]*\]",
+    r"\[\s*текст\s+тз[^\]]*\]",
+    r"\[\s*спецификация[^\]]*\]",
+)
+
+
+def is_substantive_tz_text(text: str) -> tuple[bool, str]:
+    """
+    Проверяет, содержит ли извлечённый текст реальные содержательные требования ТЗ,
+    а не пустой шаблон, заглушку редактора или один лишь заголовок.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False, "В загруженных документах отсутствует текст (файл пустой)."
+
+    # Убираем системные разделители файлов и страниц
+    cleaned = re.sub(r"===\s*(?:FILE|ARCHIVE FILE):\s*[^\n]+===", " ", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"---\s*PAGE\s*\d+\s*---", " ", cleaned, flags=re.IGNORECASE)
+
+    has_placeholder = False
+    stripped_placeholder = cleaned
+    for pat in PLACEHOLDER_TZ_PATTERNS:
+        if re.search(pat, cleaned, flags=re.IGNORECASE):
+            has_placeholder = True
+            stripped_placeholder = re.sub(pat, " ", stripped_placeholder, flags=re.IGNORECASE)
+
+    has_signature = False
+    for pat in SIGNATURE_AND_STAMP_PATTERNS:
+        if re.search(pat, stripped_placeholder, flags=re.IGNORECASE):
+            has_signature = True
+            stripped_placeholder = re.sub(pat, " ", stripped_placeholder, flags=re.IGNORECASE)
+
+    meaningful_chars = re.sub(r"[\s\W_]+", "", stripped_placeholder, flags=re.UNICODE)
+
+    if has_placeholder and len(meaningful_chars) < 25:
+        return False, "В документе нет содержимого (обнаружен шаблон «Введите текст технического задания...»). Загрузите файл с сохранённым текстом ТЗ или характеристиками товара."
+
+    if has_signature and len(meaningful_chars) < 25:
+        return False, "В документе отсутствуют требования к товару (обнаружен только штамп электронной подписи). Загрузите файл со спецификацией или текстом ТЗ."
+
+    if len(meaningful_chars) < 10:
+        return False, "В документе недостаточно данных для подбора (содержимое пусто или менее 10 значимых символов). Загрузите файл со спецификацией."
+
+    return True, "ok"
 
 
 def read_json_file(path: str | Path, default):
@@ -327,3 +971,108 @@ def read_json_file(path: str | Path, default):
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def extract_smart_pdf_content(
+    pdf_bytes: bytes,
+    *,
+    max_pages_to_extract: int = 14,
+    max_chars: int = 60000,
+    table_tag_label: str = "ТАБЛИЦА ХАРАКТЕРИСТИК",
+) -> str:
+    """
+    Smart PDF extraction for technical catalogs, spec sheets, and equipment passports.
+    Instead of blindly reading only the first 10-15 pages and cutting off at 30k characters,
+    scores pages by table presence and technical specification keywords, prioritizing
+    pages with actual parameter tables and modifications across up to 80 pages.
+    """
+    if not pdf_bytes:
+        return ""
+    try:
+        import fitz
+    except ImportError:
+        return ""
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return ""
+
+    total_pages = len(doc)
+    if total_pages == 0:
+        doc.close()
+        return ""
+
+    TECH_KEYWORDS = (
+        "гост", "ту ", "сто ", "модификац", "характеристик", "параметр",
+        "таблиц", "габарит", "давлен", "диаметр", "масса", "напряжен",
+        "мощност", "чертеж", "артикул", "исполнен", "сери", "размер",
+        "номенклатур", "паспорт", "марк", "модел", "диапазон", "расход",
+    )
+
+    scan_limit = min(total_pages, 80)
+    page_scores: list[tuple[int, int, int]] = []
+
+    for pno in range(scan_limit):
+        try:
+            page = doc[pno]
+            score = 0
+            p_text = page.get_text("text").lower()
+            table_count = 0
+            try:
+                tables = page.find_tables()
+                if tables and tables.tables:
+                    table_count = len(tables.tables)
+                    score += 20 + min(table_count * 5, 25)
+            except Exception:
+                pass
+
+            kw_matches = sum(1 for kw in TECH_KEYWORDS if kw in p_text)
+            score += min(kw_matches * 2, 25)
+            if pno == 0:
+                score += 5
+            page_scores.append((score, pno, table_count))
+        except Exception:
+            continue
+
+    page_scores.sort(key=lambda x: x[0], reverse=True)
+    selected_pnos = {p[1] for p in page_scores[:max_pages_to_extract]}
+    if 0 not in selected_pnos and scan_limit > 0:
+        selected_pnos.add(0)
+
+    sorted_pnos = sorted(selected_pnos)
+    pages_text: list[str] = []
+    current_length = 0
+
+    for pno in sorted_pnos:
+        try:
+            page = doc[pno]
+            page_parts: list[str] = []
+            try:
+                tables = page.find_tables()
+                for t_idx, tab in enumerate(tables):
+                    tab_md = tab.to_markdown()
+                    if tab_md and tab.row_count >= 2:
+                        page_parts.append(
+                            f"\n[{table_tag_label} (СТР. {pno + 1}, ТАБЛ. #{t_idx + 1})]:\n{tab_md}\n"
+                        )
+            except Exception:
+                pass
+
+            raw_text = page.get_text("text").strip()
+            if raw_text:
+                page_parts.append(raw_text)
+
+            if page_parts:
+                block = f"--- [СТРАНИЦА ПАСПОРТА/КАТАЛОГА {pno + 1}] ---\n" + "\n".join(page_parts)
+                pages_text.append(block)
+                current_length += len(block)
+                if current_length >= max_chars:
+                    break
+        except Exception:
+            continue
+
+    doc.close()
+    return "\n".join(pages_text)
+
+

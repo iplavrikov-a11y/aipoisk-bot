@@ -1,0 +1,28 @@
+[Unit]
+Description=TenderLex Durable Job Worker
+After=network.target tenderlex-api.service
+Wants=network-online.target
+# PartOf=tenderlex-api.service (disabled: cascade restarts cause start-limit-hit)
+StartLimitIntervalSec=300
+StartLimitBurst=15
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/projects/tenderlex/backend
+Environment=PYTHONPATH=/root/projects/tenderlex/backend
+Environment=OMP_THREAD_LIMIT=1
+Environment=SUPPLIER_MINPROM_REGISTRY_CACHE_DIR=/root/projects/tenderlex/data/minprom_registry
+EnvironmentFile=/root/projects/tenderlex/.env
+ExecStart=/root/projects/tenderlex/backend/.venv/bin/python -m app.worker
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tenderlex-worker
+MemoryHigh=3072M
+MemoryMax=4096M
+CPUQuota=400%
+
+[Install]
+WantedBy=multi-user.target

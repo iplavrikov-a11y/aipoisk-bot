@@ -15,6 +15,7 @@ class AppConfig(BaseSettings):
     public_base_url: str = "https://tenderlex.ru"
     database_url: str = "sqlite:///../data/aipoisk.db"
     storage_dir: str = "../storage"
+    minprom_registry_cache_dir: str = ""
     admin_token: str = "change-me"
     admin_username: str = "admin"
     admin_password: str = ""
@@ -34,9 +35,11 @@ class AppConfig(BaseSettings):
     default_supplier_search_adapter_base_url: str = ""
     default_supplier_search_adapter_api_key: str = ""
     default_supplier_search_adapter_model: str = ""
-    default_supplier_search_provider_order: str = "yandex,google,tavily,ddgs"
+    default_supplier_search_provider_order: str = "yandex"
     default_yandex_search_folder_id: str = ""
     default_yandex_search_api_key: str = ""
+    default_yandex_max_pages_per_query: int = 3
+    default_yandex_search_price_per_request: float = 0.04
     default_google_search_api_key: str = ""
     default_google_search_cse_id: str = ""
     default_document_settings_json: str = "{}"
@@ -61,9 +64,15 @@ class AppConfig(BaseSettings):
     email_relay_url: str = ""
     email_relay_api_key: str = ""
     email_from_name: str = "TenderLex"
-    email_from_email: str = ""
+    email_from_email: str = "info@tenderlex.ru"
     customer_email_verification_hours: int = 24
-    worker_concurrency: int = 1
+    yandex_oauth_client_id: str = ""
+    yandex_oauth_client_secret: str = ""
+    yandex_oauth_redirect_url: str = ""
+    worker_concurrency: int = 6
+    max_running_jobs_per_client: int = 2
+    supplier_verification_concurrency: int = 8
+    supplier_verification_timeout_seconds: float = 150.0
 
     @property
     def storage_path(self) -> Path:
