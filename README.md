@@ -25,6 +25,7 @@ Admin/internal domain: `https://admin.tenderlex.ru`
     * Added `RUSSIAN_REGION_CAPITALS` dictionary for automatic geocoding when suppliers provide region names without explicit cities (e.g., «Вологодская область» -> «Вологда»).
     * Enforced strict ascending distance priority for suppliers inside specified radius (`within_radius=True`) before national fallback.
     * Excel reports clearly summarize suppliers found inside radius vs national fallback count.
+  - Clean Customer Progress Language (`jobs.py`): eliminated billing amount suffixes (`Списано: X.X ₽`) from price monitoring completion statuses to adhere to client-result language principles and keep financial details strictly in operations history; historical tasks in SQLite backfilled.
   - Test Suite & Deployment: created `backend/tests/test_price_monitoring_multisource.py` with 5 comprehensive tests across 12 diverse industrial commodities; 861 backend tests passing (100%), site typecheck and Next.js build passing, live production deployment verified on `202.71.13.57`.
 - Geo-Radius Supplier Search & Logistics Regional Optimization (2026-10-15):
   - Geo Distance Engine & Nationwide City Database (`supplier_locations.py`, `city_coordinates.json`): Haversine distance algorithm with 1.15 road curvature factor covering 1,208 Russian cities and industrial centers (all 1,117+ official cities of Russia from Moscow to Kamensk-Shakhtinsky, Shakhty, Novoshakhtinsk, Zverevo, Gukovo, Belaya Kalitva, Millerovo, Krasny Sulin, Sysert, etc.).
