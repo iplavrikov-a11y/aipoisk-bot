@@ -23,7 +23,12 @@ from .cleaner import (
     normalize_unit,
 )
 from .excel_report import generate_price_monitoring_excel
-from .extractor import extract_supplier_quote, fetch_page_content_and_meta, is_valid_domain
+from .extractor import (
+    extract_supplier_quote,
+    fetch_page_content_and_meta,
+    is_foreign_source,
+    is_valid_domain,
+)
 from .models import BatchMonitoringResult, ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
