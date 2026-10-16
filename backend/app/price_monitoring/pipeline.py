@@ -464,13 +464,31 @@ async def process_single_item(
             if len(candidate_urls) >= 30:
                 break
 
-    # Сбор и извлечение цен с найденных страниц
     seen_domains: set[str] = set()
-
-    # Оцениваем до (max_suppliers + 4) котировок, чтобы алгоритм кластеризации имел достаточный запас для отсева выбросов
-    target_eval_quotes = max(6, max_suppliers + 4)
-    MAX_LLM_EXTRACTIONS_PER_ITEM = 12
+    seen_inns: set[str] = set()
+    target_suppliers = min_target_suppliers or max_suppliers
+    MAX_LLM_EXTRACTIONS_PER_ITEM = max(20, target_suppliers * 4)
     llm_extractions_done = 0
+
+    def _get_base_domain(d: str) -> str:
+        parts = d.split(".")
+        if len(parts) >= 3 and ".".join(parts[-2:]) in ("spb.ru", "msk.ru", "nov.ru", "com.ru", "net.ru", "org.ru"):
+            return ".".join(parts[-3:])
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return d
+
+    def _get_consensus_count() -> int:
+        valid_qs = [q for q in item_res.quotes if q.is_price_found and q.price_rub > 0]
+        if not valid_qs:
+            return 0
+        cluster_and_reconcile_item_quotes(
+            item_res,
+            cluster_ratio=cluster_ratio,
+            max_suppliers=max_suppliers,
+            max_variation_pct=max_variation_pct,
+        )
+        return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
 
     async def _evaluate_candidates(urls: list[str]) -> None:
         nonlocal llm_extractions_done
@@ -478,12 +496,15 @@ async def process_single_item(
             if llm_extractions_done >= MAX_LLM_EXTRACTIONS_PER_ITEM:
                 logger.debug("LLM extraction budget reached (%d) for '%s'", MAX_LLM_EXTRACTIONS_PER_ITEM, clean)
                 break
-            valid_found = len([q for q in item_res.quotes if q.is_price_found and q.price_rub > 0])
-            if valid_found >= target_eval_quotes:
+            if _get_consensus_count() >= target_suppliers:
+                logger.debug("Target consensus reached (%d suppliers) for '%s'", target_suppliers, clean)
+                break
+            if len([q for q in item_res.quotes if q.price_rub > 0]) >= target_suppliers * 2 + 4:
                 break
             try:
                 domain = urlparse(url).netloc.lower().replace("www.", "")
-                if domain in seen_domains:
+                base_domain = _get_base_domain(domain)
+                if domain in seen_domains or base_domain in seen_domains:
                     continue
 
                 page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
@@ -538,28 +559,22 @@ async def process_single_item(
                             if not quote.contacts:
                                 quote.contacts = kdata["contacts"]
                             break
+                    if quote.inn and quote.inn in seen_inns:
+                        logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)
+                        continue
+                    if quote.inn:
+                        seen_inns.add(quote.inn)
                     seen_domains.add(domain)
+                    seen_domains.add(base_domain)
                     item_res.quotes.append(quote)
             except Exception as exc:
                 logger.debug("Error processing url %s: %s", url, exc)
 
     await _evaluate_candidates(candidate_urls)
 
-    def _get_consensus_count() -> int:
-        valid_qs = [q for q in item_res.quotes if q.is_price_found and q.price_rub > 0]
-        if not valid_qs:
-            return 0
-        cluster_and_reconcile_item_quotes(
-            item_res,
-            cluster_ratio=cluster_ratio,
-            max_suppliers=max_suppliers,
-            max_variation_pct=max_variation_pct,
-        )
-        return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
-
-    # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ КВОРУМА):
+    # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     consensus_count = _get_consensus_count()
-    if consensus_count < min_target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
@@ -579,18 +594,17 @@ async def process_single_item(
                                 wave2_urls.append(r.url)
                 except Exception as b_exc:
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
-                if len(candidate_urls) + len(wave2_urls) >= 40:
+                if len(candidate_urls) + len(wave2_urls) >= 45:
                     break
 
         if wave2_urls:
             await _evaluate_candidates(wave2_urls)
             consensus_count = _get_consensus_count()
 
-    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР):
+    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     has_any_price = any(q.price_rub > 0 for q in item_res.quotes)
     should_run_wave3 = (
-        consensus_count < min_target_suppliers
-        and consensus_count < 2
+        consensus_count < target_suppliers
         and has_any_price
         and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
     )
