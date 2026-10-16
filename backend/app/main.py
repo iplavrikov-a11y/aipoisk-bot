@@ -2106,6 +2106,30 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.money_balance_kopeks = int(target.money_balance_kopeks or 0) + int(source.money_balance_kopeks or 0)
     target.money_reserved_kopeks = int(target.money_reserved_kopeks or 0) + int(source.money_reserved_kopeks or 0)
     merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
+    # Self-referral / referral cycle cleanup on client merge
+    is_self_referral = (source.referrer_id == target.id) or (target.referrer_id == source.id)
+    if is_self_referral:
+        target.referrer_id = None
+        target.referral_reward_granted = False
+        ref_keys = [
+            f"ref_welcome_{source.id}",
+            f"ref_reward_{source.id}",
+            f"ref_welcome_{target.id}",
+            f"ref_reward_{target.id}",
+        ]
+        abused_txs = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.client_id.in_([source.id, target.id]),
+                BillingTransaction.idempotency_key.in_(ref_keys),
+            )
+            .all()
+        )
+        deduct_kopeks = sum(int(t.amount_kopeks or 0) for t in abused_txs)
+        if deduct_kopeks > 0:
+            target.money_balance_kopeks = max(0, int(target.money_balance_kopeks or 0) - deduct_kopeks)
+            merge_note += f"; аннулированы накрученные реферальные бонусы на {deduct_kopeks / 100:.2f} ₽"
+
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
     db.query(Job).filter(Job.client_id == source.id).update({Job.client_id: target.id}, synchronize_session=False)
@@ -2195,6 +2219,12 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
+                if total_amount_kopeks >= 100_000:
+                    try:
+                        from .referral import process_referral_on_payment
+                        process_referral_on_payment(db, client, total_amount_kopeks)
+                    except Exception as ref_exc:
+                        logger.warning("referral_on_admin_grant_error", extra={"error": str(ref_exc)})
             else:
                 transaction = debit_money_balance(
                     db,
@@ -2228,6 +2258,13 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 created_by="admin",
                 idempotency_key=data.idempotency_key or "",
             )
+            pkg_price = getattr(package, "price_kopeks", 0) if package else int(data.amount_kopeks or 0)
+            if pkg_price >= 100_000:
+                try:
+                    from .referral import process_referral_on_payment
+                    process_referral_on_payment(db, client, pkg_price)
+                except Exception as ref_exc:
+                    logger.warning("referral_on_admin_package_grant_error", extra={"error": str(ref_exc)})
         else:
             transaction = debit_package_units(
                 db,
