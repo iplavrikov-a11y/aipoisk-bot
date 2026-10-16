@@ -1714,7 +1714,9 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "max_positions": int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000),
         "concurrency": int(getattr(settings, "price_monitoring_concurrency", 4) or 4),
         "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4),
-        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", False)),
+        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
+        "filter_foreign_sources": bool(getattr(settings, "price_monitoring_filter_foreign", True)),
+        "max_variation_pct": float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0),
     }
 
 
@@ -1736,6 +1738,10 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_cluster_ratio = max(1.15, min(3.0, float(data["cluster_ratio"])))
     if "filter_marketplaces" in data:
         settings.price_monitoring_filter_marketplaces = bool(data["filter_marketplaces"])
+    if "filter_foreign_sources" in data:
+        settings.price_monitoring_filter_foreign = bool(data["filter_foreign_sources"])
+    if "max_variation_pct" in data:
+        settings.price_monitoring_max_variation_pct = max(5.0, min(100.0, float(data["max_variation_pct"])))
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
@@ -1800,6 +1806,10 @@ def admin_list_price_monitoring_clients(db: Session = Depends(db_session)) -> di
             "custom_price_rub": custom_price_rub,
             "effective_price_rub": round(effective_kopeks / 100, 2),
             "has_override": custom_price_rub is not None,
+            "custom_exclude_marketplaces": getattr(c, "custom_exclude_marketplaces", None),
+            "custom_exclude_foreign": getattr(c, "custom_exclude_foreign", None),
+            "custom_max_suppliers": getattr(c, "custom_max_suppliers", None),
+            "custom_max_variation_pct": getattr(c, "custom_max_variation_pct", None),
         })
     return {"clients": items, "base_price_rub": round(base_kopeks / 100, 2)}
 
@@ -1811,6 +1821,16 @@ def admin_update_price_monitoring_client(client_id: str, data: dict, db: Session
         raise HTTPException(status_code=404, detail="Клиент не найден")
     if "allowed" in data:
         client.allowed_price_monitoring = bool(data["allowed"])
+    if "custom_exclude_marketplaces" in data:
+        client.custom_exclude_marketplaces = data["custom_exclude_marketplaces"]
+    if "custom_exclude_foreign" in data:
+        client.custom_exclude_foreign = data["custom_exclude_foreign"]
+    if "custom_max_suppliers" in data:
+        val = data["custom_max_suppliers"]
+        client.custom_max_suppliers = int(val) if val is not None and str(val).strip() != "" else None
+    if "custom_max_variation_pct" in data:
+        val = data["custom_max_variation_pct"]
+        client.custom_max_variation_pct = float(val) if val is not None and str(val).strip() != "" else None
 
     if "custom_price_rub" in data:
         override = (

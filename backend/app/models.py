@@ -92,7 +92,9 @@ class SystemSettings(Base):
     price_monitoring_max_positions: Mapped[int] = mapped_column(Integer, default=1000)
     price_monitoring_concurrency: Mapped[int] = mapped_column(Integer, default=4)
     price_monitoring_cluster_ratio: Mapped[float] = mapped_column(Float, default=1.4)
-    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=False)
+    price_monitoring_filter_marketplaces: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_monitoring_filter_foreign: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_monitoring_max_variation_pct: Mapped[float] = mapped_column(Float, default=33.0)
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -157,6 +159,8 @@ class SystemSettings(Base):
             "price_monitoring_concurrency": self.price_monitoring_concurrency,
             "price_monitoring_cluster_ratio": self.price_monitoring_cluster_ratio,
             "price_monitoring_filter_marketplaces": self.price_monitoring_filter_marketplaces,
+            "price_monitoring_filter_foreign": getattr(self, "price_monitoring_filter_foreign", True),
+            "price_monitoring_max_variation_pct": getattr(self, "price_monitoring_max_variation_pct", 33.0),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
         if include_secrets:
@@ -197,6 +201,10 @@ class Client(Base):
     money_balance_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     money_reserved_kopeks: Mapped[int] = mapped_column(Integer, default=0)
     supplier_target_min: Mapped[int] = mapped_column(Integer, default=0)
+    custom_exclude_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    custom_exclude_foreign: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    custom_max_suppliers: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    custom_max_variation_pct: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     marketing_unsubscribed: Mapped[bool] = mapped_column(Boolean, default=False)
     referrer_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("clients.id"), nullable=True, index=True)
     referral_reward_granted: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -412,6 +420,10 @@ class Job(Base):
     multi_item_mode: Mapped[str] = mapped_column(String(40), default="balanced")
     delivery_city: Mapped[str] = mapped_column(String(255), default="")
     geo_radius_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filter_marketplaces: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    filter_foreign: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    max_suppliers: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    max_variation_pct: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")

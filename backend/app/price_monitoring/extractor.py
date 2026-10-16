@@ -35,13 +35,90 @@ AUTOMOTIVE_DOMAINS = {
     "japancar.ru", "autorus.ru", "kolesa.ru", "drom.ru"
 }
 
-# Маркетплейсы потребительских товаров
+# Маркетплейсы потребительских товаров и доски объявлений
 MARKETPLACE_DOMAINS = {
-    "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru", "aliexpress.ru", "avito.ru"
+    "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru",
+    "aliexpress.ru", "aliexpress.com", "avito.ru", "taobao.com", "1688.com",
+    "temu.com", "ebay.com", "amazon.com", "lamoda.ru", "sbermegamarket.ru",
+    "youla.ru", "farpost.ru", "drom.ru", "irr.ru"
 }
 
+# Сайты-посредники зарубежного выкупа / мейлфорвардеры
+CROSSBORDER_FORWARDERS = {
+    "shopozz.ru", "cdek.shopping", "usmall.ru", "banderolka.com", "pochtaglobal.ru"
+}
 
-def is_valid_domain(url: str, target_item_name: str = "", filter_marketplaces: bool = False) -> bool:
+# Разрешенные региональные зоны для поиска поставщиков РФ
+ALLOWED_DOMESTIC_TLDS = {".ru", ".рф", ".su", ".by", ".kz"}
+
+LISTING_PATH_PATTERNS = [
+    re.compile(r'/tag[-_]page/', re.I),
+    re.compile(r'/tags?/', re.I),
+    re.compile(r'/popular/', re.I),
+    re.compile(r'/search(?:/|\?|$)', re.I),
+    re.compile(r'/collections?/', re.I),
+    re.compile(r'/find(?:/|\?|$)', re.I),
+    re.compile(r'/filter/', re.I),
+    re.compile(r'^/catalog/?$', re.I),
+    re.compile(r'^/catalog/all/?$', re.I),
+    re.compile(r'/category/(?:[a-z0-9_-]+/)*$', re.I),
+]
+
+
+def is_listing_url(url: str) -> bool:
+    """Определяет страницы-каталоги, списки тегов и результаты внутреннего поиска без конкретной карточки."""
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        for pat in LISTING_PATH_PATTERNS:
+            if pat.search(path):
+                return True
+        query = parsed.query.lower()
+        if any(param in query for param in ("sort=", "filter=", "page=", "search=")):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def is_foreign_source(url: str, text: str = "") -> bool:
+    """Определяет иностранные сайты, зарубежные TLD и сервисы трансграничного выкупа."""
+    try:
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        # Проверка посредников зарубежного выкупа
+        for fwd in CROSSBORDER_FORWARDERS:
+            if domain == fwd or domain.endswith("." + fwd):
+                return True
+
+        # Проверка TLD
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            tld = "." + parts[-1]
+            if tld not in ALLOWED_DOMESTIC_TLDS and not domain.endswith(".xn--p1ai"):
+                return True
+
+        # Проверка языка контента, если передан текст
+        if text and len(text) > 80:
+            cyrillic = len(re.findall(r'[а-яА-ЯёЁ]', text))
+            latin = len(re.findall(r'[a-zA-Z]', text))
+            total = cyrillic + latin
+            if total > 40 and (cyrillic / total) < 0.20:
+                return True
+
+        return False
+    except Exception:
+        return False
+
+
+def is_valid_domain(
+    url: str,
+    target_item_name: str = "",
+    filter_marketplaces: bool = True,
+    filter_foreign: bool = True,
+) -> bool:
     try:
         domain = urlparse(url).netloc.lower()
         if domain.startswith("www."):
@@ -52,11 +129,19 @@ def is_valid_domain(url: str, target_item_name: str = "", filter_marketplaces: b
             if domain == bd or domain.endswith("." + bd):
                 return False
 
-        # Опциональная фильтрация потребительских маркетплейсов
+        # Фильтрация маркетплейсов
         if filter_marketplaces:
             for md in MARKETPLACE_DOMAINS:
                 if domain == md or domain.endswith("." + md):
                     return False
+
+        # Фильтрация зарубежных источников
+        if filter_foreign and is_foreign_source(url):
+            return False
+
+        # Отсекаем явные страницы списков и тегов
+        if is_listing_url(url):
+            return False
 
         # Защита от автомагазинов: если ищется промышленное оборудование, отсекаем автозапчасти
         target_lower = target_item_name.lower()
@@ -328,6 +413,34 @@ def has_price_signals(text: str) -> bool:
     return bool(PRICE_SIGNAL_PATTERN.search(text))
 
 
+def is_price_grounded_in_text(raw_price: float, text: str) -> bool:
+    """Проверяет, что извлеченная цена физически присутствует в тексте страницы (защита от галлюцинаций LLM)."""
+    if raw_price <= 0:
+        return False
+    int_p = int(round(raw_price))
+    if int_p <= 0:
+        return False
+    str_int = str(int_p)
+    if str_int in text:
+        return True
+    if len(str_int) > 3:
+        # Проверка с разделителями тысяч (пробел, неразрывный пробел, точка)
+        parts = []
+        rem = len(str_int) % 3
+        if rem:
+            parts.append(str_int[:rem])
+        for i in range(rem, len(str_int), 3):
+            parts.append(str_int[i : i + 3])
+        spaced = r'[\s\xa0.,]'.join(parts)
+        if re.search(spaced, text):
+            return True
+    # Проверка исходного числа с плавающей точкой
+    str_float = f"{raw_price:.2f}".replace(".", ",")
+    if str_float in text or f"{raw_price:.2f}" in text:
+        return True
+    return False
+
+
 async def extract_supplier_quote(
     settings: SystemSettings,
     target_item_name: str,
@@ -360,23 +473,24 @@ URL страницы: {url}
 Текст страницы товара и реквизитов:
 {page_text}
 
-КРИТИЧЕСКИЕ ПРАВИЛА:
-1. РЕЛЕВАНТНОСТЬ И СТРОГИЙ ЗАПРЕТ ОМОНИМОВ / ЧУЖИХ ТОВАРОВ:
-   - Проверь, что на странице продается именно этот товар того же функционального назначения (или точная марка/ГОСТ/типоразмер/артикул).
-   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ СМЫСЛОВЫЕ ПОДМЕНЫ И ОМОНИМЫ:
-     * Промышленная деталь vs Военная экипировка: если ищется броня/футеровка для оборудования/дробилки/смесителя (например "Броня радиальная К4-52"), СТРОГО ЗАПРЕЩЕНО брать бронежилеты, бронеплиты защиты человека ("Атлант Армор", "плита Бр4")! Это разные товары (is_relevant: false, is_price_found: false).
-     * Промышленные молотки и била дробилок vs Автозапчасти: если ищется било/молоток дробилки или мельницы (например "Било Л-04.524", "Билодержатель"), КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО брать автомобильные запчасти, тормозные колодки Brembo, диски, автофильтры! На странице ОБЯЗАНО быть именно било/молоток промышленной дробилки! (is_relevant: false, is_price_found: false).
-     * Муфтовые/крановые пальцы vs Автозапчасти: если ищется палец муфты/оборудования (например "Палец К4-79"), ЗАПРЕЩЕНО брать поршневые пальцы двигателей автомобилей или строительные шплинты!
-     * Запрет частичных совпадений цифр артикула: совпадение только суффикса (например "524" в "P 00 524") при поиске промышленного кода "Л-04.524" ЯВЛЯЕТСЯ ГРУБОЙ ОШИБКОЙ. Брать только точное совпадение модели/чертежа.
-     * Запрещено делить цену сложных комплектов (например, комплект поршней 4 шт с пальцами) на части для искусственного вычисления цены отдельного элемента! Если деталь не продается отдельно — is_price_found: false.
-     * Точные артикулы и марки: если в наименовании указан буквенно-цифровой индекс/код (например: "GT13E2", "0065C...", "13630", "К4-52"), на странице ОБЯЗАН быть именно этот артикул или его полный сертифицированный аналог! Не брать датчики или детали других марок и серий.
-     * Агрегат/деталь vs Расходник/аксессуар: если ищется подшипник, ЗАПРЕЩЕНО брать уплотнительное кольцо, сальник, манжету или смазку к нему (цена в десятки раз ниже!).
-     * Технические газы vs Металлическая тара: если ищется газ (кислород, пропан, азот, углекислота) за м³ или кг, извлекать ТОЛЬКО цену заправки/газа. ЗАПРЕЩЕНО брать цену самого металлического пустого баллона (сосуда под давлением за 10 000 - 30 000 руб)!
-   - Если товар другой, не совпадает по назначению, лекарство, косметика, новостная статья, общая услуга — ответь is_price_found: false, is_relevant: false.
+КРИТИЧЕСКИЕ ПРАВИЛА (АРХИТЕКТУРА COMPARE-THEN-MATCH, ПРАВИЛО 14):
+1. ДЕКОМПОЗИЦИЯ ИДЕНТИФИКАТОРОВ И ПРОВЕРКА КОНФЛИКТОВ:
+   - Исходный товар: выдели ключевые артикулы, чертежи, индексы, марки, материалы (например: 'Р1763', 'Л-04.524', 'К4-15-01', 'К4-79', 'ВАТИ-202', 'ОЗС-12', 'К4-52', 'GT13E2', '0065C...').
+   - Товар на странице: определи точную марку, артикул, чертеж и материал на странице.
+   - КОНФЛИКТ ИДЕНТИФИКАТОРОВ (identifier_conflict):
+     * Если в запросе есть конкретный код, чертеж или марка ('Р1763', 'Л-04.524', 'GT13E2', 'ВАТИ-202', 'К4-52', 'Rosemount 0065C...'), а на странице продается ДРУГАЯ марка или общий товар без этого кода (например, просто диаграммная лента без Р1763, датчик ВАЗ вместо турбинного GT13E2, набивка АП-31 вместо безасбестовой ВАТИ-202, броня Sicoma вместо К4-52) — СТРОГО УСТАНОВИ identifier_conflict: true, is_relevant: false, is_price_found: false!
+     * Запрещены смысловые подмены и омонимы:
+       - Промышленная броня/футеровка смесителя vs бронежилеты/плиты защиты человека -> conflict!
+       - Била/молотки промышленных дробилок vs автомобильные колодки/диски/фильтры -> conflict!
+       - Муфтовые/крановые пальцы vs поршневые пальцы двигателей автомобилей -> conflict!
+       - Запрет частичных совпадений цифр артикула: совпадение только суффикса (например '524' в 'P 00 524') при поиске 'Л-04.524' -> conflict!
+   - КОНФЛИКТ МАТЕРИАЛА (material_conflict):
+     * Безасбестовые уплотнения (ВАТИ) нельзя заменять на асбестовые (АП-31/АПР-31)!
+     * Сталь ВСт3сп нельзя заменять на разнородные стали без указания марки.
+   - Если identifier_conflict: true или material_conflict: true -> is_relevant: false, is_price_found: false.
 2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
-   - Найди реальную цену в рублях.
-   - Определи, за какую ИМЕННО единицу/фасовку она указана на сайте (например: "бочка 200л", "канистра 10л", "мешок 50кг", "1 шт", "1 метр", "1 упаковка 100 шт", "1 тонна").
-   - Если цена "по запросу", "уточняйте", 0 или "нет в наличии" — ответь is_price_found: false.
+   - Найди реальную цену в рублях, которая ЯВНО указана на странице.
+   - Если на странице каталог без цен ('уточняйте цену', 'по запросу', 'нет в наличии', 0) — is_price_found: false.
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:
@@ -404,11 +518,15 @@ URL страницы: {url}
    - kpp: КПП организации (9 цифр), если есть.
    - contacts: Телефон(ы), email, город поставщика.
 
-Ответь СТРОГО JSON-объектом (ПРАВИЛО 14: СНАЧАЛА СЕМАНТИЧЕСКИЙ АНАЛИЗ, ЗАТЕМ ВЕРДИКТ):
+Ответь СТРОГО JSON-объектом:
 {{
-  "nomenclature_class": "Класс и назначение искомого товара (например: промышленная деталь бетоносмесителя / муфта крановая / датчик автоматики)",
+  "target_identifiers": ["код/чертеж/марка из запроса"],
+  "site_identifiers": ["код/чертеж/марка со страницы"],
+  "identifier_conflict": false,
+  "material_conflict": false,
+  "nomenclature_class": "Класс и назначение искомого товара",
   "site_product_name": "Точное наименование товара на найденной странице",
-  "semantic_match_reason": "Семантическое обоснование: почему товар полностью совпадает по назначению, типу и артикулу (или почему отвергнут)",
+  "semantic_match_reason": "Семантическое обоснование совпадения или причина конфликта",
   "is_relevant": true,
   "is_price_found": true,
   "company_name": "ООО Название",
@@ -428,6 +546,11 @@ URL страницы: {url}
         if not parsed or not isinstance(parsed, dict):
             return None
 
+        # Проверка конфликтов Compare-then-Match
+        if parsed.get("identifier_conflict") or parsed.get("material_conflict"):
+            logger.debug("Rejected quote for %s: conflict detected: %s", url, parsed.get("semantic_match_reason"))
+            return None
+
         if not parsed.get("is_relevant") or not parsed.get("is_price_found"):
             return None
 
@@ -437,6 +560,11 @@ URL страницы: {url}
             return None
         raw_price_val = float(raw_p)
         if raw_price_val <= 0 or raw_price_val > 500_000_000:
+            return None
+
+        # Проверка заземления цены (grounding check): цена должна присутствовать в тексте страницы/сниппета
+        if not is_price_grounded_in_text(raw_price_val, page_text):
+            logger.debug("Rejected quote for %s: price %s not grounded in page text", url, raw_price_val)
             return None
 
         # Итоговая цена (с учетом возможного пересчета LLM)
