@@ -405,9 +405,11 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
 
     cluster_and_reconcile_item_quotes(item, cluster_ratio=2.2)
 
-    # The wild outlier (1950.0) is marked as outlier, while best confirmed base quote (14.4) is kept
-    assert any(q.is_outlier for q in item.quotes)
-    assert item.has_prices is True
+    # Two wildly divergent quotes (14.40 vs 1950.00 = 135x difference, variation 139% > 33%)
+    # Under Order 567 / client requirement, when prices are non-homogeneous (V > 33%),
+    # system does not hallucinate or pick random single outliers, but honestly suppresses both.
+    assert all(q.is_outlier for q in item.quotes)
+    assert item.has_prices is False
 
     out_file = tmp_path / "test_divergence.xlsx"
     generate_price_monitoring_excel([item], str(out_file))
@@ -415,10 +417,10 @@ def test_divergent_prices_suppressed_when_no_consensus_cluster(tmp_path):
     wb = openpyxl.load_workbook(str(out_file))
     ws = wb["Пример отчета"]
 
-    # Price cell displays the best confirmed quote, never "разброс цен"
-    assert ws["C5"].value == 14.4
+    # When no homogeneous consensus exists, report displays honest missing status
+    assert ws["C5"].value == "-"
+    assert "В открытых источниках цена отсутствует" in str(ws["D5"].value)
     assert ws["C5"].value != "разброс цен"
-    assert "разброс цен" not in str(ws["D5"].value)
 
 
 def test_circular_reference_prevention_and_row_height_and_no_address(tmp_path):

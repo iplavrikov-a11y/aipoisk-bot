@@ -232,10 +232,12 @@ ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
+from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
+app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
@@ -1712,7 +1714,9 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "max_positions": int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000),
         "concurrency": int(getattr(settings, "price_monitoring_concurrency", 4) or 4),
         "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4),
-        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", False)),
+        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
+        "filter_foreign_sources": bool(getattr(settings, "price_monitoring_filter_foreign", True)),
+        "max_variation_pct": float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0),
     }
 
 
@@ -1734,6 +1738,10 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_cluster_ratio = max(1.15, min(3.0, float(data["cluster_ratio"])))
     if "filter_marketplaces" in data:
         settings.price_monitoring_filter_marketplaces = bool(data["filter_marketplaces"])
+    if "filter_foreign_sources" in data:
+        settings.price_monitoring_filter_foreign = bool(data["filter_foreign_sources"])
+    if "max_variation_pct" in data:
+        settings.price_monitoring_max_variation_pct = max(5.0, min(100.0, float(data["max_variation_pct"])))
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
@@ -1798,6 +1806,10 @@ def admin_list_price_monitoring_clients(db: Session = Depends(db_session)) -> di
             "custom_price_rub": custom_price_rub,
             "effective_price_rub": round(effective_kopeks / 100, 2),
             "has_override": custom_price_rub is not None,
+            "custom_exclude_marketplaces": getattr(c, "custom_exclude_marketplaces", None),
+            "custom_exclude_foreign": getattr(c, "custom_exclude_foreign", None),
+            "custom_max_suppliers": getattr(c, "custom_max_suppliers", None),
+            "custom_max_variation_pct": getattr(c, "custom_max_variation_pct", None),
         })
     return {"clients": items, "base_price_rub": round(base_kopeks / 100, 2)}
 
@@ -1809,6 +1821,16 @@ def admin_update_price_monitoring_client(client_id: str, data: dict, db: Session
         raise HTTPException(status_code=404, detail="Клиент не найден")
     if "allowed" in data:
         client.allowed_price_monitoring = bool(data["allowed"])
+    if "custom_exclude_marketplaces" in data:
+        client.custom_exclude_marketplaces = data["custom_exclude_marketplaces"]
+    if "custom_exclude_foreign" in data:
+        client.custom_exclude_foreign = data["custom_exclude_foreign"]
+    if "custom_max_suppliers" in data:
+        val = data["custom_max_suppliers"]
+        client.custom_max_suppliers = int(val) if val is not None and str(val).strip() != "" else None
+    if "custom_max_variation_pct" in data:
+        val = data["custom_max_variation_pct"]
+        client.custom_max_variation_pct = float(val) if val is not None and str(val).strip() != "" else None
 
     if "custom_price_rub" in data:
         override = (
@@ -2104,6 +2126,30 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.money_balance_kopeks = int(target.money_balance_kopeks or 0) + int(source.money_balance_kopeks or 0)
     target.money_reserved_kopeks = int(target.money_reserved_kopeks or 0) + int(source.money_reserved_kopeks or 0)
     merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
+    # Self-referral / referral cycle cleanup on client merge
+    is_self_referral = (source.referrer_id == target.id) or (target.referrer_id == source.id)
+    if is_self_referral:
+        target.referrer_id = None
+        target.referral_reward_granted = False
+        ref_keys = [
+            f"ref_welcome_{source.id}",
+            f"ref_reward_{source.id}",
+            f"ref_welcome_{target.id}",
+            f"ref_reward_{target.id}",
+        ]
+        abused_txs = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.client_id.in_([source.id, target.id]),
+                BillingTransaction.idempotency_key.in_(ref_keys),
+            )
+            .all()
+        )
+        deduct_kopeks = sum(int(t.amount_kopeks or 0) for t in abused_txs)
+        if deduct_kopeks > 0:
+            target.money_balance_kopeks = max(0, int(target.money_balance_kopeks or 0) - deduct_kopeks)
+            merge_note += f"; аннулированы накрученные реферальные бонусы на {deduct_kopeks / 100:.2f} ₽"
+
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
     db.query(Job).filter(Job.client_id == source.id).update({Job.client_id: target.id}, synchronize_session=False)
@@ -2193,6 +2239,12 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
+                if total_amount_kopeks >= 100_000:
+                    try:
+                        from .referral import process_referral_on_payment
+                        process_referral_on_payment(db, client, total_amount_kopeks)
+                    except Exception as ref_exc:
+                        logger.warning("referral_on_admin_grant_error", extra={"error": str(ref_exc)})
             else:
                 transaction = debit_money_balance(
                     db,
@@ -2226,6 +2278,13 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 created_by="admin",
                 idempotency_key=data.idempotency_key or "",
             )
+            pkg_price = getattr(package, "price_kopeks", 0) if package else int(data.amount_kopeks or 0)
+            if pkg_price >= 100_000:
+                try:
+                    from .referral import process_referral_on_payment
+                    process_referral_on_payment(db, client, pkg_price)
+                except Exception as ref_exc:
+                    logger.warning("referral_on_admin_package_grant_error", extra={"error": str(ref_exc)})
         else:
             transaction = debit_package_units(
                 db,

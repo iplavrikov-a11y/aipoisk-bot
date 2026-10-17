@@ -181,7 +181,10 @@ def validate_referral_linkage(
     return True, ""
 
 
-def link_referral_and_grant_welcome(
+REFERRAL_QUALIFYING_PAYMENT_MIN_KOPEKS = 100_000  # 1 000 ₽ (Minimum qualifying deposit)
+
+
+def link_referral(
     db: Session,
     invitee: Client,
     referrer: Client,
@@ -214,85 +217,113 @@ def link_referral_and_grant_welcome(
         invitee.registration_ip = client_ip
     ensure_client_referral_code(invitee, db=db)
     db.commit()
-
-    # Grant 1 000 ₽ welcome gift to invitee
-    try:
-        grant_money_balance(
-            db,
-            invitee,
-            amount_kopeks=REFERRAL_WELCOME_BONUS_KOPEKS,
-            note="Приветственный подарок 1 000 ₽ по приглашению коллеги",
-            idempotency_key=f"ref_welcome_{invitee.id}",
-            created_by="referral_program",
-        )
-        return True
-    except Exception as exc:
-        logger.error("referral_welcome_grant_failed", extra={"error": str(exc), "invitee_id": invitee.id})
-        return False
+    logger.info("referral_linked_pending_first_deposit", extra={"referrer_id": referrer.id, "invitee_id": invitee.id})
+    return True
 
 
-def process_referral_on_job_completion(db: Session, job: Job) -> bool:
-    if not job.client_id:
-        return False
+# Backward compatibility alias
+def link_referral_and_grant_welcome(
+    db: Session,
+    invitee: Client,
+    referrer: Client,
+    *,
+    client_ip: str = "",
+    invitee_email: str = "",
+    invitee_telegram_id: str = "",
+) -> bool:
+    return link_referral(
+        db,
+        invitee,
+        referrer,
+        client_ip=client_ip,
+        invitee_email=invitee_email,
+        invitee_telegram_id=invitee_telegram_id,
+    )
 
-    client = db.get(Client, job.client_id)
+
+def process_referral_on_payment(db: Session, client: Client, payment_amount_kopeks: int) -> bool:
+    """
+    Process referral rewards upon a qualifying first payment (min 1 000 ₽).
+    Grants +1 000 ₽ welcome match bonus to invitee AND +1 000 ₽ reward to inviter.
+    Guarantees zero payout on free trials and completely prevents multi-accounting abuse.
+    """
     if not client or not client.referrer_id:
         return False
 
     if client.referral_reward_granted:
         return False
 
-    # Check job validity: must be completed and not cancelled or internal smoke test
-    status = str(getattr(job, "status", "") or "").lower()
-    if status not in {"completed", "done"}:
-        return False
-
-    # Check for internal test tokens
-    job_text = f"{getattr(job, 'title', '')} {getattr(job, 'message', '')}".lower()
-    if any(tok in job_text for tok in ("smoke", "worker_smoke", "test_runner")):
+    if payment_amount_kopeks < REFERRAL_QUALIFYING_PAYMENT_MIN_KOPEKS:
         return False
 
     referrer = db.get(Client, client.referrer_id)
-    if not referrer or not referrer.is_active:
+    if not referrer or not referrer.is_active or referrer.id == client.id:
         return False
 
-    if referrer.id == client.id:
-        return False
+    # 1. Award +1 000 ₽ welcome deposit bonus to invitee
+    try:
+        grant_money_balance(
+            db,
+            client,
+            amount_kopeks=REFERRAL_WELCOME_BONUS_KOPEKS,
+            note="Приветственный бонус +1 000 ₽ к первому пополнению по приглашению",
+            idempotency_key=f"ref_welcome_{client.id}",
+            created_by="referral_program",
+        )
+    except Exception as exc:
+        logger.error("referral_welcome_payment_bonus_failed", extra={"error": str(exc), "client_id": client.id})
 
-    # Award 1 000 ₽ to inviter
+    # 2. Award +1 000 ₽ reward to inviter
     try:
         grant_money_balance(
             db,
             referrer,
             amount_kopeks=REFERRAL_INVITER_REWARD_KOPEKS,
-            note=f"Бонус 1 000 ₽ за первую выполненную задачу реферала {client.id[:8]}",
+            note=f"Бонус 1 000 ₽ за первое пополнение реферала {client.id[:8]}",
             idempotency_key=f"ref_reward_{client.id}",
             created_by="referral_program",
         )
         client.referral_reward_granted = True
         db.commit()
         logger.info(
-            "referral_inviter_reward_granted",
-            extra={"referrer_id": referrer.id, "referred_client_id": client.id},
+            "referral_payment_reward_granted",
+            extra={"referrer_id": referrer.id, "referred_client_id": client.id, "payment_kopeks": payment_amount_kopeks},
         )
     except Exception as exc:
         logger.error("referral_inviter_reward_failed", extra={"error": str(exc), "referrer_id": referrer.id})
         return False
 
-    # Notify inviter in Telegram if Telegram is linked
-    tg_id = _get_client_primary_telegram_id(db, referrer)
-    if tg_id:
+    # 3. Notify inviter in Telegram if linked
+    inviter_tg_id = _get_client_primary_telegram_id(db, referrer)
+    if inviter_tg_id:
         import asyncio
         asyncio.create_task(
             _send_telegram_inviter_notification(
-                tg_id,
+                inviter_tg_id,
                 "🎉 Вам начислено 1 000 ₽ на баланс!\n\n"
-                "Приглашенный вами коллега успешно выполнил свою первую задачу в TenderLex.\n"
-                "Ваш баланс пополнен на 1 000 ₽. Спасибо за рекомендацию!"
+                "Приглашенный вами коллега впервые пополнил баланс в TenderLex.\n"
+                "Ваш баланс пополнен на 1 000 ₽. Спасибо за рекомендацию!",
+            )
+        )
+
+    # 4. Notify invitee in Telegram if linked
+    invitee_tg_id = _get_client_primary_telegram_id(db, client)
+    if invitee_tg_id:
+        import asyncio
+        asyncio.create_task(
+            _send_telegram_inviter_notification(
+                invitee_tg_id,
+                "🎁 Вам начислен приветственный бонус +1 000 ₽ к первому пополнению по приглашению коллеги!\n\n"
+                "Средства уже зачислены на ваш единый баланс.",
             )
         )
 
     return True
+
+
+def process_referral_on_job_completion(db: Session, job: Job) -> bool:
+    """Deprecated: Referral rewards are now strictly payment-based (process_referral_on_payment) to prevent trial multi-accounting abuse."""
+    return False
 
 
 def _get_client_primary_telegram_id(db: Session, client: Client) -> str:

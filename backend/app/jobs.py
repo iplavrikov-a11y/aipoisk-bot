@@ -1702,10 +1702,36 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
         _set_job(db, job, progress=progress, message=message)
 
     checkpoint_file = out_dir / "checkpoint.json"
-    max_sup = int(getattr(settings, "price_monitoring_max_suppliers", 3) or 3)
+    client = job.client if job else None
+
+    # 3-уровневая иерархия параметров (Job -> Client -> SystemSettings)
+    max_sup = getattr(job, "max_suppliers", None)
+    if max_sup is None and client:
+        max_sup = getattr(client, "custom_max_suppliers", None)
+    if max_sup is None:
+        max_sup = int(getattr(settings, "price_monitoring_max_suppliers", 5) or 5)
+    max_sup = max(2, min(5, int(max_sup)))
+
+    filter_marketplaces = getattr(job, "filter_marketplaces", None)
+    if filter_marketplaces is None and client:
+        filter_marketplaces = getattr(client, "custom_exclude_marketplaces", None)
+    if filter_marketplaces is None:
+        filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", True))
+
+    filter_foreign = getattr(job, "filter_foreign", None)
+    if filter_foreign is None and client:
+        filter_foreign = getattr(client, "custom_exclude_foreign", None)
+    if filter_foreign is None:
+        filter_foreign = bool(getattr(settings, "price_monitoring_filter_foreign", True))
+
+    max_variation_pct = getattr(job, "max_variation_pct", None)
+    if max_variation_pct is None and client:
+        max_variation_pct = getattr(client, "custom_max_variation_pct", None)
+    if max_variation_pct is None:
+        max_variation_pct = float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0)
+
     concurrency = int(getattr(settings, "price_monitoring_concurrency", 4) or 4)
     cluster_ratio = float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4)
-    filter_marketplaces = bool(getattr(settings, "price_monitoring_filter_marketplaces", False))
     delivery_city = str(getattr(job, "delivery_city", "") or "").strip()
     geo_radius_km = getattr(job, "geo_radius_km", None)
 
@@ -1722,6 +1748,8 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
                 checkpoint_path=str(checkpoint_file),
                 cluster_ratio=cluster_ratio,
                 filter_marketplaces=filter_marketplaces,
+                filter_foreign=filter_foreign,
+                max_variation_pct=max_variation_pct,
                 items=items,
                 delivery_city=delivery_city,
                 geo_radius_km=geo_radius_km,

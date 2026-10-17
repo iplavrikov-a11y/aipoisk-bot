@@ -23,7 +23,12 @@ from .cleaner import (
     normalize_unit,
 )
 from .excel_report import generate_price_monitoring_excel
-from .extractor import extract_supplier_quote, fetch_page_content_and_meta, is_valid_domain
+from .extractor import (
+    extract_supplier_quote,
+    fetch_page_content_and_meta,
+    is_foreign_source,
+    is_valid_domain,
+)
 from .models import BatchMonitoringResult, ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
@@ -143,15 +148,36 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     return items
 
 
-def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: float = 1.4) -> None:
+def calculate_variation_coefficient(prices: list[float]) -> float:
+    """
+    Расчет коэффициента вариации по Приказу Минэкономразвития №567 (44-ФЗ):
+    V = (sigma / mean) * 100%
+    где sigma = sqrt(sum((p_i - mean)^2) / (n - 1))
+    """
+    if len(prices) < 2:
+        return 0.0
+    mean_p = statistics.mean(prices)
+    if mean_p <= 0:
+        return 0.0
+    stdev_p = statistics.stdev(prices)
+    return (stdev_p / mean_p) * 100.0
+
+
+def cluster_and_reconcile_item_quotes(
+    item_res: ItemPriceResult,
+    cluster_ratio: float = 1.4,
+    max_suppliers: int = 5,
+    max_variation_pct: float = 33.0,
+) -> None:
     """
     1. Авто-приведение кратностей (баллоны 50л -> кг, м3 -> штуки, мешки 50кг -> т, упаковки 100 шт).
-    2. Кластеризация цен (Price Clustering):
-       Находит наибольший согласованный кластер близких цен (где max_p / min_p <= cluster_ratio).
-    3. Жесткая отсечка выбросов:
-       Все цены вне согласованного кластера маркируются is_outlier = True и исключаются из клиентского отчета.
-    4. Если согласованного кластера нет (все цены разрознены и отличаются более чем в cluster_ratio раз):
-       маркировать котировки как несогласованные выбросы, не выводить в отчет сомнительные цены.
+    2. Кластеризация цен по Приказу №567 (44-ФЗ) с коэффициентом вариации V <= max_variation_pct (по умолчанию 33%):
+       - Ищет комбинаторное подмножество поставщиков максимального размера k (до max_suppliers, затем k-1, ..., 2),
+         удовлетворяющее критерию однородности V <= max_variation_pct.
+       - Если найдено подмножество с V <= max_variation_pct, котировки внутри него считаются подтвержденными.
+       - Все котировки вне однородного подмножества маркируются is_outlier = True.
+       - Если ни одной однородной группы из >= 2 поставщиков нет и разброс превышает max_variation_pct,
+         все котировки маркируются как выбросы (is_outlier = True), чтобы честно отразить отсутствие товара.
     """
     valid_quotes = [q for q in item_res.quotes if q.price_rub > 0]
     if not valid_quotes:
@@ -218,10 +244,9 @@ def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: 
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за уп (100 шт) -> {converted:,.2f} ₽/шт"
 
-    # 2. Кластеризация цен (Price Clustering)
-    # Сбрасываем флаги выбросов перед кластеризацией, кроме явных ошибок фасовки пиломатериалов
+    # 2. Кластеризация цен по Приказу №567 (V <= max_variation_pct)
     for q in item_res.quotes:
-        if not (q.is_outlier and "штуку, а не за м³" in q.comment):
+        if not (q.is_outlier and "штуку, а не за м³" in (q.comment or "")):
             q.is_outlier = False
             q.comment = ""
 
@@ -229,58 +254,42 @@ def cluster_and_reconcile_item_quotes(item_res: ItemPriceResult, cluster_ratio: 
     if len(valid_quotes) <= 1:
         return
 
+    import itertools
+
     valid_quotes.sort(key=lambda q: q.price_rub)
 
-    def _find_best_cluster(quotes_list: list[SupplierQuote], ratio: float) -> list[SupplierQuote]:
-        cl_list: list[list[SupplierQuote]] = []
-        n = len(quotes_list)
-        for i in range(n):
-            for j in range(i, n):
-                p_min = quotes_list[i].price_rub
-                p_max = quotes_list[j].price_rub
-                if p_min > 0 and (p_max / p_min) <= ratio:
-                    cl_list.append(quotes_list[i : j + 1])
-        if not cl_list:
-            return []
-        m_size = max(len(c) for c in cl_list)
-        cand = [c for c in cl_list if len(c) == m_size]
-        if len(cand) == 1:
-            return cand[0]
-        def _rel_spread(cl: list[SupplierQuote]) -> float:
-            p_vals = [q.price_rub for q in cl]
-            return (max(p_vals) - min(p_vals)) / (statistics.mean(p_vals) or 1.0)
-        return min(cand, key=_rel_spread)
+    # Ищем однородное подмножество поставщиков максимального размера k (до max_suppliers)
+    best_homogeneous_subset: list[SupplierQuote] = []
+    best_v = 999.0
 
-    # Ищем согласованный кластер в пределах заданного cluster_ratio (например, 1.4x - 1.5x)
-    best_cluster = _find_best_cluster(valid_quotes, cluster_ratio)
+    target_k_max = min(len(valid_quotes), max_suppliers)
+    for k in range(target_k_max, 1, -1):
+        candidates_at_k: list[tuple[float, list[SupplierQuote]]] = []
+        for combo in itertools.combinations(valid_quotes, k):
+            p_list = [q.price_rub for q in combo]
+            v = calculate_variation_coefficient(p_list)
+            if v <= max_variation_pct:
+                candidates_at_k.append((v, list(combo)))
+        if candidates_at_k:
+            # Выбираем группу с наименьшим коэффициентом вариации
+            candidates_at_k.sort(key=lambda c: c[0])
+            best_v, best_homogeneous_subset = candidates_at_k[0]
+            break
 
-    # Если в пределах cluster_ratio нет кластера из >= 2 источников, пробуем расширенный диапазон до 2.0x
-    fallback_ratio = max(cluster_ratio, min(2.0, cluster_ratio * 1.4))
-    if len(best_cluster) < 2 and fallback_ratio > cluster_ratio:
-        wider_cluster = _find_best_cluster(valid_quotes, fallback_ratio)
-        if len(wider_cluster) >= 2:
-            best_cluster = wider_cluster
-
-    best_ids = {id(q) for q in best_cluster}
-
-    if len(best_cluster) >= 2:
-        # Сформирован согласованный кластер из >= 2 источников
-        min_cp = min(q.price_rub for q in best_cluster)
-        max_cp = max(q.price_rub for q in best_cluster)
+    if best_homogeneous_subset:
+        best_ids = {id(q) for q in best_homogeneous_subset}
+        min_cp = min(q.price_rub for q in best_homogeneous_subset)
+        max_cp = max(q.price_rub for q in best_homogeneous_subset)
         for q in item_res.quotes:
             if id(q) not in best_ids:
                 q.is_outlier = True
-                q.comment = f"⚠️ Исключена: цена {q.price_rub:,.2f} ₽ вне согласованного кластера ({min_cp:,.2f} - {max_cp:,.2f} ₽)"
+                q.comment = f"⚠️ Исключена: цена {q.price_rub:,.2f} ₽ не вошла в однородную группу V={best_v:.1f}% ({min_cp:,.2f} - {max_cp:,.2f} ₽)"
     else:
-        # Если цены отличаются сильнее 2.0x, не скрываем все позиции:
-        # выбираем наиболее релевантную базовую котировку (минимальная адекватная цена),
-        # чтобы строка не оставалась пустой
-        best_single = min(valid_quotes, key=lambda q: q.price_rub)
-        best_ids = {id(best_single)}
+        # Цены не образуют однородной совокупности (разброс > max_variation_pct)
+        all_v = calculate_variation_coefficient([q.price_rub for q in valid_quotes])
         for q in item_res.quotes:
-            if id(q) not in best_ids:
-                q.is_outlier = True
-                q.comment = f"⚠️ Цена {q.price_rub:,.2f} ₽ существенно отличается от базовой ({best_single.price_rub:,.2f} ₽)"
+            q.is_outlier = True
+            q.comment = f"⚠️ Неоднородная цена: вариация {all_v:.1f}% превышает лимит {max_variation_pct:.0f}% (Приказ №567)"
 
     # Сортируем: сначала подтвержденный кластер по возрастанию цены, затем исключенные
     item_res.quotes.sort(key=lambda q: (q.is_outlier, q.price_rub if q.price_rub > 0 else 999_999_999))
@@ -412,10 +421,12 @@ async def process_single_item(
     settings: SystemSettings,
     http_client: httpx.AsyncClient,
     search_semaphore: asyncio.Semaphore,
-    max_suppliers: int = 3,
+    max_suppliers: int = 5,
     min_target_suppliers: int = 3,
     cluster_ratio: float = 1.4,
-    filter_marketplaces: bool = False,
+    filter_marketplaces: bool = True,
+    filter_foreign: bool = True,
+    max_variation_pct: float = 33.0,
     city: str = "",
 ) -> ItemPriceResult:
     row_idx, raw_name, unit = item_tuple
@@ -444,7 +455,7 @@ async def process_single_item(
                     q, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                 )
                 for r in results:
-                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces):
+                    if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
                         url_to_meta[r.url] = r
                         if r.url not in candidate_urls:
                             candidate_urls.append(r.url)
@@ -453,13 +464,31 @@ async def process_single_item(
             if len(candidate_urls) >= 30:
                 break
 
-    # Сбор и извлечение цен с найденных страниц
     seen_domains: set[str] = set()
-
-    # Оцениваем до (max_suppliers + 3) котировок, чтобы алгоритм кластеризации имел достаточный запас для отсева выбросов
-    target_eval_quotes = max(6, max_suppliers + 3)
-    MAX_LLM_EXTRACTIONS_PER_ITEM = 10
+    seen_inns: set[str] = set()
+    target_suppliers = min_target_suppliers or max_suppliers
+    MAX_LLM_EXTRACTIONS_PER_ITEM = max(20, target_suppliers * 4)
     llm_extractions_done = 0
+
+    def _get_base_domain(d: str) -> str:
+        parts = d.split(".")
+        if len(parts) >= 3 and ".".join(parts[-2:]) in ("spb.ru", "msk.ru", "nov.ru", "com.ru", "net.ru", "org.ru"):
+            return ".".join(parts[-3:])
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return d
+
+    def _get_consensus_count() -> int:
+        valid_qs = [q for q in item_res.quotes if q.is_price_found and q.price_rub > 0]
+        if not valid_qs:
+            return 0
+        cluster_and_reconcile_item_quotes(
+            item_res,
+            cluster_ratio=cluster_ratio,
+            max_suppliers=max_suppliers,
+            max_variation_pct=max_variation_pct,
+        )
+        return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
 
     async def _evaluate_candidates(urls: list[str]) -> None:
         nonlocal llm_extractions_done
@@ -467,12 +496,15 @@ async def process_single_item(
             if llm_extractions_done >= MAX_LLM_EXTRACTIONS_PER_ITEM:
                 logger.debug("LLM extraction budget reached (%d) for '%s'", MAX_LLM_EXTRACTIONS_PER_ITEM, clean)
                 break
-            valid_found = len([q for q in item_res.quotes if q.is_price_found and q.price_rub > 0])
-            if valid_found >= target_eval_quotes:
+            if _get_consensus_count() >= target_suppliers:
+                logger.debug("Target consensus reached (%d suppliers) for '%s'", target_suppliers, clean)
+                break
+            if len([q for q in item_res.quotes if q.price_rub > 0]) >= target_suppliers * 2 + 4:
                 break
             try:
                 domain = urlparse(url).netloc.lower().replace("www.", "")
-                if domain in seen_domains:
+                base_domain = _get_base_domain(domain)
+                if domain in seen_domains or base_domain in seen_domains:
                     continue
 
                 page_text, inn, kpp, contacts = await fetch_page_content_and_meta(http_client, url)
@@ -492,6 +524,11 @@ async def process_single_item(
                     page_text = snippet_block + page_text
 
                 if not page_text or len(page_text) < 30:
+                    continue
+
+                # Дополнительная проверка на иностранный язык контента
+                if filter_foreign and is_foreign_source(url, page_text):
+                    logger.debug("Skip foreign source by content for %s", url)
                     continue
 
                 llm_extractions_done += 1
@@ -522,26 +559,22 @@ async def process_single_item(
                             if not quote.contacts:
                                 quote.contacts = kdata["contacts"]
                             break
+                    if quote.inn and quote.inn in seen_inns:
+                        logger.debug("Skip duplicate supplier INN %s for %s", quote.inn, url)
+                        continue
+                    if quote.inn:
+                        seen_inns.add(quote.inn)
                     seen_domains.add(domain)
+                    seen_domains.add(base_domain)
                     item_res.quotes.append(quote)
             except Exception as exc:
                 logger.debug("Error processing url %s: %s", url, exc)
 
     await _evaluate_candidates(candidate_urls)
 
-    def _get_consensus_count() -> int:
-        valid_qs = [q for q in item_res.quotes if q.is_price_found and q.price_rub > 0]
-        if not valid_qs:
-            return 0
-        cluster_and_reconcile_item_quotes(item_res, cluster_ratio=cluster_ratio)
-        return len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
-
-    # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ КВОРУМА):
-    # Запускаем Волну 2 только если:
-    # 1) Кластер меньше целевого
-    # 2) Бюджет ИИ-экстракций не исчерпан
+    # ВОЛНА 2 (АДАПТИВНЫЙ ПОИСК ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     consensus_count = _get_consensus_count()
-    if consensus_count < min_target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
+    if consensus_count < target_suppliers and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM:
         fallback_queries: list[str] = []
         if settings.has_active_ai_provider:
             fallback_queries = await generate_monitoring_queries_ai(clean, unit, settings, wave=2, city=city)
@@ -555,28 +588,23 @@ async def process_single_item(
                         bq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                     )
                     for r in b_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls:
                                 wave2_urls.append(r.url)
                 except Exception as b_exc:
                     logger.warning("Broad search query error for %s: %s", bq, b_exc)
-                if len(candidate_urls) + len(wave2_urls) >= 40:
+                if len(candidate_urls) + len(wave2_urls) >= 45:
                     break
 
         if wave2_urls:
             await _evaluate_candidates(wave2_urls)
             consensus_count = _get_consensus_count()
 
-    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР):
-    # Страховой контур:
-    # 1. Если уже найдено >= 2 подтвержденных поставщиков в кластере — добор завершен успешно (не сжигать ресурсы ради 3-го).
-    # 2. Если за волны 1 и 2 не найдено вообще ни одной цены — товар непубличный/заказной, Волна 3 принесет только спам.
-    # 3. Бюджет ИИ-экстракций не исчерпан.
+    # ВОЛНА 3 (СВЕРХШИРОКИЙ ДОБОР ДЛЯ ДОСТИЖЕНИЯ ЦЕЛЕВОГО КОЛИЧЕСТВА ПОСТАВЩИКОВ):
     has_any_price = any(q.price_rub > 0 for q in item_res.quotes)
     should_run_wave3 = (
-        consensus_count < min_target_suppliers
-        and consensus_count < 2
+        consensus_count < target_suppliers
         and has_any_price
         and llm_extractions_done < MAX_LLM_EXTRACTIONS_PER_ITEM
     )
@@ -599,10 +627,10 @@ async def process_single_item(
             for wq in wave3_queries:
                 try:
                     w_results = await engine.search(
-                        wq, max_results=20, enrich_query=False, filter_marketplaces=False
+                        wq, max_results=20, enrich_query=False, filter_marketplaces=filter_marketplaces
                     )
                     for r in w_results:
-                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=False):
+                        if r.url and is_valid_domain(r.url, target_item_name=clean, filter_marketplaces=filter_marketplaces, filter_foreign=filter_foreign):
                             url_to_meta[r.url] = r
                             if r.url not in candidate_urls and r.url not in wave2_urls and r.url not in wave3_urls:
                                 wave3_urls.append(r.url)
@@ -614,10 +642,21 @@ async def process_single_item(
         if wave3_urls:
             await _evaluate_candidates(wave3_urls)
 
-    # Итоговая кластеризация цен и жесткая отсечка выбросов
-    cluster_and_reconcile_item_quotes(item_res, cluster_ratio=cluster_ratio)
+    # Итоговая кластеризация цен и жесткая отсечка выбросов по 44-ФЗ (V <= max_variation_pct)
+    cluster_and_reconcile_item_quotes(
+        item_res,
+        cluster_ratio=cluster_ratio,
+        max_suppliers=max_suppliers,
+        max_variation_pct=max_variation_pct,
+    )
 
-    item_res.status = "found" if item_res.has_prices else ("divergent" if any(q.price_rub > 0 for q in item_res.quotes) else "not_found")
+    confirmed_count = len([q for q in item_res.quotes if q.price_rub > 0 and not q.is_outlier])
+    if confirmed_count >= 1:
+        item_res.status = "found"
+    elif any(q.price_rub > 0 for q in item_res.quotes):
+        item_res.status = "divergent"
+    else:
+        item_res.status = "not_found"
     return item_res
 
 
@@ -627,11 +666,13 @@ async def run_price_monitoring_pipeline(
     output_excel_path: str,
     price_per_position_rub: float = 50.0,
     progress_callback: Optional[Callable[[int, str], Any]] = None,
-    max_suppliers: int = 3,
+    max_suppliers: int = 5,
     max_parallel_items: int = 4,
     checkpoint_path: Optional[str] = None,
     cluster_ratio: float = 1.4,
-    filter_marketplaces: bool = False,
+    filter_marketplaces: bool = True,
+    filter_foreign: bool = True,
+    max_variation_pct: float = 33.0,
     items: Optional[List[tuple[str, str]]] = None,
     delivery_city: str = "",
     geo_radius_km: Optional[int] = None,
@@ -692,6 +733,8 @@ async def run_price_monitoring_pipeline(
                         min_target_suppliers=max_suppliers,
                         cluster_ratio=cluster_ratio,
                         filter_marketplaces=filter_marketplaces,
+                        filter_foreign=filter_foreign,
+                        max_variation_pct=max_variation_pct,
                         city=delivery_city,
                     )
                     for item in chunk_to_process
@@ -722,6 +765,7 @@ async def run_price_monitoring_pipeline(
         results,
         output_excel_path,
         max_suppliers=max_suppliers,
+        max_variation_pct=max_variation_pct,
         delivery_city=delivery_city,
         geo_radius_km=geo_radius_km,
     )

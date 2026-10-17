@@ -122,6 +122,7 @@ def generate_price_monitoring_excel(
     items: List[ItemPriceResult],
     output_path: str,
     max_suppliers: int = 5,
+    max_variation_pct: float = 33.0,
     delivery_city: str = "",
     geo_radius_km: Optional[int] = None,
 ) -> str:
@@ -270,11 +271,13 @@ def generate_price_monitoring_excel(
         cell_src.font = font_header_regular
         cell_src.alignment = align_center
 
-    # Сводные колонки: Мин. цена и Средняя цена
+    # Сводные колонки: Мин. цена, Средняя цена и Коэффициент вариации
     col_min_idx = 3 + max_suppliers * 2
     col_avg_idx = col_min_idx + 1
+    col_var_idx = col_avg_idx + 1
     col_min_let = get_column_letter(col_min_idx)
     col_avg_let = get_column_letter(col_avg_idx)
+    col_var_let = get_column_letter(col_var_idx)
 
     ws.merge_cells(f"{col_min_let}1:{col_min_let}4")
     cell_min_hdr = ws[f"{col_min_let}1"]
@@ -288,8 +291,14 @@ def generate_price_monitoring_excel(
     cell_avg_hdr.font = font_calibri_bold
     cell_avg_hdr.alignment = align_center
 
+    ws.merge_cells(f"{col_var_let}1:{col_var_let}4")
+    cell_var_hdr = ws[f"{col_var_let}1"]
+    cell_var_hdr.value = "Коэффициент вариации"
+    cell_var_hdr.font = font_calibri_bold
+    cell_var_hdr.alignment = align_center
+
     # Применяем границы и фон к заголовкам
-    max_col = col_avg_idx
+    max_col = col_var_idx
     for r in range(1, 5):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
@@ -318,10 +327,36 @@ def generate_price_monitoring_excel(
         cell_unit.border = thin_border
 
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        if not display_quotes and item.quotes:
-            valid_all = [q for q in item.quotes if q.price_rub > 0]
-            if valid_all:
-                display_quotes = valid_all[:max_suppliers]
+
+        if not display_quotes:
+            # Честно отражаем отсутствие товара в открытых источниках без выдуманных цен
+            cell_p1 = ws.cell(row=current_row, column=3, value="-")
+            cell_p1.border = thin_border
+            cell_p1.alignment = align_center
+            cell_p1.font = font_calibri_regular
+
+            cell_l1 = ws.cell(row=current_row, column=4, value="В открытых источниках цена отсутствует (заказная позиция / по чертежу)")
+            cell_l1.border = thin_border
+            cell_l1.font = Font(name="Calibri", size=10, italic=True, color="64748B")
+            cell_l1.alignment = align_left
+
+            for s_idx in range(2, max_suppliers + 1):
+                col_start = 3 + (s_idx - 1) * 2
+                col_end = col_start + 1
+                c_p = ws.cell(row=current_row, column=col_start, value="")
+                c_p.border = thin_border
+                c_l = ws.cell(row=current_row, column=col_end, value="")
+                c_l.border = thin_border
+
+            cell_min = ws.cell(row=current_row, column=col_min_idx, value="")
+            cell_min.border = thin_border
+            cell_avg = ws.cell(row=current_row, column=col_avg_idx, value="")
+            cell_avg.border = thin_border
+            cell_var = ws.cell(row=current_row, column=col_var_idx, value="")
+            cell_var.border = thin_border
+
+            current_row += 1
+            continue
 
         # Заполняем котировки поставщиков (СТРОГО согласованный кластер цен)
         for s_idx in range(1, max_suppliers + 1):
@@ -402,13 +437,20 @@ def generate_price_monitoring_excel(
         cell_avg.number_format = "#,##0.00"
         cell_avg.font = font_calibri_bold
 
+        cell_var = ws.cell(row=current_row, column=col_var_idx)
+        cell_var.border = thin_border
+        cell_var.alignment = align_center
+        cell_var.font = font_calibri_regular
+
         if clean_col_letters:
             args_str = ",".join(f"{col_let}{current_row}" for col_let in clean_col_letters)
             cell_min.value = f"=MIN({args_str})"
             cell_avg.value = f"=AVERAGE({args_str})"
+            cell_var.value = f'=_xlfn.IFS(COUNTA({args_str})>=3,_xlfn.STDEV.S({args_str})/AVERAGE({args_str})*100,COUNTA({args_str})<3,"недостаточно данных")'
         else:
             cell_min.value = ""
             cell_avg.value = ""
+            cell_var.value = ""
 
         current_row += 1
 
@@ -449,6 +491,7 @@ def generate_price_monitoring_excel(
 
     ws.column_dimensions[col_min_let].width = 18
     ws.column_dimensions[col_avg_let].width = 18
+    ws.column_dimensions[col_var_let].width = 24
 
     # --- ЛИСТ 2: Подробный детализированный реестр для закупщика/1С ---
     ws2 = wb.create_sheet(title="Детализированный реестр")
@@ -477,11 +520,7 @@ def generate_price_monitoring_excel(
     row_num = 2
     for idx, item in enumerate(items, 1):
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        if not display_quotes and item.quotes:
-            valid_all = [q for q in item.quotes if q.price_rub > 0]
-            if valid_all:
-                display_quotes = valid_all[:max_suppliers]
-        status_text = "Подтверждено" if display_quotes else "Не найдено"
+        status_text = "Подтверждено" if display_quotes else "В открытых источниках цена отсутствует"
         best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
 
         row_vals = [
@@ -513,7 +552,7 @@ def generate_price_monitoring_excel(
             cell.font = font_calibri_regular
             cell.border = thin_border
             if col_idx == 4:
-                cell.font = Font(name="Calibri", bold=True, color="008000" if item.has_prices else "808080")
+                cell.font = Font(name="Calibri", bold=True, color="166534" if display_quotes else "64748B")
             elif col_idx > 5 and (col_idx - 5) % 9 == 0:  # Ссылка
                 val = str(cell.value or "")
                 if val.startswith("http"):

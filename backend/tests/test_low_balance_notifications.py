@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.bot import (
     _alert_owner_about_low_balance,
+    _generate_personalized_low_balance_pitch,
     _is_insufficient_funds_error,
     _low_balance_contact_info,
     _money_balance_warning,
@@ -266,5 +267,120 @@ class LowBalanceNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Напомните клиенту об оплате, чтобы не блокировать следующую задачу.", text)
         self.assertIn("Ольга Петрова", text)
         self.assertIn("№ 99", text)
+
+    async def test_generate_personalized_low_balance_pitch_fallback(self) -> None:
+        settings = SystemSettings(contact_telegram="@lexelence")
+        client = Client(id="c_test_1", name="Владимир Кузовлев", client_number=69)
+
+        text = await _generate_personalized_low_balance_pitch(
+            settings,
+            client,
+            mode="exact_product",
+            job_title="Спецификация_поставка_медоборудования.xlsx",
+            contact_handle="@lexelence",
+        )
+        self.assertIn("Владимир", text)
+        self.assertIn("Точный товар и аналоги", text)
+        self.assertIn("Спецификация_поставка_медоборудования.xlsx", text)
+        self.assertIn("@lexelence", text)
+
+    @patch("app.ai.call_llm")
+    async def test_generate_personalized_low_balance_pitch_with_ai(self, mock_call_llm: AsyncMock) -> None:
+        mock_call_llm.return_value = "Владимир, приветствую! Вижу задачу по подбору аналогов. Напишите мне в Telegram."
+        settings = SystemSettings(contact_telegram="@lexelence")
+        client = Client(id="c_real_user", name="Владимир", client_number=69)
+
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}):
+            text = await _generate_personalized_low_balance_pitch(
+                settings,
+                client,
+                mode="exact_product",
+                job_title="ТЗ.docx",
+                contact_handle="@lexelence",
+            )
+        self.assertIn("Владимир", text)
+        self.assertIn("Вижу задачу по подбору аналогов", text)
+
+    @patch("app.bot.config")
+    async def test_alert_owner_includes_bonus_button_for_real_client(self, mock_config: MagicMock) -> None:
+        mock_config.owner_telegram_id = "998877"
+        mock_config.bot_token = "fake-token"
+
+        bot = AsyncMock()
+        client = Client(
+            id="usr_883219aa",
+            client_number=69,
+            name="Владимир Кузовлев",
+            username="vlakuz13",
+            telegram_id="7808703178",
+            money_balance_kopeks=0,
+        )
+        reset_client_low_balance_alert(client.id)
+
+        await _alert_owner_about_low_balance(
+            bot,
+            client,
+            reason="Попытка загрузки документа без средств на балансе",
+            job_title="ТЗ.docx",
+            mode="exact_product",
+            ai_pitch="Владимир, приветствую! Вижу задачу по аналогам.",
+        )
+        self.assertEqual(bot.send_message.call_count, 1)
+        _, kwargs = bot.send_message.call_args
+        reply_markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(reply_markup)
+        self.assertEqual(len(reply_markup.inline_keyboard), 2)
+        self.assertEqual(reply_markup.inline_keyboard[0][0].text, "💬 Написать @vlakuz13")
+        self.assertIn("Пополнить баланс", reply_markup.inline_keyboard[1][0].text)
+        self.assertEqual(reply_markup.inline_keyboard[1][0].callback_data, "owner_grant:usr_883219aa:exact_product")
+        self.assertIn("Персональное предложение для клиента (ИИ)", kwargs.get("text", ""))
+
+    @patch("app.bot.config")
+    async def test_handle_owner_grant_bonus(self, mock_config: MagicMock) -> None:
+        from app.bot import handle_owner_grant_bonus
+        from app.db import SessionLocal
+
+        mock_config.owner_telegram_id = "998877"
+
+        # Create real test client in DB
+        with SessionLocal() as db:
+            client = Client(
+                id="c_grant_test_1",
+                name="Владимир",
+                username="vlakuz13",
+                telegram_id="7808703178",
+                money_balance_kopeks=0,
+            )
+            db.merge(client)
+            db.commit()
+
+        bot = AsyncMock()
+        callback = MagicMock()
+        callback.bot = bot
+        callback.from_user.id = 998877
+        callback.data = "owner_grant:c_grant_test_1:exact_product"
+        callback.answer = AsyncMock()
+        callback.message = MagicMock()
+        callback.message.edit_reply_markup = AsyncMock()
+
+        await handle_owner_grant_bonus(callback)
+
+        callback.answer.assert_called_once()
+        # Verify client got credited
+        with SessionLocal() as db:
+            refreshed = db.get(Client, "c_grant_test_1")
+            self.assertIsNotNone(refreshed)
+            self.assertGreater(refreshed.money_balance_kopeks, 0)
+
+        # Verify client got notified in Telegram
+        bot.send_message.assert_called_once()
+        notify_kwargs = bot.send_message.call_args[1]
+        self.assertEqual(notify_kwargs["chat_id"], 7808703178)
+        self.assertIn("Ваш баланс пополнен", notify_kwargs["text"])
+        self.assertIn("Точный товар и аналоги", notify_kwargs["text"])
+
+        # Verify owner message keyboard was updated
+        callback.message.edit_reply_markup.assert_called_once()
+
 
 

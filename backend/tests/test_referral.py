@@ -100,6 +100,19 @@ def test_anti_abuse_safeguards():
         db.close()
 
 
+from app.referral import (
+    REFERRAL_INVITER_REWARD_KOPEKS,
+    REFERRAL_WELCOME_BONUS_KOPEKS,
+    ensure_client_referral_code,
+    get_referral_stats,
+    link_referral,
+    link_referral_and_grant_welcome,
+    process_referral_on_job_completion,
+    process_referral_on_payment,
+    validate_referral_linkage,
+)
+
+
 def test_referral_welcome_and_first_job_reward_lifecycle():
     db = SessionLocal()
     try:
@@ -120,25 +133,26 @@ def test_referral_welcome_and_first_job_reward_lifecycle():
         db.refresh(inviter)
         db.refresh(invitee)
 
-        # Step 1: Link referral and grant welcome bonus
+        # Step 1: Link referral (welcome bonus is pending first qualifying payment)
         success = link_referral_and_grant_welcome(db, invitee, inviter)
         assert success is True
         db.refresh(invitee)
         assert invitee.referrer_id == inviter.id
-        assert invitee.money_balance_kopeks == REFERRAL_WELCOME_BONUS_KOPEKS
+        # Invitee has 0 unearned balance before real payment
+        assert invitee.money_balance_kopeks == 0
 
         # Idempotency check: linking again does nothing
         assert link_referral_and_grant_welcome(db, invitee, inviter) is False
         db.refresh(invitee)
-        assert invitee.money_balance_kopeks == REFERRAL_WELCOME_BONUS_KOPEKS
+        assert invitee.money_balance_kopeks == 0
 
-        # Check stats before completion
+        # Check stats before deposit: invited=1, activated=0
         stats = get_referral_stats(db, inviter)
         assert stats["invited_count"] == 1
         assert stats["activated_count"] == 0
         assert stats["bonus_earned_rub"] == 0
 
-        # Step 2: Invitee starts and completes a job
+        # Step 2: Invitee completes a free trial job -> MUST NOT award any referral money!
         job = Job(
             client_id=invitee.id,
             mode="supplier_search",
@@ -151,32 +165,35 @@ def test_referral_welcome_and_first_job_reward_lifecycle():
         db.commit()
         db.refresh(job)
 
-        # Process referral reward
+        # Free job does not reward
         rewarded = process_referral_on_job_completion(db, job)
-        assert rewarded is True
+        assert rewarded is False
+        db.refresh(inviter)
+        assert inviter.money_balance_kopeks == 0
+
+        # Step 3: Non-qualifying small payment (< 1000 ₽) does not trigger reward
+        small_payment_rewarded = process_referral_on_payment(db, invitee, 50_000)
+        assert small_payment_rewarded is False
+
+        # Step 4: Qualifying first payment (>= 1 000 ₽ / 100_000 kopeks)
+        # Triggers +1 000 ₽ welcome match for invitee AND +1 000 ₽ reward for inviter
+        payment_rewarded = process_referral_on_payment(db, invitee, 100_000)
+        assert payment_rewarded is True
 
         db.refresh(inviter)
         db.refresh(invitee)
         assert invitee.referral_reward_granted is True
+        assert invitee.money_balance_kopeks == REFERRAL_WELCOME_BONUS_KOPEKS
         assert inviter.money_balance_kopeks == REFERRAL_INVITER_REWARD_KOPEKS
 
-        # Step 3: Check stats after completion
+        # Step 5: Check stats after qualifying payment
         stats = get_referral_stats(db, inviter)
         assert stats["invited_count"] == 1
         assert stats["activated_count"] == 1
         assert stats["bonus_earned_rub"] == 1000
 
-        # Step 4: Second job must NOT reward inviter again
-        job2 = Job(
-            client_id=invitee.id,
-            mode="exact_product",
-            status="completed",
-            title="Подбор аналогов насоса",
-            completed_at=now_utc(),
-        )
-        db.add(job2)
-        db.commit()
-        assert process_referral_on_job_completion(db, job2) is False
+        # Step 6: Subsequent payments do NOT reward inviter again
+        assert process_referral_on_payment(db, invitee, 100_000) is False
         db.refresh(inviter)
         assert inviter.money_balance_kopeks == REFERRAL_INVITER_REWARD_KOPEKS
     finally:
@@ -219,11 +236,12 @@ def test_customer_referral_api_and_registration():
         session_cookie = client.cookies.get("tenderlex_customer_session")
         assert session_cookie
 
-        # Check that invitee received welcome bonus
+        # Check that invitee is linked to referrer
         invitee_client = db.query(Client).join(WebUser, WebUser.client_id == Client.id).filter(WebUser.email == test_email).first()
         assert invitee_client is not None
         assert invitee_client.referrer_id == inviter.id
-        assert invitee_client.money_balance_kopeks >= REFERRAL_WELCOME_BONUS_KOPEKS
+        # Starts with standard trial balance without unearned referral bonus (< 1 000 ₽)
+        assert invitee_client.money_balance_kopeks in {49500, 49600}
 
         # Check referral stats via customer_referral_api
         from app.main import customer_referral_api
@@ -235,7 +253,7 @@ def test_customer_referral_api_and_registration():
         assert "invite_url_bot" in ref_data
         assert "invite_url_web" in ref_data
         assert "invited_count" in ref_data
-        assert ref_data["balance_rub"] >= 1000
+        assert ref_data["balance_rub"] in {495, 496}
     finally:
         db.close()
 

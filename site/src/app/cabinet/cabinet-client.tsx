@@ -5684,7 +5684,7 @@ export function CabinetClient() {
 2. Подобрать точную модель товара и аналоги под первую часть заявки
 3. Сформировать структурированный отчет и анализ требований закупки
 
-По ссылке сразу начислят 1 000 ₽ на баланс:
+По ссылке доступно 5 бесплатных проверок + бонус 1 000 ₽ к первому пополнению баланса:
 ${webLink}`;
 
         function copyLink(textToCopy: string, key: string) {
@@ -5720,7 +5720,7 @@ ${webLink}`;
                       Пригласить коллегу
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Дарите 1 000 ₽ на баланс коллеге и получайте 1 000 ₽ за его первую задачу
+                      Дарите +1 000 ₽ к первому пополнению коллеге и получайте 1 000 ₽ за его первый платёж
                     </p>
                   </div>
                 </div>
@@ -5742,7 +5742,7 @@ ${webLink}`;
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
                   <div className="text-lg sm:text-xl font-black text-teal-700">{activated}</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">Выполнили задачу</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Пополнили баланс</div>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
                   <div className="text-lg sm:text-xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
