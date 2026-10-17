@@ -42,6 +42,7 @@ from .billing import (
     client_uses_trial_access,
     client_service_balance_summary,
     effective_price_kopeks,
+    effective_price_to_dict,
     expire_stale_confirmations,
     grant_money_balance,
     job_has_unsettled_reservation,
@@ -891,6 +892,16 @@ def _mode_label(mode: str) -> str:
     return "поиск поставщиков"
 
 
+def _mode_to_billing_kind(mode: str) -> str:
+    if mode == MODE_EXACT_PRODUCT:
+        return KIND_EXACT_PRODUCT
+    if mode in (MODE_PROCUREMENT_REPORT, MODE_ANALYSIS_AND_SUPPLIERS):
+        return KIND_PROCUREMENT_REPORT
+    if mode == MODE_SUPPLIER_SEARCH_EXTRA:
+        return KIND_SUPPLIER_SEARCH_EXTRA
+    return KIND_SUPPLIER_SEARCH
+
+
 def _job_mode_for_scenario(scenario: str) -> str:
     if scenario == SCENARIO_REPORT:
         return MODE_PROCUREMENT_REPORT
@@ -1446,10 +1457,25 @@ async def _alert_owner_about_low_balance(
     if client_tg and client_tg.isdigit():
         lines.append(f"📱 <b>Telegram ID:</b> <code>{client_tg}</code>")
 
+    tariff_display = ""
+    price_rub = 0.0
+    if client and client_id and not client_id.startswith(("blocked", "fake", "test", "c_test")):
+        try:
+            with SessionLocal() as db:
+                kind = _mode_to_billing_kind(mode)
+                tariff_info = effective_price_to_dict(db, client, kind)
+                price_rub = tariff_info["price_rub"]
+                is_custom = tariff_info["source"] == "client_override"
+                tariff_display = f"{price_rub:.0f} ₽" + (" (индивидуальный тариф)" if is_custom else " (базовый тариф)")
+        except Exception:
+            pass
+
     lines.append(f"💰 <b>Остаток:</b> {balance_note}")
 
     if mode_name:
         lines.append(f"⚙️ <b>Услуга:</b> {html_escape(mode_name.capitalize())}")
+    if tariff_display:
+        lines.append(f"💵 <b>Тариф на операцию:</b> {html_escape(tariff_display)}")
     if job_title and job_title.lower() not in {"failed", "none"}:
         lines.append(f"📝 <b>Запрос / файл:</b> <i>{html_escape(job_title[:150])}</i>")
     if reason:
@@ -1493,8 +1519,9 @@ async def _alert_owner_about_low_balance(
         kb_rows.append([InlineKeyboardButton(text="💬 Написать клиенту в TG", url=f"tg://user?id={client_tg}")])
 
     if client_id and not client_id.startswith(("blocked", "fake", "test", "c_test")):
+        btn_label = f"💳 Пополнить баланс на {price_rub:.0f} ₽" if price_rub > 0 else "💳 Пополнить баланс"
         kb_rows.append([
-            InlineKeyboardButton(text="🎁 Дать 1 бонусный запуск", callback_data=f"owner_grant:{client_id}:{mode or 'default'}")
+            InlineKeyboardButton(text=btn_label, callback_data=f"owner_grant:{client_id}:{mode or 'default'}")
         ])
 
     reply_markup = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
@@ -1771,6 +1798,21 @@ async def _generate_personalized_low_balance_pitch(
     contact_info = html_escape(contact_handle or "@lexelence")
     task_desc = f" (файл: <i>{html_escape(clean_job_title[:100])}</i>)" if clean_job_title else ""
 
+    tariff_rub = 0.0
+    tariff_is_custom = False
+    if client and getattr(client, "id", None) and not str(client.id).startswith("test"):
+        try:
+            with SessionLocal() as db:
+                kind = _mode_to_billing_kind(mode)
+                tariff_info = effective_price_to_dict(db, client, kind)
+                tariff_rub = tariff_info["price_rub"]
+                tariff_is_custom = tariff_info["source"] == "client_override"
+        except Exception:
+            pass
+
+    tariff_note = f" (тариф операции: {tariff_rub:.0f} ₽)" if tariff_rub > 0 else ""
+    custom_label = " (действует ваш индивидуальный тариф)" if tariff_is_custom else ""
+
     if first_name:
         greeting_line = f"⚠️ <b>Здравствуйте, {html_escape(first_name)}!</b>"
     else:
@@ -1778,8 +1820,8 @@ async def _generate_personalized_low_balance_pitch(
 
     fallback_text = (
         f"{greeting_line}\n\n"
-        f"Вижу, вы хотели запустить задачу «<b>{html_escape(mode_name.capitalize())}</b>»{task_desc}, но баланс сейчас исчерпан (0.00 ₽).\n\n"
-        f"Чтобы не откладывать работу по закупке, напишите мне в Telegram: {contact_info} — оперативно помогу подключить доступ, начислю тестовый запуск или разберу документ лично."
+        f"Вижу, вы хотели запустить операцию «<b>{html_escape(mode_name.capitalize())}</b>»{task_desc}, но на общем балансе сейчас недостаточно средств{tariff_note}{custom_label}.\n\n"
+        f"Чтобы продолжить автоматическую обработку закупок, пополните баланс в кабинете https://tenderlex.ru/cabinet или напишите мне в Telegram: {contact_info} — оперативно выставим счёт для юрлица (УПД, ЭДО) или согласуем индивидуальный тариф под объёмы вашей компании."
     )
 
     if os.getenv("PYTEST_CURRENT_TEST"):
@@ -1788,20 +1830,24 @@ async def _generate_personalized_low_balance_pitch(
     try:
         from .ai import call_llm
         system_prompt = (
-            "Ты — внимательный и доброжелательный основатель B2B-сервиса TenderLex (поиск поставщиков и анализ тендерной документации). "
-            "Клиент только что попытался запустить задачу в Telegram-боте, но у него исчерпан баланс (0 ₽). "
-            "Составь короткое (2-3 предложения), теплое и емкое персональное сообщение клиенту от своего лица.\n"
+            "Ты — представитель B2B-сервиса TenderLex (автоматизация поиска поставщиков, подбора аналогов и анализа документации по 44-ФЗ и 223-ФЗ). "
+            "В TenderLex расчеты ведутся по единому балансу компании в рублях с тарифами за операцию по функциям (включая индивидуальные тарифы для юрлиц). "
+            "Сервис полностью автоматизирован: ИИ разбирает ТЗ за 2-3 минуты. Основатель НЕ делает ручных запусков и НЕ разбирает файлы вручную. "
+            "Клиент только что попытался запустить задачу в боте, но на балансе недостаточно средств. "
+            "Составь лаконичное (2-3 предложения), деловое персональное сообщение клиенту.\n"
             "Правила:\n"
             "1. Обратись по имени (если указано).\n"
-            "2. Упомяни конкретную услугу и файл/запрос, который клиент пытался запустить.\n"
-            "3. Поясни, что баланс закончился, но задача важная: предложи написать напрямую в Telegram для быстрой помощи, консультации или начисления тестового доступа.\n"
-            "4. Тон — деловой, живой, партнерский, без канцеляризмов и роботоподобных фраз.\n"
-            "5. Верни ТОЛЬКО готовый текст сообщения без лишних кавычек и служебных пометок."
+            "2. Упомяни конкретную услугу и файл/запрос, который клиент загрузил.\n"
+            "3. Поясни, что на общем балансе недостаточно средств для оплаты операции по тарифу. Не использовать слова 'бонусный запуск' или 'ручной разбор'.\n"
+            "4. Оффер из B2B-рассылок: предложить пополнить баланс в кабинете tenderlex.ru/cabinet либо написать напрямую в Telegram для выставления счёта юрлицу (УПД/ЭДО) или подключения индивидуального тарифа под объёмы отдела снабжения.\n"
+            "5. Тон — деловой, партнерский, B2B, без спама и лишних восторгов.\n"
+            "6. Верни ТОЛЬКО готовый текст сообщения без кавычек и служебных пометок."
         )
         user_prompt = (
             f"Имя клиента: {first_name or 'не указано'}\n"
             f"Услуга: {mode_name}\n"
-            f"Запрос / файл: {clean_job_title or 'документ'}\n"
+            f"Тариф операции: {tariff_rub:.0f} ₽{' (индивидуальный тариф)' if tariff_is_custom else ''}\n"
+            f"Запрос / файл: {clean_job_title or 'спецификация'}\n"
             f"Контакт для связи: {contact_handle or '@lexelence'}"
         )
         ai_resp = await asyncio.wait_for(
@@ -4578,11 +4624,12 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             kind = KIND_SUPPLIER_SEARCH_EXTRA
 
         price_kopeks = effective_price_kopeks(db, client, kind) or 9900
+        price_rub = round(price_kopeks / 100, 2)
         grant_money_balance(
             db,
             client,
             amount_kopeks=price_kopeks,
-            note=f"Бонусный запуск от владельца ({_mode_label(mode_val)})",
+            note=f"Пополнение баланса от владельца (+{price_rub:.0f} ₽, {_mode_label(mode_val)})",
             created_by="owner_tg",
         )
         db.commit()
@@ -4592,9 +4639,9 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             mode_text = _mode_label(mode_val).capitalize()
             service_label = f" «{mode_text}»" if mode_text else ""
             notification_text = (
-                "🎁 <b>Вам начислен 1 бонусный запуск!</b>\n\n"
-                f"Администратор сервиса открыл вам доступ для выполнения услуги{service_label}.\n\n"
-                "Загрузите ваш документ или отправьте запрос — он сразу пойдет в обработку! 🚀"
+                f"💳 <b>Ваш баланс пополнен на {price_rub:.0f} ₽!</b>\n\n"
+                f"Средства зачислены для операции{service_label}.\n\n"
+                "Загрузите ваш документ или отправьте запрос в чат — сервис обработает его автоматически за 2–3 минуты! 🚀"
             )
             try:
                 await callback.bot.send_message(
@@ -4606,8 +4653,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
             except Exception as notify_err:
                 logger.warning("failed_to_notify_client_of_bonus", extra={"error": str(notify_err), "client_id": client.id})
 
-        price_rub = round(price_kopeks / 100, 2)
-        await callback.answer(f"Начислен 1 запуск (+{price_rub:.0f} ₽)!", show_alert=False)
+        await callback.answer(f"Баланс пополнен (+{price_rub:.0f} ₽)!", show_alert=False)
 
         if callback.message:
             username = str(getattr(client, "username", "") or "").strip().lstrip("@")
@@ -4616,7 +4662,7 @@ async def handle_owner_grant_bonus(callback: CallbackQuery) -> None:
                 updated_kb.append([InlineKeyboardButton(text=f"💬 Написать @{username}", url=f"https://t.me/{username}")])
             elif client_tg and client_tg.isdigit():
                 updated_kb.append([InlineKeyboardButton(text="💬 Написать клиенту в TG", url=f"tg://user?id={client_tg}")])
-            updated_kb.append([InlineKeyboardButton(text=f"✅ Начислен 1 запуск ({price_rub:.0f} ₽)", callback_data="none")])
+            updated_kb.append([InlineKeyboardButton(text=f"✅ Баланс пополнен на {price_rub:.0f} ₽", callback_data="none")])
             try:
                 await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=updated_kb))
             except Exception:

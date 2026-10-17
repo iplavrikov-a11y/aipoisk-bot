@@ -331,7 +331,7 @@ class LowBalanceNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reply_markup)
         self.assertEqual(len(reply_markup.inline_keyboard), 2)
         self.assertEqual(reply_markup.inline_keyboard[0][0].text, "💬 Написать @vlakuz13")
-        self.assertEqual(reply_markup.inline_keyboard[1][0].text, "🎁 Дать 1 бонусный запуск")
+        self.assertIn("Пополнить баланс", reply_markup.inline_keyboard[1][0].text)
         self.assertEqual(reply_markup.inline_keyboard[1][0].callback_data, "owner_grant:usr_883219aa:exact_product")
         self.assertIn("Персональное предложение для клиента (ИИ)", kwargs.get("text", ""))
 
@@ -376,7 +376,7 @@ class LowBalanceNotificationTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.assert_called_once()
         notify_kwargs = bot.send_message.call_args[1]
         self.assertEqual(notify_kwargs["chat_id"], 7808703178)
-        self.assertIn("Вам начислен 1 бонусный запуск", notify_kwargs["text"])
+        self.assertIn("Ваш баланс пополнен", notify_kwargs["text"])
         self.assertIn("Точный товар и аналоги", notify_kwargs["text"])
 
         # Verify owner message keyboard was updated
