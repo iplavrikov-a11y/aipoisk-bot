@@ -692,6 +692,17 @@ Date: 2026-10-05 (MSK)
        - `.job-actions-strip`: Added `margin-left: auto` to ensure action buttons stay right-aligned when wrapping, and sized `.icon-button.small` to `26×26px` matching file button height.
        - `.job-card-top` and `.job-title-row h2`: Added `flex-wrap: wrap` and `word-break: break-word; overflow-wrap: anywhere;` preventing horizontal page stretch on long procurement titles.
   - **Verification**: Built with Vite (`npm run build`), verified 787 backend unit tests passing (0 failures), checked live served bundle at `https://admin.tenderlex.ru/assets/index-BmXxZEfF.css`.
+- AI-Personalized Low-Balance Notifications & Owner 1-Click Bonus Actions (2026-10-17):
+  - **Feature**: Full personalization of low-balance / paywall messages using AI and task context (uploaded document filename, text specification, or service mode), plus 1-click interactive owner actions in Telegram.
+  - **Client AI Personalization**:
+    - When a user tries to launch a task (document upload, direct text TZ, or procurement link) with 0 ₽ balance, the system generates a tailored, warm, professional message addressing the client by first name, acknowledging their specific task/file (e.g. `«Точный товар и аналоги» (файл: Спецификация_поставка_медоборудования.xlsx)`), and offering founder contact to resolve it quickly or test the service.
+    - Uses `call_llm(tier="light")` with 3.5s timeout and an instant personalized fallback template ensuring zero latency or disruption.
+    - Pre-filled Telegram contact link now automatically includes the specific requested service for instant context in founder's PM.
+  - **Interactive Owner Actions & AI Proposal**:
+    - Owner alert now displays the exact AI pitch sent to the client (`💡 Персональное предложение для клиента (ИИ)`).
+    - Added instant action button: `[🎁 Дать 1 бонусный запуск]` (`owner_grant:<client_id>:<mode>`).
+    - When clicked by the owner, the bot automatically credits the client's balance for 1 run of that service via `grant_money_balance`, dispatches an instant Telegram notification to the client inviting them to upload the document right away, and updates the owner's message button to `✅ Начислен 1 запуск`.
+  - **Verification**: 15 unit tests in `backend/tests/test_low_balance_notifications.py` passing 100%.
 - Telegram Low-Balance Client Notifications & Owner Telegram Alerts (2026-10-02):
   - **Feature**: Proactive detection and alerts when a client's balance drops to 100 ₽ or less (`money_balance_kopeks <= 10_000`), allowing the owner to remind the client before their final/next task is blocked.
   - **Client Experience**: Client receives short, actionable message in Telegram with an inline button `💬 Написать в Telegram для пополнения` linking directly to owner's Telegram (`t.me/<owner>?text=...`) with pre-filled message: `"Здравствуйте! У меня закончился баланс в TenderLex (#<client_number>). Хочу пополнить."`. Also displayed under task delivery captions and in `/cabinet`.
