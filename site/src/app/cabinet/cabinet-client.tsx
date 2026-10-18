@@ -6344,7 +6344,7 @@ ${webLink}`;
                 }`}
               >
                 <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
-                <span>На карту / Telegram</span>
+                <span>Оплата картой</span>
               </button>
               <button
                 type="button"
@@ -6500,7 +6500,7 @@ ${webLink}`;
                 <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
                   <div className="font-bold text-slate-900 flex items-center gap-1.5">
                     <CreditCard size={14} className="text-emerald-700" />
-                    <span>Порядок оплаты переводом:</span>
+                    <span>Порядок оплаты картой:</span>
                   </div>
                   <p className="text-[11px] text-slate-600">
                     1. Нажмите кнопку ниже для связи в Telegram — менеджер вышлет актуальные реквизиты карты для перевода.
@@ -6660,7 +6660,7 @@ ${webLink}`;
                     onClick={() => setTopUpTab("card")}
                     className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
-                    ← Вернуться к оплате переводом на карту
+                    ← Вернуться к оплате картой
                   </button>
                 </div>
               </div>
@@ -6704,7 +6704,7 @@ ${webLink}`;
                       className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
                     >
                       <CreditCard size={15} />
-                      <span>Перейти к переводу на карту</span>
+                      <span>Перейти к оплате картой</span>
                     </button>
 
                     <div className="text-center pt-1">
