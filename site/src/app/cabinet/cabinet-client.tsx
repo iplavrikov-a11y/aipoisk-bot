@@ -2071,7 +2071,7 @@ export function CabinetClient() {
       );
 
       if (otherPending.length > 0) {
-        setMessage(`Стратегия для «${job.human_title || "ТЗ"}» сохранена (${mode === "balanced" ? "Сбалансированный" : `Попозиционный${countLabel}`}). Переход к следующей задаче...`);
+        setMessage(`Стратегия для «${job.human_title || "ТЗ"}» сохранена (${mode === "balanced" ? "Сбалансированный" : `Попозиционный${countLabel}`}).`);
         openStrategyConfirmModal(otherPending[0]);
       } else {
         setStrategyConfirmJob(null);
@@ -4515,7 +4515,7 @@ export function CabinetClient() {
                   onClick={skipOrDismissStrategyModal}
                   disabled={Boolean(strategySubmittingJobId)}
                 >
-                  {totalPending > 1 && currentJobIndex < totalPending - 1 ? "Пропустить" : "Позже"}
+                  Позже
                 </button>
                 <button
                   type="button"
@@ -4531,11 +4531,7 @@ export function CabinetClient() {
                   ) : (
                     <CheckCircle2 size={15} aria-hidden="true" />
                   )}
-                  <span>
-                    {totalPending > 1 && currentJobIndex < totalPending - 1
-                      ? "Применить и к следующей →"
-                      : "Применить стратегию"}
-                  </span>
+                  <span>Применить</span>
                 </button>
               </div>
             </footer>
