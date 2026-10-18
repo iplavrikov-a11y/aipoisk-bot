@@ -11,6 +11,7 @@ import {
   BellOff,
   BellRing,
   BookOpen,
+  Building2,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -36,6 +37,7 @@ import {
   Paperclip,
   Pencil,
   PlusCircle,
+  QrCode,
   Receipt,
   RotateCcw,
   Search,
@@ -1116,6 +1118,7 @@ export function CabinetClient() {
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [topUpTab, setTopUpTab] = useState<"card" | "b2b" | "sbp">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
   const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
   const [topUpCopied, setTopUpCopied] = useState(false);
@@ -2780,25 +2783,38 @@ export function CabinetClient() {
                     </span>
                     <span className="text-[10px] font-bold text-emerald-700">до +50% к платежу</span>
                   </div>
-                  <div className="space-y-1 mt-1">
+                  <div className="space-y-1.5 mt-1">
                     {depositPkgs.map((pkg) => (
                       <div
                         key={pkg.id}
-                        className="px-2 py-1 bg-white/90 border border-emerald-200/70 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs"
+                        className="px-2 py-1.5 bg-white/95 border border-emerald-200/70 hover:border-emerald-400 rounded-lg flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs transition-colors"
                       >
                         <div className="flex items-center gap-1.5 truncate mr-2">
-                          <span className="font-bold text-slate-900">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
+                          <span className="font-bold text-slate-900 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
                           <span className="text-slate-400">→</span>
-                          <span className="font-extrabold text-emerald-700">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                          <span className="font-extrabold text-emerald-700 whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex items-center gap-1.5 shrink-0">
                           {pkg.bonus_rub > 0 ? (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold whitespace-nowrap">
                               +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
                             </span>
                           ) : (
                             <span className="text-[10px] text-slate-400 font-medium">Старт</span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTopUpPackage(pkg);
+                              setCustomTopUpRub(pkg.price_rub);
+                              setTopUpTab("card");
+                              setShowTopUpModal(true);
+                              setShowTariffs(false);
+                            }}
+                            className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded text-[11px] font-bold shadow-2xs transition-all cursor-pointer whitespace-nowrap"
+                          >
+                            Купить
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -2817,7 +2833,9 @@ export function CabinetClient() {
                     const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
                     setSelectedTopUpPackage(defPkg);
                     setCustomTopUpRub(defPkg?.price_rub || 5000);
+                    setTopUpTab("card");
                     setShowTopUpModal(true);
+                    setShowTariffs(false);
                   }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ml-auto"
                 >
@@ -6314,207 +6332,397 @@ ${webLink}`;
               </button>
             </div>
 
-            {/* Quick Packages Grid */}
-            <div className="space-y-2">
-              <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                Выберите пакет с бонусом:
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
-                  const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
-                  return (
-                    <button
-                      key={pkg.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedTopUpPackage(pkg);
-                        setCustomTopUpRub(pkg.price_rub);
-                      }}
-                      className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
-                        isSelected
-                          ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
-                          : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
-                      }`}
-                    >
-                      {pkg.badge ? (
-                        <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
-                          {pkg.badge}
-                        </span>
-                      ) : null}
-                      <div>
-                        <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
-                        <div className="text-sm font-black text-slate-900 mt-0.5">
-                          {pkg.price_rub.toLocaleString("ru-RU")} ₽
-                        </div>
-                      </div>
-                      <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
-                        <div className="text-emerald-700 font-bold">
-                          На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
-                        </div>
-                        {pkg.bonus_rub > 0 ? (
-                          <div className="text-[10px] text-emerald-600 font-medium">
-                            +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+            {/* Payment Method Switcher Tabs */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200/80 text-xs font-semibold shrink-0">
+              <button
+                type="button"
+                onClick={() => setTopUpTab("card")}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  topUpTab === "card"
+                    ? "bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
+                <span>На карту / Telegram</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTopUpTab("b2b")}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  topUpTab === "b2b"
+                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Building2 size={14} className={topUpTab === "b2b" ? "text-slate-700" : "text-slate-400"} />
+                <span>Счёт для юрлиц</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTopUpTab("sbp")}
+                className={`py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  topUpTab === "sbp"
+                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <QrCode size={13} className={topUpTab === "sbp" ? "text-slate-700" : "text-slate-400"} />
+                <span>СБП</span>
+                <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">скоро</span>
+              </button>
             </div>
 
-            {/* Custom Amount Input */}
-            <div className="space-y-1.5 pt-1">
-              <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
-                Или введите другую сумму:
-              </label>
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <input
-                    id="custom-topup-input"
-                    type="number"
-                    min={500}
-                    step={500}
-                    value={customTopUpRub || ""}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10) || 0;
-                      setCustomTopUpRub(val);
-                      const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
-                      setSelectedTopUpPackage(match || null);
-                    }}
-                    placeholder="5000"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                    ₽
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Live Calculation Card */}
-            {(() => {
-              const hasCustomPrices = Boolean(
-                session?.balance?.has_custom_tariffs ||
-                (session?.balance?.effective_prices &&
-                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
-              );
-              const calc = hasCustomPrices
-                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
-                : calculateDepositBonus(customTopUpRub);
-              const approxTasks = Math.floor(calc.totalRub / 99);
-              return (
-                <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
-                    <span>Сумма к оплате:</span>
-                    <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+            {/* TAB 1: Transfer to Card / Telegram */}
+            {topUpTab === "card" ? (
+              <>
+                {/* Quick Packages Grid */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                    Выберите пакет с бонусом:
                   </div>
-                  {calc.bonusRub > 0 ? (
-                    <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
-                      <span>Бонус сервиса ({calc.percent}%):</span>
-                      <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
-                    </div>
-                  ) : hasCustomPrices ? (
-                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
-                      <span>Тариф:</span>
-                      <span className="font-medium text-slate-600">индивидуальные цены, без бонуса</span>
-                    </div>
-                  ) : null}
-                  <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
-                      <span className="text-[10px] text-slate-500">
-                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач`}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                      const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                      return (
+                        <button
+                          key={pkg.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTopUpPackage(pkg);
+                            setCustomTopUpRub(pkg.price_rub);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                            isSelected
+                              ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                              : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                          }`}
+                        >
+                          {pkg.badge ? (
+                            <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                              {pkg.badge}
+                            </span>
+                          ) : null}
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">
+                              {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                            </div>
+                          </div>
+                          <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                            <div className="text-emerald-700 font-bold">
+                              На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                            </div>
+                            {pkg.bonus_rub > 0 ? (
+                              <div className="text-[10px] text-emerald-600 font-medium">
+                                +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Custom Amount Input */}
+                <div className="space-y-1.5 pt-1">
+                  <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                    Или введите другую сумму:
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        id="custom-topup-input"
+                        type="number"
+                        min={500}
+                        step={500}
+                        value={customTopUpRub || ""}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10) || 0;
+                          setCustomTopUpRub(val);
+                          const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                          setSelectedTopUpPackage(match || null);
+                        }}
+                        placeholder="5000"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                        ₽
                       </span>
                     </div>
-                    <div className="text-lg sm:text-xl font-black text-emerald-700">
-                      {calc.totalRub.toLocaleString("ru-RU")} ₽
+                  </div>
+                </div>
+
+                {/* Live Calculation Card */}
+                {(() => {
+                  const calc = (() => {
+                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                      return {
+                        bonusRub: selectedTopUpPackage.bonus_rub,
+                        totalRub: selectedTopUpPackage.total_rub,
+                        percent: selectedTopUpPackage.bonus_percent,
+                      };
+                    }
+                    return calculateDepositBonus(customTopUpRub);
+                  })();
+                  const approxTasks = Math.floor(calc.totalRub / 99);
+                  return (
+                    <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                        <span>Сумма к оплате:</span>
+                        <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                      </div>
+                      {calc.bonusRub > 0 ? (
+                        <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
+                          <span>Бонус сервиса ({calc.percent}%):</span>
+                          <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
+                        </div>
+                      ) : null}
+                      <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
+                          <span className="text-[10px] text-slate-500">
+                            {`хватит примерно на ${approxTasks} задач`}
+                          </span>
+                        </div>
+                        <div className="text-lg sm:text-xl font-black text-emerald-700">
+                          {calc.totalRub.toLocaleString("ru-RU")} ₽
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* How to Pay Instructions */}
+                <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <CreditCard size={14} className="text-emerald-700" />
+                    <span>Порядок оплаты переводом:</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600">
+                    1. Нажмите кнопку ниже для связи в Telegram — менеджер вышлет актуальные реквизиты карты для перевода.
+                  </p>
+                  <p className="text-[11px] text-slate-600">
+                    2. После перевода отправьте подтверждение (чек или скриншот) в чат — баланс и бонус моментально зачисляются на ваш аккаунт (обычно 5–15 минут).
+                  </p>
+                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-slate-500">Ваш email аккаунта:</span>
+                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  </div>
+                </div>
+
+                {/* Contact Action Buttons */}
+                {(() => {
+                  const calc = (() => {
+                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                      return {
+                        bonusRub: selectedTopUpPackage.bonus_rub,
+                        totalRub: selectedTopUpPackage.total_rub,
+                        percent: selectedTopUpPackage.bonus_percent,
+                      };
+                    }
+                    return calculateDepositBonus(customTopUpRub);
+                  })();
+                  const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                  const tgMsg = encodeURIComponent(
+                    `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+                  );
+                  const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
+
+                  return (
+                    <div className="space-y-2 pt-1">
+                      <a
+                        href={tgUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      >
+                        <Send size={15} />
+                        <span>
+                          {calc.bonusRub > 0
+                            ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
+                            : `Написать в Telegram для зачисления`}
+                        </span>
+                      </a>
+
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
+                            navigator.clipboard.writeText(copyText).then(() => {
+                              setTopUpCopied(true);
+                              setTimeout(() => setTopUpCopied(false), 2500);
+                            });
+                          }}
+                          className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                        >
+                          <Copy size={13} />
+                          <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                        </button>
+
+                        <a
+                          href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
+                          className="text-xs text-slate-500 hover:text-slate-700 underline"
+                        >
+                          Написать на email
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            ) : null}
+
+            {/* TAB 2: B2B Invoice Stub */}
+            {topUpTab === "b2b" ? (
+              <div className="space-y-3 py-1">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-xl bg-slate-200/70 text-slate-700 shrink-0 mt-0.5">
+                      <Building2 size={22} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">Безналичный расчёт для юридических лиц</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-extrabold">
+                          По запросу
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Работаем с организациями и ИП по договору. Предоставляем полный комплект закрывающих документов (УПД) через ЭДО (Диадок / СБИС) или скан с оригинальной синей печатью.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-lg text-xs text-amber-900 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <Clock3 size={13} className="text-amber-700 shrink-0" />
+                      <span>Обновление платёжных реквизитов</span>
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-amber-800">
+                      В данный момент расчётный счёт обновляется. Для выставления коммерческого предложения, согласования счёта и отправки реквизитов свяжитесь с нами напрямую через Telegram или отправьте карточку предприятия на email.
+                    </p>
+                  </div>
+
+                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-slate-500">Ваш email аккаунта:</span>
+                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <a
+                      href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
+                        `Здравствуйте! Интересует оплата по безналичному расчету (счёт для юрлица) в сервисе TenderLex. Мой email: ${session?.user?.email || ""}`
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                    >
+                      <Send size={15} />
+                      <span>Запросить счёт в Telegram</span>
+                    </a>
+
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const copyText = `Запрос счёта для юрлица в TenderLex. Email аккаунта: ${session?.user?.email || ""}`;
+                          navigator.clipboard.writeText(copyText).then(() => {
+                            setTopUpCopied(true);
+                            setTimeout(() => setTopUpCopied(false), 2500);
+                          });
+                        }}
+                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                      >
+                        <Copy size={13} />
+                        <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать запрос"}</span>
+                      </button>
+
+                      <a
+                        href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(
+                          `Запрос счёта для юрлица - TenderLex (${session?.user?.email || ""})`
+                        )}`}
+                        className="text-xs text-slate-500 hover:text-slate-700 underline"
+                      >
+                        Отправить реквизиты на email
+                      </a>
                     </div>
                   </div>
                 </div>
-              );
-            })()}
 
-            {/* How to Pay Instructions */}
-            <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                <CreditCard size={14} className="text-teal-700" />
-                <span>Инструкция по оплате переводом:</span>
-              </div>
-              <p className="text-[11px] text-slate-600">
-                1. Переведите выбранную сумму на банковскую карту или счет владельца сервиса.
-              </p>
-              <p className="text-[11px] text-slate-600">
-                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс (обычно 5–15 минут).
-              </p>
-              <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-slate-500">Ваш email аккаунта:</span>
-                <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
-              </div>
-            </div>
-
-            {/* Contact Action Buttons */}
-            {(() => {
-              const hasCustomPrices = Boolean(
-                session?.balance?.has_custom_tariffs ||
-                (session?.balance?.effective_prices &&
-                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
-              );
-              const calc = hasCustomPrices
-                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
-                : calculateDepositBonus(customTopUpRub);
-              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
-              const tgMsg = encodeURIComponent(
-                hasCustomPrices
-                  ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (индивидуальный тариф). Мой email в сервисе: ${session?.user?.email || ""}`
-                  : `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
-              );
-              const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
-
-              return (
-                <div className="space-y-2 pt-1">
-                  <a
-                    href={tgUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                <div className="text-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setTopUpTab("card")}
+                    className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
-                    <Send size={15} />
-                    <span>
-                      {calc.bonusRub > 0
-                        ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
-                        : `Написать в Telegram для зачисления`}
-                    </span>
-                  </a>
+                    ← Вернуться к оплате переводом на карту
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
-                  <div className="flex items-center justify-between gap-2 pt-0.5">
+            {/* TAB 3: SBP Stub */}
+            {topUpTab === "sbp" ? (
+              <div className="space-y-3 py-1">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0 mt-0.5">
+                      <QrCode size={22} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">Система быстрых платежей (СБП)</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[10px] font-extrabold">
+                          В процессе подключения
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Прямая оплата по динамическому QR-коду СБП через любое банковское приложение без комиссии.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-blue-50/80 border border-blue-200/90 rounded-lg text-xs text-blue-950 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <Clock3 size={13} className="text-blue-700 shrink-0" />
+                      <span>Подключение платежного шлюза</span>
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-blue-800">
+                      Интеграция шлюза СБП находится на финальном этапе тестирования. Пока шлюз подключается, вы можете совершить быстрый перевод на карту или связаться с администратором в Telegram для мгновенного начисления.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => {
-                        const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
-                        navigator.clipboard.writeText(copyText).then(() => {
-                          setTopUpCopied(true);
-                          setTimeout(() => setTopUpCopied(false), 2500);
-                        });
-                      }}
-                      className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                      onClick={() => setTopUpTab("card")}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
                     >
-                      <Copy size={13} />
-                      <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                      <CreditCard size={15} />
+                      <span>Перейти к переводу на карту</span>
                     </button>
 
-                    <a
-                      href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
-                      className="text-xs text-slate-500 hover:text-slate-700 underline"
-                    >
-                      Написать на email
-                    </a>
+                    <div className="text-center pt-1">
+                      <a
+                        href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
+                          `Здравствуйте! Хочу пополнить баланс TenderLex через СБП/карту. Мой email: ${session?.user?.email || ""}`
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-slate-500 hover:text-slate-800 underline"
+                      >
+                        Или написать в Telegram для перевода по номеру телефона
+                      </a>
+                    </div>
                   </div>
                 </div>
-              );
-            })()}
+              </div>
+            ) : null}
           </section>
         </div>
       ) : null}

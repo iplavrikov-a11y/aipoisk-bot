@@ -3964,19 +3964,6 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
     deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
-    if client_has_custom_tariffs(db, user.client):
-        deposit_packages = [
-            {
-                **item,
-                "bonus_kopeks": 0,
-                "bonus_rub": 0,
-                "total_kopeks": item.get("price_kopeks", 0),
-                "total_rub": item.get("price_rub", 0),
-                "credit_rub": item.get("price_rub", 0),
-                "badge": "",
-            }
-            for item in deposit_packages
-        ]
     price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
     price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
     price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
