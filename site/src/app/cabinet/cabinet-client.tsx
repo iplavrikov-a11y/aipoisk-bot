@@ -1034,7 +1034,6 @@ export function CabinetClient() {
   const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
   const [strategyError, setStrategyError] = useState<string>("");
   const [strategySubmittingJobId, setStrategySubmittingJobId] = useState<string | null>(null);
-  const [batchApplyingBalanced, setBatchApplyingBalanced] = useState<boolean>(false);
   const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
 
   function openStrategyConfirmModal(job: CustomerJob) {
@@ -2028,37 +2027,6 @@ export function CabinetClient() {
       setStrategyError(err instanceof Error ? err.message : String(err));
     } finally {
       setStrategySubmittingJobId(null);
-    }
-  }
-
-  async function applyBalancedToAllPending(pendingList: CustomerJob[]) {
-    if (!csrf || pendingList.length === 0) return;
-    setBatchApplyingBalanced(true);
-    setError("");
-    try {
-      for (const job of pendingList) {
-        dismissedStrategyJobIdsRef.current.add(job.id);
-        const res = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "x-csrf-token": csrf,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ multi_item_mode: "balanced" }),
-        });
-        if (!res.ok) {
-          throw new Error(parseError(await res.text()));
-        }
-      }
-      setStrategyConfirmJob(null);
-      setMessage(`Все ${pendingList.length} ${declensionTasks(pendingList.length)} запущены в сбалансированном режиме.`);
-      await loadSession();
-      await loadJobs();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBatchApplyingBalanced(false);
     }
   }
 
@@ -3081,68 +3049,6 @@ export function CabinetClient() {
         </form>
       </section>
 
-      {/* Sticky Banner: Multi-Item Strategy Confirmation Queue */}
-      {(() => {
-        const pendingStrategyJobs = jobs.filter(
-          (j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy"
-        );
-        if (pendingStrategyJobs.length === 0) return null;
-
-        const isMulti = pendingStrategyJobs.length > 1;
-
-        return (
-          <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300/90 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-amber-950 shadow-sm transition-all">
-            <div className="flex items-start sm:items-center gap-3.5 min-w-0">
-              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
-                <Sliders size={20} aria-hidden="true" />
-              </div>
-              <div className="min-w-0 space-y-0.5">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <strong className="text-sm sm:text-base font-extrabold text-amber-950">
-                    {isMulti
-                      ? `Ожидают выбора стратегии: ${pendingStrategyJobs.length} ${declensionTasks(pendingStrategyJobs.length)}`
-                      : `Спецификация ожидает решения (${pendingStrategyJobs[0].multi_item_details?.items?.length || 0} ${declensionCategory(pendingStrategyJobs[0].multi_item_details?.items?.length || 0)})`}
-                  </strong>
-                  {isMulti ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/80 text-amber-900 uppercase tracking-wider">
-                      Очередь задач
-                    </span>
-                  ) : null}
-                </div>
-                <p className="text-xs text-amber-900/90 truncate max-w-2xl">
-                  {isMulti
-                    ? "Загружено несколько спецификаций. Выберите глубину поиска для каждой по очереди или запустите все сбалансированно в 1 клик."
-                    : `${pendingStrategyJobs[0].human_title || "Загруженный документ"}: выберите единый отчёт (1 задача) или раздельный поиск по позициям.`}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2.5 shrink-0 flex-wrap sm:flex-nowrap">
-              {isMulti ? (
-                <button
-                  type="button"
-                  onClick={() => void applyBalancedToAllPending(pendingStrategyJobs)}
-                  disabled={batchApplyingBalanced}
-                  className="px-3.5 py-2 rounded-xl bg-white hover:bg-amber-100/60 text-amber-900 border border-amber-300 font-bold text-xs shadow-2xs transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-                  title="Запустить все ожидающие спецификации как единый сбалансированный поиск"
-                >
-                  {batchApplyingBalanced ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                  <span>Все сбалансированно (в 1 клик)</span>
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => openStrategyConfirmModal(pendingStrategyJobs[0])}
-                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-extrabold text-xs shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                <Sliders size={14} />
-                <span>{isMulti ? `Настроить по очереди (1 из ${pendingStrategyJobs.length})` : "Выбрать стратегию"}</span>
-              </button>
-            </div>
-          </div>
-        );
-      })()}
-
       {/* Jobs History Table */}
       <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
@@ -3662,32 +3568,6 @@ export function CabinetClient() {
                       </details>
                     </div>
                   ) : null}
-
-                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" ? (() => {
-                    const items = job.multi_item_details?.items || [];
-                    return (
-                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-amber-50/70 p-3 sm:p-3.5 rounded-xl border border-amber-200/80">
-                        <div className="space-y-0.5 text-xs text-amber-950">
-                          <strong className="block font-bold">
-                            В спецификации обнаружено {items.length} {declensionCategory(items.length)} снабжения
-                          </strong>
-                          <p className="text-amber-900/80 text-[11px] max-w-xl">
-                            Выберите единый сбалансированный реестр (1 задача) или детальный попозиционный поиск поставщиков по каждой категории.
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => openStrategyConfirmModal(job)}
-                            className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                          >
-                            <Sliders size={13} />
-                            <span>Выбрать стратегию</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })() : null}
                 </article>
               );
             })
