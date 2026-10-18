@@ -1134,7 +1134,6 @@ export function CabinetClient() {
   const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
   const [showApiModal, setShowApiModal] = useState(false);
-  const [showChatNoticeModal, setShowChatNoticeModal] = useState(false);
   const [apiModalTab, setApiModalTab] = useState<"key" | "methods" | "ai_prompt" | "mcp">("key");
   const [apiKeys, setApiKeys] = useState<Array<{
     id: string;
@@ -2624,7 +2623,10 @@ export function CabinetClient() {
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
-                setShowChatNoticeModal(true);
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
+                }
               }}
               title="Онлайн-чат поддержки"
             >
@@ -6224,74 +6226,6 @@ ${webLink}`;
         );
       })() : null}
 
-      {/* Support Chat Notice Modal */}
-      {showChatNoticeModal ? (
-        <div
-          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
-          onClick={() => setShowChatNoticeModal(false)}
-        >
-          <section
-            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150 p-5 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2 text-teal-800 font-extrabold text-sm sm:text-base">
-                <MessageCircle size={18} className="text-teal-600" />
-                <span>Чат поддержки</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowChatNoticeModal(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
-                title="Закрыть"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
-              <p>
-                Чат поддержки в личном кабинете пока находится в разработке.
-              </p>
-              <p>
-                Пожалуйста, свяжитесь с нами напрямую через Telegram или электронную почту:
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                {session?.contacts?.telegram_url ? (
-                  <a
-                    href={session.contacts.telegram_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl font-bold transition-all text-xs"
-                  >
-                    <Send size={14} className="text-sky-500" />
-                    <span>Telegram</span>
-                  </a>
-                ) : null}
-
-                <a
-                  href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-bold transition-all text-xs"
-                >
-                  <Mail size={14} className="text-slate-600" />
-                  <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
-                </a>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowChatNoticeModal(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-              >
-                Понятно
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       {/* Top-Up Balance Modal */}
       {showTopUpModal ? (
