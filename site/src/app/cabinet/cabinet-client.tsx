@@ -1036,6 +1036,30 @@ export function CabinetClient() {
   const [strategySubmittingJobId, setStrategySubmittingJobId] = useState<string | null>(null);
   const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
 
+  function markStrategyDismissed(jobId: string) {
+    dismissedStrategyJobIdsRef.current.add(jobId);
+    try {
+      const raw = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      const list: string[] = raw ? JSON.parse(raw) : [];
+      if (!list.includes(jobId)) {
+        list.push(jobId);
+        sessionStorage.setItem("tenderlex_dismissed_strategy_jobs", JSON.stringify(list));
+      }
+    } catch {}
+  }
+
+  function unmarkStrategyDismissed(jobId: string) {
+    dismissedStrategyJobIdsRef.current.delete(jobId);
+    try {
+      const raw = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      if (raw) {
+        const list: string[] = JSON.parse(raw);
+        const filtered = list.filter((id) => id !== jobId);
+        sessionStorage.setItem("tenderlex_dismissed_strategy_jobs", JSON.stringify(filtered));
+      }
+    } catch {}
+  }
+
   function openStrategyConfirmModal(job: CustomerJob) {
     const items = job.multi_item_details?.items || [];
     const allIds = items.map((it, idx) => it.id || `item-${idx}`);
@@ -1047,7 +1071,7 @@ export function CabinetClient() {
 
   function skipOrDismissStrategyModal() {
     if (!strategyConfirmJob) return;
-    dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+    markStrategyDismissed(strategyConfirmJob.id);
     const otherPending = jobs.filter(
       (j) =>
         j.id !== strategyConfirmJob.id &&
@@ -1528,10 +1552,43 @@ export function CabinetClient() {
       if (savedNotif !== null) {
         setNotificationsEnabled(savedNotif === "true");
       }
+      const savedDismissed = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      if (savedDismissed) {
+        const list = JSON.parse(savedDismissed);
+        if (Array.isArray(list)) {
+          list.forEach((id) => dismissedStrategyJobIdsRef.current.add(String(id)));
+        }
+      }
     } catch {
       // ignore
     }
   }, []);
+
+  // Auto-open strategy modal when specification needs customer decision
+  useEffect(() => {
+    if (strategyConfirmJob) return;
+    const pendingJob = jobs.find(
+      (j) =>
+        j.awaiting_customer_confirmation &&
+        j.confirmation_kind === "multi_item_strategy" &&
+        !dismissedStrategyJobIdsRef.current.has(j.id)
+    );
+    if (pendingJob) {
+      openStrategyConfirmModal(pendingJob);
+    }
+  }, [jobs, strategyConfirmJob]);
+
+  // Close modal on Escape
+  useEffect(() => {
+    if (!strategyConfirmJob) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        skipOrDismissStrategyModal();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [strategyConfirmJob]);
 
   useEffect(() => {
     if (!activeToast) return;
@@ -3325,11 +3382,12 @@ export function CabinetClient() {
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  unmarkStrategyDismissed(job.id);
                                   openStrategyConfirmModal(job);
                                 }}
                               >
                                 <Sliders size={14} aria-hidden="true" />
-                                <span>Выбрать стратегию ({items.length} поз.)</span>
+                                <span>Выбрать стратегию{items.length > 0 ? ` (${items.length} поз.)` : ""}</span>
                               </button>
                               <button
                                 type="button"
@@ -4185,10 +4243,7 @@ export function CabinetClient() {
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) {
-                if (strategyConfirmJob) {
-                  dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
-                }
-                setStrategyConfirmJob(null);
+                skipOrDismissStrategyModal();
               }
             }}
           >
@@ -4223,12 +4278,7 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
-                  onClick={() => {
-                    if (strategyConfirmJob) {
-                      dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
-                    }
-                    setStrategyConfirmJob(null);
-                  }}
+                  onClick={skipOrDismissStrategyModal}
                   aria-label="Закрыть"
                 >
                   <X size={18} aria-hidden="true" />
