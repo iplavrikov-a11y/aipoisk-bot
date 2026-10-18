@@ -1031,6 +1031,33 @@ export function CabinetClient() {
   const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
   const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
   const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
+  const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
+
+  function openStrategyConfirmModal(job: CustomerJob) {
+    const items = job.multi_item_details?.items || [];
+    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+    setSelectedStrategyMode("balanced");
+    setSelectedStrategyItemIds(allIds);
+    setStrategyConfirmJob(job);
+  }
+
+  function fillDemoExample() {
+    setScenario("supplier_search");
+    setText(
+      "Поставка промышленной трубопроводной арматуры:\n" +
+      "1. Задвижка стальная клиновая фланцевая 30с41нж Ду100 Ру16 — 12 шт.\n" +
+      "2. Клапан обратный поворотный фланцевый 19с53нж Ду100 Ру16 — 8 шт.\n" +
+      "3. Кран шаровой стальной фланцевый 11с67п Ду50 Ру16 — 25 шт.\n" +
+      "4. Фланец плоский приварной стальной ГОСТ 33259-2015 Ду100 Ру16 — 24 шт."
+    );
+    clearSelectedFiles();
+    const launcher = document.getElementById("new-job");
+    if (launcher) {
+      launcher.scrollIntoView({ behavior: "smooth" });
+    }
+    setMessage("Демонстрационное ТЗ загружено в форму. Нажмите кнопку «Запустить поиск поставщиков».");
+  }
+
   const [inlineStrategies, setInlineStrategies] = useState<Record<string, {
     mode: "balanced" | "per_item";
     selectedItemIds: string[];
@@ -1336,9 +1363,22 @@ export function CabinetClient() {
         }
       }
 
+      const checkPendingStrategyJob = (items: CustomerJob[]) => {
+        const pending = items.find(
+          (j) =>
+            j.awaiting_customer_confirmation &&
+            j.confirmation_kind === "multi_item_strategy" &&
+            !dismissedStrategyJobIdsRef.current.has(j.id)
+        );
+        if (pending && !strategyConfirmJob) {
+          openStrategyConfirmModal(pending);
+        }
+      };
+
       if (Array.isArray(payload)) {
         setJobs(payload);
         setJobsTotal(payload.length);
+        checkPendingStrategyJob(payload);
         return;
       }
       const total = typeof payload?.total === "number" ? payload.total : incomingItems.length;
@@ -1350,6 +1390,7 @@ export function CabinetClient() {
         return;
       }
       setJobs(incomingItems);
+      checkPendingStrategyJob(incomingItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2439,6 +2480,21 @@ export function CabinetClient() {
               <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
                 Вам начислен стартовый баланс для проверки поиска поставщиков, подбора товара и аналогов или анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
               </p>
+              {jobsTotal === 0 ? (
+                <div className="pt-2 flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={fillDemoExample}
+                    className="px-3.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles size={14} />
+                    <span>Попробовать на демо-ТЗ в 1 клик</span>
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Заполнит форму тестовой спецификацией (арматура / краны / фланцы) для мгновенного запуска.
+                  </span>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -3018,6 +3074,38 @@ export function CabinetClient() {
         </form>
       </section>
 
+      {/* Sticky Banner: Multi-Item Strategy Confirmation */}
+      {(() => {
+        const pendingJob = jobs.find((j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy");
+        if (!pendingJob) return null;
+        const itemsCount = pendingJob.multi_item_details?.items?.length || 0;
+        return (
+          <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-950 shadow-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Sliders size={20} aria-hidden="true" />
+              </div>
+              <div className="min-w-0">
+                <strong className="text-sm font-extrabold block">
+                  Спецификация ожидает решения ({itemsCount} {declensionCategory(itemsCount)})
+                </strong>
+                <p className="text-xs text-amber-900/90 truncate max-w-xl">
+                  {pendingJob.human_title || "Загруженный документ"}: выберите единый отчёт (1 задача) или раздельный поиск по позициям.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => openStrategyConfirmModal(pendingJob)}
+              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-xs shrink-0 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Sliders size={15} />
+              <span>Выбрать стратегию</span>
+            </button>
+          </div>
+        );
+      })()}
+
       {/* Jobs History Table */}
       <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
@@ -3295,12 +3383,11 @@ export function CabinetClient() {
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  updateJobInlineStrategy(job.id, { isExpanded: !stratState.isExpanded });
+                                  openStrategyConfirmModal(job);
                                 }}
                               >
                                 <Sliders size={14} aria-hidden="true" />
-                                <span>{stratState.isExpanded ? "Свернуть" : `Выбрать стратегию (${items.length} поз.)`}</span>
-                                {stratState.isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                <span>Выбрать стратегию ({items.length} поз.)</span>
                               </button>
                               <button
                                 type="button"
@@ -3853,9 +3940,9 @@ export function CabinetClient() {
               );
             })
           ) : (
-            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs space-y-2">
-              <p>{hasActiveJobFilters ? "По заданным фильтрам ничего не найдено." : "У вас пока нет запущенных задач."}</p>
-              {hasActiveJobFilters ? (
+            hasActiveJobFilters ? (
+              <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs space-y-2">
+                <p>По заданным фильтрам ничего не найдено.</p>
                 <button
                   type="button"
                   onClick={resetJobFilters}
@@ -3863,8 +3950,42 @@ export function CabinetClient() {
                 >
                   Сбросить фильтры
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : (
+              <div className="p-8 sm:p-10 text-center bg-gradient-to-br from-teal-50/60 via-slate-50 to-white rounded-2xl border-2 border-dashed border-teal-200 text-slate-700 text-xs space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-700 flex items-center justify-center mx-auto shadow-2xs">
+                  <Sparkles size={24} />
+                </div>
+                <div className="max-w-md mx-auto space-y-1">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                    У вас пока нет выполненных задач
+                  </h3>
+                  <p className="text-slate-500 text-xs leading-relaxed">
+                    Загрузите ваше техническое задание в форму выше или проверьте точность подбора поставщиков на готовом примере за 1 клик.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={fillDemoExample}
+                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles size={14} />
+                    <span>Попробовать на демо-ТЗ в 1 клик</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const launcher = document.getElementById("new-job");
+                      if (launcher) launcher.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold text-xs transition-all cursor-pointer"
+                  >
+                    Перейти к загрузке ТЗ
+                  </button>
+                </div>
+              </div>
+            )
           )}
         </div>
 
@@ -4425,6 +4546,9 @@ export function CabinetClient() {
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
+              if (strategyConfirmJob) {
+                dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+              }
               setStrategyConfirmJob(null);
             }
           }}
@@ -4453,7 +4577,12 @@ export function CabinetClient() {
               <button
                 type="button"
                 className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
-                onClick={() => setStrategyConfirmJob(null)}
+                onClick={() => {
+                  if (strategyConfirmJob) {
+                    dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+                  }
+                  setStrategyConfirmJob(null);
+                }}
                 aria-label="Закрыть"
               >
                 <X size={18} aria-hidden="true" />
@@ -4679,7 +4808,12 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
-                  onClick={() => setStrategyConfirmJob(null)}
+                  onClick={() => {
+                    if (strategyConfirmJob) {
+                      dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+                    }
+                    setStrategyConfirmJob(null);
+                  }}
                   disabled={busy}
                 >
                   Позже

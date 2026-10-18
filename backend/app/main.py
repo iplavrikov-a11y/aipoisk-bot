@@ -3869,8 +3869,12 @@ def public_site_payload(db: Session) -> dict:
         },
         "contacts": {
             "email": settings.contact_email,
-            "phone": None,
-            "phone_url": None,
+            "phone": getattr(settings, "contact_phone", None) or None,
+            "phone_url": (
+                f"tel:{re.sub(r'[^0-9+]', '', getattr(settings, 'contact_phone', ''))}"
+                if getattr(settings, "contact_phone", None)
+                else None
+            ),
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
             "max": None,

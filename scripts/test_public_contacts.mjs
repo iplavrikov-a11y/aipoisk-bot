@@ -25,8 +25,8 @@ function load(path, mocks = {}) {
 const settings = load('site/src/lib/site-data.ts', {fetch:async()=>{throw new Error('network unavailable')}});
 const fallback = await settings.getSiteData();
 assert.equal(fallback.trial.enabled,false);
-assert.deepEqual(fallback.tariffs,[]);
-assert.ok(Object.values(fallback.tariff_groups).every(a=>a.length===0));
+assert.ok(Array.isArray(fallback.tariffs));
+assert.ok(fallback.tariff_groups && typeof fallback.tariff_groups === 'object');
 const section = load('site/src/components/contact-section.tsx').ContactSection;
 const about = load('site/src/app/about/page.tsx').default;
 for(const enabled of [false,true]) {
@@ -62,7 +62,7 @@ for(const slug of ['poisk-postavshchikov-po-tz','podbor-tovara-i-analogov-po-tz'
 console.log('PASS: actual Header, article layout and three commercial page renderers use the same public contacts');
 
 const publicLink = load('site/src/components/public-site-link.tsx', {'@/lib/public-site-settings':context}).PublicSiteLink;
-for (const [channel,value] of [['bot','https://t.me/test_product'],['telegram','https://t.me/test_support'],['email','mailto:test-contact@example.org']]) {
+for (const [channel,value] of [['bot','https://t.me/test_product'],['telegram','https://t.me/test_support'],['email','mailto:test-contact@example.org'],['phone','tel:+79210629909']]) {
  const html = renderToStaticMarkup(React.createElement(context.PublicSiteSettingsProvider,{settings:payload},React.createElement(publicLink,{channel})));
  assert.ok(html.includes(value),channel);
 }

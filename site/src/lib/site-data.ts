@@ -163,6 +163,8 @@ const fallbackData: PublicSitePayload = {
   },
   contacts: {
     email: "info@tenderlex.ru",
+    phone: "+7 (921) 062-99-09",
+    phone_url: "tel:+79210629909",
     telegram: "Telegram",
     telegram_url: "https://t.me/lexelence",
     website: "tenderlex.ru",
