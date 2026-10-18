@@ -18,6 +18,7 @@ Admin/internal domain: `https://admin.tenderlex.ru`
   - Fixed deposit package bonus zeroing for clients with custom task prices in `backend/app/main.py` and `cabinet-client.tsx`. Deposit tiers faithfully award +17% (3 000 ₽ -> 3 500 ₽), +30% (5 000 ₽ -> 6 500 ₽), +40% (10 000 ₽ -> 14 000 ₽), and +50% (25 000 ₽ -> 37 500 ₽).
   - Added direct `[ Купить ]` buttons inside the cabinet tariffs dropdown for one-click modal opening with selected tier.
   - Redesigned cabinet top-up modal with 3 tabs: `Оплата картой` (direct card transfer + Telegram crediting with pre-filled payload), `Счёт для юрлиц` (B2B invoice stub with UPD/EDO notice and instant Telegram/Email request triggers), and `СБП` (payment gateway stub with card fallback).
+  - Connected the header `Чат` button directly to the live bottom-right `ChatWidget` via `open_tenderlex_chat` event, completely eliminating the obsolete development stub modal.
   - Verified with 904 backend tests passing, clean Next.js typecheck/build, and live deploy on `202.71.13.57`.
 - Compare-then-Match Entity Resolution, Order 567 Variation Clustering & Custom Source Filters (2026-10-16):
   - Zero-Shot Compare-then-Match (`extractor.py`): inspired by SOTA GitHub implementations (ComEM, MatchGPT), LLM extracts structured `target_identifiers`, `site_identifiers`, and detects `identifier_conflict` and `material_conflict` to strictly reject homonyms and partial matches without hardcoded brand/model dictionaries (Strict Rule 14 compliance).
