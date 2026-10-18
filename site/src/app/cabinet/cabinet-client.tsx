@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent,
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
 import { trackGoal } from "@/lib/analytics";
 import {
+  AlertTriangle,
   ArrowRight,
   Bell,
   BellOff,
@@ -1031,6 +1032,9 @@ export function CabinetClient() {
   const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
   const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
   const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
+  const [strategyError, setStrategyError] = useState<string>("");
+  const [strategySubmittingJobId, setStrategySubmittingJobId] = useState<string | null>(null);
+  const [batchApplyingBalanced, setBatchApplyingBalanced] = useState<boolean>(false);
   const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
 
   function openStrategyConfirmModal(job: CustomerJob) {
@@ -1038,7 +1042,25 @@ export function CabinetClient() {
     const allIds = items.map((it, idx) => it.id || `item-${idx}`);
     setSelectedStrategyMode("balanced");
     setSelectedStrategyItemIds(allIds);
+    setStrategyError("");
     setStrategyConfirmJob(job);
+  }
+
+  function skipOrDismissStrategyModal() {
+    if (!strategyConfirmJob) return;
+    dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+    const otherPending = jobs.filter(
+      (j) =>
+        j.id !== strategyConfirmJob.id &&
+        j.awaiting_customer_confirmation &&
+        j.confirmation_kind === "multi_item_strategy" &&
+        !dismissedStrategyJobIdsRef.current.has(j.id)
+    );
+    if (otherPending.length > 0) {
+      openStrategyConfirmModal(otherPending[0]);
+    } else {
+      setStrategyConfirmJob(null);
+    }
   }
 
   function fillDemoExample() {
@@ -1058,61 +1080,12 @@ export function CabinetClient() {
     setMessage("Демонстрационное ТЗ загружено в форму. Нажмите кнопку «Запустить поиск поставщиков».");
   }
 
-  const [inlineStrategies, setInlineStrategies] = useState<Record<string, {
-    mode: "balanced" | "per_item";
-    selectedItemIds: string[];
-    isExpanded: boolean;
-    showAllCategories: boolean;
-    categoriesCollapsed: boolean;
-    previewCategories: boolean;
-  }>>({});
-
   function getClientEffectiveTaskPrice(): number | null {
     const eff = session?.balance?.effective_prices?.supplier_search?.price_rub;
     if (typeof eff === "number" && eff > 0) return eff;
     const s = session?.balance?.supplier_search?.price_rub;
     if (typeof s === "number" && s > 0) return s;
     return null;
-  }
-
-  function getJobInlineStrategy(job: CustomerJob) {
-    if (inlineStrategies[job.id]) {
-      return inlineStrategies[job.id];
-    }
-    const items = job.multi_item_details?.items || [];
-    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
-    return {
-      mode: job.multi_item_mode === "per_item" ? ("per_item" as const) : ("balanced" as const),
-      selectedItemIds: allIds,
-      isExpanded: true,
-      showAllCategories: false,
-      categoriesCollapsed: false,
-      previewCategories: false,
-    };
-  }
-
-  function updateJobInlineStrategy(jobId: string, partial: Partial<{
-    mode: "balanced" | "per_item";
-    selectedItemIds: string[];
-    isExpanded: boolean;
-    showAllCategories: boolean;
-    categoriesCollapsed: boolean;
-    previewCategories: boolean;
-  }>) {
-    setInlineStrategies((prev) => {
-      const existing = prev[jobId] || {
-        mode: "balanced",
-        selectedItemIds: [],
-        isExpanded: true,
-        showAllCategories: false,
-        categoriesCollapsed: false,
-        previewCategories: false,
-      };
-      return {
-        ...prev,
-        [jobId]: { ...existing, ...partial },
-      };
-    });
   }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [quoteItemSearch, setQuoteItemSearch] = useState("");
@@ -1363,22 +1336,9 @@ export function CabinetClient() {
         }
       }
 
-      const checkPendingStrategyJob = (items: CustomerJob[]) => {
-        const pending = items.find(
-          (j) =>
-            j.awaiting_customer_confirmation &&
-            j.confirmation_kind === "multi_item_strategy" &&
-            !dismissedStrategyJobIdsRef.current.has(j.id)
-        );
-        if (pending && !strategyConfirmJob) {
-          openStrategyConfirmModal(pending);
-        }
-      };
-
       if (Array.isArray(payload)) {
         setJobs(payload);
         setJobsTotal(payload.length);
-        checkPendingStrategyJob(payload);
         return;
       }
       const total = typeof payload?.total === "number" ? payload.total : incomingItems.length;
@@ -1390,7 +1350,6 @@ export function CabinetClient() {
         return;
       }
       setJobs(incomingItems);
-      checkPendingStrategyJob(incomingItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2026,9 +1985,9 @@ export function CabinetClient() {
 
   async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item", itemIds?: string[]) {
     if (!csrf) return;
-    setBusy(true);
-    setError("");
-    setStrategyConfirmJob(null);
+    setStrategySubmittingJobId(job.id);
+    setStrategyError("");
+    dismissedStrategyJobIdsRef.current.add(job.id);
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
         method: "POST",
@@ -2045,13 +2004,61 @@ export function CabinetClient() {
       if (!response.ok) throw new Error(parseError(await response.text()));
       await readJson(response);
       const countLabel = mode === "per_item" && itemIds?.length ? ` (${itemIds.length} поз.)` : "";
-      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
+
+      // Check if there are other pending strategy jobs in the queue
+      const otherPending = jobs.filter(
+        (j) =>
+          j.id !== job.id &&
+          j.awaiting_customer_confirmation &&
+          j.confirmation_kind === "multi_item_strategy" &&
+          !dismissedStrategyJobIdsRef.current.has(j.id)
+      );
+
+      if (otherPending.length > 0) {
+        setMessage(`Стратегия для «${job.human_title || "ТЗ"}» сохранена (${mode === "balanced" ? "Сбалансированный" : `Попозиционный${countLabel}`}). Переход к следующей задаче...`);
+        openStrategyConfirmModal(otherPending[0]);
+      } else {
+        setStrategyConfirmJob(null);
+        setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
+      }
+
+      await loadSession();
+      await loadJobs();
+    } catch (err) {
+      setStrategyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStrategySubmittingJobId(null);
+    }
+  }
+
+  async function applyBalancedToAllPending(pendingList: CustomerJob[]) {
+    if (!csrf || pendingList.length === 0) return;
+    setBatchApplyingBalanced(true);
+    setError("");
+    try {
+      for (const job of pendingList) {
+        dismissedStrategyJobIdsRef.current.add(job.id);
+        const res = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "x-csrf-token": csrf,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ multi_item_mode: "balanced" }),
+        });
+        if (!res.ok) {
+          throw new Error(parseError(await res.text()));
+        }
+      }
+      setStrategyConfirmJob(null);
+      setMessage(`Все ${pendingList.length} ${declensionTasks(pendingList.length)} запущены в сбалансированном режиме.`);
       await loadSession();
       await loadJobs();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBatchApplyingBalanced(false);
     }
   }
 
@@ -3074,34 +3081,64 @@ export function CabinetClient() {
         </form>
       </section>
 
-      {/* Sticky Banner: Multi-Item Strategy Confirmation */}
+      {/* Sticky Banner: Multi-Item Strategy Confirmation Queue */}
       {(() => {
-        const pendingJob = jobs.find((j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy");
-        if (!pendingJob) return null;
-        const itemsCount = pendingJob.multi_item_details?.items?.length || 0;
+        const pendingStrategyJobs = jobs.filter(
+          (j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy"
+        );
+        if (pendingStrategyJobs.length === 0) return null;
+
+        const isMulti = pendingStrategyJobs.length > 1;
+
         return (
-          <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-950 shadow-xs">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+          <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300/90 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-amber-950 shadow-sm transition-all">
+            <div className="flex items-start sm:items-center gap-3.5 min-w-0">
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
                 <Sliders size={20} aria-hidden="true" />
               </div>
-              <div className="min-w-0">
-                <strong className="text-sm font-extrabold block">
-                  Спецификация ожидает решения ({itemsCount} {declensionCategory(itemsCount)})
-                </strong>
-                <p className="text-xs text-amber-900/90 truncate max-w-xl">
-                  {pendingJob.human_title || "Загруженный документ"}: выберите единый отчёт (1 задача) или раздельный поиск по позициям.
+              <div className="min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <strong className="text-sm sm:text-base font-extrabold text-amber-950">
+                    {isMulti
+                      ? `Ожидают выбора стратегии: ${pendingStrategyJobs.length} ${declensionTasks(pendingStrategyJobs.length)}`
+                      : `Спецификация ожидает решения (${pendingStrategyJobs[0].multi_item_details?.items?.length || 0} ${declensionCategory(pendingStrategyJobs[0].multi_item_details?.items?.length || 0)})`}
+                  </strong>
+                  {isMulti ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/80 text-amber-900 uppercase tracking-wider">
+                      Очередь задач
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-xs text-amber-900/90 truncate max-w-2xl">
+                  {isMulti
+                    ? "Загружено несколько спецификаций. Выберите глубину поиска для каждой по очереди или запустите все сбалансированно в 1 клик."
+                    : `${pendingStrategyJobs[0].human_title || "Загруженный документ"}: выберите единый отчёт (1 задача) или раздельный поиск по позициям.`}
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => openStrategyConfirmModal(pendingJob)}
-              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-xs shrink-0 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
-            >
-              <Sliders size={15} />
-              <span>Выбрать стратегию</span>
-            </button>
+
+            <div className="flex items-center gap-2.5 shrink-0 flex-wrap sm:flex-nowrap">
+              {isMulti ? (
+                <button
+                  type="button"
+                  onClick={() => void applyBalancedToAllPending(pendingStrategyJobs)}
+                  disabled={batchApplyingBalanced}
+                  className="px-3.5 py-2 rounded-xl bg-white hover:bg-amber-100/60 text-amber-900 border border-amber-300 font-bold text-xs shadow-2xs transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                  title="Запустить все ожидающие спецификации как единый сбалансированный поиск"
+                >
+                  {batchApplyingBalanced ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                  <span>Все сбалансированно (в 1 клик)</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => openStrategyConfirmModal(pendingStrategyJobs[0])}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-extrabold text-xs shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Sliders size={14} />
+                <span>{isMulti ? `Настроить по очереди (1 из ${pendingStrategyJobs.length})` : "Выбрать стратегию"}</span>
+              </button>
+            </div>
           </div>
         );
       })()}
@@ -3374,7 +3411,6 @@ export function CabinetClient() {
                     {job.awaiting_customer_confirmation ? (
                       job.confirmation_kind === "multi_item_strategy" ? (
                         (() => {
-                          const stratState = getJobInlineStrategy(job);
                           const items = job.multi_item_details?.items || [];
                           return (
                             <div className="flex items-center gap-2 flex-wrap">
@@ -3627,312 +3663,28 @@ export function CabinetClient() {
                     </div>
                   ) : null}
 
-                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
-                    const stratState = getJobInlineStrategy(job);
+                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" ? (() => {
                     const items = job.multi_item_details?.items || [];
-                    const clientPrice = getClientEffectiveTaskPrice();
-                    const hasPackageRuns = Boolean(
-                      session?.balance?.supplier_search?.unlimited ||
-                      ((session?.balance?.supplier_search?.available ?? 0) > 0)
-                    );
-                    const selectedCount = stratState.selectedItemIds.length;
-                    const priceLabel = (tasksCount: number) => {
-                      if (clientPrice && !hasPackageRuns) {
-                        return ` (${tasksCount * clientPrice} ₽)`;
-                      }
-                      return "";
-                    };
-
-                    const visibleItems = items.length <= 6 || stratState.showAllCategories
-                      ? items
-                      : items.slice(0, 6);
-
                     return (
-                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-2.5">
-                        {items.length >= 10 ? (
-                          <div className="p-2.5 sm:p-3 rounded-lg bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
-                            <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
-                            <div className="space-y-1">
-                              <div className="font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
-                                <span>Крупная спецификация ({items.length} {declensionCategory(items.length)}): как получить максимум?</span>
-                              </div>
-                              <p className="text-amber-900/90 text-[11px] sm:text-xs">
-                                Поставщики работают по специализированным рынкам (электрика, вентиляция, металлопрокат, отделка). Если закупка разнородная, <strong>рекомендуется разделять ТЗ на отдельные файлы по направлениям</strong> и запускать независимыми задачами — так вы получите максимальный отклик от профильных заводов по каждому разделу.
-                              </p>
-                              <p className="text-amber-800/90 text-[11px]">
-                                Либо выберите <strong>«⚖️ Сбалансированный поиск»</strong> (1 задача), чтобы сервис автоматически распределил квоту и сформировал единый сводный реестр по ключевым системам.
-                              </p>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* Top Control Bar: Segmented Switcher & Primary CTA */}
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
-                          {/* Segmented Mode Switcher */}
-                          <div className="inline-flex items-center rounded-md border border-slate-200 bg-white p-0.5 shadow-2xs">
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
-                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                stratState.mode === "balanced"
-                                  ? "bg-teal-600 text-white shadow-2xs"
-                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-                              }`}
-                            >
-                              <span>⚖️ Сбалансированный поиск</span>
-                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
-                                stratState.mode === "balanced" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
-                              }`}>
-                                1 задача{priceLabel(1)}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item", categoriesCollapsed: false })}
-                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                stratState.mode === "per_item"
-                                  ? "bg-teal-600 text-white shadow-2xs"
-                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-                              }`}
-                            >
-                              <span>🔍 Попозиционный поиск</span>
-                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
-                                stratState.mode === "per_item" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
-                              }`}>
-                                {stratState.mode === "per_item" ? `${selectedCount} поз.` : `${items.length} поз.`}
-                              </span>
-                            </button>
-                          </div>
-
-                          {/* Quick Launch CTA right in the control bar */}
-                          <div className="flex items-center gap-2">
-                            {stratState.mode === "balanced" ? (
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "balanced")}
-                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить поиск (1 задача{priceLabel(1)})</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
-                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy || selectedCount === 0}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
-                              </button>
-                            )}
-                          </div>
+                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-amber-50/70 p-3 sm:p-3.5 rounded-xl border border-amber-200/80">
+                        <div className="space-y-0.5 text-xs text-amber-950">
+                          <strong className="block font-bold">
+                            В спецификации обнаружено {items.length} {declensionCategory(items.length)} снабжения
+                          </strong>
+                          <p className="text-amber-900/80 text-[11px] max-w-xl">
+                            Выберите единый сбалансированный реестр (1 задача) или детальный попозиционный поиск поставщиков по каждой категории.
+                          </p>
                         </div>
-
-                        {/* Quiet Subtitle / Description */}
-                        {stratState.mode === "balanced" ? (
-                          <div className="flex items-center justify-between text-xs text-slate-600 px-1 flex-wrap gap-2">
-                            <p className="leading-snug">
-                              Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем {items.length} {declensionCategory(items.length)} ТЗ со сворачиваемой структурой (+ / -) на одном листе (1 задача).
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { previewCategories: !stratState.previewCategories })}
-                              className="text-teal-700 hover:text-teal-900 font-semibold text-[11px] underline cursor-pointer shrink-0"
-                            >
-                              {stratState.previewCategories ? "Скрыть список категорий ▴" : `Посмотреть позиции ТЗ (${items.length}) ▾`}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-slate-600 px-1 leading-snug">
-                            Глубокий независимый сбор по каждой выбранной позиции со сворачиваемой структурой (+ / -) в едином Excel-отчёте (по 1 задаче за категорию).
-                          </div>
-                        )}
-
-                        {/* Balanced Mode Optional Preview of Items (read-only, no checkboxes) */}
-                        {stratState.mode === "balanced" && stratState.previewCategories ? (
-                          <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
-                            <div className="text-[11px] font-bold text-slate-700">
-                              Включены в консолидированный поиск ({items.length}):
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {items.map((it, idx) => (
-                                <span
-                                  key={it.id || idx}
-                                  className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-800"
-                                >
-                                  <span className="font-bold text-slate-500">{idx + 1}.</span>
-                                  <span>{it.name}</span>
-                                  {it.quantity ? <span className="text-slate-400 text-[10px]">({it.quantity} {it.unit || "шт."})</span> : null}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* PER-ITEM MODE: Categories Selection Accordion (ONLY RENDERS IN PER_ITEM MODE!) */}
-                        {stratState.mode === "per_item" ? (
-                          <div className="bg-white rounded-lg border border-slate-200/90 p-3 sm:p-3.5 space-y-2.5">
-                            {/* Categories Selection Toolbar */}
-                            <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
-                              <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                                <span>Категории ТЗ ({items.length}):</span>
-                                <span className="text-[11px] font-normal text-slate-500">
-                                  отметьте зелеными галочками нужные для поиска
-                                </span>
-                              </div>
-
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
-                                    updateJobInlineStrategy(job.id, { selectedItemIds: allIds });
-                                  }}
-                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
-                                >
-                                  Выбрать все ({items.length})
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const coreIds = items
-                                      .filter(it => it.is_core || (!it.is_auxiliary && it.cost_tier !== "auxiliary"))
-                                      .map((it, idx) => it.id || `item-${idx}`);
-                                    updateJobInlineStrategy(job.id, { selectedItemIds: coreIds.length ? coreIds : items.map((it, idx) => it.id || `item-${idx}`) });
-                                  }}
-                                  className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-md font-bold cursor-pointer"
-                                >
-                                  Только основные
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => updateJobInlineStrategy(job.id, { selectedItemIds: [] })}
-                                  className="px-2 py-1 text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
-                                >
-                                  Снять все
-                                </button>
-                                <div className="h-3.5 w-px bg-slate-200" />
-                                <button
-                                  type="button"
-                                  onClick={() => updateJobInlineStrategy(job.id, { categoriesCollapsed: !stratState.categoriesCollapsed })}
-                                  className="px-2 py-1 text-teal-700 hover:text-teal-900 font-bold flex items-center gap-1 cursor-pointer"
-                                >
-                                  <span>{stratState.categoriesCollapsed ? "Развернуть список" : "Свернуть список"}</span>
-                                  {stratState.categoriesCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Categories Grid (collapsible) */}
-                            {!stratState.categoriesCollapsed ? (
-                              <>
-                                <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
-                                  items.length > 6 && stratState.showAllCategories ? "max-h-64 overflow-y-auto pr-1 category-scroll-container" : ""
-                                }`}>
-                                  {visibleItems.map((it, idx) => {
-                                    const itemId = it.id || `item-${idx}`;
-                                    const isChecked = stratState.selectedItemIds.includes(itemId);
-                                    const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
-
-                                    return (
-                                      <div
-                                        key={itemId}
-                                        onClick={() => {
-                                          const newIds = isChecked
-                                            ? stratState.selectedItemIds.filter(id => id !== itemId)
-                                            : [...stratState.selectedItemIds, itemId];
-                                          updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
-                                        }}
-                                        className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all cursor-pointer ${
-                                          isChecked
-                                            ? "border-teal-400 bg-teal-50/20 shadow-2xs"
-                                            : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300"
-                                        }`}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="flex items-center gap-2 min-w-0">
-                                            <div
-                                              className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
-                                                isChecked
-                                                  ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
-                                                  : "bg-white border-slate-300 hover:border-emerald-500"
-                                              }`}
-                                            >
-                                              {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
-                                            </div>
-                                            <span className="font-bold text-slate-800 truncate">
-                                              {idx + 1}. {it.name}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center gap-1.5 shrink-0">
-                                            {isAuxiliary ? (
-                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
-                                                Комплектующие
-                                              </span>
-                                            ) : (
-                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
-                                                Основная
-                                              </span>
-                                            )}
-                                            {it.quantity ? (
-                                              <span className="text-slate-500 font-medium text-[11px]">
-                                                {it.quantity} {it.unit || "шт."}
-                                              </span>
-                                            ) : null}
-                                          </div>
-                                        </div>
-                                        {it.included_sub_items && it.included_sub_items.length > 0 ? (
-                                          <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
-                                            <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
-                                            <span>{it.included_sub_items.join(" · ")}</span>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-
-                                {items.length > 6 ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
-                                    className="w-full py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                                  >
-                                    {stratState.showAllCategories ? (
-                                      <>
-                                        <ChevronUp size={14} />
-                                        <span>Свернуть список категорий (показаны все {items.length})</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <ChevronDown size={14} />
-                                        <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} с прокруткой (всего {items.length})</span>
-                                      </>
-                                    )}
-                                  </button>
-                                ) : null}
-                              </>
-                            ) : null}
-
-                            {/* Summary Bar */}
-                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
-                              <div>
-                                Выбрано категорий: <strong className="text-slate-900">{selectedCount}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)}</strong>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
-                                className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy || selectedCount === 0}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openStrategyConfirmModal(job)}
+                            className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Sliders size={13} />
+                            <span>Выбрать стратегию</span>
+                          </button>
+                        </div>
                       </div>
                     );
                   })() : null}
@@ -4541,53 +4293,67 @@ export function CabinetClient() {
         </div>
       ) : null}
 
-      {strategyConfirmJob ? (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              if (strategyConfirmJob) {
-                dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+      {strategyConfirmJob ? (() => {
+        const pendingStrategyJobs = jobs.filter(
+          (j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy"
+        );
+        const currentJobIndex = pendingStrategyJobs.findIndex((j) => j.id === strategyConfirmJob.id);
+        const totalPending = pendingStrategyJobs.length;
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                if (strategyConfirmJob) {
+                  dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+                }
+                setStrategyConfirmJob(null);
               }
-              setStrategyConfirmJob(null);
-            }
-          }}
-        >
-          <section
-            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="strategy-confirm-title"
+            }}
           >
-            {/* Header with Title, Procurement Name and Close Button */}
-            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
-              <div className="flex items-center gap-3 min-w-0 pr-2">
-                <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                  <Sliders size={20} aria-hidden="true" />
+            <section
+              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="strategy-confirm-title"
+            >
+              {/* Header with Title, Procurement Name and Close Button */}
+              <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+                <div className="flex items-center gap-3 min-w-0 pr-2">
+                  <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <Sliders size={20} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                        Выбор стратегии поиска поставщиков
+                      </h2>
+                      {totalPending > 1 && currentJobIndex >= 0 ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-teal-100 text-teal-800 border border-teal-200 shrink-0">
+                          Задача {currentJobIndex + 1} из {totalPending}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
+                      {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
-                    Выбор стратегии поиска поставщиков
-                  </h2>
-                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
-                    {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
-                onClick={() => {
-                  if (strategyConfirmJob) {
-                    dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
-                  }
-                  setStrategyConfirmJob(null);
-                }}
-                aria-label="Закрыть"
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </header>
+                <button
+                  type="button"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                  onClick={() => {
+                    if (strategyConfirmJob) {
+                      dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
+                    }
+                    setStrategyConfirmJob(null);
+                  }}
+                  aria-label="Закрыть"
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
 
             {/* Content Body */}
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
@@ -4790,6 +4556,14 @@ export function CabinetClient() {
               </div>
             </div>
 
+            {/* Error inside modal */}
+            {strategyError ? (
+              <div className="mx-6 mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                <AlertTriangle size={15} className="shrink-0" />
+                <span>{strategyError}</span>
+              </div>
+            ) : null}
+
             {/* Modal Actions Footer */}
             <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
               <button
@@ -4797,10 +4571,10 @@ export function CabinetClient() {
                 className="px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-800 hover:bg-rose-50 transition-all cursor-pointer"
                 onClick={() => {
                   const jobToCancel = strategyConfirmJob;
-                  setStrategyConfirmJob(null);
-                  void cancelJob(jobToCancel);
+                  skipOrDismissStrategyModal();
+                  if (jobToCancel) void cancelJob(jobToCancel);
                 }}
-                disabled={busy}
+                disabled={Boolean(strategySubmittingJobId)}
               >
                 Отменить задачу
               </button>
@@ -4808,30 +4582,37 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
-                  onClick={() => {
-                    if (strategyConfirmJob) {
-                      dismissedStrategyJobIdsRef.current.add(strategyConfirmJob.id);
-                    }
-                    setStrategyConfirmJob(null);
-                  }}
-                  disabled={busy}
+                  onClick={skipOrDismissStrategyModal}
+                  disabled={Boolean(strategySubmittingJobId)}
                 >
-                  Позже
+                  {totalPending > 1 && currentJobIndex < totalPending - 1 ? "Пропустить" : "Позже"}
                 </button>
                 <button
                   type="button"
                   className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode, selectedStrategyItemIds)}
-                  disabled={busy || (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)}
+                  disabled={
+                    strategySubmittingJobId === strategyConfirmJob.id ||
+                    (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)
+                  }
                 >
-                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-                  <span>Применить стратегию</span>
+                  {strategySubmittingJobId === strategyConfirmJob.id ? (
+                    <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 size={15} aria-hidden="true" />
+                  )}
+                  <span>
+                    {totalPending > 1 && currentJobIndex < totalPending - 1
+                      ? "Применить и к следующей →"
+                      : "Применить стратегию"}
+                  </span>
                 </button>
               </div>
             </footer>
           </section>
         </div>
-      ) : null}
+      );
+    })() : null}
 
       {retryConfirmJob ? (
         <div
