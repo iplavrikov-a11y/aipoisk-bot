@@ -2846,7 +2846,7 @@ export function CabinetClient() {
           <div className="flex items-center gap-2">
             <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
             <span>
-              <strong>Подтвердите email.</strong> Проверьте вашу почту для активирования всех функций уведомлений.
+              <strong>Подтвердите email.</strong> Для запуска задач и получения отчётов подтвердите адрес почты (проверьте почту или запросите ссылку повторно).
             </span>
           </div>
           <button
@@ -3145,6 +3145,32 @@ export function CabinetClient() {
                 <span>💡</span>
                 <span>Совет: если спецификация крупная и объединяет разные рынки (электрика, отделка, сантехника), эффективнее загружать разделы отдельными файлами для максимальной глубины подбора.</span>
               </p>
+            ) : null}
+
+            {!emailVerified ? (
+              <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                <div className="flex items-center gap-2">
+                  <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
+                  <span>
+                    <strong>Требуется подтверждение email для запуска задач.</strong> Проверьте почту или запросите повторную отправку.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                  onClick={resendVerification}
+                  disabled={busy}
+                >
+                  Отправить письмо повторно
+                </button>
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-800 flex items-center gap-2 shadow-2xs">
+                <XCircle size={15} className="text-rose-600 shrink-0" aria-hidden="true" />
+                <span>{error}</span>
+              </div>
             ) : null}
 
             {acceptsSources ? (

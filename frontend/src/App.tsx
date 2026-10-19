@@ -5019,23 +5019,39 @@ function BillingView({
     sort_order: 100,
     is_active: true,
   })
+  const [billingError, setBillingError] = useState('')
 
   async function createTariff() {
-    await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
-    setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
-    setShowAddForm(false)
-    await onChange()
+    setBillingError('')
+    try {
+      await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
+      setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
+      setShowAddForm(false)
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
 
   async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
-    await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
-    await onChange()
+    setBillingError('')
+    try {
+      await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
 
   async function deleteTariff(item: TariffPackage) {
     if (!window.confirm(`Удалить тариф "${item.name}"?`)) return
-    await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
-    await onChange()
+    setBillingError('')
+    try {
+      await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
 
   const depositTariffs = tariffs.filter(item => item.kind === 'deposit')
@@ -5075,6 +5091,12 @@ function BillingView({
           {showAddForm ? 'Скрыть форму' : 'Добавить пакет'}
         </button>
       </div>
+
+      {billingError && (
+        <div className="alert error" style={{ margin: 0, padding: '8px 12px', fontSize: 13, borderRadius: 8 }}>
+          {billingError}
+        </div>
+      )}
 
       {/* 2. Sleek 1-line logistics filter strip (replaces bulky banner) */}
       <div className="tariff-subnav-strip">
@@ -5203,7 +5225,10 @@ function BillingView({
                         style={{ fontWeight: 600 }}
                         defaultValue={item.name}
                         placeholder="Название"
-                        onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val && val !== item.name) void patchTariff(item, { name: val })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
@@ -5213,7 +5238,10 @@ function BillingView({
                         min={0}
                         step={100}
                         defaultValue={payRub}
-                        onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
@@ -5223,7 +5251,10 @@ function BillingView({
                         min={0}
                         step={100}
                         defaultValue={bonusRub}
-                        onBlur={e => void patchTariff(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== bonusRub) void patchTariff(item, { bonus_kopeks: rublesToKopeks(val) })
+                        }}
                       />
                     </td>
                     <td>
@@ -5252,7 +5283,10 @@ function BillingView({
                         type="number"
                         min={1}
                         defaultValue={item.units}
-                        onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -5260,7 +5294,10 @@ function BillingView({
                         className="t-input badge-text"
                         defaultValue={item.badge || ''}
                         placeholder="—"
-                        onBlur={e => void patchTariff(item, { badge: e.currentTarget.value })}
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val !== (item.badge || '')) void patchTariff(item, { badge: val })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -5360,7 +5397,10 @@ function BillingView({
                       <input
                         className="t-input text"
                         defaultValue={item.name}
-                        onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val && val !== item.name) void patchTariff(item, { name: val })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -5369,7 +5409,10 @@ function BillingView({
                         type="number"
                         min={1}
                         defaultValue={item.units}
-                        onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
+                        }}
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
@@ -5380,7 +5423,10 @@ function BillingView({
                         step={10}
                         style={{ fontWeight: 600 }}
                         defaultValue={payRub}
-                        onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
+                        }}
                       />
                     </td>
                     <td>

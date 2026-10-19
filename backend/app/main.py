@@ -1623,7 +1623,7 @@ def _validate_tariff_unit_price(
     is_active: bool,
     exclude_id: str | None = None,
 ) -> None:
-    if not is_active or units <= 0:
+    if not is_active or units <= 0 or kind == "deposit" or kind == KIND_DEPOSIT:
         return
     existing = db.query(TariffPackage).filter(
         TariffPackage.kind == kind,
