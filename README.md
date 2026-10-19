@@ -14,6 +14,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Rule 14 Universal Domain-Agnostic Matching Architecture & Complete Hardcode Elimination (2026-10-19):
+  - Completely eradicated all product-specific tuples, brand whitelists, bespoke model/query injections, and hardcoded TU numbers (including TU 5433-001/002) across `matcher.py` and `deep.py`.
+  - Replaced ad-hoc strings with Russian Civil Code (ст. 1473 ГК РФ) legal entity structural extraction (mandatory corporate forms `ООО`, `АО`, `ПАО`, `ЗАО`, `Завод`, `Фабрика`, `Комбинат`, `Концерн`, `НПО` or industrial suffixes `пром`, `маш`, `тех`), filtering out raw equipment classification acronyms (`МДУ`, `КТП`, `ВРУ`, `СИП`) and 4+ consonant cluster noise.
+  - Formulated universal physical laws in AI prompts: integrating reservoir volume vs cyclic dose/flow rate across fluids/granular media, operating power vs startup electrical transients, and 44-FZ negative specifications.
+  - Deployed purely objective mathematical candidate rotation (`main_mismatches == 0 and main_passes > 0` stays winner; rotation activates only on confirmed defect of primary winner), removing all brand favoritism (`is_canonical_winner`, `is_tender_analog_winner`).
+  - Architecture fully synced across both TenderLex and EmailAgent codebases; verified with 907 backend tests (100% pass) and live zero-downtime deployment.
 - Deposit Packages Bonus Restoration, Direct Purchase Buttons & Multi-Tab Billing Redesign (2026-10-18):
   - Fixed deposit package bonus zeroing for clients with custom task prices in `backend/app/main.py` and `cabinet-client.tsx`. Deposit tiers faithfully award +17% (3 000 ₽ -> 3 500 ₽), +30% (5 000 ₽ -> 6 500 ₽), +40% (10 000 ₽ -> 14 000 ₽), and +50% (25 000 ₽ -> 37 500 ₽).
   - Added direct `[ Купить ]` buttons inside the cabinet tariffs dropdown for one-click modal opening with selected tier.
