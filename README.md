@@ -14,6 +14,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Admin Jobs Performance Acceleration, Eager Loading & Two-Stage Polling (2026-10-19):
+  - Backend Query & N+1 Elimination (`backend/app/main.py`): added `selectinload(Job.files, Job.sources)` and pre-fetched all admin reruns in a single batch query (`child_reruns_map`), cutting 1800+ redundant database roundtrips down to 2 batch queries.
+  - Disk Stat Caching (`backend/app/main.py`): introduced `_ADMIN_JOB_RESULT_FILES_CACHE` in `admin_job_result_files` for completed tasks, eliminating disk-bound `evidence.json` parsing and file `stat()` calls across 600+ records. Reduced 25-job fetch latency from 5.5s to 0.08s (70x faster) and full 608-job cache retrieval to 0.10s.
+  - Frontend Two-Stage Loading & Polling Optimization (`frontend/src/App.tsx`): clicking the "Задачи" tab instantly retrieves the top 25 jobs in ~80ms while smoothly loading the complete history in the background for client-side search. Replaced heavy full-history polling with a lightweight top-50 poll (`limit=50`) every 6s, eliminating recurring server spikes.
+  - UI Feedback & Pagination (`frontend/src/App.tsx`): added active `Загрузка задач...` spinner and toolbar indicators during initial load to eliminate misleading `0-0 из 0` empty states. Added a `По 10` page-size option alongside 12, 25, 50, and 100.
+  - Verified with 907 backend tests passing (100%), clean Next.js/Vite builds, and live production deployment on `202.71.13.57`.
 - Deposit Tariff Validation Exemption, Cabinet Task Launcher Inline Error Feedback & Client Email Activation (2026-10-19):
   - Tariff Unit Price Validation (`backend/app/main.py`): exempted `deposit` packages from the identical unit price validation rule (`_validate_tariff_unit_price`). Deposit packages inherently have progressive discount and bonus tiers (from 100 ₽ down to 66.7 ₽ per task), which previously triggered a false 400 alert `Все активные тарифы услуги должны иметь одинаковую цену за единицу`.
   - Admin Tariff View Isolation & Blur Guards (`frontend/src/App.tsx`): isolated tariff error states into local `billingError` banner, and added input change guards on table inputs `onBlur` to prevent redundant PATCH requests on clicks without editing.
