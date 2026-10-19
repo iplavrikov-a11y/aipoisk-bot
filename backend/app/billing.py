@@ -650,9 +650,15 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
     if error:
         raise BillingError(error)
     for kind, count in units_to_reserve.items():
-        amount = _reservable_amount_for_kind(db, client, kind, count)
+        amount = _reservable_amount_for_kind(db, client, kind, count, job=job)
         if amount > 0:
             client.money_reserved_kopeks = max(0, int(client.money_reserved_kopeks or 0)) + amount
+        has_geo = bool(job and getattr(job, "geo_radius_km", None) and int(job.geo_radius_km or 0) > 0)
+        reserve_note = (
+            f"Резерв средств перед запуском задачи (радиус {job.geo_radius_km} км)"
+            if has_geo and amount > 0
+            else ("Резерв средств перед запуском задачи" if amount > 0 else "Резерв перед запуском задачи")
+        )
         db.add(
             BillingTransaction(
                 client_id=client.id,
@@ -663,7 +669,7 @@ def _reserve_job_units_locked(db: Session, client: Client, job: Job, *, supplier
                 amount_kopeks=amount,
                 balance_after_kopeks=max(0, int(client.money_balance_kopeks or 0)),
                 reserved_after_kopeks=max(0, int(client.money_reserved_kopeks or 0)),
-                note="Резерв средств перед запуском задачи" if amount > 0 else "Резерв перед запуском задачи",
+                note=reserve_note,
                 created_by="system",
             )
         )
@@ -723,8 +729,20 @@ def reserve_additional_job_units(
         db.commit()
 
 
-def _reservable_amount_for_kind(db: Session, client: Client, kind: str, count: int) -> int:
+def _reservable_amount_for_kind(
+    db: Session,
+    client: Client,
+    kind: str,
+    count: int,
+    *,
+    job: Job | None = None,
+) -> int:
     price = effective_price_kopeks(db, client, kind)
+    if job and getattr(job, "geo_radius_km", None) and int(job.geo_radius_km or 0) > 0 and kind in {KIND_SUPPLIER_SEARCH, KIND_SUPPLIER_SEARCH_EXTRA, KIND_PRICE_MONITORING}:
+        settings = db.query(SystemSettings).first()
+        surcharge_pct = float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0)
+        if surcharge_pct > 0:
+            price = int(round(price * (1.0 + surcharge_pct / 100.0)))
     amount = price * max(0, int(count or 0))
     if amount <= 0:
         return 0

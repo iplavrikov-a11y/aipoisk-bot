@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePublicSiteContacts } from "@/lib/public-site-settings";
 import { TenderLexLogo } from "@/components/logo";
-import { Send, Sparkles, Mail, MessageSquare } from "lucide-react";
+import { Send, Sparkles, Mail, MessageSquare, Phone } from "lucide-react";
 
 export function SiteHeader() {
   const data = usePublicSiteContacts();
@@ -26,6 +26,14 @@ export function SiteHeader() {
           </div>
 
           <div className="flex items-center gap-4 text-xs">
+            <a
+              href={data.contacts.phone_url || `tel:${(data.contacts.phone || "+7 (921) 062-99-09").replace(/[^0-9+]/g, "")}`}
+              className="hover:text-teal-300 transition-colors flex items-center gap-1 font-semibold text-slate-200"
+            >
+              <Phone size={12} className="text-teal-400" />
+              {data.contacts.phone || "+7 (921) 062-99-09"}
+            </a>
+            <span className="text-slate-700">|</span>
             <a
               href={telegramSupportUrl}
               target="_blank"

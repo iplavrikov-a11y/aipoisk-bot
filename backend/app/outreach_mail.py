@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .outreach_models import (
@@ -27,10 +28,73 @@ from .outreach_models import (
     OutreachSettings,
     now_utc,
 )
+from .outreach_suppression import (
+    build_unsubscribe_url,
+    get_shared_suppression_reason,
+    record_shared_suppression,
+)
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_CAMPAIGN_TASKS: dict[str, asyncio.Task] = {}
+
+
+def is_invalid_recipient_smtp_error(error: str) -> bool:
+    """Recognize only recipient-specific permanent failures for global suppression."""
+    reason = (error or "").lower()
+    if any(word in reason for word in ("sender", "mail from", "spam", "security reason", "blacklist", "quota", "policy")):
+        return False
+    if re.search(r"\b5\.1\.[136]\b", reason):
+        return True
+    return any(word in reason for word in (
+        "invalid mailbox", "no such user", "user unknown", "unknown recipient",
+        "user not found", "user is terminated", "recipient not found", "mailbox not found",
+    ))
+
+
+EXPLICIT_OPTOUT_REPLIES = {"стоп", "unsubscribe", "отписаться", "прошу отписать", "прошу отписаться"}
+
+
+def is_explicit_optout_reply(subject: str, body_text: str) -> bool:
+    """Accept only a standalone opt-out instruction, never quoted or incidental text."""
+    def normalized(value: str) -> str:
+        return (value or "").strip().lower().rstrip(".! ")
+
+    saw_body_content = False
+    for line in (body_text or "").splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        saw_body_content = True
+        if candidate.startswith(">"):
+            continue
+        return normalized(candidate) in EXPLICIT_OPTOUT_REPLIES
+    if saw_body_content:
+        return False
+    return normalized(subject) in EXPLICIT_OPTOUT_REPLIES
+
+
+def _list_unsubscribe_header(to_email: str, from_email: str) -> str:
+    unsubscribe_url = build_unsubscribe_url(to_email)
+    if unsubscribe_url.startswith("mailto:"):
+        return f"<{unsubscribe_url}>"
+    return f"<mailto:{from_email}?subject=Unsubscribe>, <{unsubscribe_url}>"
+
+
+def _with_marketing_unsubscribe_footer(to_email: str, body_text: str, body_html: str) -> tuple[str, str]:
+    unsubscribe_url = build_unsubscribe_url(to_email)
+    text = body_text or ""
+    html_body = body_html or ""
+    if unsubscribe_url not in text:
+        text = f"{text.rstrip()}\n\n---\nНе хотите получать коммерческие письма TenderLex? Отпишитесь: {unsubscribe_url}".lstrip()
+    if html_body and unsubscribe_url not in html_body:
+        escaped_url = html.escape(unsubscribe_url, quote=True)
+        html_body = (
+            f"{html_body}<hr><p style='font-size:12px;color:#666'>"
+            f"Не хотите получать коммерческие письма TenderLex? "
+            f"<a href='{escaped_url}'>Отписаться</a></p>"
+        )
+    return text, html_body
 
 
 def _decode_bytes_losslessly(payload: bytes, declared_charset: str | None = None) -> str:
@@ -252,10 +316,20 @@ async def send_single_email(
     body_text: str,
     body_html: str,
     settings: OutreachSettings,
+    is_marketing: bool = False,
 ) -> tuple[bool, str]:
     """Sends email via Relay VPS or direct SMTP with anti-spam deliverability headers."""
     from_name = settings.from_name or "TenderLex"
     from_email = settings.from_email or "info@tenderlex.ru"
+    if is_marketing:
+        try:
+            shared_reason = get_shared_suppression_reason(to_email)
+        except Exception:
+            logger.exception("Marketing send blocked: shared suppression lookup failed")
+            return False, "suppression_lookup_failed"
+        if shared_reason:
+            return False, f"suppressed:{shared_reason}"
+        body_text, body_html = _with_marketing_unsubscribe_footer(to_email, body_text, body_html)
 
     # 1. Relay VPS (Russian Post Relay on VPS 79.133.182.215)
     relay_url = (settings.relay_url or "").strip()
@@ -270,8 +344,7 @@ async def send_single_email(
             "from_email": from_email,
             "reply_to": settings.reply_to or from_email,
             "headers": {
-                "List-Unsubscribe": f"<mailto:{from_email}?subject=Unsubscribe>, <https://tenderlex.ru/cabinet?unsubscribe={to_email}>",
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                "List-Unsubscribe": _list_unsubscribe_header(to_email, from_email),
                 "Precedence": "bulk",
                 "X-Auto-Response-Suppress": "OOF, AutoReply",
             },
@@ -311,8 +384,7 @@ async def send_single_email(
     msg["To"] = normalized_to
     if settings.reply_to:
         msg["Reply-To"] = settings.reply_to
-    msg["List-Unsubscribe"] = f"<mailto:{from_email}?subject=Unsubscribe>, <https://tenderlex.ru/cabinet?unsubscribe={normalized_to}>"
-    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg["List-Unsubscribe"] = _list_unsubscribe_header(normalized_to, from_email)
     msg["Precedence"] = "bulk"
     msg["X-Auto-Response-Suppress"] = "OOF, AutoReply"
 
@@ -429,6 +501,15 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                 logger.info(f"Skipping lead {lead_em}: blocked by stop-list spam rules")
                 continue
 
+            try:
+                shared_reason = get_shared_suppression_reason(lead_em)
+            except Exception:
+                logger.exception("Skipping lead %s: shared suppression lookup failed", lead_em)
+                continue
+            if shared_reason:
+                logger.info("Skipping lead %s: blocked by shared suppression (%s)", lead_em, shared_reason)
+                continue
+
         # Pre-flight verify deliverability
         is_deliverable, deliverable_reason = await verify_email_deliverability(lead_item["email"])
         if not is_deliverable:
@@ -466,10 +547,12 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
             body_text=text_body,
             body_html=html_body,
             settings=current_settings,
+            is_marketing=True,
         )
 
         with session_factory() as db:
             db_lead = db.query(OutreachLead).filter(OutreachLead.id == lead_item["id"]).first()
+            permanent_bounce = False
             if db_lead:
                 if success:
                     db_lead.status = "sent"
@@ -482,6 +565,7 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                         db_lead.status = "bounced"
                         db_lead.mx_valid = False
                         db_lead.notes = f"Авто-подавление (550): {err}"[:150]
+                        permanent_bounce = is_invalid_recipient_smtp_error(err)
                     else:
                         db_lead.notes = f"Ошибка: {err}"[:150]
 
@@ -505,6 +589,12 @@ async def run_campaign_worker(campaign_id: str, session_factory: Any) -> None:
                     c.failed_count = (c.failed_count or 0) + 1
                 c.current_index = idx + 1
             db.commit()
+
+        if permanent_bounce:
+            try:
+                record_shared_suppression(lead_item["email"], "invalid_recipient", "tenderlex_smtp_bounce")
+            except Exception:
+                logger.exception("Could not mirror invalid recipient to shared suppression: %s", lead_item["email"])
 
         # Adaptive jitter delay (random ±25% to prevent robotic spam signatures)
         jitter_delay = max(1.0, delay_seconds * random.uniform(0.85, 1.35))
@@ -750,6 +840,53 @@ SPAM_KEYWORDS = [
     r"продвину ваш сайт",
 ]
 
+RUSSIAN_PROCUREMENT_PLATFORMS = {
+    "tektorg.ru", "sberb2b.ru", "roseltorg.ru", "etp-ets.ru", "rts-tender.ru",
+    "fabrikant.ru", "b2b-center.ru", "zakupki.gov.ru", "etpgpb.ru", "gpb.ru",
+    "tender.pro", "b2b-energo.ru", "otc.ru", "lot-online.ru", "eltox.ru",
+}
+
+
+def is_english_spam_message(subject: str, body_text: str) -> bool:
+    """
+    Detects unsolicited English-language inbound cold outreach emails.
+    In TenderLex (a Russian B2B procurement platform for 44-FZ / 223-FZ tenders),
+    all legitimate supplier and customer correspondence is exclusively in Russian.
+    Any inbound email written predominantly in English is unsolicited spam.
+    """
+    full_text = f"{subject or ''} {body_text or ''}".strip()
+    if not full_text:
+        return False
+
+    # Remove URLs and HTML tags before analyzing text
+    clean = re.sub(r"https?://\S+", "", full_text)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+
+    cyrillic_chars = len(re.findall(r"[а-яА-ЯёЁ]", clean))
+    latin_chars = len(re.findall(r"[a-zA-Z]", clean))
+
+    # 1. Pure or overwhelming English text (20+ Latin letters, virtually no Cyrillic)
+    if latin_chars >= 20:
+        if cyrillic_chars == 0:
+            return True
+        total = cyrillic_chars + latin_chars
+        if total >= 25 and (latin_chars / total) >= 0.75:
+            return True
+
+    # 2. English cold outreach keywords / phrases (SaaS, pitch, links, Product Hunt)
+    clean_low = clean.lower()
+    english_cold_phrases = [
+        "reaching out", "quick question", "saw your launch", "product hunt",
+        "guest post", "sponsored post", "listing on", "pitching", "backlink",
+        "daily execution", "feature on", "growth partner", "seo agency",
+        "cold email", "scale your startup", "fellow founder", "congrats on",
+        "partnership inquiry", "listing inquiry", "quick note on", "commercial proposal",
+    ]
+    if cyrillic_chars < 15 and any(p in clean_low for p in english_cold_phrases):
+        return True
+
+    return False
+
 
 def is_spam_message(
     subject: str,
@@ -795,11 +932,8 @@ def is_spam_message(
                 ):
                     return True, f"Спам-ключ: {rval}"
             elif rtype == "sender":
-                if (
-                    rval in email_clean
-                    or rval in name_clean
-                    or rval_norm in name_norm
-                ):
+                # Strict email matching: do NOT match substring of sender_name to prevent false positives
+                if email_clean == rval or (rval and "@" in rval and rval in email_clean):
                     return True, f"Заблокированный отправитель: {rval}"
 
     # 2. Known Spam Domains & TLDs
@@ -839,6 +973,26 @@ def is_spam_message(
     for kw_pattern in SPAM_KEYWORDS:
         if re.search(kw_pattern, subj_clean) or re.search(kw_pattern, body_clean):
             return True, f"Спам-паттерн в тексте: {kw_pattern}"
+
+    # 7. English cold outreach detection (all English incoming emails are spam)
+    if is_english_spam_message(subject, body_text):
+        return True, "Спам: входящее письмо на английском языке"
+
+    # 8. Whitelist: Legitimate Russian procurement inquiries (e.g. from TekTorg or containing tender keywords)
+    is_rfq_intent = any(
+        kw in subj_clean or kw in body_clean
+        for kw in [
+            "запрос предложения", "коммерческое предложение", "запрос кп",
+            "номенклатур", "список тмц", "поставщик", "спецификаци",
+            "поставка товара", "ценовое предложение",
+        ]
+    )
+    is_procurement_platform = (
+        domain in RUSSIAN_PROCUREMENT_PLATFORMS
+        or any(domain.endswith("." + p) for p in RUSSIAN_PROCUREMENT_PLATFORMS)
+    )
+    if is_procurement_platform or is_rfq_intent:
+        return False, ""
 
     return False, ""
 
@@ -1077,6 +1231,48 @@ def backfill_existing_bounces(db: Session) -> int:
     return updated_count
 
 
+def expunge_imap_sender(settings: OutreachSettings, sender_email: str, sender_domain: str = "") -> int:
+    """Connects to IMAP, flags all messages from sender_email or domain with \\Deleted, and expunges them."""
+    if not settings.imap_password:
+        return 0
+    try:
+        import imaplib
+        import ssl
+        imap_host = (settings.imap_host or "127.0.0.1").strip()
+        imap_port = settings.imap_port or 19993
+        imap_user = (settings.imap_user or settings.from_email or "info@tenderlex.ru").strip()
+        imap_pass = settings.imap_password.strip()
+        if settings.imap_use_ssl or imap_port in (993, 19993):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            client = imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ctx)
+        else:
+            client = imaplib.IMAP4(imap_host, imap_port)
+        client.login(imap_user, imap_pass)
+        client.select("INBOX")
+
+        deleted_count = 0
+        search_queries = []
+        if sender_email:
+            search_queries.append(f'(FROM "{sender_email}")')
+        if sender_domain:
+            search_queries.append(f'(FROM "@{sender_domain}")')
+
+        for q in search_queries:
+            t, data = client.search(None, q)
+            if t == "OK" and data and data[0]:
+                for mid in data[0].split():
+                    client.store(mid, "+FLAGS", "\\Deleted")
+                    deleted_count += 1
+        client.expunge()
+        client.logout()
+        return deleted_count
+    except Exception as e:
+        logger.warning(f"Could not expunge sender {sender_email} on IMAP: {e}")
+        return 0
+
+
 def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -> dict[str, Any]:
     """Syncs incoming replies and bounce notifications from info@tenderlex.ru via IMAP."""
     imap_host = (settings.imap_host or "127.0.0.1").strip()
@@ -1118,6 +1314,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
         custom_rules = json.loads(settings.spam_rules_json) if settings.spam_rules_json else []
 
         new_count = 0
+        explicit_optout_emails: set[str] = set()
         for m_id in reversed(recent_ids):
             typ, m_data = client.fetch(m_id, "(RFC822)")
             if typ != "OK" or not m_data or not m_data[0]:
@@ -1148,13 +1345,24 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             body_text, body_html = extract_email_bodies(msg, subject=subject)
 
             # 1. Lead Match & Spam Check
-            matched_lead_id = find_matched_lead_id(
-                sender_email, sender_name, subject, body_text, email_map, domain_map
-            )
-            has_lead_match = bool(matched_lead_id)
-            is_spam, spam_reason = is_spam_message(
-                subject, body_text, sender_name, sender_email, has_lead_match, custom_rules
-            )
+            explicit_optout = bool(sender_email and "@" in sender_email and is_explicit_optout_reply(subject, body_text))
+            if explicit_optout:
+                exact_leads = db.query(OutreachLead).filter(func.lower(OutreachLead.email) == sender_email).all()
+                for lead_obj in exact_leads:
+                    lead_obj.status = "unsubscribed"
+                    lead_obj.mx_valid = False
+                explicit_optout_emails.add(sender_email)
+                matched_lead_id = exact_leads[0].id if exact_leads else None
+                is_spam = False
+                spam_reason = ""
+            else:
+                matched_lead_id = find_matched_lead_id(
+                    sender_email, sender_name, subject, body_text, email_map, domain_map
+                )
+                has_lead_match = bool(matched_lead_id)
+                is_spam, spam_reason = is_spam_message(
+                    subject, body_text, sender_name, sender_email, has_lead_match, custom_rules
+                )
 
             is_bounce, matched_bounce_id, target_em, bounce_reason = parse_bounce_info(
                 sender_email, sender_name, subject, body_text, email_map, domain_map
@@ -1175,6 +1383,9 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
                     client.store(m_id, "+FLAGS", "\\Deleted")
                 except Exception as de:
                     logger.debug(f"Could not flag spam as \\Deleted in IMAP: {de}")
+                # If already blacklisted by custom rules, expunge on server and skip saving to database
+                if "Заблокированный" in (spam_reason or ""):
+                    continue
             elif is_bounce or is_mailer_daemon:
                 if matched_bounce_id:
                     lead_obj = db.query(OutreachLead).filter(OutreachLead.id == matched_bounce_id).first()
@@ -1207,7 +1418,7 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             )
             db.add(inbound)
 
-            if lead_id and not is_spam_val:
+            if lead_id and not is_spam_val and not explicit_optout:
                 lead_obj = db.query(OutreachLead).filter(OutreachLead.id == lead_id).first()
                 if lead_obj:
                     if is_bounce:
@@ -1223,6 +1434,11 @@ def sync_imap_inbox(settings: OutreachSettings, db: Session, limit: int = 100) -
             new_count += 1
 
         db.commit()
+        for optout_email in explicit_optout_emails:
+            try:
+                record_shared_suppression(optout_email, "unsubscribed", "tenderlex_explicit_reply")
+            except Exception:
+                logger.exception("Could not mirror explicit reply opt-out to shared suppression")
         try:
             client.expunge()
         except Exception:

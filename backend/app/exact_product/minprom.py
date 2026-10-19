@@ -33,30 +33,10 @@ _GISP_COMPAT_CACHE: dict[str, bool] = {}
 def detect_minprom_registry_requirement(report_text: str) -> Optional[bool]:
     """
     Определяет, требуется ли в закупке включение продукции в Реестр промышленной продукции РФ (ГИСП).
-    Возвращает True только при наличии требований нацрежима (запрет по ПП 616, ограничение по ПП 878, 102 и т.д.).
+    Выписка обязательна ТОЛЬКО при прямом запрете на допуск (ПП РФ 616 / 44-ФЗ).
     """
-    if not report_text:
-        return None
-    text_low = report_text.lower()
-    minprom_triggers = (
-        "реестр российской промышленной продукции",
-        "реестровая запись",
-        "выписка из реестра",
-        "постановление № 616",
-        "постановление правительства № 616",
-        "пп рф 616",
-        "пп 616",
-        "постановление № 878",
-        "пп рф 878",
-        "пп 878",
-        "национальный режим",
-        "нацрежим",
-        "запрет на допуск",
-        "ограничение допуска",
-        "1875",
-        "719",
-    )
-    return any(trig in text_low for trig in minprom_triggers)
+    from .matcher import detect_minprom_registry_requirement as _real_detect
+    return _real_detect(report_text)
 
 
 def _is_generic_gisp_term(s: str) -> bool:

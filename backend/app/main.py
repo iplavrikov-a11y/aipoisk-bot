@@ -232,10 +232,12 @@ ANALYTICS_EXCLUDED_TELEGRAM_IDS = {"320433711"}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 logger = logging.getLogger(__name__)
 from .outreach_api import router as outreach_router
+from .outreach_unsubscribe import router as outreach_unsubscribe_router
 from .mcp_api import router as mcp_router, admin_router as mcp_admin_router, generate_api_key
 
 app = FastAPI(title="TenderLex API", version="0.1.0")
 app.include_router(outreach_router)
+app.include_router(outreach_unsubscribe_router)
 app.include_router(mcp_router)
 app.include_router(mcp_admin_router)
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
@@ -1621,7 +1623,7 @@ def _validate_tariff_unit_price(
     is_active: bool,
     exclude_id: str | None = None,
 ) -> None:
-    if not is_active or units <= 0:
+    if not is_active or units <= 0 or kind == "deposit" or kind == KIND_DEPOSIT:
         return
     existing = db.query(TariffPackage).filter(
         TariffPackage.kind == kind,
@@ -1712,7 +1714,9 @@ def admin_get_price_monitoring_settings(db: Session = Depends(db_session)) -> di
         "max_positions": int(getattr(settings, "price_monitoring_max_positions", 1000) or 1000),
         "concurrency": int(getattr(settings, "price_monitoring_concurrency", 4) or 4),
         "cluster_ratio": float(getattr(settings, "price_monitoring_cluster_ratio", 1.4) or 1.4),
-        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", False)),
+        "filter_marketplaces": bool(getattr(settings, "price_monitoring_filter_marketplaces", True)),
+        "filter_foreign_sources": bool(getattr(settings, "price_monitoring_filter_foreign", True)),
+        "max_variation_pct": float(getattr(settings, "price_monitoring_max_variation_pct", 33.0) or 33.0),
     }
 
 
@@ -1734,6 +1738,10 @@ def admin_update_price_monitoring_settings(data: dict, db: Session = Depends(db_
         settings.price_monitoring_cluster_ratio = max(1.15, min(3.0, float(data["cluster_ratio"])))
     if "filter_marketplaces" in data:
         settings.price_monitoring_filter_marketplaces = bool(data["filter_marketplaces"])
+    if "filter_foreign_sources" in data:
+        settings.price_monitoring_filter_foreign = bool(data["filter_foreign_sources"])
+    if "max_variation_pct" in data:
+        settings.price_monitoring_max_variation_pct = max(5.0, min(100.0, float(data["max_variation_pct"])))
 
     db.commit()
     return admin_get_price_monitoring_settings(db)
@@ -1798,6 +1806,10 @@ def admin_list_price_monitoring_clients(db: Session = Depends(db_session)) -> di
             "custom_price_rub": custom_price_rub,
             "effective_price_rub": round(effective_kopeks / 100, 2),
             "has_override": custom_price_rub is not None,
+            "custom_exclude_marketplaces": getattr(c, "custom_exclude_marketplaces", None),
+            "custom_exclude_foreign": getattr(c, "custom_exclude_foreign", None),
+            "custom_max_suppliers": getattr(c, "custom_max_suppliers", None),
+            "custom_max_variation_pct": getattr(c, "custom_max_variation_pct", None),
         })
     return {"clients": items, "base_price_rub": round(base_kopeks / 100, 2)}
 
@@ -1809,6 +1821,16 @@ def admin_update_price_monitoring_client(client_id: str, data: dict, db: Session
         raise HTTPException(status_code=404, detail="Клиент не найден")
     if "allowed" in data:
         client.allowed_price_monitoring = bool(data["allowed"])
+    if "custom_exclude_marketplaces" in data:
+        client.custom_exclude_marketplaces = data["custom_exclude_marketplaces"]
+    if "custom_exclude_foreign" in data:
+        client.custom_exclude_foreign = data["custom_exclude_foreign"]
+    if "custom_max_suppliers" in data:
+        val = data["custom_max_suppliers"]
+        client.custom_max_suppliers = int(val) if val is not None and str(val).strip() != "" else None
+    if "custom_max_variation_pct" in data:
+        val = data["custom_max_variation_pct"]
+        client.custom_max_variation_pct = float(val) if val is not None and str(val).strip() != "" else None
 
     if "custom_price_rub" in data:
         override = (
@@ -2104,6 +2126,30 @@ def merge_client(client_id: str, data: ClientMergeRequest, db: Session = Depends
     target.money_balance_kopeks = int(target.money_balance_kopeks or 0) + int(source.money_balance_kopeks or 0)
     target.money_reserved_kopeks = int(target.money_reserved_kopeks or 0) + int(source.money_reserved_kopeks or 0)
     merge_note = f"Объединён клиент: {source.name or source.username or source.telegram_id or source.id}"
+    # Self-referral / referral cycle cleanup on client merge
+    is_self_referral = (source.referrer_id == target.id) or (target.referrer_id == source.id)
+    if is_self_referral:
+        target.referrer_id = None
+        target.referral_reward_granted = False
+        ref_keys = [
+            f"ref_welcome_{source.id}",
+            f"ref_reward_{source.id}",
+            f"ref_welcome_{target.id}",
+            f"ref_reward_{target.id}",
+        ]
+        abused_txs = (
+            db.query(BillingTransaction)
+            .filter(
+                BillingTransaction.client_id.in_([source.id, target.id]),
+                BillingTransaction.idempotency_key.in_(ref_keys),
+            )
+            .all()
+        )
+        deduct_kopeks = sum(int(t.amount_kopeks or 0) for t in abused_txs)
+        if deduct_kopeks > 0:
+            target.money_balance_kopeks = max(0, int(target.money_balance_kopeks or 0) - deduct_kopeks)
+            merge_note += f"; аннулированы накрученные реферальные бонусы на {deduct_kopeks / 100:.2f} ₽"
+
     target.notes = "\n".join(item for item in [target.notes, merge_note] if item).strip()
 
     db.query(Job).filter(Job.client_id == source.id).update({Job.client_id: target.id}, synchronize_session=False)
@@ -2193,6 +2239,12 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                     created_by="admin",
                     idempotency_key=data.idempotency_key or "",
                 )
+                if total_amount_kopeks >= 100_000:
+                    try:
+                        from .referral import process_referral_on_payment
+                        process_referral_on_payment(db, client, total_amount_kopeks)
+                    except Exception as ref_exc:
+                        logger.warning("referral_on_admin_grant_error", extra={"error": str(ref_exc)})
             else:
                 transaction = debit_money_balance(
                     db,
@@ -2226,6 +2278,13 @@ def grant_client_billing_units(client_id: str, data: BillingGrantCreate, db: Ses
                 created_by="admin",
                 idempotency_key=data.idempotency_key or "",
             )
+            pkg_price = getattr(package, "price_kopeks", 0) if package else int(data.amount_kopeks or 0)
+            if pkg_price >= 100_000:
+                try:
+                    from .referral import process_referral_on_payment
+                    process_referral_on_payment(db, client, pkg_price)
+                except Exception as ref_exc:
+                    logger.warning("referral_on_admin_package_grant_error", extra={"error": str(ref_exc)})
         else:
             transaction = debit_package_units(
                 db,
@@ -2719,14 +2778,40 @@ def list_jobs(
     safe_limit = max(1, min(10000, int(limit or 2000)))
     jobs = (
         db.query(Job)
-        .options(selectinload(Job.client).selectinload(Client.web_users))
+        .options(
+            selectinload(Job.client).selectinload(Client.web_users),
+            selectinload(Job.files),
+            selectinload(Job.sources),
+        )
         .order_by(Job.created_at.desc())
         .limit(safe_limit * 2)
         .all()
     )
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
+    sliced_jobs = visible_jobs[:safe_limit]
+
+    # Pre-fetch admin reruns in a single batch query to avoid N+1 queries per job
+    child_reruns_map: dict[str, list[Job]] = {}
+    if sliced_jobs:
+        all_reruns = (
+            db.query(Job)
+            .options(
+                selectinload(Job.files),
+                selectinload(Job.sources),
+            )
+            .filter(Job.is_admin_rerun == True)
+            .order_by(Job.created_at.desc())
+            .all()
+        )
+        for r in all_reruns:
+            if r.parent_job_id:
+                child_reruns_map.setdefault(r.parent_job_id, []).append(r)
+
     settings = get_or_create_settings(db)
-    return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
+    return [
+        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map)
+        for job in sliced_jobs
+    ]
 
 
 def resolve_admin_job(job_identifier: str, db: Session) -> Job | None:
@@ -3810,8 +3895,12 @@ def public_site_payload(db: Session) -> dict:
         },
         "contacts": {
             "email": settings.contact_email,
-            "phone": None,
-            "phone_url": None,
+            "phone": getattr(settings, "contact_phone", None) or None,
+            "phone_url": (
+                f"tel:{re.sub(r'[^0-9+]', '', getattr(settings, 'contact_phone', ''))}"
+                if getattr(settings, "contact_phone", None)
+                else None
+            ),
             "telegram": settings.contact_telegram,
             "telegram_url": telegram_public_url(settings.contact_telegram),
             "max": None,
@@ -3835,6 +3924,10 @@ def public_site_payload(db: Session) -> dict:
             "exact_product": [item for item in tariffs if item["kind"] == "exact_product"],
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
             "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
+        },
+        "geo_radius": {
+            "enabled": bool(getattr(settings, "geo_radius_search_enabled_global", False)),
+            "surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
         },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
@@ -3901,19 +3994,6 @@ def customer_session_payload(db: Session, user: WebUser, *, csrf_token: str = ""
     settings = get_or_create_settings(db)
     tariffs = [tariff_to_public_dict(item) for item in list_tariffs(db, active_only=True)]
     deposit_packages = [item for item in tariffs if item["kind"] == "deposit"]
-    if client_has_custom_tariffs(db, user.client):
-        deposit_packages = [
-            {
-                **item,
-                "bonus_kopeks": 0,
-                "bonus_rub": 0,
-                "total_kopeks": item.get("price_kopeks", 0),
-                "total_rub": item.get("price_rub", 0),
-                "credit_rub": item.get("price_rub", 0),
-                "badge": "",
-            }
-            for item in deposit_packages
-        ]
     price_search = effective_price_kopeks(db, user.client, KIND_SUPPLIER_SEARCH) or 9900
     price_exact = effective_price_kopeks(db, user.client, KIND_EXACT_PRODUCT) or 9900
     price_report = effective_price_kopeks(db, user.client, KIND_PROCUREMENT_REPORT) or 9900
@@ -3991,6 +4071,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "client_id": user.client_id,
         "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
         "allowed_geo_radius": is_geo_allowed,
+        "geo_radius_surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
@@ -5719,7 +5800,13 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
     }
 
 
-def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings | None = None, db: Session | None = None) -> dict:
+def job_to_dict(
+    job: Job,
+    include_files: bool = False,
+    settings: SystemSettings | None = None,
+    db: Session | None = None,
+    child_reruns_map: dict[str, list[Job]] | None = None,
+) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     result_files = admin_job_result_files(job)
@@ -5813,12 +5900,19 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "sources": [source_to_dict(item) for item in job.sources],
     }
     if db and not getattr(job, "is_admin_rerun", False):
-        child_reruns = (
-            db.query(Job)
-            .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
-            .order_by(Job.created_at.desc())
-            .all()
-        )
+        if child_reruns_map is not None:
+            child_reruns = child_reruns_map.get(job.id, [])
+        else:
+            child_reruns = (
+                db.query(Job)
+                .options(
+                    selectinload(Job.files),
+                    selectinload(Job.sources),
+                )
+                .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
+                .order_by(Job.created_at.desc())
+                .all()
+            )
         data["admin_reruns"] = [
             {
                 "id": r.id,
@@ -5845,7 +5939,23 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
     return data
 
 
+_ADMIN_JOB_RESULT_FILES_CACHE: dict[tuple, list[dict]] = {}
+
+
 def admin_job_result_files(job: Job) -> list[dict]:
+    is_finished = getattr(job, "status", "") in {"completed", "partial", "failed", "cancelled"}
+    cache_key = None
+    if is_finished:
+        cache_key = (
+            job.id,
+            str(getattr(job, "updated_at", "") or ""),
+            str(getattr(job, "status", "") or ""),
+            str(getattr(job, "admin_supplement_at", "") or ""),
+            str(getattr(job, "admin_supplement_path", "") or ""),
+        )
+        if cache_key in _ADMIN_JOB_RESULT_FILES_CACHE:
+            return _ADMIN_JOB_RESULT_FILES_CACHE[cache_key]
+
     result: list[dict] = []
     default_time = (
         job.completed_at.isoformat()
@@ -5880,6 +5990,10 @@ def admin_job_result_files(job: Job) -> list[dict]:
                 "created_at": supp.get("created_at") or default_time,
             }
         )
+    if cache_key is not None:
+        if len(_ADMIN_JOB_RESULT_FILES_CACHE) > 5000:
+            _ADMIN_JOB_RESULT_FILES_CACHE.clear()
+        _ADMIN_JOB_RESULT_FILES_CACHE[cache_key] = result
     return result
 
 

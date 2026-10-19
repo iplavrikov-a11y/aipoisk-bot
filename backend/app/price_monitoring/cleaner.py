@@ -274,16 +274,19 @@ def parse_items_from_text(text: str) -> list[tuple[str, str]]:
             # Отфильтровываем чисто числовые ячейки (номера строк, количества)
             text_parts = [p for p in parts if not re.match(r"^\d+(?:[.,]\d+)?$", p)]
             if text_parts:
-                nom = text_parts[0]
-                for p in text_parts[1:]:
+                unit = "шт"
+                nom_parts = []
+                for p in text_parts:
                     if re.match(rf"^(?:{multi_units}|{single_units})$", p, re.IGNORECASE):
                         unit = p
-                        break
-            if nom:
-                clean_n = clean_nomenclature_name(nom)
-                if clean_n and len(clean_n) >= 2:
-                    items.append((clean_n, normalize_unit(unit)))
-                    continue
+                    else:
+                        nom_parts.append(p)
+                if nom_parts:
+                    nom = " ".join(nom_parts)
+                    clean_n = clean_nomenclature_name(nom)
+                    if clean_n and len(clean_n) >= 2:
+                        items.append((clean_n, normalize_unit(unit)))
+                        continue
 
         # 2. Выделение единицы измерения в конце через запятую, дефис или скобки (например "Кислород, м3" или "Подшипник - шт")
         m = re.search(rf"^(.*?)(?:[,\-]\s*|\s*\()\s*({multi_units}|{single_units})\s*\)?$", line, re.IGNORECASE)

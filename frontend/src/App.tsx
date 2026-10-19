@@ -50,6 +50,7 @@ import {
   Calendar,
   Crown,
   Coins,
+  MapPin,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
@@ -385,6 +386,8 @@ type SettingsPayload = {
   default_supplier_target: number
   allow_partial_supplier_reports: boolean
   logistics_enabled: boolean
+  geo_radius_search_enabled_global?: boolean
+  geo_radius_surcharge_pct?: number
   trial_enabled: boolean
   trial_balance_rub?: number
   trial_supplier_search_limit?: number
@@ -1177,9 +1180,12 @@ export function App() {
   const [password, setPassword] = useState('')
   const [authenticated, setAuthenticated] = useState(false)
   const [view, setViewState] = useState<View>(getInitialView)
+  const viewRef = useRef(view)
+  viewRef.current = view
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
+  const [jobsLoading, setJobsLoading] = useState(false)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [minpromRegistry, setMinpromRegistry] = useState<MinpromRegistryStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
@@ -1292,7 +1298,7 @@ export function App() {
 
       // Fetch background / secondary data without delaying core view rendering
       void api<Job[]>('/api/jobs?include_internal=true&limit=100')
-        .then(jobsData => { if (jobsData) setJobs(jobsData) })
+        .then(jobsData => { if (jobsData && viewRef.current !== 'jobs') setJobs(jobsData) })
         .catch(() => {})
       void api<MinpromRegistryStatus>('/api/ops/minprom-registry')
         .then(minpromData => { if (minpromData) setMinpromRegistry(minpromData) })
@@ -1369,6 +1375,43 @@ export function App() {
     let timeoutId: any = null
     let cancelled = false
     let lastClientsPoll = 0
+    let fullJobsRequest: Promise<Job[]> | null = null
+    let resumeRefreshing = false
+
+    async function refreshFullJobHistory() {
+      if (!fullJobsRequest) {
+        fullJobsRequest = api<Job[]>('/api/jobs?include_internal=true&limit=2000')
+          .then(updatedJobs => {
+            if (!cancelled && updatedJobs) setJobs(updatedJobs)
+            return updatedJobs
+          })
+          .finally(() => {
+            fullJobsRequest = null
+            if (!cancelled) setJobsLoading(false)
+          })
+      }
+      return fullJobsRequest
+    }
+
+    // The Jobs view needs the complete history for its client-side filters and
+    // pagination. Two-stage loading: stage 1 loads top 25 instantly (<100ms),
+    // stage 2 loads the full history in background without blocking.
+    if (view === 'jobs') {
+      if (jobs.length === 0) {
+        setJobsLoading(true)
+        void api<Job[]>('/api/jobs?include_internal=true&limit=25')
+          .then(quickJobs => {
+            if (!cancelled && quickJobs && quickJobs.length > 0) {
+              setJobs(prev => (prev.length > quickJobs.length ? prev : quickJobs))
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (!cancelled && jobs.length === 0) setJobsLoading(false)
+          })
+      }
+      void refreshFullJobHistory().catch(() => {})
+    }
 
     async function loop() {
       if (cancelled) return
@@ -1385,14 +1428,24 @@ export function App() {
         if (cancelled) return
         if (!document.hidden) {
           try {
-            const updatedJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=2000')
-            if (!cancelled && updatedJobs) {
-              setJobs(updatedJobs)
-              const nowHasActive = updatedJobs.some(j => j.status === 'running' || j.status === 'pending')
-              if (hasActive && !nowHasActive) {
-                void api<Dashboard>('/api/dashboard').then(d => {
-                  if (!cancelled && d) setDashboard(d)
-                }).catch(() => {})
+            if (view === 'jobs') {
+              // Lightweight poll: only fetch latest 50 to update active tasks and recent completions instantly
+              const quickJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=50')
+              if (!cancelled && quickJobs) {
+                setJobs(prevJobs => {
+                  if (prevJobs.length === 0) return quickJobs
+                  const map = new Map(prevJobs.map(j => [j.id, j]))
+                  for (const qj of quickJobs) {
+                    map.set(qj.id, qj)
+                  }
+                  return Array.from(map.values()).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+                })
+                const nowHasActive = quickJobs.some(j => j.status === 'running' || j.status === 'pending')
+                if (hasActive && !nowHasActive) {
+                  void api<Dashboard>('/api/dashboard').then(d => {
+                    if (!cancelled && d) setDashboard(d)
+                  }).catch(() => {})
+                }
               }
             }
 
@@ -1426,19 +1479,17 @@ export function App() {
     loop()
 
     function handleVisibilityOrFocus() {
-      if (!document.hidden && authenticated) {
-        void api<Job[]>('/api/jobs?include_internal=true&limit=2000').then(updatedJobs => {
-          if (!cancelled && updatedJobs) setJobs(updatedJobs)
-        }).catch(() => {})
-        void api<Dashboard>('/api/dashboard').then(dData => {
+      if (document.hidden || !authenticated || cancelled || resumeRefreshing) return
+      resumeRefreshing = true
+      void Promise.all([
+        view === 'jobs' ? refreshFullJobHistory().catch(() => {}) : Promise.resolve(),
+        api<Dashboard>('/api/dashboard').then(dData => {
           if (!cancelled && dData) setDashboard(dData)
-        }).catch(() => {})
-        if (view === 'clients') {
-          void api<PasswordResetRequest[]>('/api/web-password-resets?status=open').then(pData => {
-            if (!cancelled && pData) setPasswordResets(pData)
-          }).catch(() => {})
-        }
-      }
+        }).catch(() => {}),
+        view === 'clients' ? api<PasswordResetRequest[]>('/api/web-password-resets?status=open').then(pData => {
+          if (!cancelled && pData) setPasswordResets(pData)
+        }).catch(() => {}) : Promise.resolve(),
+      ]).finally(() => { resumeRefreshing = false })
     }
 
     window.addEventListener('focus', handleVisibilityOrFocus)
@@ -1478,9 +1529,11 @@ export function App() {
 
     let cancelled = false
     let timerId: any = null
+    let syncInFlight = false
 
     async function checkSync() {
-      if (cancelled || document.hidden) return
+      if (cancelled || document.hidden || syncInFlight) return
+      syncInFlight = true
       try {
         const syncData = await api<AdminSyncCheckResponse>('/api/clients/sync-check')
         if (!cancelled && syncData) {
@@ -1523,6 +1576,8 @@ export function App() {
         }
       } catch {
         // Ignore network glitches
+      } finally {
+        syncInFlight = false
       }
     }
 
@@ -1701,10 +1756,11 @@ export function App() {
             selectedClientId={selectedClientForJobs}
             onClearSelectedClient={() => setSelectedClientForJobs('')}
             onChange={loadAll}
+            loading={jobsLoading}
           />
         )}
         {isReady && view === 'outreach' && <OutreachView />}
-        {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
+        {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
@@ -3671,12 +3727,14 @@ function JobsView({
   selectedClientId = '',
   onClearSelectedClient,
   onChange,
+  loading = false,
 }: {
   jobs: Job[]
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
   onChange: () => Promise<void>
+  loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
@@ -3706,10 +3764,10 @@ function JobsView({
       const saved = localStorage.getItem('tenderlex_admin_jobs_page_size')
       if (saved) {
         const parsed = parseInt(saved, 10)
-        if (parsed === 12 || parsed === 25 || parsed === 50 || parsed === 100) return parsed
+        if (parsed === 10 || parsed === 12 || parsed === 25 || parsed === 50 || parsed === 100) return parsed
       }
     } catch {}
-    return 12
+    return 25
   })
 
   function handleJobPageSizeChange(nextSize: number) {
@@ -3932,7 +3990,17 @@ function JobsView({
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="list-toolbar-meta">
-            <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
+            <strong>
+              {loading && filteredJobs.length === 0
+                ? 'Задачи: загрузка...'
+                : `Задачи: ${shownFrom}-${shownTo} из ${filteredJobs.length}`}
+            </strong>
+            {loading && (
+              <span className="inline-note" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <Loader2 size={12} className="animate-spin" />
+                <span>обновление...</span>
+              </span>
+            )}
             {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
             {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
           </div>
@@ -4029,6 +4097,7 @@ function JobsView({
             style={{ width: 'auto', minWidth: 90, fontSize: 12 }}
             title="Количество задач на странице"
           >
+            <option value={10}>По 10</option>
             <option value={12}>По 12</option>
             <option value={25}>По 25</option>
             <option value={50}>По 50</option>
@@ -4519,7 +4588,14 @@ function JobsView({
           </article>
           )
         })}
-        {!visibleJobs.length && <div className="empty inline-empty">Нет пользовательских задач для показа.</div>}
+        {loading && !visibleJobs.length ? (
+          <div className="empty inline-empty" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '40px 0' }}>
+            <Loader2 size={18} className="animate-spin" style={{ color: '#0f766e' }} />
+            <span>Загрузка задач...</span>
+          </div>
+        ) : !visibleJobs.length ? (
+          <div className="empty inline-empty">Нет пользовательских задач для показа.</div>
+        ) : null}
       </div>
       {filteredJobs.length > pageSize && (
         <div className="list-pagination">
@@ -4941,7 +5017,47 @@ function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
   )
 }
 
-function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
+function BillingView({
+  tariffs,
+  settings,
+  onChange,
+}: {
+  tariffs: TariffPackage[]
+  settings: SettingsPayload | null
+  onChange: () => Promise<void>
+}) {
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [showAllServices, setShowAllServices] = useState(false)
+  const [geoEnabled, setGeoEnabled] = useState(settings?.geo_radius_search_enabled_global ?? true)
+  const [geoSurcharge, setGeoSurcharge] = useState(settings?.geo_radius_surcharge_pct ?? 30)
+  const [geoSaving, setGeoSaving] = useState(false)
+  const [geoSaved, setGeoSaved] = useState(false)
+
+  useEffect(() => {
+    if (settings) {
+      setGeoEnabled(settings.geo_radius_search_enabled_global ?? true)
+      setGeoSurcharge(settings.geo_radius_surcharge_pct ?? 30)
+    }
+  }, [settings])
+
+  async function saveGeoSettings() {
+    setGeoSaving(true)
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          geo_radius_search_enabled_global: geoEnabled,
+          geo_radius_surcharge_pct: Number(geoSurcharge),
+        }),
+      })
+      await onChange()
+      setGeoSaved(true)
+      setTimeout(() => setGeoSaved(false), 2500)
+    } finally {
+      setGeoSaving(false)
+    }
+  }
+
   const [newTariff, setNewTariff] = useState({
     kind: 'deposit',
     name: '',
@@ -4952,117 +5068,454 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
     sort_order: 100,
     is_active: true,
   })
+  const [billingError, setBillingError] = useState('')
+
   async function createTariff() {
-    await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
-    setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
-    await onChange()
+    setBillingError('')
+    try {
+      await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
+      setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
+      setShowAddForm(false)
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
+
   async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
-    await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
-    await onChange()
+    setBillingError('')
+    try {
+      await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
+
   async function deleteTariff(item: TariffPackage) {
-    await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
-    await onChange()
+    if (!window.confirm(`Удалить тариф "${item.name}"?`)) return
+    setBillingError('')
+    try {
+      await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
+      await onChange()
+    } catch (err) {
+      setBillingError(formatError(err))
+    }
   }
+
   const depositTariffs = tariffs.filter(item => item.kind === 'deposit')
-  const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
-  const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
-  const extraSupplierTariffs = tariffs.filter(item => item.kind === 'supplier_search_extra')
-  const exactProductTariffs = tariffs.filter(item => item.kind === 'exact_product')
+  const baseServiceOrder = ['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra']
+  const allServiceTariffs = tariffs
+    .filter(item => item.kind !== 'deposit')
+    .sort((a, b) => {
+      const orderA = baseServiceOrder.indexOf(a.kind)
+      const orderB = baseServiceOrder.indexOf(b.kind)
+      if (orderA !== orderB) return orderA - orderB
+      return (a.sort_order ?? 0) - (b.sort_order ?? 0)
+    })
+
+  // Filter to core 1-unit services unless expanded
+  const displayedServiceTariffs = showAllServices
+    ? allServiceTariffs
+    : allServiceTariffs.filter(t => t.units === 1)
+
+  const basePriceExample = 99
+  const surchargeExample = Math.round(basePriceExample * (1 + (geoSurcharge || 0) / 100))
 
   return (
-    <section className="stack">
-      <div className="form-panel full-width-panel">
-        <h2>Новый тарифный пакет</h2>
-        <div className="tariff-form-grid">
-          <label className="field">
-            <span>Тип</span>
-            <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
-              <option value="deposit">Пакет пополнения баланса (с бонусом)</option>
-              <option value="supplier_search">Поиск поставщиков (базовый)</option>
-              <option value="exact_product">Подбор товара и аналогов (базовый)</option>
-              <option value="procurement_report">Анализ документации (базовый)</option>
-              <option value="supplier_search_extra">Добор поставщиков (базовый)</option>
-            </select>
-          </label>
-          <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
-          <NumberField label="Оплата, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
-          {newTariff.kind === 'deposit' ? (
-            <>
-              <NumberField label="Бонус, ₽" value={kopeksToRubles(newTariff.bonus_kopeks)} onChange={value => setNewTariff({ ...newTariff, bonus_kopeks: rublesToKopeks(value) })} />
-              <TextField label="Бейдж" value={newTariff.badge} onChange={value => setNewTariff({ ...newTariff, badge: value })} />
-            </>
-          ) : null}
-          <NumberField label="Генераций / Задач" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
-          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать клиентам</label>
+    <section className="stack" style={{ gap: 14 }}>
+      {/* 1. Header with Title & Add button */}
+      <div className="tariff-header-bar">
+        <div>
+          <h2>Тарифы и ценообразование</h2>
+          <span className="sync-note">
+            Синхронизировано: Сайт (tenderlex.ru) + Web-кабинет + Telegram-бот
+          </span>
         </div>
-        <p className="field-help">Включённые пакеты сразу видны на сайте, в кабинете и в Telegram.</p>
-        <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
+        <button
+          className={showAddForm ? 'button-secondary' : 'button-primary'}
+          onClick={() => setShowAddForm(!showAddForm)}
+        >
+          {showAddForm ? <X size={14} /> : <Plus size={14} />}
+          {showAddForm ? 'Скрыть форму' : 'Добавить пакет'}
+        </button>
       </div>
 
-      <TariffGroupDeposit title="Пакеты пополнения единого баланса (со скидкой / бонусом)" tariffs={depositTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Поиск поставщиков" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Подбор товара и аналогов" tariffs={exactProductTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      {billingError && (
+        <div className="alert error" style={{ margin: 0, padding: '8px 12px', fontSize: 13, borderRadius: 8 }}>
+          {billingError}
+        </div>
+      )}
+
+      {/* 2. Sleek 1-line logistics filter strip (replaces bulky banner) */}
+      <div className="tariff-subnav-strip">
+        <div className="tariff-subnav-left">
+          <span className="tariff-subnav-title">
+            <MapPin size={15} />
+            Поиск в радиусе города:
+          </span>
+          <label className="tariff-inline-switch">
+            <input
+              type="checkbox"
+              checked={geoEnabled}
+              onChange={e => setGeoEnabled(e.target.checked)}
+            />
+            <span>Доступен всем</span>
+          </label>
+          <div className="tariff-inline-rate">
+            <span>Доплата:</span>
+            <input
+              type="number"
+              min={0}
+              max={500}
+              step={5}
+              value={geoSurcharge}
+              onChange={e => setGeoSurcharge(Number(e.target.value))}
+            />
+            <span>%</span>
+            <span className="tariff-rate-example">
+              (пример: 99 ₽ → <strong>{surchargeExample} ₽</strong>)
+            </span>
+          </div>
+        </div>
+        <button
+          className="tariff-subnav-save-btn"
+          onClick={() => void saveGeoSettings()}
+          disabled={geoSaving}
+        >
+          {geoSaved ? <CheckCircle2 size={13} /> : <Save size={13} />}
+          {geoSaved ? 'Сохранено' : geoSaving ? 'Сохранение...' : 'Сохранить'}
+        </button>
+      </div>
+
+      {/* 3. Collapsible Add Form */}
+      {showAddForm && (
+        <div className="tariff-collapsible-panel">
+          <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
+            Новый тарифный пакет
+          </h3>
+          <div className="tariff-form-grid">
+            <label className="field">
+              <span>Тип</span>
+              <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
+                <option value="deposit">Пакет пополнения баланса (с бонусом)</option>
+                <option value="supplier_search">Поиск поставщиков (базовый)</option>
+                <option value="exact_product">Подбор товара и аналогов (базовый)</option>
+                <option value="procurement_report">Анализ документации (базовый)</option>
+                <option value="supplier_search_extra">Добор поставщиков (базовый)</option>
+              </select>
+            </label>
+            <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
+            <NumberField label="Оплата, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+            {newTariff.kind === 'deposit' ? (
+              <>
+                <NumberField label="Бонус, ₽" value={kopeksToRubles(newTariff.bonus_kopeks)} onChange={value => setNewTariff({ ...newTariff, bonus_kopeks: rublesToKopeks(value) })} />
+                <TextField label="Бейдж" value={newTariff.badge} onChange={value => setNewTariff({ ...newTariff, badge: value })} />
+              </>
+            ) : null}
+            <NumberField label="Генераций / Задач" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
+            <label className="switch-row">
+              <input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />
+              Показывать клиентам
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+            <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}>
+              <Plus size={14} /> Сохранить тариф
+            </button>
+            <button className="button-secondary" onClick={() => setShowAddForm(false)}>
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Deposit Packages Table: Noise-Free with Effective Cost per Task */}
+      <div className="tariff-panel-card">
+        <div className="tariff-panel-header">
+          <div>
+            <h2>Пакеты пополнения единого баланса</h2>
+            <span className="sync-note">Пополнение баланса со скидкой / бонусом и пересчетом стоимости 1 задачи</span>
+          </div>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Пакетов: {depositTariffs.length}</span>
+        </div>
+
+        <div className="tariff-clean-table-container">
+          <table className="tariff-clean-table">
+            <thead>
+              <tr>
+                <th style={{ width: '20%' }}>Пакет / Название</th>
+                <th style={{ width: '11%', textAlign: 'right' }}>Оплата, ₽</th>
+                <th style={{ width: '11%', textAlign: 'right' }}>Бонус, ₽</th>
+                <th style={{ width: '16%' }}>Итого на баланс</th>
+                <th style={{ width: '14%' }}>Цена 1 задачи</th>
+                <th style={{ width: '8%', textAlign: 'center' }}>Задач</th>
+                <th style={{ width: '10%', textAlign: 'center' }}>Бейдж</th>
+                <th style={{ width: '6%', textAlign: 'center' }}>Активен</th>
+                <th style={{ width: '4%', textAlign: 'center' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {depositTariffs.map(item => {
+                const payRub = kopeksToRubles(item.price_kopeks)
+                const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
+                const totalRub = payRub + bonusRub
+                const costPerTask = item.units > 0 ? payRub / item.units : 0
+                // Discount relative to 100 ₽ base rate
+                const discountPct = costPerTask > 0 && costPerTask < 100
+                  ? Math.round(((100 - costPerTask) / 100) * 100)
+                  : 0
+
+                return (
+                  <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
+                    <td>
+                      <input
+                        className="t-input text"
+                        style={{ fontWeight: 600 }}
+                        defaultValue={item.name}
+                        placeholder="Название"
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val && val !== item.name) void patchTariff(item, { name: val })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input
+                        className="t-input number"
+                        type="number"
+                        min={0}
+                        step={100}
+                        defaultValue={payRub}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input
+                        className="t-input number"
+                        type="number"
+                        min={0}
+                        step={100}
+                        defaultValue={bonusRub}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== bonusRub) void patchTariff(item, { bonus_kopeks: rublesToKopeks(val) })
+                        }}
+                      />
+                    </td>
+                    <td>
+                      <div className="balance-credit-wrap">
+                        <span className="balance-credit-total">{totalRub.toLocaleString('ru-RU')} ₽</span>
+                        {bonusRub > 0 && (
+                          <span className="balance-credit-bonus">(+{bonusRub.toLocaleString('ru-RU')} ₽)</span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="task-cost-wrap">
+                        <span className="task-cost-price">
+                          {costPerTask > 0 ? `${costPerTask.toFixed(costPerTask % 1 === 0 ? 0 : 1)} ₽` : '—'}
+                        </span>
+                        {discountPct > 0 ? (
+                          <span className="task-cost-badge">-{discountPct}%</span>
+                        ) : costPerTask === 100 ? (
+                          <span className="task-cost-badge base">база</span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        className="t-input number-center"
+                        type="number"
+                        min={1}
+                        defaultValue={item.units}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        className="t-input badge-text"
+                        defaultValue={item.badge || ''}
+                        placeholder="—"
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val !== (item.badge || '')) void patchTariff(item, { badge: val })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={item.is_active}
+                        title="Показывать клиентам"
+                        onChange={e => void patchTariff(item, { is_active: e.target.checked })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        className="icon-button small"
+                        title="Удалить пакет"
+                        style={{ color: '#ef4444' }}
+                        onClick={() => void deleteTariff(item)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 5. Service Base Prices Table: Clean & Compact with Segmented Toggle */}
+      <div className="tariff-panel-card">
+        <div className="tariff-panel-header">
+          <div>
+            <h2>Базовые цены разовых услуг</h2>
+            <span className="sync-note">
+              Порядок: (1) Поиск поставщиков → (2) Подбор товара и аналогов → (3) Анализ документации
+            </span>
+          </div>
+          <div className="tariff-segmented-control">
+            <button
+              className={`tariff-seg-btn ${!showAllServices ? 'active' : ''}`}
+              onClick={() => setShowAllServices(false)}
+            >
+              4 основные услуги (1 задача)
+            </button>
+            <button
+              className={`tariff-seg-btn ${showAllServices ? 'active' : ''}`}
+              onClick={() => setShowAllServices(true)}
+            >
+              Все пакетные варианты ({allServiceTariffs.length})
+            </button>
+          </div>
+        </div>
+
+        <div className="tariff-clean-table-container">
+          <table className="tariff-clean-table">
+            <thead>
+              <tr>
+                <th style={{ width: '25%' }}>Модуль / Сценарий</th>
+                <th style={{ width: '28%' }}>Тариф / Описание</th>
+                <th style={{ width: '8%', textAlign: 'center' }}>Задач</th>
+                <th style={{ width: '12%', textAlign: 'right' }}>Разовая цена, ₽</th>
+                <th style={{ width: '15%' }}>Цена 1 задачи</th>
+                <th style={{ width: '7%', textAlign: 'center' }}>Активен</th>
+                <th style={{ width: '5%', textAlign: 'center' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayedServiceTariffs.map(item => {
+                const getModuleInfo = (kind: string) => {
+                  switch (kind) {
+                    case 'supplier_search':
+                      return { label: '1. Поиск поставщиков', cls: 'supplier_search' }
+                    case 'exact_product':
+                      return { label: '2. Подбор товара и аналогов', cls: 'exact_product' }
+                    case 'procurement_report':
+                      return { label: '3. Анализ документации', cls: 'procurement_report' }
+                    case 'supplier_search_extra':
+                      return { label: '4. Добор поставщиков', cls: 'supplier_search_extra' }
+                    default:
+                      return { label: kind, cls: 'supplier_search_extra' }
+                  }
+                }
+                const mod = getModuleInfo(item.kind)
+                const payRub = kopeksToRubles(item.price_kopeks)
+                const costPerTask = item.units > 0 ? payRub / item.units : 0
+                const baseUnitRate = item.kind === 'supplier_search_extra' ? 49 : 99
+                const bulkDiscountPct = item.units > 1 && costPerTask < baseUnitRate
+                  ? Math.round(((baseUnitRate - costPerTask) / baseUnitRate) * 100)
+                  : 0
+
+                return (
+                  <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
+                    <td>
+                      <span className={`module-pill-tag ${mod.cls}`}>{mod.label}</span>
+                    </td>
+                    <td>
+                      <input
+                        className="t-input text"
+                        defaultValue={item.name}
+                        onBlur={e => {
+                          const val = e.currentTarget.value.trim()
+                          if (val && val !== item.name) void patchTariff(item, { name: val })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        className="t-input number-center"
+                        type="number"
+                        min={1}
+                        defaultValue={item.units}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val > 0 && val !== item.units) void patchTariff(item, { units: val })
+                        }}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input
+                        className="t-input number"
+                        type="number"
+                        min={0}
+                        step={10}
+                        style={{ fontWeight: 600 }}
+                        defaultValue={payRub}
+                        onBlur={e => {
+                          const val = Number(e.currentTarget.value)
+                          if (!isNaN(val) && val !== payRub) void patchTariff(item, { price_kopeks: rublesToKopeks(val) })
+                        }}
+                      />
+                    </td>
+                    <td>
+                      <div className="task-cost-wrap">
+                        <span className="task-cost-price">
+                          {costPerTask > 0 ? `${costPerTask.toFixed(costPerTask % 1 === 0 ? 0 : 1)} ₽` : '—'}
+                        </span>
+                        {bulkDiscountPct > 0 ? (
+                          <span className="task-cost-badge">-{bulkDiscountPct}%</span>
+                        ) : (
+                          <span className="task-cost-badge base">база</span>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={item.is_active}
+                        title="Показывать клиентам"
+                        onChange={e => void patchTariff(item, { is_active: e.target.checked })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        className="icon-button small"
+                        title="Удалить тариф"
+                        style={{ color: '#ef4444' }}
+                        onClick={() => void deleteTariff(item)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
-  )
-}
-
-function TariffGroupDeposit({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
-  return (
-    <div className="form-panel full-width-panel">
-      <div className="panel-heading">
-        <h2>{title}</h2>
-        <span className="sync-note">Сайт + кабинет + Telegram (единый баланс)</span>
-      </div>
-      <div className="tariff-list">
-        {tariffs.map(item => {
-          const payRub = kopeksToRubles(item.price_kopeks)
-          const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
-          const totalRub = payRub + bonusRub
-          return (
-            <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr)) auto', gap: 6, alignItems: 'center' }}>
-              <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
-              <label className="mini-field"><span>Оплата, ₽</span><input type="number" min={0} step={1} defaultValue={payRub} aria-label="Сумма оплаты" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-              <label className="mini-field"><span>Бонус, ₽</span><input type="number" min={0} step={1} defaultValue={bonusRub} aria-label="Бонус" onBlur={e => void onPatch(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-              <label className="mini-field"><span>Бейдж</span><input defaultValue={item.badge || ''} placeholder="Хит" aria-label="Бейдж" onBlur={e => void onPatch(item, { badge: e.currentTarget.value })} /></label>
-              <label className="mini-field"><span>Примерно задач</span><input type="number" min={1} defaultValue={item.units} aria-label="Задач" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#0f766e', alignSelf: 'center', minWidth: 95 }}>
-                Итого: {totalRub.toLocaleString('ru-RU')} ₽
-              </div>
-              <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать</label>
-              <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
-            </article>
-          )
-        })}
-        {!tariffs.length && <div className="empty inline-empty">Пакеты пополнения ещё не добавлены.</div>}
-      </div>
-    </div>
-  )
-}
-
-function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
-  return (
-    <div className="form-panel full-width-panel">
-      <div className="panel-heading">
-        <h2>{title}</h2>
-        <span className="sync-note">Сайт + кабинет + Telegram</span>
-      </div>
-      <div className="tariff-list">
-        {tariffs.map(item => (
-          <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id}>
-            <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
-            <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
-            <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать клиентам</label>
-            <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
-          </article>
-        ))}
-        {!tariffs.length && <div className="empty inline-empty">Пакеты ещё не добавлены.</div>}
-      </div>
-    </div>
   )
 }
 

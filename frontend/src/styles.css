@@ -1919,6 +1919,314 @@ a.api-service-row.configured:hover {
 .tariff-row .switch-row { align-self: center; min-height: 38px; }
 .tariff-row input[type="checkbox"] { width: 16px; min-height: 16px; }
 
+/* --- TARIFF ULTRA-COMPACT NOISE-FREE DESIGN --- */
+.tariff-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+.tariff-header-bar h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+/* 1-line compact strip for logistics filter (replaces giant banner) */
+.tariff-subnav-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #334155;
+}
+.tariff-subnav-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.tariff-subnav-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #0f766e;
+  white-space: nowrap;
+}
+.tariff-inline-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1e293b;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.tariff-inline-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #475569;
+  white-space: nowrap;
+}
+.tariff-inline-rate input {
+  width: 52px !important;
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 2px 6px !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: #0f172a;
+  background: #ffffff !important;
+}
+.tariff-rate-example {
+  color: #64748b;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.tariff-subnav-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 5px;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.tariff-subnav-save-btn:hover {
+  background: #0d9488;
+}
+.tariff-subnav-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Card Containers & Headings */
+.tariff-panel-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 14px 18px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+.tariff-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.tariff-panel-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.tariff-segmented-control {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  padding: 2px;
+  border-radius: 6px;
+  gap: 2px;
+}
+.tariff-seg-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.tariff-seg-btn.active {
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Crisp, Clean Table (Noise-Free) */
+.tariff-clean-table-container {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.tariff-clean-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+.tariff-clean-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.tariff-clean-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+.tariff-clean-table tr:last-child td {
+  border-bottom: none;
+}
+.tariff-clean-table tr:hover td {
+  background: #f8fafc;
+}
+.tariff-clean-table tr.muted-row td {
+  opacity: 0.55;
+  background: #fafbfc;
+}
+
+/* Ghost cell inputs - zero noise until hovered/focused */
+.tariff-clean-table input.t-input {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 2px 6px !important;
+  border: 1px solid transparent !important;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0f172a;
+  background: transparent !important;
+  font-family: inherit;
+  box-shadow: none !important;
+  transition: all 0.15s ease;
+}
+.tariff-clean-table input.t-input:hover {
+  border-color: #cbd5e1 !important;
+  background: #ffffff !important;
+}
+.tariff-clean-table input.t-input:focus {
+  border-color: #0d9488 !important;
+  background: #ffffff !important;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15) !important;
+}
+.tariff-clean-table input.t-input.text {
+  width: 100%;
+}
+.tariff-clean-table input.t-input.number {
+  width: 82px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.tariff-clean-table input.t-input.number-center {
+  width: 50px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.tariff-clean-table input.t-input.badge-text {
+  width: 70px;
+  text-align: center;
+}
+
+/* Effective task cost cell */
+.task-cost-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.task-cost-price {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.task-cost-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #dcfce7;
+  color: #15803d;
+}
+.task-cost-badge.base {
+  background: #f1f5f9;
+  color: #64748b;
+  font-weight: 500;
+}
+
+/* Balance credit summary */
+.balance-credit-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.balance-credit-total {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+}
+.balance-credit-bonus {
+  font-size: 11px;
+  color: #16a34a;
+  font-weight: 600;
+}
+
+/* Module pills */
+.module-pill-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.module-pill-tag.supplier_search { background: #ccfbf1; color: #0f766e; }
+.module-pill-tag.exact_product { background: #e0e7ff; color: #3730a3; }
+.module-pill-tag.procurement_report { background: #fef3c7; color: #92400e; }
+.module-pill-tag.supplier_search_extra { background: #f1f5f9; color: #475569; }
+
+/* Collapsible panel */
+.tariff-collapsible-panel {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.04);
+}
+
 .status { display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 0 10px; font-size: 12px; font-weight: 750; white-space: nowrap; background: #e2e8f0; color: #334155; }
 .status.completed, .status.active { background: #dcfce7; color: #166534; }
 .status.trial { background: #e0f2fe; color: #075985; margin-top: 7px; }
@@ -4562,6 +4870,22 @@ a.server-api-card.warning:hover {
 @keyframes badgeGlow {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.05); opacity: 0.9; }
+}
+
+.seo-refresh-state {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .outreach-badge.running,
+  .outreach-live-dot,
+  .live-dot,
+  .live-dot.syncing,
+  .spin-icon,
+  .badge-new-client {
+    animation: none;
+  }
 }
 
 /* Toast Notifications */

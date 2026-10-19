@@ -58,11 +58,13 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
 
   // System Settings State
   const [defaultPriceRub, setDefaultPriceRub] = useState<number>(50)
-  const [maxSuppliers, setMaxSuppliers] = useState<number>(3)
+  const [maxSuppliers, setMaxSuppliers] = useState<number>(5)
   const [maxPositions, setMaxPositions] = useState<number>(1000)
   const [concurrency, setConcurrency] = useState<number>(4)
   const [clusterRatio, setClusterRatio] = useState<number>(1.4)
-  const [filterMarketplaces, setFilterMarketplaces] = useState<boolean>(false)
+  const [filterMarketplaces, setFilterMarketplaces] = useState<boolean>(true)
+  const [filterForeignSources, setFilterForeignSources] = useState<boolean>(true)
+  const [maxVariationPct, setMaxVariationPct] = useState<number>(33.0)
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
 
@@ -93,11 +95,13 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
       if (settingsRes.ok) {
         const sData = await settingsRes.json()
         setDefaultPriceRub(sData.default_price_rub ?? 50)
-        setMaxSuppliers(sData.max_suppliers_per_item ?? sData.max_suppliers ?? 3)
+        setMaxSuppliers(sData.max_suppliers_per_item ?? sData.max_suppliers ?? 5)
         setMaxPositions(sData.max_positions ?? 1000)
         setConcurrency(sData.concurrency ?? 4)
         setClusterRatio(sData.cluster_ratio ?? 1.4)
-        setFilterMarketplaces(sData.filter_marketplaces ?? false)
+        setFilterMarketplaces(sData.filter_marketplaces ?? true)
+        setFilterForeignSources(sData.filter_foreign_sources ?? true)
+        setMaxVariationPct(sData.max_variation_pct ?? 33.0)
       }
 
       if (clientsRes.ok) {
@@ -144,6 +148,8 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
           concurrency,
           cluster_ratio: clusterRatio,
           filter_marketplaces: filterMarketplaces,
+          filter_foreign_sources: filterForeignSources,
+          max_variation_pct: maxVariationPct,
         }),
         credentials: 'same-origin',
       })
@@ -447,7 +453,42 @@ export function PriceMonitoringView({ onNavigateToCookies }: { onNavigateToCooki
               />
               <span style={{ fontSize: '13px', color: '#334155' }}>Исключать Ozon, WB, Avito</span>
             </label>
-            <span style={{ fontSize: '11px', color: '#94a3b8' }}>По умолчанию выключено (все площадки включены)</span>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Рекомендуется для промышленных B2B закупок</span>
+          </div>
+
+          {/* Foreign Sources Filter Toggle */}
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '4px' }}>
+              Фильтр зарубежных источников
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '34px' }}>
+              <input
+                type="checkbox"
+                checked={filterForeignSources}
+                onChange={(e) => setFilterForeignSources(e.target.checked)}
+                style={{ width: '16px', height: '16px', accentColor: '#2563eb' }}
+              />
+              <span style={{ fontSize: '13px', color: '#334155' }}>Исключать AliExpress, Taobao, форвардеров</span>
+            </label>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Отсекает зарубежные TLD и сервисы выкупа</span>
+          </div>
+
+          {/* Max Variation Pct (Order 567 / 44-FZ) */}
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '4px' }}>
+              Коэфф. вариации (44-ФЗ), %
+            </label>
+            <input
+              type="number"
+              min="5"
+              max="100"
+              step="1"
+              value={maxVariationPct}
+              onChange={(e) => setMaxVariationPct(parseFloat(e.target.value) || 33.0)}
+              className="form-input"
+              style={{ width: '100%', padding: '6px 10px', fontSize: '13px' }}
+            />
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Приказ Минэка №567 (норма: до 33.0%)</span>
           </div>
         </div>
       </div>

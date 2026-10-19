@@ -1,15 +1,19 @@
 "use client";
 
+import "./cabinet-redesign.css";
+
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
 import { trackGoal } from "@/lib/analytics";
 import {
+  AlertTriangle,
   ArrowRight,
   Bell,
   BellOff,
   BellRing,
   BookOpen,
+  Building2,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -35,6 +39,7 @@ import {
   Paperclip,
   Pencil,
   PlusCircle,
+  QrCode,
   Receipt,
   RotateCcw,
   Search,
@@ -161,6 +166,7 @@ type SessionPayload = {
     is_email_verified: boolean;
     allowed_price_monitoring?: boolean;
     allowed_geo_radius?: boolean;
+    geo_radius_surcharge_pct?: number;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -516,6 +522,16 @@ function formatDate(value: string | null) {
   const date = new Date(apiDateValue(value));
   if (Number.isNaN(date.getTime())) return value.slice(0, 16);
   return date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: MOSCOW_TIME_ZONE });
+}
+
+function formatArtifactLabel(label?: string | null): string {
+  if (!label) return "Скачать";
+  let clean = label.replace(/\s*\(\.(?:xlsx|docx|pdf)\)/gi, "").trim();
+  const lower = clean.toLowerCase();
+  if (lower === "отчет по ценам поставщиков" || lower === "отчет по ценам" || lower === "отчет по ценам поставщиков (.xlsx)") {
+    clean = "Цены поставщиков";
+  }
+  return clean;
 }
 
 function formatRubles(kopeks: number) {
@@ -1018,6 +1034,9 @@ export function CabinetClient() {
   const [dragActive, setDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const jobsRequestIdRef = useRef(0);
+  const jobsForegroundRequestRef = useRef<number | null>(null);
+  const jobsBackgroundRequestRef = useRef<number | null>(null);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
   const [findMorePrompt, setFindMorePrompt] = useState("");
   const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
@@ -1031,14 +1050,76 @@ export function CabinetClient() {
   const [strategyConfirmJob, setStrategyConfirmJob] = useState<CustomerJob | null>(null);
   const [selectedStrategyMode, setSelectedStrategyMode] = useState<"balanced" | "per_item">("balanced");
   const [selectedStrategyItemIds, setSelectedStrategyItemIds] = useState<string[]>([]);
-  const [inlineStrategies, setInlineStrategies] = useState<Record<string, {
-    mode: "balanced" | "per_item";
-    selectedItemIds: string[];
-    isExpanded: boolean;
-    showAllCategories: boolean;
-    categoriesCollapsed: boolean;
-    previewCategories: boolean;
-  }>>({});
+  const [strategyError, setStrategyError] = useState<string>("");
+  const [strategySubmittingJobId, setStrategySubmittingJobId] = useState<string | null>(null);
+  const dismissedStrategyJobIdsRef = useRef<Set<string>>(new Set());
+
+  function markStrategyDismissed(jobId: string) {
+    dismissedStrategyJobIdsRef.current.add(jobId);
+    try {
+      const raw = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      const list: string[] = raw ? JSON.parse(raw) : [];
+      if (!list.includes(jobId)) {
+        list.push(jobId);
+        sessionStorage.setItem("tenderlex_dismissed_strategy_jobs", JSON.stringify(list));
+      }
+    } catch {}
+  }
+
+  function unmarkStrategyDismissed(jobId: string) {
+    dismissedStrategyJobIdsRef.current.delete(jobId);
+    try {
+      const raw = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      if (raw) {
+        const list: string[] = JSON.parse(raw);
+        const filtered = list.filter((id) => id !== jobId);
+        sessionStorage.setItem("tenderlex_dismissed_strategy_jobs", JSON.stringify(filtered));
+      }
+    } catch {}
+  }
+
+  function openStrategyConfirmModal(job: CustomerJob) {
+    const items = job.multi_item_details?.items || [];
+    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
+    setSelectedStrategyMode("balanced");
+    setSelectedStrategyItemIds(allIds);
+    setStrategyError("");
+    setStrategyConfirmJob(job);
+  }
+
+  function skipOrDismissStrategyModal() {
+    if (!strategyConfirmJob) return;
+    markStrategyDismissed(strategyConfirmJob.id);
+    const otherPending = jobs.filter(
+      (j) =>
+        j.id !== strategyConfirmJob.id &&
+        j.awaiting_customer_confirmation &&
+        j.confirmation_kind === "multi_item_strategy" &&
+        !dismissedStrategyJobIdsRef.current.has(j.id)
+    );
+    if (otherPending.length > 0) {
+      openStrategyConfirmModal(otherPending[0]);
+    } else {
+      setStrategyConfirmJob(null);
+    }
+  }
+
+  function fillDemoExample() {
+    setScenario("supplier_search");
+    setText(
+      "Поставка промышленной трубопроводной арматуры:\n" +
+      "1. Задвижка стальная клиновая фланцевая 30с41нж Ду100 Ру16 — 12 шт.\n" +
+      "2. Клапан обратный поворотный фланцевый 19с53нж Ду100 Ру16 — 8 шт.\n" +
+      "3. Кран шаровой стальной фланцевый 11с67п Ду50 Ру16 — 25 шт.\n" +
+      "4. Фланец плоский приварной стальной ГОСТ 33259-2015 Ду100 Ру16 — 24 шт."
+    );
+    clearSelectedFiles();
+    const launcher = document.getElementById("new-job");
+    if (launcher) {
+      launcher.scrollIntoView({ behavior: "smooth" });
+    }
+    setMessage("Демонстрационное ТЗ загружено в форму. Нажмите кнопку «Запустить поиск поставщиков».");
+  }
 
   function getClientEffectiveTaskPrice(): number | null {
     const eff = session?.balance?.effective_prices?.supplier_search?.price_rub;
@@ -1047,52 +1128,14 @@ export function CabinetClient() {
     if (typeof s === "number" && s > 0) return s;
     return null;
   }
-
-  function getJobInlineStrategy(job: CustomerJob) {
-    if (inlineStrategies[job.id]) {
-      return inlineStrategies[job.id];
-    }
-    const items = job.multi_item_details?.items || [];
-    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
-    return {
-      mode: job.multi_item_mode === "per_item" ? ("per_item" as const) : ("balanced" as const),
-      selectedItemIds: allIds,
-      isExpanded: true,
-      showAllCategories: false,
-      categoriesCollapsed: false,
-      previewCategories: false,
-    };
-  }
-
-  function updateJobInlineStrategy(jobId: string, partial: Partial<{
-    mode: "balanced" | "per_item";
-    selectedItemIds: string[];
-    isExpanded: boolean;
-    showAllCategories: boolean;
-    categoriesCollapsed: boolean;
-    previewCategories: boolean;
-  }>) {
-    setInlineStrategies((prev) => {
-      const existing = prev[jobId] || {
-        mode: "balanced",
-        selectedItemIds: [],
-        isExpanded: true,
-        showAllCategories: false,
-        categoriesCollapsed: false,
-        previewCategories: false,
-      };
-      return {
-        ...prev,
-        [jobId]: { ...existing, ...partial },
-      };
-    });
-  }
   const [quoteRequestModal, setQuoteRequestModal] = useState<QuoteRequestModal | null>(null);
   const [quoteItemSearch, setQuoteItemSearch] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [topUpTab, setTopUpTab] = useState<"card" | "b2b" | "sbp">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
   const [customTopUpRub, setCustomTopUpRub] = useState<number>(5000);
   const [topUpCopied, setTopUpCopied] = useState(false);
@@ -1108,7 +1151,6 @@ export function CabinetClient() {
   const [showScenarioHint, setShowScenarioHint] = useState(false);
   const [helpModalTab, setHelpModalTab] = useState<string>("workflow");
   const [showApiModal, setShowApiModal] = useState(false);
-  const [showChatNoticeModal, setShowChatNoticeModal] = useState(false);
   const [apiModalTab, setApiModalTab] = useState<"key" | "methods" | "ai_prompt" | "mcp">("key");
   const [apiKeys, setApiKeys] = useState<Array<{
     id: string;
@@ -1283,9 +1325,17 @@ export function CabinetClient() {
     mode = jobModeFilter,
     policy = jobPolicyFilter,
     pageSize = jobsPageSize,
+    background = false,
   ) {
     if (!authenticated) return;
-    setJobsLoading(true);
+    if (background && (jobsForegroundRequestRef.current !== null || jobsBackgroundRequestRef.current !== null)) return;
+    const requestId = ++jobsRequestIdRef.current;
+    if (background) {
+      jobsBackgroundRequestRef.current = requestId;
+    } else {
+      jobsForegroundRequestRef.current = requestId;
+      setJobsLoading(true);
+    }
     try {
       const offset = (page - 1) * pageSize;
       const params = new URLSearchParams({
@@ -1302,6 +1352,7 @@ export function CabinetClient() {
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
+      if (requestId !== jobsRequestIdRef.current) return;
       const rawItems = Array.isArray(payload) ? payload : (payload?.items || (payload as { jobs?: CustomerJob[] })?.jobs || []);
       const incomingItems: CustomerJob[] = Array.isArray(rawItems) ? rawItems : [];
 
@@ -1351,9 +1402,13 @@ export function CabinetClient() {
       }
       setJobs(incomingItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (requestId === jobsRequestIdRef.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setJobsLoading(false);
+      if (jobsBackgroundRequestRef.current === requestId) jobsBackgroundRequestRef.current = null;
+      if (jobsForegroundRequestRef.current === requestId) {
+        jobsForegroundRequestRef.current = null;
+        setJobsLoading(false);
+      }
     }
   }
 
@@ -1498,10 +1553,20 @@ export function CabinetClient() {
   }, [emailEditOpen, session?.user?.email]);
 
   useEffect(() => {
+    if (authenticated) loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
+    else setJobsLoading(false);
+    return () => {
+      // Responses from the previous page, filters or session must never replace current tasks.
+      jobsRequestIdRef.current += 1;
+      jobsForegroundRequestRef.current = null;
+      jobsBackgroundRequestRef.current = null;
+    };
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize]);
+
+  useEffect(() => {
     if (!authenticated) return;
-    loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
     const timer = window.setInterval(() => {
-      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
+      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true);
       if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
@@ -1529,10 +1594,43 @@ export function CabinetClient() {
       if (savedNotif !== null) {
         setNotificationsEnabled(savedNotif === "true");
       }
+      const savedDismissed = sessionStorage.getItem("tenderlex_dismissed_strategy_jobs");
+      if (savedDismissed) {
+        const list = JSON.parse(savedDismissed);
+        if (Array.isArray(list)) {
+          list.forEach((id) => dismissedStrategyJobIdsRef.current.add(String(id)));
+        }
+      }
     } catch {
       // ignore
     }
   }, []);
+
+  // Auto-open strategy modal when specification needs customer decision
+  useEffect(() => {
+    if (strategyConfirmJob) return;
+    const pendingJob = jobs.find(
+      (j) =>
+        j.awaiting_customer_confirmation &&
+        j.confirmation_kind === "multi_item_strategy" &&
+        !dismissedStrategyJobIdsRef.current.has(j.id)
+    );
+    if (pendingJob) {
+      openStrategyConfirmModal(pendingJob);
+    }
+  }, [jobs, strategyConfirmJob]);
+
+  // Close modal on Escape
+  useEffect(() => {
+    if (!strategyConfirmJob) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        skipOrDismissStrategyModal();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [strategyConfirmJob]);
 
   useEffect(() => {
     if (!activeToast) return;
@@ -1985,9 +2083,9 @@ export function CabinetClient() {
 
   async function chooseStrategy(job: CustomerJob, mode: "balanced" | "per_item", itemIds?: string[]) {
     if (!csrf) return;
-    setBusy(true);
-    setError("");
-    setStrategyConfirmJob(null);
+    setStrategySubmittingJobId(job.id);
+    setStrategyError("");
+    dismissedStrategyJobIdsRef.current.add(job.id);
     try {
       const response = await fetch(`/api/customer/jobs/${job.id}/choose-strategy`, {
         method: "POST",
@@ -2004,13 +2102,30 @@ export function CabinetClient() {
       if (!response.ok) throw new Error(parseError(await response.text()));
       await readJson(response);
       const countLabel = mode === "per_item" && itemIds?.length ? ` (${itemIds.length} поз.)` : "";
-      setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
+
+      // Check if there are other pending strategy jobs in the queue
+      const otherPending = jobs.filter(
+        (j) =>
+          j.id !== job.id &&
+          j.awaiting_customer_confirmation &&
+          j.confirmation_kind === "multi_item_strategy" &&
+          !dismissedStrategyJobIdsRef.current.has(j.id)
+      );
+
+      if (otherPending.length > 0) {
+        setMessage(`Стратегия для «${job.human_title || "ТЗ"}» сохранена (${mode === "balanced" ? "Сбалансированный" : `Попозиционный${countLabel}`}).`);
+        openStrategyConfirmModal(otherPending[0]);
+      } else {
+        setStrategyConfirmJob(null);
+        setMessage(`Стратегия поиска сохранена (${mode === "balanced" ? "Сбалансированный поиск" : `Попозиционный поиск${countLabel}`}). Поиск поставщиков продолжается.`);
+      }
+
       await loadSession();
       await loadJobs();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setStrategyError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setStrategySubmittingJobId(null);
     }
   }
 
@@ -2110,8 +2225,8 @@ export function CabinetClient() {
 
   if (!authenticated) {
     return (
-      <main className="min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
-        <header className="w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
+      <main className="tl-cabinet tl-cabinet-auth cabinet-page min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
+        <header className="tl-cabinet-auth-header w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
           <a className="flex items-center gap-3 font-extrabold text-slate-900 text-xl hover:text-teal-700 transition-colors" href="/">
             <Image src="/tenderlex-logo.png" alt="TenderLex" width={36} height={36} priority />
             <span>TenderLex</span>
@@ -2121,7 +2236,7 @@ export function CabinetClient() {
           </a>
         </header>
 
-        <section className="w-full max-w-5xl grid lg:grid-cols-12 gap-8 items-stretch bg-white p-6 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl">
+        <section className="tl-cabinet-auth-card w-full max-w-5xl grid lg:grid-cols-12 gap-8 items-stretch bg-white p-6 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl">
           <div className="lg:col-span-7 flex flex-col justify-between space-y-6 pr-0 lg:pr-4">
             <div className="space-y-4">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">Работайте с закупками прямо на сайте</h1>
@@ -2163,7 +2278,7 @@ export function CabinetClient() {
             </div>
           </div>
 
-          <form className="lg:col-span-5 bg-slate-50/70 p-6 sm:p-8 rounded-2xl border border-slate-200/80 space-y-4 flex flex-col justify-center" onSubmit={submitAuth}>
+          <form className="tl-cabinet-auth-form lg:col-span-5 bg-slate-50/70 p-6 sm:p-8 rounded-2xl border border-slate-200/80 space-y-4 flex flex-col justify-center" onSubmit={submitAuth}>
             {authMode === "reset" ? (
               <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
                 <h2 className="text-lg font-bold text-slate-900">Восстановить доступ</h2>
@@ -2372,80 +2487,19 @@ export function CabinetClient() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
-      <header className="w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
-        <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
-          <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
-          <span>TenderLex</span>
-        </a>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
-            <User size={14} className="text-teal-600" aria-hidden="true" />
-            <span>{session?.user?.email}</span>
-            <button
-              type="button"
-              className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
-              onClick={logout}
-              disabled={busy}
-              aria-label="Выйти"
-            >
-              <LogOut size={14} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {!emailVerified ? (
-        <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
-          <div className="flex items-center gap-2">
-            <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
-            <span>
-              <strong>Подтвердите email.</strong> Проверьте вашу почту для активирования всех функций уведомлений.
-            </span>
-          </div>
-          <button
-            type="button"
-            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-            onClick={resendVerification}
-            disabled={busy}
-          >
-            Отправить письмо повторно
-          </button>
-        </div>
-      ) : null}
-
-      {(message || error) ? (
-        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
-          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-          <span>{error || message}</span>
-        </div>
-      ) : null}
-
-      {session?.user?.is_trial ? (
-        <div className="p-3 sm:p-4 bg-gradient-to-r from-teal-50 via-white to-sky-50 border border-teal-200/90 rounded-xl shadow-2xs">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
-              <Sparkles size={16} aria-hidden="true" />
-            </div>
-            <div className="space-y-0.5 text-xs">
-              <div className="flex items-center gap-2">
-                <h2 className="font-bold text-slate-900 text-xs sm:text-sm">
-                  Тестовый доступ активен
-                </h2>
-                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded border border-teal-300 shrink-0">
-                  пробный период
-                </span>
-              </div>
-              <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
-                Вам начислен стартовый баланс для проверки поиска поставщиков, подбора товара и аналогов или анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
-              </p>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
+    <main className="tl-cabinet cabinet-page min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
+      <aside className={`tl-cabinet-sidebar ${mobileToolsOpen ? "tl-cabinet-sidebar--open" : ""}`} aria-label="Инструменты кабинета">
+        <nav className="tl-cabinet-navlinks" aria-label="Рабочая область">
+          <a href="#new-job"><PlusCircle size={17} aria-hidden="true" />Новая задача</a>
+          <a href="#jobs"><History size={17} aria-hidden="true" />История задач</a>
+        </nav>
+        <button type="button" className="tl-cabinet-tools-toggle" aria-expanded={mobileToolsOpen} aria-controls="cabinet-account-tools" onClick={() => setMobileToolsOpen((open) => !open)}>
+          <span>Баланс {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}</span>
+          <span>{mobileToolsOpen ? "Скрыть инструменты" : "Меню кабинета"}<ChevronDown size={15} aria-hidden="true" /></span>
+        </button>
+        <div id="cabinet-account-tools" className="tl-cabinet-account-tools">
       {/* Top Dashboard: Compact Header with Balance and All Buttons in 1 Continuous Row */}
-      <section className="bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
+      <section className="tl-cabinet-toolbar bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
           <div className="flex flex-wrap items-center gap-1.5">
@@ -2483,6 +2537,8 @@ export function CabinetClient() {
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => setShowTariffs((v) => !v)}
+              aria-expanded={showTariffs}
+              aria-controls="cabinet-tariffs"
             >
               <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>{showTariffs ? "Тарифы ▲" : "Тарифы ▼"}</span>
@@ -2533,7 +2589,10 @@ export function CabinetClient() {
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => {
-                setShowChatNoticeModal(true);
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("open_tenderlex_chat"));
+                  (window as unknown as { openTenderlexChat?: () => void }).openTenderlexChat?.();
+                }
               }}
               title="Онлайн-чат поддержки"
             >
@@ -2599,7 +2658,33 @@ export function CabinetClient() {
           </div>
         </div>
 
-        {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
+        </section>
+        </div>
+      </aside>
+      <div className="tl-cabinet-content space-y-3">
+        <header className="tl-cabinet-header w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
+          <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
+            <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
+            <span>TenderLex</span>
+          </a>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
+              <User size={14} className="text-teal-600" aria-hidden="true" />
+              <span>{session?.user?.email}</span>
+              <button
+                type="button"
+                className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+                onClick={logout}
+                disabled={busy}
+                aria-label="Выйти"
+              >
+                <LogOut size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Collapsible tariff content belongs to the work column, not the sidebar. */}
         {showTariffs ? (() => {
           const supplierPriceKopeks =
             session?.balance?.effective_prices?.supplier_search?.price_kopeks ??
@@ -2623,9 +2708,10 @@ export function CabinetClient() {
 
           const comboPriceKopeks = supplierPriceKopeks + reportPriceKopeks;
           const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+          const maxBonusPercent = Math.max(0, ...depositPkgs.map((pkg) => pkg.price_rub > 0 ? Math.round(pkg.bonus_rub / pkg.price_rub * 100) : 0));
 
           return (
-            <div className="pt-2.5 border-t border-slate-100 transition-all space-y-2.5">
+            <section id="cabinet-tariffs" className="tl-cabinet-tariffs pt-2.5 border-t border-slate-100 transition-all space-y-2.5" aria-label="Тарифы и пополнение баланса">
               <div className="grid md:grid-cols-2 gap-2.5">
                 {/* Column 1: Списание за операции по прайсу */}
                 <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
@@ -2688,29 +2774,42 @@ export function CabinetClient() {
                 <div className="space-y-1 bg-gradient-to-br from-emerald-50/60 to-teal-50/40 p-2.5 rounded-xl border border-emerald-200/80">
                   <div className="flex items-center justify-between pb-1 border-b border-emerald-200/60">
                     <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                      Бонусы при пополнении баланса
+                      {maxBonusPercent > 0 ? "Бонусы при пополнении баланса" : "Пакеты пополнения баланса"}
                     </span>
-                    <span className="text-[10px] font-bold text-emerald-700">до +50% к платежу</span>
+                    {maxBonusPercent > 0 ? <span className="text-[10px] font-bold text-emerald-700">до +{maxBonusPercent}% к платежу</span> : null}
                   </div>
-                  <div className="space-y-1 mt-1">
+                  <div className="space-y-1.5 mt-1">
                     {depositPkgs.map((pkg) => (
                       <div
                         key={pkg.id}
-                        className="px-2 py-1 bg-white/90 border border-emerald-200/70 rounded-md flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs"
+                        className="tl-topup-package px-2 py-1.5 bg-white/95 border border-emerald-200/70 hover:border-emerald-400 rounded-lg flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs transition-colors"
                       >
-                        <div className="flex items-center gap-1.5 truncate mr-2">
-                          <span className="font-bold text-slate-900">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
+                        <div className="tl-topup-package__amounts flex items-center gap-1.5 truncate mr-2">
+                          <span className="font-bold text-slate-900 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
                           <span className="text-slate-400">→</span>
-                          <span className="font-extrabold text-emerald-700">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
+                          <span className="font-extrabold text-emerald-700 whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="tl-topup-package__action flex items-center gap-1.5 shrink-0">
                           {pkg.bonus_rub > 0 ? (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold whitespace-nowrap">
                               +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
                             </span>
                           ) : (
                             <span className="text-[10px] text-slate-400 font-medium">Старт</span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTopUpPackage(pkg);
+                              setCustomTopUpRub(pkg.price_rub);
+                              setTopUpTab("card");
+                              setShowTopUpModal(true);
+                              setShowTariffs(false);
+                            }}
+                            className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded text-[11px] font-bold shadow-2xs transition-all cursor-pointer whitespace-nowrap"
+                          >
+                            Купить
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -2729,7 +2828,9 @@ export function CabinetClient() {
                     const defPkg = depositPkgs.find((p) => p.price_rub === 5000) || depositPkgs[2] || depositPkgs[0];
                     setSelectedTopUpPackage(defPkg);
                     setCustomTopUpRub(defPkg?.price_rub || 5000);
+                    setTopUpTab("card");
                     setShowTopUpModal(true);
+                    setShowTariffs(false);
                   }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer ml-auto"
                 >
@@ -2737,13 +2838,75 @@ export function CabinetClient() {
                   <span>Пополнить баланс с бонусом</span>
                 </button>
               </div>
-            </div>
+            </section>
           );
         })() : null}
-      </section>
+      {!emailVerified ? (
+        <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
+            <span>
+              <strong>Подтвердите email.</strong> Для запуска задач и получения отчётов подтвердите адрес почты (проверьте почту или запросите ссылку повторно).
+            </span>
+          </div>
+          <button
+            type="button"
+            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+            onClick={resendVerification}
+            disabled={busy}
+          >
+            Отправить письмо повторно
+          </button>
+        </div>
+      ) : null}
+
+      {(message || error) ? (
+        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
+          <span>{error || message}</span>
+        </div>
+      ) : null}
+
+      {session?.user?.is_trial ? (
+        <div className="p-3 sm:p-4 bg-gradient-to-r from-teal-50 via-white to-sky-50 border border-teal-200/90 rounded-xl shadow-2xs">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
+              <Sparkles size={16} aria-hidden="true" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-900 text-xs sm:text-sm">
+                  Тестовый доступ активен
+                </h2>
+                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded border border-teal-300 shrink-0">
+                  пробный период
+                </span>
+              </div>
+              <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
+                Вам начислен стартовый баланс для проверки поиска поставщиков, подбора товара и аналогов или анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
+              </p>
+              {jobsTotal === 0 ? (
+                <div className="pt-2 flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={fillDemoExample}
+                    className="px-3.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles size={14} />
+                    <span>Попробовать на демо-ТЗ в 1 клик</span>
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Заполнит форму тестовой спецификацией (арматура / краны / фланцы) для мгновенного запуска.
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Main Task Launch Form */}
-      <section className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
+      <section className="tl-cabinet-launcher bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
         <form id="new-job" className="space-y-2.5" onSubmit={submitJob}>
           <div className="space-y-0.5 pb-2 border-b border-slate-100">
             <h1 className="text-sm sm:text-base font-extrabold text-slate-900">Запуск задачи</h1>
@@ -2836,8 +2999,8 @@ export function CabinetClient() {
           ) : null}
 
           {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
-            <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
-              <div className="flex items-center justify-between">
+            <section className="tl-geo-filter p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5" aria-label="Логистический фильтр">
+              <div className="tl-geo-filter__heading flex items-center justify-between gap-3">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -2845,39 +3008,44 @@ export function CabinetClient() {
                     onChange={(e) => setGeoRadiusEnabled(e.target.checked)}
                     className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
                   />
-                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <span>📍</span> Поиск в радиусе доставки
+                  <span className="text-xs font-bold text-slate-800">
+                    Поиск в радиусе доставки
                   </span>
                 </label>
-                <span className="text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
-                  ⚡ Логистический фильтр (+40%)
+                <span className="tl-geo-filter__badge text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
+                  +{session?.user?.geo_radius_surcharge_pct ?? 30}% к стоимости задачи
                 </span>
               </div>
 
               {geoRadiusEnabled ? (
-                <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Город объекта / поставки:
+                <div className="tl-geo-filter__fields pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                  <div className="tl-geo-filter__city sm:col-span-2">
+                    <label htmlFor="delivery-city" className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Город объекта или поставки
                     </label>
                     <input
+                      id="delivery-city"
                       type="text"
+                      pattern=".*\S.*"
                       value={deliveryCity}
                       onChange={(e) => setDeliveryCity(e.target.value)}
                       placeholder="например, Каменск-Шахтинский или Ростов-на-Дону"
+                      required={geoRadiusEnabled}
+                      aria-describedby="delivery-radius-help"
                       className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder:text-slate-400"
                     />
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Радиус поиска:
+                  <div className="tl-geo-filter__radius">
+                    <label htmlFor="delivery-radius" className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Радиус поиска
                     </label>
                     <div className="relative">
                       <input
+                        id="delivery-radius"
                         type="number"
                         min={10}
                         max={5000}
-                        step={25}
+                        step={1}
                         value={geoRadiusKm || ""}
                         onChange={(e) => {
                           const val = e.target.value === "" ? 0 : Number(e.target.value);
@@ -2891,12 +3059,12 @@ export function CabinetClient() {
                       </span>
                     </div>
                   </div>
-                  <div className="sm:col-span-3 text-[11px] text-slate-500 leading-tight">
-                    Поиск заводов-производителей, оптовых складов, а также официальных дилеров и дистрибьюторов в радиусе доставки. База охватывает все 1 100+ городов и населенных пунктов РФ.
+                  <div id="delivery-radius-help" className="tl-geo-filter__helper sm:col-span-3 text-[11px] text-slate-500 leading-tight">
+                    Укажите точку доставки и радиус поиска. Доступность доставки и срок уточняются у поставщика.
                   </div>
                 </div>
               ) : null}
-            </div>
+            </section>
           ) : null}
 
           <div className="space-y-2">
@@ -2904,6 +3072,9 @@ export function CabinetClient() {
               className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
                 dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-400/80 hover:border-teal-500 bg-teal-50/25 hover:bg-teal-50/50"
               }`}
+              role="button"
+              tabIndex={0}
+              aria-label="Выбрать файлы для задачи"
               onDragOver={(event) => {
                 event.preventDefault();
                 setDragActive(true);
@@ -2915,6 +3086,12 @@ export function CabinetClient() {
                 filesFromList(event.dataTransfer.files);
               }}
               onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
             >
               <input
                 ref={fileInputRef}
@@ -2970,6 +3147,32 @@ export function CabinetClient() {
               </p>
             ) : null}
 
+            {!emailVerified ? (
+              <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                <div className="flex items-center gap-2">
+                  <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
+                  <span>
+                    <strong>Требуется подтверждение email для запуска задач.</strong> Проверьте почту или запросите повторную отправку.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                  onClick={resendVerification}
+                  disabled={busy}
+                >
+                  Отправить письмо повторно
+                </button>
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-800 flex items-center gap-2 shadow-2xs">
+                <XCircle size={15} className="text-rose-600 shrink-0" aria-hidden="true" />
+                <span>{error}</span>
+              </div>
+            ) : null}
+
             {acceptsSources ? (
               <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full">
                 <label className="flex flex-col gap-1 text-xs font-bold text-slate-700 flex-1 min-w-0">
@@ -3019,7 +3222,7 @@ export function CabinetClient() {
       </section>
 
       {/* Jobs History Table */}
-      <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
+      <section id="jobs" className="tl-cabinet-jobs bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-extrabold text-slate-900">Задачи</h2>
@@ -3093,6 +3296,7 @@ export function CabinetClient() {
           {/* Mode Filter (Тип поиска) */}
           <div className="col-span-6 md:col-span-3">
             <select
+              aria-label="Тип задачи в истории"
               value={jobModeFilter}
               onChange={(e) => {
                 setJobModeFilter(e.target.value);
@@ -3114,6 +3318,7 @@ export function CabinetClient() {
           {/* Policy Filter (Режим поиска по реестру) */}
           <div className="col-span-6 md:col-span-3 flex items-center gap-1.5">
             <select
+              aria-label="Режим поиска в истории"
               value={jobPolicyFilter}
               onChange={(e) => {
                 setJobPolicyFilter(e.target.value);
@@ -3146,9 +3351,9 @@ export function CabinetClient() {
           <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
             <span className="col-span-3">Задача</span>
             <span className="col-span-2">Режим</span>
-            <span className="col-span-2">Статус</span>
+            <span className="col-span-1">Статус</span>
             <span className="col-span-2">Прогресс</span>
-            <span className="col-span-3 text-right">Результат</span>
+            <span className="col-span-4 text-right">Результат</span>
           </div>
 
           {jobs.length ? (
@@ -3210,7 +3415,7 @@ export function CabinetClient() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-6 md:col-span-2 flex flex-col gap-1">
+                  <div className="col-span-6 md:col-span-1 flex flex-col gap-1 min-w-0">
                     <span
                       className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
                         job.status_label === "нет в реестре"
@@ -3233,7 +3438,7 @@ export function CabinetClient() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600">
+                  <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600 min-w-0 overflow-hidden">
                     {activeJobStatuses.has(job.status) ? <JobStageSteps progress={job.progress} /> : null}
                     <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mt-1.5" aria-label={`Прогресс ${job.progress}%`}>
                       <i
@@ -3243,10 +3448,10 @@ export function CabinetClient() {
                         style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
                       />
                     </div>
-                    <span className="text-[11px] text-slate-600 leading-snug">{job.message || `${job.progress}%`}</span>
+                    <span className="text-[11px] text-slate-600 leading-snug truncate">{job.message || `${job.progress}%`}</span>
                   </div>
 
-                  <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end">
+                  <div className="col-span-12 md:col-span-4 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
                     {isFailed ? (
                       <>
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
@@ -3286,7 +3491,6 @@ export function CabinetClient() {
                     {job.awaiting_customer_confirmation ? (
                       job.confirmation_kind === "multi_item_strategy" ? (
                         (() => {
-                          const stratState = getJobInlineStrategy(job);
                           const items = job.multi_item_details?.items || [];
                           return (
                             <div className="flex items-center gap-2 flex-wrap">
@@ -3295,12 +3499,12 @@ export function CabinetClient() {
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs transition-colors cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  updateJobInlineStrategy(job.id, { isExpanded: !stratState.isExpanded });
+                                  unmarkStrategyDismissed(job.id);
+                                  openStrategyConfirmModal(job);
                                 }}
                               >
                                 <Sliders size={14} aria-hidden="true" />
-                                <span>{stratState.isExpanded ? "Свернуть" : `Выбрать стратегию (${items.length} поз.)`}</span>
-                                {stratState.isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                <span>Выбрать стратегию{items.length > 0 ? ` (${items.length} поз.)` : ""}</span>
                               </button>
                               <button
                                 type="button"
@@ -3402,7 +3606,7 @@ export function CabinetClient() {
                                 ) : (
                                   <FileText size={14} className="text-indigo-600" aria-hidden="true" />
                                 )}
-                                <span>{file.label || "Скачать"}</span>
+                                <span>{formatArtifactLabel(file.label)}</span>
                               </button>
                             );
                           })
@@ -3539,323 +3743,13 @@ export function CabinetClient() {
                       </details>
                     </div>
                   ) : null}
-
-                  {job.awaiting_customer_confirmation && job.confirmation_kind === "multi_item_strategy" && getJobInlineStrategy(job).isExpanded ? (() => {
-                    const stratState = getJobInlineStrategy(job);
-                    const items = job.multi_item_details?.items || [];
-                    const clientPrice = getClientEffectiveTaskPrice();
-                    const hasPackageRuns = Boolean(
-                      session?.balance?.supplier_search?.unlimited ||
-                      ((session?.balance?.supplier_search?.available ?? 0) > 0)
-                    );
-                    const selectedCount = stratState.selectedItemIds.length;
-                    const priceLabel = (tasksCount: number) => {
-                      if (clientPrice && !hasPackageRuns) {
-                        return ` (${tasksCount * clientPrice} ₽)`;
-                      }
-                      return "";
-                    };
-
-                    const visibleItems = items.length <= 6 || stratState.showAllCategories
-                      ? items
-                      : items.slice(0, 6);
-
-                    return (
-                      <div className="col-span-12 mt-2 pt-3 border-t border-slate-200/90 space-y-2.5">
-                        {items.length >= 10 ? (
-                          <div className="p-2.5 sm:p-3 rounded-lg bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-2.5 leading-relaxed">
-                            <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
-                            <div className="space-y-1">
-                              <div className="font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
-                                <span>Крупная спецификация ({items.length} {declensionCategory(items.length)}): как получить максимум?</span>
-                              </div>
-                              <p className="text-amber-900/90 text-[11px] sm:text-xs">
-                                Поставщики работают по специализированным рынкам (электрика, вентиляция, металлопрокат, отделка). Если закупка разнородная, <strong>рекомендуется разделять ТЗ на отдельные файлы по направлениям</strong> и запускать независимыми задачами — так вы получите максимальный отклик от профильных заводов по каждому разделу.
-                              </p>
-                              <p className="text-amber-800/90 text-[11px]">
-                                Либо выберите <strong>«⚖️ Сбалансированный поиск»</strong> (1 задача), чтобы сервис автоматически распределил квоту и сформировал единый сводный реестр по ключевым системам.
-                              </p>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* Top Control Bar: Segmented Switcher & Primary CTA */}
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/80 p-2 sm:p-2.5 rounded-lg border border-slate-200/80">
-                          {/* Segmented Mode Switcher */}
-                          <div className="inline-flex items-center rounded-md border border-slate-200 bg-white p-0.5 shadow-2xs">
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { mode: "balanced" })}
-                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                stratState.mode === "balanced"
-                                  ? "bg-teal-600 text-white shadow-2xs"
-                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-                              }`}
-                            >
-                              <span>⚖️ Сбалансированный поиск</span>
-                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
-                                stratState.mode === "balanced" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
-                              }`}>
-                                1 задача{priceLabel(1)}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { mode: "per_item", categoriesCollapsed: false })}
-                              className={`px-3 py-1.5 rounded-xs text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                                stratState.mode === "per_item"
-                                  ? "bg-teal-600 text-white shadow-2xs"
-                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-                              }`}
-                            >
-                              <span>🔍 Попозиционный поиск</span>
-                              <span className={`text-[10px] px-1.5 py-0.2 rounded-xs font-semibold ${
-                                stratState.mode === "per_item" ? "bg-teal-700/80 text-white" : "bg-slate-100 text-slate-500"
-                              }`}>
-                                {stratState.mode === "per_item" ? `${selectedCount} поз.` : `${items.length} поз.`}
-                              </span>
-                            </button>
-                          </div>
-
-                          {/* Quick Launch CTA right in the control bar */}
-                          <div className="flex items-center gap-2">
-                            {stratState.mode === "balanced" ? (
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "balanced")}
-                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить поиск (1 задача{priceLabel(1)})</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
-                                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy || selectedCount === 0}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Quiet Subtitle / Description */}
-                        {stratState.mode === "balanced" ? (
-                          <div className="flex items-center justify-between text-xs text-slate-600 px-1 flex-wrap gap-2">
-                            <p className="leading-snug">
-                              Единый консолидированный отчёт. Поставщики подбираются пропорционально по всем {items.length} {declensionCategory(items.length)} ТЗ со сворачиваемой структурой (+ / -) на одном листе (1 задача).
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => updateJobInlineStrategy(job.id, { previewCategories: !stratState.previewCategories })}
-                              className="text-teal-700 hover:text-teal-900 font-semibold text-[11px] underline cursor-pointer shrink-0"
-                            >
-                              {stratState.previewCategories ? "Скрыть список категорий ▴" : `Посмотреть позиции ТЗ (${items.length}) ▾`}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-slate-600 px-1 leading-snug">
-                            Глубокий независимый сбор по каждой выбранной позиции со сворачиваемой структурой (+ / -) в едином Excel-отчёте (по 1 задаче за категорию).
-                          </div>
-                        )}
-
-                        {/* Balanced Mode Optional Preview of Items (read-only, no checkboxes) */}
-                        {stratState.mode === "balanced" && stratState.previewCategories ? (
-                          <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
-                            <div className="text-[11px] font-bold text-slate-700">
-                              Включены в консолидированный поиск ({items.length}):
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {items.map((it, idx) => (
-                                <span
-                                  key={it.id || idx}
-                                  className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-800"
-                                >
-                                  <span className="font-bold text-slate-500">{idx + 1}.</span>
-                                  <span>{it.name}</span>
-                                  {it.quantity ? <span className="text-slate-400 text-[10px]">({it.quantity} {it.unit || "шт."})</span> : null}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* PER-ITEM MODE: Categories Selection Accordion (ONLY RENDERS IN PER_ITEM MODE!) */}
-                        {stratState.mode === "per_item" ? (
-                          <div className="bg-white rounded-lg border border-slate-200/90 p-3 sm:p-3.5 space-y-2.5">
-                            {/* Categories Selection Toolbar */}
-                            <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
-                              <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                                <span>Категории ТЗ ({items.length}):</span>
-                                <span className="text-[11px] font-normal text-slate-500">
-                                  отметьте зелеными галочками нужные для поиска
-                                </span>
-                              </div>
-
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const allIds = items.map((it, idx) => it.id || `item-${idx}`);
-                                    updateJobInlineStrategy(job.id, { selectedItemIds: allIds });
-                                  }}
-                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-semibold cursor-pointer"
-                                >
-                                  Выбрать все ({items.length})
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const coreIds = items
-                                      .filter(it => it.is_core || (!it.is_auxiliary && it.cost_tier !== "auxiliary"))
-                                      .map((it, idx) => it.id || `item-${idx}`);
-                                    updateJobInlineStrategy(job.id, { selectedItemIds: coreIds.length ? coreIds : items.map((it, idx) => it.id || `item-${idx}`) });
-                                  }}
-                                  className="px-2 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-md font-bold cursor-pointer"
-                                >
-                                  Только основные
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => updateJobInlineStrategy(job.id, { selectedItemIds: [] })}
-                                  className="px-2 py-1 text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
-                                >
-                                  Снять все
-                                </button>
-                                <div className="h-3.5 w-px bg-slate-200" />
-                                <button
-                                  type="button"
-                                  onClick={() => updateJobInlineStrategy(job.id, { categoriesCollapsed: !stratState.categoriesCollapsed })}
-                                  className="px-2 py-1 text-teal-700 hover:text-teal-900 font-bold flex items-center gap-1 cursor-pointer"
-                                >
-                                  <span>{stratState.categoriesCollapsed ? "Развернуть список" : "Свернуть список"}</span>
-                                  {stratState.categoriesCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Categories Grid (collapsible) */}
-                            {!stratState.categoriesCollapsed ? (
-                              <>
-                                <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
-                                  items.length > 6 && stratState.showAllCategories ? "max-h-64 overflow-y-auto pr-1 category-scroll-container" : ""
-                                }`}>
-                                  {visibleItems.map((it, idx) => {
-                                    const itemId = it.id || `item-${idx}`;
-                                    const isChecked = stratState.selectedItemIds.includes(itemId);
-                                    const isAuxiliary = Boolean(it.is_auxiliary || it.cost_tier === "auxiliary");
-
-                                    return (
-                                      <div
-                                        key={itemId}
-                                        onClick={() => {
-                                          const newIds = isChecked
-                                            ? stratState.selectedItemIds.filter(id => id !== itemId)
-                                            : [...stratState.selectedItemIds, itemId];
-                                          updateJobInlineStrategy(job.id, { selectedItemIds: newIds });
-                                        }}
-                                        className={`flex flex-col text-xs bg-white p-2.5 rounded-md border transition-all cursor-pointer ${
-                                          isChecked
-                                            ? "border-teal-400 bg-teal-50/20 shadow-2xs"
-                                            : "border-slate-200 opacity-60 hover:opacity-100 hover:border-slate-300"
-                                        }`}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="flex items-center gap-2 min-w-0">
-                                            <div
-                                              className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
-                                                isChecked
-                                                  ? "bg-emerald-600 border-emerald-600 text-white shadow-2xs"
-                                                  : "bg-white border-slate-300 hover:border-emerald-500"
-                                              }`}
-                                            >
-                                              {isChecked && <Check size={11} strokeWidth={3.5} className="text-white" />}
-                                            </div>
-                                            <span className="font-bold text-slate-800 truncate">
-                                              {idx + 1}. {it.name}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center gap-1.5 shrink-0">
-                                            {isAuxiliary ? (
-                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-amber-50 text-amber-800 border border-amber-200/70">
-                                                Комплектующие
-                                              </span>
-                                            ) : (
-                                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-xs bg-teal-50 text-teal-700 border border-teal-200/70">
-                                                Основная
-                                              </span>
-                                            )}
-                                            {it.quantity ? (
-                                              <span className="text-slate-500 font-medium text-[11px]">
-                                                {it.quantity} {it.unit || "шт."}
-                                              </span>
-                                            ) : null}
-                                          </div>
-                                        </div>
-                                        {it.included_sub_items && it.included_sub_items.length > 0 ? (
-                                          <div className="mt-1 text-[11px] text-slate-500 pl-6 border-l border-teal-200/80">
-                                            <span className="font-semibold text-slate-600">Включает позиции ТЗ ({it.included_sub_items.length}): </span>
-                                            <span>{it.included_sub_items.join(" · ")}</span>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-
-                                {items.length > 6 ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => updateJobInlineStrategy(job.id, { showAllCategories: !stratState.showAllCategories })}
-                                    className="w-full py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                                  >
-                                    {stratState.showAllCategories ? (
-                                      <>
-                                        <ChevronUp size={14} />
-                                        <span>Свернуть список категорий (показаны все {items.length})</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <ChevronDown size={14} />
-                                        <span>Показать ещё {items.length - 6} {declensionCategory(items.length - 6)} с прокруткой (всего {items.length})</span>
-                                      </>
-                                    )}
-                                  </button>
-                                ) : null}
-                              </>
-                            ) : null}
-
-                            {/* Summary Bar */}
-                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600 flex-wrap gap-2">
-                              <div>
-                                Выбрано категорий: <strong className="text-slate-900">{selectedCount}</strong> из {items.length} · К списанию: <strong className="text-teal-700">{selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)}</strong>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => void chooseStrategy(job, "per_item", stratState.selectedItemIds)}
-                                className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
-                                disabled={busy || selectedCount === 0}
-                              >
-                                <CheckCircle2 size={14} />
-                                <span>Запустить ({selectedCount} {declensionTasks(selectedCount)}{priceLabel(selectedCount)})</span>
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })() : null}
                 </article>
               );
             })
           ) : (
-            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs space-y-2">
-              <p>{hasActiveJobFilters ? "По заданным фильтрам ничего не найдено." : "У вас пока нет запущенных задач."}</p>
-              {hasActiveJobFilters ? (
+            hasActiveJobFilters ? (
+              <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-slate-500 text-xs space-y-2">
+                <p>По заданным фильтрам ничего не найдено.</p>
                 <button
                   type="button"
                   onClick={resetJobFilters}
@@ -3863,8 +3757,42 @@ export function CabinetClient() {
                 >
                   Сбросить фильтры
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : (
+              <div className="p-8 sm:p-10 text-center bg-gradient-to-br from-teal-50/60 via-slate-50 to-white rounded-2xl border-2 border-dashed border-teal-200 text-slate-700 text-xs space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-700 flex items-center justify-center mx-auto shadow-2xs">
+                  <Sparkles size={24} />
+                </div>
+                <div className="max-w-md mx-auto space-y-1">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                    У вас пока нет выполненных задач
+                  </h3>
+                  <p className="text-slate-500 text-xs leading-relaxed">
+                    Загрузите ваше техническое задание в форму выше или проверьте точность подбора поставщиков на готовом примере за 1 клик.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={fillDemoExample}
+                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles size={14} />
+                    <span>Попробовать на демо-ТЗ в 1 клик</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const launcher = document.getElementById("new-job");
+                      if (launcher) launcher.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold text-xs transition-all cursor-pointer"
+                  >
+                    Перейти к загрузке ТЗ
+                  </button>
+                </div>
+              </div>
+            )
           )}
         </div>
 
@@ -4420,45 +4348,59 @@ export function CabinetClient() {
         </div>
       ) : null}
 
-      {strategyConfirmJob ? (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setStrategyConfirmJob(null);
-            }
-          }}
-        >
-          <section
-            className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="strategy-confirm-title"
+      {strategyConfirmJob ? (() => {
+        const pendingStrategyJobs = jobs.filter(
+          (j) => j.awaiting_customer_confirmation && j.confirmation_kind === "multi_item_strategy"
+        );
+        const currentJobIndex = pendingStrategyJobs.findIndex((j) => j.id === strategyConfirmJob.id);
+        const totalPending = pendingStrategyJobs.length;
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 z-50 overflow-y-auto"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                skipOrDismissStrategyModal();
+              }
+            }}
           >
-            {/* Header with Title, Procurement Name and Close Button */}
-            <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
-              <div className="flex items-center gap-3 min-w-0 pr-2">
-                <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                  <Sliders size={20} aria-hidden="true" />
+            <section
+              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col font-sans text-left my-auto"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="strategy-confirm-title"
+            >
+              {/* Header with Title, Procurement Name and Close Button */}
+              <header className="px-6 py-4 border-b border-slate-200/90 flex items-center justify-between bg-gradient-to-r from-slate-50 to-teal-50/40 shrink-0">
+                <div className="flex items-center gap-3 min-w-0 pr-2">
+                  <div className="w-10 h-10 rounded-2xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <Sliders size={20} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+                        Выбор стратегии поиска поставщиков
+                      </h2>
+                      {totalPending > 1 && currentJobIndex >= 0 ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-teal-100 text-teal-800 border border-teal-200 shrink-0">
+                          Задача {currentJobIndex + 1} из {totalPending}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
+                      {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h2 id="strategy-confirm-title" className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
-                    Выбор стратегии поиска поставщиков
-                  </h2>
-                  <p className="text-[11px] text-slate-500 font-medium truncate mt-0.5 max-w-md sm:max-w-lg">
-                    {strategyConfirmJob.job_number ? `#${strategyConfirmJob.job_number} · ` : ""}{strategyConfirmJob.human_title}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
-                onClick={() => setStrategyConfirmJob(null)}
-                aria-label="Закрыть"
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </header>
+                <button
+                  type="button"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-all shrink-0 cursor-pointer"
+                  onClick={skipOrDismissStrategyModal}
+                  aria-label="Закрыть"
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
 
             {/* Content Body */}
             <div className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[75vh]">
@@ -4661,6 +4603,14 @@ export function CabinetClient() {
               </div>
             </div>
 
+            {/* Error inside modal */}
+            {strategyError ? (
+              <div className="mx-6 mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                <AlertTriangle size={15} className="shrink-0" />
+                <span>{strategyError}</span>
+              </div>
+            ) : null}
+
             {/* Modal Actions Footer */}
             <footer className="px-6 py-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 shrink-0">
               <button
@@ -4668,10 +4618,10 @@ export function CabinetClient() {
                 className="px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-800 hover:bg-rose-50 transition-all cursor-pointer"
                 onClick={() => {
                   const jobToCancel = strategyConfirmJob;
-                  setStrategyConfirmJob(null);
-                  void cancelJob(jobToCancel);
+                  skipOrDismissStrategyModal();
+                  if (jobToCancel) void cancelJob(jobToCancel);
                 }}
-                disabled={busy}
+                disabled={Boolean(strategySubmittingJobId)}
               >
                 Отменить задачу
               </button>
@@ -4679,8 +4629,8 @@ export function CabinetClient() {
                 <button
                   type="button"
                   className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-all cursor-pointer"
-                  onClick={() => setStrategyConfirmJob(null)}
-                  disabled={busy}
+                  onClick={skipOrDismissStrategyModal}
+                  disabled={Boolean(strategySubmittingJobId)}
                 >
                   Позже
                 </button>
@@ -4688,16 +4638,24 @@ export function CabinetClient() {
                   type="button"
                   className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   onClick={() => void chooseStrategy(strategyConfirmJob, selectedStrategyMode, selectedStrategyItemIds)}
-                  disabled={busy || (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)}
+                  disabled={
+                    strategySubmittingJobId === strategyConfirmJob.id ||
+                    (selectedStrategyMode === "per_item" && selectedStrategyItemIds.length === 0)
+                  }
                 >
-                  {busy ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-                  <span>Применить стратегию</span>
+                  {strategySubmittingJobId === strategyConfirmJob.id ? (
+                    <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 size={15} aria-hidden="true" />
+                  )}
+                  <span>Применить</span>
                 </button>
               </div>
             </footer>
           </section>
         </div>
-      ) : null}
+      );
+    })() : null}
 
       {retryConfirmJob ? (
         <div
@@ -5684,7 +5642,7 @@ export function CabinetClient() {
 2. Подобрать точную модель товара и аналоги под первую часть заявки
 3. Сформировать структурированный отчет и анализ требований закупки
 
-По ссылке сразу начислят 1 000 ₽ на баланс:
+По ссылке доступно 5 бесплатных проверок + бонус 1 000 ₽ к первому пополнению баланса:
 ${webLink}`;
 
         function copyLink(textToCopy: string, key: string) {
@@ -5720,7 +5678,7 @@ ${webLink}`;
                       Пригласить коллегу
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Дарите 1 000 ₽ на баланс коллеге и получайте 1 000 ₽ за его первую задачу
+                      Дарите +1 000 ₽ к первому пополнению коллеге и получайте 1 000 ₽ за его первый платёж
                     </p>
                   </div>
                 </div>
@@ -5742,7 +5700,7 @@ ${webLink}`;
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
                   <div className="text-lg sm:text-xl font-black text-teal-700">{activated}</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">Выполнили задачу</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Пополнили баланс</div>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
                   <div className="text-lg sm:text-xl font-black text-emerald-700">{earned.toLocaleString("ru-RU")} ₽</div>
@@ -6365,74 +6323,6 @@ ${webLink}`;
         );
       })() : null}
 
-      {/* Support Chat Notice Modal */}
-      {showChatNoticeModal ? (
-        <div
-          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
-          onClick={() => setShowChatNoticeModal(false)}
-        >
-          <section
-            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150 p-5 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2 text-teal-800 font-extrabold text-sm sm:text-base">
-                <MessageCircle size={18} className="text-teal-600" />
-                <span>Чат поддержки</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowChatNoticeModal(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
-                title="Закрыть"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
-              <p>
-                Чат поддержки в личном кабинете пока находится в разработке.
-              </p>
-              <p>
-                Пожалуйста, свяжитесь с нами напрямую через Telegram или электронную почту:
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                {session?.contacts?.telegram_url ? (
-                  <a
-                    href={session.contacts.telegram_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl font-bold transition-all text-xs"
-                  >
-                    <Send size={14} className="text-sky-500" />
-                    <span>Telegram</span>
-                  </a>
-                ) : null}
-
-                <a
-                  href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}`}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-bold transition-all text-xs"
-                >
-                  <Mail size={14} className="text-slate-600" />
-                  <span>{session?.contacts?.email || "info@tenderlex.ru"}</span>
-                </a>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowChatNoticeModal(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-              >
-                Понятно
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       {/* Top-Up Balance Modal */}
       {showTopUpModal ? (
@@ -6473,210 +6363,401 @@ ${webLink}`;
               </button>
             </div>
 
-            {/* Quick Packages Grid */}
-            <div className="space-y-2">
-              <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                Выберите пакет с бонусом:
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
-                  const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
-                  return (
-                    <button
-                      key={pkg.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedTopUpPackage(pkg);
-                        setCustomTopUpRub(pkg.price_rub);
-                      }}
-                      className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
-                        isSelected
-                          ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
-                          : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
-                      }`}
-                    >
-                      {pkg.badge ? (
-                        <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
-                          {pkg.badge}
-                        </span>
-                      ) : null}
-                      <div>
-                        <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
-                        <div className="text-sm font-black text-slate-900 mt-0.5">
-                          {pkg.price_rub.toLocaleString("ru-RU")} ₽
-                        </div>
-                      </div>
-                      <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
-                        <div className="text-emerald-700 font-bold">
-                          На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
-                        </div>
-                        {pkg.bonus_rub > 0 ? (
-                          <div className="text-[10px] text-emerald-600 font-medium">
-                            +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+            {/* Payment Method Switcher Tabs */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200/80 text-xs font-semibold shrink-0">
+              <button
+                type="button"
+                onClick={() => setTopUpTab("card")}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  topUpTab === "card"
+                    ? "bg-white text-emerald-800 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <CreditCard size={14} className={topUpTab === "card" ? "text-emerald-600" : "text-slate-400"} />
+                <span>Оплата картой</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTopUpTab("b2b")}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  topUpTab === "b2b"
+                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Building2 size={14} className={topUpTab === "b2b" ? "text-slate-700" : "text-slate-400"} />
+                <span>Счёт для юрлиц</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTopUpTab("sbp")}
+                className={`py-1.5 px-2 rounded-lg text-center transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  topUpTab === "sbp"
+                    ? "bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <QrCode size={13} className={topUpTab === "sbp" ? "text-slate-700" : "text-slate-400"} />
+                <span>СБП</span>
+                <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">скоро</span>
+              </button>
             </div>
 
-            {/* Custom Amount Input */}
-            <div className="space-y-1.5 pt-1">
-              <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
-                Или введите другую сумму:
-              </label>
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <input
-                    id="custom-topup-input"
-                    type="number"
-                    min={500}
-                    step={500}
-                    value={customTopUpRub || ""}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10) || 0;
-                      setCustomTopUpRub(val);
-                      const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
-                      setSelectedTopUpPackage(match || null);
-                    }}
-                    placeholder="5000"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                    ₽
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Live Calculation Card */}
-            {(() => {
-              const hasCustomPrices = Boolean(
-                session?.balance?.has_custom_tariffs ||
-                (session?.balance?.effective_prices &&
-                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
-              );
-              const calc = hasCustomPrices
-                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
-                : calculateDepositBonus(customTopUpRub);
-              const approxTasks = Math.floor(calc.totalRub / 99);
-              return (
-                <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
-                    <span>Сумма к оплате:</span>
-                    <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+            {/* TAB 1: Transfer to Card / Telegram */}
+            {topUpTab === "card" ? (
+              <>
+                {/* Quick Packages Grid */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                    Выберите пакет с бонусом:
                   </div>
-                  {calc.bonusRub > 0 ? (
-                    <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
-                      <span>Бонус сервиса ({calc.percent}%):</span>
-                      <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
-                    </div>
-                  ) : hasCustomPrices ? (
-                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
-                      <span>Тариф:</span>
-                      <span className="font-medium text-slate-600">индивидуальные цены, без бонуса</span>
-                    </div>
-                  ) : null}
-                  <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
-                      <span className="text-[10px] text-slate-500">
-                        {hasCustomPrices ? "зачисление 100% от суммы платежа" : `хватит примерно на ${approxTasks} задач`}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {(session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES).map((pkg) => {
+                      const isSelected = (selectedTopUpPackage?.id === pkg.id) || (!selectedTopUpPackage && customTopUpRub === pkg.price_rub);
+                      return (
+                        <button
+                          key={pkg.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTopUpPackage(pkg);
+                            setCustomTopUpRub(pkg.price_rub);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-all relative cursor-pointer flex flex-col justify-between ${
+                            isSelected
+                              ? "bg-emerald-50/80 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs"
+                              : "bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/80 hover:border-slate-300"
+                          }`}
+                        >
+                          {pkg.badge ? (
+                            <span className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-extrabold text-[9px] shadow-2xs">
+                              {pkg.badge}
+                            </span>
+                          ) : null}
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">{pkg.name}</div>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">
+                              {pkg.price_rub.toLocaleString("ru-RU")} ₽
+                            </div>
+                          </div>
+                          <div className="mt-2 pt-1.5 border-t border-slate-200/70 text-[11px] space-y-0.5">
+                            <div className="text-emerald-700 font-bold">
+                              На баланс: {pkg.total_rub.toLocaleString("ru-RU")} ₽
+                            </div>
+                            {pkg.bonus_rub > 0 ? (
+                              <div className="text-[10px] text-emerald-600 font-medium">
+                                +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽ бонус
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-400 font-normal">без бонуса</div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Custom Amount Input */}
+                <div className="space-y-1.5 pt-1">
+                  <label htmlFor="custom-topup-input" className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                    Или введите другую сумму:
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        id="custom-topup-input"
+                        type="number"
+                        min={500}
+                        step={500}
+                        value={customTopUpRub || ""}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10) || 0;
+                          setCustomTopUpRub(val);
+                          const match = (session?.deposit_packages || DEFAULT_DEPOSIT_PACKAGES).find((p) => p.price_rub === val);
+                          setSelectedTopUpPackage(match || null);
+                        }}
+                        placeholder="5000"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 pr-8"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                        ₽
                       </span>
                     </div>
-                    <div className="text-lg sm:text-xl font-black text-emerald-700">
-                      {calc.totalRub.toLocaleString("ru-RU")} ₽
+                  </div>
+                </div>
+
+                {/* Live Calculation Card */}
+                {(() => {
+                  const calc = (() => {
+                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                      return {
+                        bonusRub: selectedTopUpPackage.bonus_rub,
+                        totalRub: selectedTopUpPackage.total_rub,
+                        percent: selectedTopUpPackage.bonus_percent,
+                      };
+                    }
+                    return calculateDepositBonus(customTopUpRub);
+                  })();
+                  const approxTasks = Math.floor(calc.totalRub / 99);
+                  return (
+                    <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                        <span>Сумма к оплате:</span>
+                        <strong className="text-slate-900 font-bold">{customTopUpRub.toLocaleString("ru-RU")} ₽</strong>
+                      </div>
+                      {calc.bonusRub > 0 ? (
+                        <div className="flex items-center justify-between text-xs font-semibold text-emerald-700">
+                          <span>Бонус сервиса ({calc.percent}%):</span>
+                          <strong className="font-extrabold">+{calc.bonusRub.toLocaleString("ru-RU")} ₽</strong>
+                        </div>
+                      ) : null}
+                      <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-bold text-slate-900 block">Поступит на баланс:</span>
+                          <span className="text-[10px] text-slate-500">
+                            {`хватит примерно на ${approxTasks} задач`}
+                          </span>
+                        </div>
+                        <div className="text-lg sm:text-xl font-black text-emerald-700">
+                          {calc.totalRub.toLocaleString("ru-RU")} ₽
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* How to Pay Instructions */}
+                <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <CreditCard size={14} className="text-emerald-700" />
+                    <span>Порядок оплаты картой:</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600">
+                    1. Нажмите кнопку ниже для связи в Telegram — менеджер вышлет актуальные реквизиты карты для перевода.
+                  </p>
+                  <p className="text-[11px] text-slate-600">
+                    2. После перевода отправьте подтверждение (чек или скриншот) в чат — баланс и бонус моментально зачисляются на ваш аккаунт (обычно 5–15 минут).
+                  </p>
+                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-slate-500">Ваш email аккаунта:</span>
+                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  </div>
+                </div>
+
+                {/* Contact Action Buttons */}
+                {(() => {
+                  const calc = (() => {
+                    if (selectedTopUpPackage && selectedTopUpPackage.price_rub === customTopUpRub) {
+                      return {
+                        bonusRub: selectedTopUpPackage.bonus_rub,
+                        totalRub: selectedTopUpPackage.total_rub,
+                        percent: selectedTopUpPackage.bonus_percent,
+                      };
+                    }
+                    return calculateDepositBonus(customTopUpRub);
+                  })();
+                  const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
+                  const tgMsg = encodeURIComponent(
+                    `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
+                  );
+                  const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
+
+                  return (
+                    <div className="space-y-2 pt-1">
+                      <a
+                        href={tgUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      >
+                        <Send size={15} />
+                        <span>
+                          {calc.bonusRub > 0
+                            ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
+                            : `Написать в Telegram для зачисления`}
+                        </span>
+                      </a>
+
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
+                            navigator.clipboard.writeText(copyText).then(() => {
+                              setTopUpCopied(true);
+                              setTimeout(() => setTopUpCopied(false), 2500);
+                            });
+                          }}
+                          className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                        >
+                          <Copy size={13} />
+                          <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                        </button>
+
+                        <a
+                          href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
+                          className="text-xs text-slate-500 hover:text-slate-700 underline"
+                        >
+                          Написать на email
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            ) : null}
+
+            {/* TAB 2: B2B Invoice Stub */}
+            {topUpTab === "b2b" ? (
+              <div className="space-y-3 py-1">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-xl bg-slate-200/70 text-slate-700 shrink-0 mt-0.5">
+                      <Building2 size={22} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">Безналичный расчёт для юридических лиц</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-extrabold">
+                          По запросу
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Работаем с организациями и ИП по договору. Предоставляем полный комплект закрывающих документов (УПД) через ЭДО (Диадок / СБИС) или скан с оригинальной синей печатью.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-lg text-xs text-amber-900 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <Clock3 size={13} className="text-amber-700 shrink-0" />
+                      <span>Обновление платёжных реквизитов</span>
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-amber-800">
+                      В данный момент расчётный счёт обновляется. Для выставления коммерческого предложения, согласования счёта и отправки реквизитов свяжитесь с нами напрямую через Telegram или отправьте карточку предприятия на email.
+                    </p>
+                  </div>
+
+                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-slate-500">Ваш email аккаунта:</span>
+                    <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <a
+                      href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
+                        `Здравствуйте! Интересует оплата по безналичному расчету (счёт для юрлица) в сервисе TenderLex. Мой email: ${session?.user?.email || ""}`
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                    >
+                      <Send size={15} />
+                      <span>Запросить счёт в Telegram</span>
+                    </a>
+
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const copyText = `Запрос счёта для юрлица в TenderLex. Email аккаунта: ${session?.user?.email || ""}`;
+                          navigator.clipboard.writeText(copyText).then(() => {
+                            setTopUpCopied(true);
+                            setTimeout(() => setTopUpCopied(false), 2500);
+                          });
+                        }}
+                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                      >
+                        <Copy size={13} />
+                        <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать запрос"}</span>
+                      </button>
+
+                      <a
+                        href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(
+                          `Запрос счёта для юрлица - TenderLex (${session?.user?.email || ""})`
+                        )}`}
+                        className="text-xs text-slate-500 hover:text-slate-700 underline"
+                      >
+                        Отправить реквизиты на email
+                      </a>
                     </div>
                   </div>
                 </div>
-              );
-            })()}
 
-            {/* How to Pay Instructions */}
-            <div className="space-y-2 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                <CreditCard size={14} className="text-teal-700" />
-                <span>Инструкция по оплате переводом:</span>
-              </div>
-              <p className="text-[11px] text-slate-600">
-                1. Переведите выбранную сумму на банковскую карту или счет владельца сервиса.
-              </p>
-              <p className="text-[11px] text-slate-600">
-                2. Отправьте подтверждение (чек или скриншот) в Telegram — администратор моментально начислит баланс (обычно 5–15 минут).
-              </p>
-              <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-slate-500">Ваш email аккаунта:</span>
-                <b className="text-slate-900 font-mono font-bold select-all">{session?.user?.email || "Ваш email"}</b>
-              </div>
-            </div>
-
-            {/* Contact Action Buttons */}
-            {(() => {
-              const hasCustomPrices = Boolean(
-                session?.balance?.has_custom_tariffs ||
-                (session?.balance?.effective_prices &&
-                  Object.values(session.balance.effective_prices).some((p) => p?.source === "client_override"))
-              );
-              const calc = hasCustomPrices
-                ? { bonusRub: 0, totalRub: customTopUpRub, percent: 0 }
-                : calculateDepositBonus(customTopUpRub);
-              const pkgName = selectedTopUpPackage?.name || "Пополнение баланса";
-              const tgMsg = encodeURIComponent(
-                hasCustomPrices
-                  ? `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (индивидуальный тариф). Мой email в сервисе: ${session?.user?.email || ""}`
-                  : `Здравствуйте! Хочу пополнить баланс TenderLex на ${customTopUpRub.toLocaleString("ru-RU")} ₽ (пакет «${pkgName}», к зачислению с бонусом: ${calc.totalRub.toLocaleString("ru-RU")} ₽). Мой email в сервисе: ${session?.user?.email || ""}`
-              );
-              const tgUrl = `${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${tgMsg}`;
-
-              return (
-                <div className="space-y-2 pt-1">
-                  <a
-                    href={tgUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                <div className="text-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setTopUpTab("card")}
+                    className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
                   >
-                    <Send size={15} />
-                    <span>
-                      {calc.bonusRub > 0
-                        ? `Написать в Telegram для зачисления (+${calc.bonusRub.toLocaleString("ru-RU")} ₽ бонус)`
-                        : `Написать в Telegram для зачисления`}
-                    </span>
-                  </a>
+                    ← Вернуться к оплате картой
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
-                  <div className="flex items-center justify-between gap-2 pt-0.5">
+            {/* TAB 3: SBP Stub */}
+            {topUpTab === "sbp" ? (
+              <div className="space-y-3 py-1">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0 mt-0.5">
+                      <QrCode size={22} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">Система быстрых платежей (СБП)</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[10px] font-extrabold">
+                          В процессе подключения
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Прямая оплата по динамическому QR-коду СБП через любое банковское приложение без комиссии.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-blue-50/80 border border-blue-200/90 rounded-lg text-xs text-blue-950 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <Clock3 size={13} className="text-blue-700 shrink-0" />
+                      <span>Подключение платежного шлюза</span>
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-blue-800">
+                      Интеграция шлюза СБП находится на финальном этапе тестирования. Пока шлюз подключается, вы можете совершить быстрый перевод на карту или связаться с администратором в Telegram для мгновенного начисления.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => {
-                        const copyText = `Пополнение TenderLex: ${customTopUpRub} ₽ (пакет «${pkgName}», к зачислению: ${calc.totalRub} ₽ с бонусом). Email: ${session?.user?.email || ""}`;
-                        navigator.clipboard.writeText(copyText).then(() => {
-                          setTopUpCopied(true);
-                          setTimeout(() => setTopUpCopied(false), 2500);
-                        });
-                      }}
-                      className="inline-flex items-center gap-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer font-medium"
+                      onClick={() => setTopUpTab("card")}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
                     >
-                      <Copy size={13} />
-                      <span>{topUpCopied ? "Скопировано в буфер!" : "Скопировать детали заявки"}</span>
+                      <CreditCard size={15} />
+                      <span>Перейти к оплате картой</span>
                     </button>
 
-                    <a
-                      href={`mailto:${session?.contacts?.email || "info@tenderlex.ru"}?subject=${encodeURIComponent(`Пополнение баланса TenderLex - ${session?.user?.email || ""}`)}`}
-                      className="text-xs text-slate-500 hover:text-slate-700 underline"
-                    >
-                      Написать на email
-                    </a>
+                    <div className="text-center pt-1">
+                      <a
+                        href={`${session?.contacts?.telegram_url || "https://t.me/lexelence"}?text=${encodeURIComponent(
+                          `Здравствуйте! Хочу пополнить баланс TenderLex через СБП/карту. Мой email: ${session?.user?.email || ""}`
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-slate-500 hover:text-slate-800 underline"
+                      >
+                        Или написать в Telegram для перевода по номеру телефона
+                      </a>
+                    </div>
                   </div>
                 </div>
-              );
-            })()}
+              </div>
+            ) : null}
           </section>
         </div>
       ) : null}
+      </div>
     </main>
   );
 }

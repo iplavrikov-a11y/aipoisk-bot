@@ -112,6 +112,10 @@ export default function LegalPage() {
                 <PublicSiteLink channel="bot" target="_blank" rel="noreferrer" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
               </div>
               <div>
+                <span className="text-slate-400 block uppercase font-bold text-[10px]">Телефон горячей линии</span>
+                <PublicSiteLink channel="phone" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
+              </div>
+              <div>
                 <span className="text-slate-400 block uppercase font-bold text-[10px]">Электронная почта</span>
                 <PublicSiteLink channel="email" className="block text-teal-700 font-bold hover:underline text-sm mt-0.5"></PublicSiteLink>
               </div>

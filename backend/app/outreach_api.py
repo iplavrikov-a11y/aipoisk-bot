@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import uuid
 from typing import Any
@@ -38,9 +39,11 @@ from .outreach_search import (
     _clean_email,
     run_outreach_search_task,
 )
+from .outreach_suppression import record_shared_suppression
 from .security import require_admin
 
 router = APIRouter(prefix="/api/outreach", tags=["outreach"], dependencies=[Depends(require_admin)])
+logger = logging.getLogger(__name__)
 
 
 def get_db():
@@ -959,6 +962,7 @@ async def send_direct_email(data: DirectSendRequest, db: Session = Depends(get_d
             body_text=text_body,
             body_html=html_body,
             settings=settings,
+            is_marketing=True,
         )
         if ok:
             sent_count += 1
@@ -1010,6 +1014,7 @@ async def send_test_email(data: TestSendRequest, db: Session = Depends(get_db)) 
         body_text=text_body,
         body_html=html_body,
         settings=settings,
+        is_marketing=True,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=f"Ошибка отправки: {err}")
@@ -1404,6 +1409,21 @@ def block_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> dict[s
 
     settings.spam_rules_json = json.dumps(spam_rules, ensure_ascii=False)
 
+    # 1. Expunge matching emails from IMAP server so sync never re-imports them
+    from .outreach_mail import expunge_imap_sender
+    domain_to_expunge = sender_domain if sender_domain not in generic_domains else ""
+    try:
+        expunge_imap_sender(settings, sender_email, domain_to_expunge)
+    except Exception as ie:
+        logger.warning(f"Could not expunge spam on IMAP for {sender_email}: {ie}")
+
+    # 2. Mark matching lead as spam if exists
+    if sender_email:
+        matching_leads = db.query(OutreachLead).filter(func.lower(OutreachLead.email) == sender_email).all()
+        for ld in matching_leads:
+            ld.status = "spam"
+            ld.mx_valid = False
+
     deleted_q = db.query(OutreachIncomingEmail).filter(
         (OutreachIncomingEmail.sender_email == sender_email) |
         (OutreachIncomingEmail.sender_email.ilike(f"%@{sender_domain}"))
@@ -1462,6 +1482,11 @@ def unsubscribe_inbox_sender(message_id: str, db: Session = Depends(get_db)) -> 
 
     db.commit()
 
+    try:
+        record_shared_suppression(sender_email, "unsubscribed", "tenderlex_inbox_unsubscribe")
+    except Exception:
+        logger.exception("Could not mirror inbox unsubscribe to shared suppression: %s", sender_email)
+
     return {
         "ok": True,
         "email": sender_email,
@@ -1493,6 +1518,12 @@ def unsubscribe_lead(lead_id: str, db: Session = Depends(get_db)) -> dict[str, A
     lead.mx_valid = False
     lead.notes = f"{lead.notes}\nОтписан вручную ({now_str})".strip() if lead.notes else f"Отписан вручную ({now_str})"
     db.commit()
+
+    if email and "@" in email:
+        try:
+            record_shared_suppression(email, "unsubscribed", "tenderlex_manual_unsubscribe")
+        except Exception:
+            logger.exception("Could not mirror manual unsubscribe to shared suppression: %s", email)
 
     return {
         "ok": True,
