@@ -4978,6 +4978,7 @@ function BillingView({
   onChange: () => Promise<void>
 }) {
   const [showAddForm, setShowAddForm] = useState(false)
+  const [showAllServices, setShowAllServices] = useState(false)
   const [geoEnabled, setGeoEnabled] = useState(settings?.geo_radius_search_enabled_global ?? true)
   const [geoSurcharge, setGeoSurcharge] = useState(settings?.geo_radius_surcharge_pct ?? 30)
   const [geoSaving, setGeoSaving] = useState(false)
@@ -5039,7 +5040,7 @@ function BillingView({
 
   const depositTariffs = tariffs.filter(item => item.kind === 'deposit')
   const baseServiceOrder = ['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra']
-  const serviceTariffs = tariffs
+  const allServiceTariffs = tariffs
     .filter(item => item.kind !== 'deposit')
     .sort((a, b) => {
       const orderA = baseServiceOrder.indexOf(a.kind)
@@ -5048,12 +5049,17 @@ function BillingView({
       return (a.sort_order ?? 0) - (b.sort_order ?? 0)
     })
 
+  // Filter to core 1-unit services unless expanded
+  const displayedServiceTariffs = showAllServices
+    ? allServiceTariffs
+    : allServiceTariffs.filter(t => t.units === 1)
+
   const basePriceExample = 99
   const surchargeExample = Math.round(basePriceExample * (1 + (geoSurcharge || 0) / 100))
 
   return (
-    <section className="stack">
-      {/* 1. Header with quick stats & add button */}
+    <section className="stack" style={{ gap: 14 }}>
+      {/* 1. Header with Title & Add button */}
       <div className="tariff-header-bar">
         <div>
           <h2>Тарифы и ценообразование</h2>
@@ -5065,15 +5071,56 @@ function BillingView({
           className={showAddForm ? 'button-secondary' : 'button-primary'}
           onClick={() => setShowAddForm(!showAddForm)}
         >
-          {showAddForm ? <X size={15} /> : <Plus size={15} />}
+          {showAddForm ? <X size={14} /> : <Plus size={14} />}
           {showAddForm ? 'Скрыть форму' : 'Добавить пакет'}
         </button>
       </div>
 
-      {/* 2. Collapsible Add Form */}
+      {/* 2. Sleek 1-line logistics filter strip (replaces bulky banner) */}
+      <div className="tariff-subnav-strip">
+        <div className="tariff-subnav-left">
+          <span className="tariff-subnav-title">
+            <MapPin size={15} />
+            Поиск в радиусе города:
+          </span>
+          <label className="tariff-inline-switch">
+            <input
+              type="checkbox"
+              checked={geoEnabled}
+              onChange={e => setGeoEnabled(e.target.checked)}
+            />
+            <span>Доступен всем</span>
+          </label>
+          <div className="tariff-inline-rate">
+            <span>Доплата:</span>
+            <input
+              type="number"
+              min={0}
+              max={500}
+              step={5}
+              value={geoSurcharge}
+              onChange={e => setGeoSurcharge(Number(e.target.value))}
+            />
+            <span>%</span>
+            <span className="tariff-rate-example">
+              (пример: 99 ₽ → <strong>{surchargeExample} ₽</strong>)
+            </span>
+          </div>
+        </div>
+        <button
+          className="tariff-subnav-save-btn"
+          onClick={() => void saveGeoSettings()}
+          disabled={geoSaving}
+        >
+          {geoSaved ? <CheckCircle2 size={13} /> : <Save size={13} />}
+          {geoSaved ? 'Сохранено' : geoSaving ? 'Сохранение...' : 'Сохранить'}
+        </button>
+      </div>
+
+      {/* 3. Collapsible Add Form */}
       {showAddForm && (
         <div className="tariff-collapsible-panel">
-          <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
             Новый тарифный пакет
           </h3>
           <div className="tariff-form-grid">
@@ -5101,9 +5148,9 @@ function BillingView({
               Показывать клиентам
             </label>
           </div>
-          <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}>
-              <Plus size={15} /> Сохранить тариф
+              <Plus size={14} /> Сохранить тариф
             </button>
             <button className="button-secondary" onClick={() => setShowAddForm(false)}>
               Отмена
@@ -5112,86 +5159,29 @@ function BillingView({
         </div>
       )}
 
-      {/* 3. Dedicated Geo-Radius Logistics Card */}
-      <div className="tariff-geo-card">
-        <div className="tariff-geo-header">
-          <div className="tariff-geo-title">
-            <MapPin size={18} color="#0f766e" />
-            <div>
-              <h3>Логистический фильтр: Поиск поставщиков в радиусе города</h3>
-              <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
-                Поиск компаний в радиусе (10–500 км) через геокодер Яндекс Карт
-              </p>
-            </div>
-          </div>
-          <span className={geoEnabled ? 'tariff-geo-badge' : 'tariff-geo-badge disabled'}>
-            <CheckCircle2 size={13} />
-            {geoEnabled ? `Доступно всем (+${geoSurcharge}% доплата)` : 'Выключено для всех'}
-          </span>
-        </div>
-
-        <div className="tariff-geo-body">
-          <label className="switch-row" style={{ fontWeight: 600, color: '#1e293b' }}>
-            <input
-              type="checkbox"
-              checked={geoEnabled}
-              onChange={e => setGeoEnabled(e.target.checked)}
-            />
-            Включить поиск в радиусе для всех клиентов (Web-кабинет и Telegram)
-          </label>
-
-          <div className="tariff-geo-inputs">
-            <div className="tariff-geo-input-wrap">
-              <span>Доплата к стоимости задачи:</span>
-              <input
-                type="number"
-                min={0}
-                max={500}
-                step={1}
-                value={geoSurcharge}
-                onChange={e => setGeoSurcharge(Number(e.target.value))}
-              />
-              <span>%</span>
-            </div>
-
-            <div className="tariff-geo-preview">
-              Пример: 99 ₽ + {geoSurcharge}% = <strong>{surchargeExample} ₽</strong>
-            </div>
-
-            <button
-              className="tariff-geo-save-btn"
-              onClick={() => void saveGeoSettings()}
-              disabled={geoSaving}
-            >
-              {geoSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
-              {geoSaved ? 'Сохранено!' : geoSaving ? 'Сохранение...' : 'Сохранить доплату'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* 4. Compact Table: Deposit Packages */}
-      <div className="form-panel full-width-panel" style={{ padding: '16px 20px' }}>
-        <div className="panel-heading" style={{ marginBottom: 12 }}>
+      {/* 4. Deposit Packages Table: Noise-Free with Effective Cost per Task */}
+      <div className="tariff-panel-card">
+        <div className="tariff-panel-header">
           <div>
-            <h2 style={{ fontSize: 16 }}>Пакеты пополнения единого баланса</h2>
-            <span className="sync-note">Пополнение баланса со скидкой / бонусом</span>
+            <h2>Пакеты пополнения единого баланса</h2>
+            <span className="sync-note">Пополнение баланса со скидкой / бонусом и пересчетом стоимости 1 задачи</span>
           </div>
-          <span style={{ fontSize: 12, color: '#64748b' }}>Всего пакетов: {depositTariffs.length}</span>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Пакетов: {depositTariffs.length}</span>
         </div>
 
-        <div className="tariff-table-container">
-          <table className="tariff-table">
+        <div className="tariff-clean-table-container">
+          <table className="tariff-clean-table">
             <thead>
               <tr>
-                <th style={{ width: '22%' }}>Пакет / Название</th>
-                <th style={{ width: '13%' }}>Оплата, ₽</th>
-                <th style={{ width: '13%' }}>Бонус, ₽</th>
-                <th style={{ width: '15%' }}>Итого на баланс</th>
-                <th style={{ width: '12%' }}>Бейдж</th>
-                <th style={{ width: '10%' }}>~ Задач</th>
-                <th style={{ width: '10%', textAlign: 'center' }}>Показывать</th>
-                <th style={{ width: '5%', textAlign: 'center' }}></th>
+                <th style={{ width: '20%' }}>Пакет / Название</th>
+                <th style={{ width: '11%', textAlign: 'right' }}>Оплата, ₽</th>
+                <th style={{ width: '11%', textAlign: 'right' }}>Бонус, ₽</th>
+                <th style={{ width: '16%' }}>Итого на баланс</th>
+                <th style={{ width: '14%' }}>Цена 1 задачи</th>
+                <th style={{ width: '8%', textAlign: 'center' }}>Задач</th>
+                <th style={{ width: '10%', textAlign: 'center' }}>Бейдж</th>
+                <th style={{ width: '6%', textAlign: 'center' }}>Активен</th>
+                <th style={{ width: '4%', textAlign: 'center' }}></th>
               </tr>
             </thead>
             <tbody>
@@ -5199,59 +5189,78 @@ function BillingView({
                 const payRub = kopeksToRubles(item.price_kopeks)
                 const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
                 const totalRub = payRub + bonusRub
+                const costPerTask = item.units > 0 ? payRub / item.units : 0
+                // Discount relative to 100 ₽ base rate
+                const discountPct = costPerTask > 0 && costPerTask < 100
+                  ? Math.round(((100 - costPerTask) / 100) * 100)
+                  : 0
+
                 return (
                   <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
                     <td>
                       <input
-                        type="text"
-                        style={{ width: '100%', fontWeight: 600 }}
+                        className="t-input text"
+                        style={{ fontWeight: 600 }}
                         defaultValue={item.name}
                         placeholder="Название"
                         onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
                       />
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right' }}>
                       <input
+                        className="t-input number"
                         type="number"
                         min={0}
                         step={100}
-                        style={{ width: '100%' }}
                         defaultValue={payRub}
                         onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
                       />
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right' }}>
                       <input
+                        className="t-input number"
                         type="number"
                         min={0}
                         step={100}
-                        style={{ width: '100%' }}
                         defaultValue={bonusRub}
                         onBlur={e => void patchTariff(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
                       />
                     </td>
                     <td>
-                      <span className="tariff-total-badge">
-                        {totalRub.toLocaleString('ru-RU')} ₽
-                        {bonusRub > 0 ? ` (+${bonusRub.toLocaleString('ru-RU')} ₽)` : ''}
-                      </span>
+                      <div className="balance-credit-wrap">
+                        <span className="balance-credit-total">{totalRub.toLocaleString('ru-RU')} ₽</span>
+                        {bonusRub > 0 && (
+                          <span className="balance-credit-bonus">(+{bonusRub.toLocaleString('ru-RU')} ₽)</span>
+                        )}
+                      </div>
                     </td>
                     <td>
-                      <input
-                        type="text"
-                        style={{ width: '100%' }}
-                        defaultValue={item.badge || ''}
-                        placeholder="Хит"
-                        onBlur={e => void patchTariff(item, { badge: e.currentTarget.value })}
-                      />
+                      <div className="task-cost-wrap">
+                        <span className="task-cost-price">
+                          {costPerTask > 0 ? `${costPerTask.toFixed(costPerTask % 1 === 0 ? 0 : 1)} ₽` : '—'}
+                        </span>
+                        {discountPct > 0 ? (
+                          <span className="task-cost-badge">-{discountPct}%</span>
+                        ) : costPerTask === 100 ? (
+                          <span className="task-cost-badge base">база</span>
+                        ) : null}
+                      </div>
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'center' }}>
                       <input
+                        className="t-input number-center"
                         type="number"
                         min={1}
-                        style={{ width: '100%', textAlign: 'center' }}
                         defaultValue={item.units}
                         onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        className="t-input badge-text"
+                        defaultValue={item.badge || ''}
+                        placeholder="—"
+                        onBlur={e => void patchTariff(item, { badge: e.currentTarget.value })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
@@ -5269,7 +5278,7 @@ function BillingView({
                         style={{ color: '#ef4444' }}
                         onClick={() => void deleteTariff(item)}
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={13} />
                       </button>
                     </td>
                   </tr>
@@ -5280,33 +5289,47 @@ function BillingView({
         </div>
       </div>
 
-      {/* 5. Compact Table: Single Service Base Prices */}
-      <div className="form-panel full-width-panel" style={{ padding: '16px 20px' }}>
-        <div className="panel-heading" style={{ marginBottom: 12 }}>
+      {/* 5. Service Base Prices Table: Clean & Compact with Segmented Toggle */}
+      <div className="tariff-panel-card">
+        <div className="tariff-panel-header">
           <div>
-            <h2 style={{ fontSize: 16 }}>Базовые цены разовых услуг</h2>
+            <h2>Базовые цены разовых услуг</h2>
             <span className="sync-note">
               Порядок: (1) Поиск поставщиков → (2) Подбор товара и аналогов → (3) Анализ документации
             </span>
           </div>
-          <span style={{ fontSize: 12, color: '#64748b' }}>Всего тарифов услуг: {serviceTariffs.length}</span>
+          <div className="tariff-segmented-control">
+            <button
+              className={`tariff-seg-btn ${!showAllServices ? 'active' : ''}`}
+              onClick={() => setShowAllServices(false)}
+            >
+              4 основные услуги (1 задача)
+            </button>
+            <button
+              className={`tariff-seg-btn ${showAllServices ? 'active' : ''}`}
+              onClick={() => setShowAllServices(true)}
+            >
+              Все пакетные варианты ({allServiceTariffs.length})
+            </button>
+          </div>
         </div>
 
-        <div className="tariff-table-container">
-          <table className="tariff-table">
+        <div className="tariff-clean-table-container">
+          <table className="tariff-clean-table">
             <thead>
               <tr>
                 <th style={{ width: '25%' }}>Модуль / Сценарий</th>
-                <th style={{ width: '30%' }}>Тариф / Описание</th>
-                <th style={{ width: '12%', textAlign: 'center' }}>Задач</th>
-                <th style={{ width: '16%' }}>Разовая цена, ₽</th>
-                <th style={{ width: '12%', textAlign: 'center' }}>Показывать</th>
+                <th style={{ width: '28%' }}>Тариф / Описание</th>
+                <th style={{ width: '8%', textAlign: 'center' }}>Задач</th>
+                <th style={{ width: '12%', textAlign: 'right' }}>Разовая цена, ₽</th>
+                <th style={{ width: '15%' }}>Цена 1 задачи</th>
+                <th style={{ width: '7%', textAlign: 'center' }}>Активен</th>
                 <th style={{ width: '5%', textAlign: 'center' }}></th>
               </tr>
             </thead>
             <tbody>
-              {serviceTariffs.map(item => {
-                const getModuleLabel = (kind: string) => {
+              {displayedServiceTariffs.map(item => {
+                const getModuleInfo = (kind: string) => {
                   switch (kind) {
                     case 'supplier_search':
                       return { label: '1. Поиск поставщиков', cls: 'supplier_search' }
@@ -5315,43 +5338,62 @@ function BillingView({
                     case 'procurement_report':
                       return { label: '3. Анализ документации', cls: 'procurement_report' }
                     case 'supplier_search_extra':
-                      return { label: 'Добор поставщиков', cls: 'supplier_search_extra' }
+                      return { label: '4. Добор поставщиков', cls: 'supplier_search_extra' }
                     default:
                       return { label: kind, cls: 'supplier_search_extra' }
                   }
                 }
-                const mod = getModuleLabel(item.kind)
+                const mod = getModuleInfo(item.kind)
+                const payRub = kopeksToRubles(item.price_kopeks)
+                const costPerTask = item.units > 0 ? payRub / item.units : 0
+                const baseUnitRate = item.kind === 'supplier_search_extra' ? 49 : 99
+                const bulkDiscountPct = item.units > 1 && costPerTask < baseUnitRate
+                  ? Math.round(((baseUnitRate - costPerTask) / baseUnitRate) * 100)
+                  : 0
+
                 return (
                   <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
                     <td>
-                      <span className={`module-tag ${mod.cls}`}>{mod.label}</span>
+                      <span className={`module-pill-tag ${mod.cls}`}>{mod.label}</span>
                     </td>
                     <td>
                       <input
-                        type="text"
-                        style={{ width: '100%', fontWeight: 500 }}
+                        className="t-input text"
                         defaultValue={item.name}
                         onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
                       />
                     </td>
                     <td style={{ textAlign: 'center' }}>
                       <input
+                        className="t-input number-center"
                         type="number"
                         min={1}
-                        style={{ width: 70, textAlign: 'center' }}
                         defaultValue={item.units}
                         onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
                       />
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right' }}>
                       <input
+                        className="t-input number"
                         type="number"
                         min={0}
                         step={10}
-                        style={{ width: '100%', fontWeight: 600 }}
-                        defaultValue={kopeksToRubles(item.price_kopeks)}
+                        style={{ fontWeight: 600 }}
+                        defaultValue={payRub}
                         onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
                       />
+                    </td>
+                    <td>
+                      <div className="task-cost-wrap">
+                        <span className="task-cost-price">
+                          {costPerTask > 0 ? `${costPerTask.toFixed(costPerTask % 1 === 0 ? 0 : 1)} ₽` : '—'}
+                        </span>
+                        {bulkDiscountPct > 0 ? (
+                          <span className="task-cost-badge">-{bulkDiscountPct}%</span>
+                        ) : (
+                          <span className="task-cost-badge base">база</span>
+                        )}
+                      </div>
                     </td>
                     <td style={{ textAlign: 'center' }}>
                       <input
@@ -5368,7 +5410,7 @@ function BillingView({
                         style={{ color: '#ef4444' }}
                         onClick={() => void deleteTariff(item)}
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={13} />
                       </button>
                     </td>
                   </tr>
