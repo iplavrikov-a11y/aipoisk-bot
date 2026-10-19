@@ -2778,14 +2778,40 @@ def list_jobs(
     safe_limit = max(1, min(10000, int(limit or 2000)))
     jobs = (
         db.query(Job)
-        .options(selectinload(Job.client).selectinload(Client.web_users))
+        .options(
+            selectinload(Job.client).selectinload(Client.web_users),
+            selectinload(Job.files),
+            selectinload(Job.sources),
+        )
         .order_by(Job.created_at.desc())
         .limit(safe_limit * 2)
         .all()
     )
     visible_jobs = jobs if include_internal else [job for job in jobs if not is_internal_job(job) and not getattr(job, "is_admin_rerun", False)]
+    sliced_jobs = visible_jobs[:safe_limit]
+
+    # Pre-fetch admin reruns in a single batch query to avoid N+1 queries per job
+    child_reruns_map: dict[str, list[Job]] = {}
+    if sliced_jobs:
+        all_reruns = (
+            db.query(Job)
+            .options(
+                selectinload(Job.files),
+                selectinload(Job.sources),
+            )
+            .filter(Job.is_admin_rerun == True)
+            .order_by(Job.created_at.desc())
+            .all()
+        )
+        for r in all_reruns:
+            if r.parent_job_id:
+                child_reruns_map.setdefault(r.parent_job_id, []).append(r)
+
     settings = get_or_create_settings(db)
-    return [job_to_dict(job, settings=settings, db=db) for job in visible_jobs[:safe_limit]]
+    return [
+        job_to_dict(job, settings=settings, db=db, child_reruns_map=child_reruns_map)
+        for job in sliced_jobs
+    ]
 
 
 def resolve_admin_job(job_identifier: str, db: Session) -> Job | None:
@@ -5774,7 +5800,13 @@ def web_password_reset_to_dict(item: WebPasswordResetRequest) -> dict:
     }
 
 
-def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings | None = None, db: Session | None = None) -> dict:
+def job_to_dict(
+    job: Job,
+    include_files: bool = False,
+    settings: SystemSettings | None = None,
+    db: Session | None = None,
+    child_reruns_map: dict[str, list[Job]] | None = None,
+) -> dict:
     supplier_units, report_units = requested_function_units(job.mode)
     evidence_path = str(getattr(job, "evidence_path", "") or "")
     result_files = admin_job_result_files(job)
@@ -5868,12 +5900,19 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
         "sources": [source_to_dict(item) for item in job.sources],
     }
     if db and not getattr(job, "is_admin_rerun", False):
-        child_reruns = (
-            db.query(Job)
-            .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
-            .order_by(Job.created_at.desc())
-            .all()
-        )
+        if child_reruns_map is not None:
+            child_reruns = child_reruns_map.get(job.id, [])
+        else:
+            child_reruns = (
+                db.query(Job)
+                .options(
+                    selectinload(Job.files),
+                    selectinload(Job.sources),
+                )
+                .filter(Job.parent_job_id == job.id, Job.is_admin_rerun == True)
+                .order_by(Job.created_at.desc())
+                .all()
+            )
         data["admin_reruns"] = [
             {
                 "id": r.id,
@@ -5900,7 +5939,23 @@ def job_to_dict(job: Job, include_files: bool = False, settings: SystemSettings 
     return data
 
 
+_ADMIN_JOB_RESULT_FILES_CACHE: dict[tuple, list[dict]] = {}
+
+
 def admin_job_result_files(job: Job) -> list[dict]:
+    is_finished = getattr(job, "status", "") in {"completed", "partial", "failed", "cancelled"}
+    cache_key = None
+    if is_finished:
+        cache_key = (
+            job.id,
+            str(getattr(job, "updated_at", "") or ""),
+            str(getattr(job, "status", "") or ""),
+            str(getattr(job, "admin_supplement_at", "") or ""),
+            str(getattr(job, "admin_supplement_path", "") or ""),
+        )
+        if cache_key in _ADMIN_JOB_RESULT_FILES_CACHE:
+            return _ADMIN_JOB_RESULT_FILES_CACHE[cache_key]
+
     result: list[dict] = []
     default_time = (
         job.completed_at.isoformat()
@@ -5935,6 +5990,10 @@ def admin_job_result_files(job: Job) -> list[dict]:
                 "created_at": supp.get("created_at") or default_time,
             }
         )
+    if cache_key is not None:
+        if len(_ADMIN_JOB_RESULT_FILES_CACHE) > 5000:
+            _ADMIN_JOB_RESULT_FILES_CACHE.clear()
+        _ADMIN_JOB_RESULT_FILES_CACHE[cache_key] = result
     return result
 
 

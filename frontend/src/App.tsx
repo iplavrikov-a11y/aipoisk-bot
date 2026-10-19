@@ -1185,6 +1185,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
+  const [jobsLoading, setJobsLoading] = useState(false)
   const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null)
   const [minpromRegistry, setMinpromRegistry] = useState<MinpromRegistryStatus | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
@@ -1384,15 +1385,31 @@ export function App() {
             if (!cancelled && updatedJobs) setJobs(updatedJobs)
             return updatedJobs
           })
-          .finally(() => { fullJobsRequest = null })
+          .finally(() => {
+            fullJobsRequest = null
+            if (!cancelled) setJobsLoading(false)
+          })
       }
       return fullJobsRequest
     }
 
     // The Jobs view needs the complete history for its client-side filters and
-    // pagination. Other views already receive the latest 100 records in
-    // loadAll(), so loading the full history there only adds background load.
+    // pagination. Two-stage loading: stage 1 loads top 25 instantly (<100ms),
+    // stage 2 loads the full history in background without blocking.
     if (view === 'jobs') {
+      if (jobs.length === 0) {
+        setJobsLoading(true)
+        void api<Job[]>('/api/jobs?include_internal=true&limit=25')
+          .then(quickJobs => {
+            if (!cancelled && quickJobs && quickJobs.length > 0) {
+              setJobs(prev => (prev.length > quickJobs.length ? prev : quickJobs))
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (!cancelled && jobs.length === 0) setJobsLoading(false)
+          })
+      }
       void refreshFullJobHistory().catch(() => {})
     }
 
@@ -1412,12 +1429,23 @@ export function App() {
         if (!document.hidden) {
           try {
             if (view === 'jobs') {
-              const updatedJobs = await refreshFullJobHistory()
-              const nowHasActive = updatedJobs.some(j => j.status === 'running' || j.status === 'pending')
-              if (hasActive && !nowHasActive) {
-                void api<Dashboard>('/api/dashboard').then(d => {
-                  if (!cancelled && d) setDashboard(d)
-                }).catch(() => {})
+              // Lightweight poll: only fetch latest 50 to update active tasks and recent completions instantly
+              const quickJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=50')
+              if (!cancelled && quickJobs) {
+                setJobs(prevJobs => {
+                  if (prevJobs.length === 0) return quickJobs
+                  const map = new Map(prevJobs.map(j => [j.id, j]))
+                  for (const qj of quickJobs) {
+                    map.set(qj.id, qj)
+                  }
+                  return Array.from(map.values()).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+                })
+                const nowHasActive = quickJobs.some(j => j.status === 'running' || j.status === 'pending')
+                if (hasActive && !nowHasActive) {
+                  void api<Dashboard>('/api/dashboard').then(d => {
+                    if (!cancelled && d) setDashboard(d)
+                  }).catch(() => {})
+                }
               }
             }
 
@@ -1728,6 +1756,7 @@ export function App() {
             selectedClientId={selectedClientForJobs}
             onClearSelectedClient={() => setSelectedClientForJobs('')}
             onChange={loadAll}
+            loading={jobsLoading}
           />
         )}
         {isReady && view === 'outreach' && <OutreachView />}
@@ -3698,12 +3727,14 @@ function JobsView({
   selectedClientId = '',
   onClearSelectedClient,
   onChange,
+  loading = false,
 }: {
   jobs: Job[]
   clients?: Client[]
   selectedClientId?: string
   onClearSelectedClient?: () => void
   onChange: () => Promise<void>
+  loading?: boolean
 }) {
   const [nowTs, setNowTs] = useState(() => Date.now())
   const [showServerModal, setShowServerModal] = useState(false)
@@ -3733,10 +3764,10 @@ function JobsView({
       const saved = localStorage.getItem('tenderlex_admin_jobs_page_size')
       if (saved) {
         const parsed = parseInt(saved, 10)
-        if (parsed === 12 || parsed === 25 || parsed === 50 || parsed === 100) return parsed
+        if (parsed === 10 || parsed === 12 || parsed === 25 || parsed === 50 || parsed === 100) return parsed
       }
     } catch {}
-    return 12
+    return 25
   })
 
   function handleJobPageSizeChange(nextSize: number) {
@@ -3959,7 +3990,17 @@ function JobsView({
       <div className="list-toolbar">
         <div className="list-toolbar-row">
           <div className="list-toolbar-meta">
-            <strong>Задачи: {shownFrom}-{shownTo} из {filteredJobs.length}</strong>
+            <strong>
+              {loading && filteredJobs.length === 0
+                ? 'Задачи: загрузка...'
+                : `Задачи: ${shownFrom}-${shownTo} из ${filteredJobs.length}`}
+            </strong>
+            {loading && (
+              <span className="inline-note" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <Loader2 size={12} className="animate-spin" />
+                <span>обновление...</span>
+              </span>
+            )}
             {registryFallbackJobsCount > 0 && <span className="inline-note">Без реестра: {registryFallbackJobsCount}</span>}
             {totalYandexCost > 0 && <span className="inline-note yandex-total">Яндекс API: {totalYandexCost.toFixed(2)} ₽</span>}
           </div>
@@ -4056,6 +4097,7 @@ function JobsView({
             style={{ width: 'auto', minWidth: 90, fontSize: 12 }}
             title="Количество задач на странице"
           >
+            <option value={10}>По 10</option>
             <option value={12}>По 12</option>
             <option value={25}>По 25</option>
             <option value={50}>По 50</option>
@@ -4546,7 +4588,14 @@ function JobsView({
           </article>
           )
         })}
-        {!visibleJobs.length && <div className="empty inline-empty">Нет пользовательских задач для показа.</div>}
+        {loading && !visibleJobs.length ? (
+          <div className="empty inline-empty" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '40px 0' }}>
+            <Loader2 size={18} className="animate-spin" style={{ color: '#0f766e' }} />
+            <span>Загрузка задач...</span>
+          </div>
+        ) : !visibleJobs.length ? (
+          <div className="empty inline-empty">Нет пользовательских задач для показа.</div>
+        ) : null}
       </div>
       {filteredJobs.length > pageSize && (
         <div className="list-pagination">
