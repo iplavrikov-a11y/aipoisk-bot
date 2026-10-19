@@ -1,5 +1,35 @@
 # TenderLex: Project Status
 
+20 октября (ночь): Внедрение Home v3 на production, SEO-аудит всего сайта и технические SEO-исправления:
+- **Новая главная (Home v3)**:
+  * Production homepage переведена на интерактивный разбор ТЗ из 5 шагов: спецификация → извлечённые поля с источником → кандидаты → аналоги → черновик запроса КП.
+  * Добавлены «Чему учит шаг», «Проверьте сами», «Типичная ошибка» и мини-проверка в шаге 5. Шаг сохраняется в URL (?step=1..5), работает back/forward, клавиатура, reduced-motion и no-JS fallback.
+  * Реализация: site/src/app/page.tsx, site/src/app/home-v3-content.ts, site/src/app/home-v3.css, site/src/components/home-v3-interactions.tsx. Используются существующие SiteHeader/SiteFooter, Метрика, чат и правовые ссылки.
+  * Предыдущая главная: site/src/app/page.tsx.bak-home-v3-20261019; предыдущий .next сохранён deploy-скриптом.
+- **SEO-аудит**:
+  * GSC за 28 дней: 995 показов, 20 кликов, CTR 2.01%, средняя позиция 20.96; главная — 7 кликов / 39 показов / позиция 3.7. Sitemap без ошибок.
+  * Яндекс Вебмастер: кэш SQI 10, 57 страниц в поиске, 3 исключено; API недоступен с VPS (IPv4 timeout, IPv6 нет), свежие данные не собираются с 30.08.
+  * Wordstat API недоступен (404/чужой сертификат); значения в кэше — оценки. Метрика работает: 7 визитов / 6 пользователей за 28 дней; счётчик consent-gated.
+- **Технические SEO-исправления**:
+  * Sitemap: lastmod статей из updatedDate; обновлены даты изменённых лендингов и главной.
+  * TechArticle: datePublished добавлен всем статьям (fallback на updatedDate при отсутствии реальной даты).
+  * /v2: noindex, nofollow + canonical /; добавлен в robots.txt. 404: noindex + canonical /. Robots закрывает /v2, /test-buttons, /demo-*.
+  * Organization: email/телефон; новый OG 1200×630; Метрика: fallback на YANDEX_METRIKA_COUNTER_ID; HTTP/2 включён на 4443.
+  * llms.txt: 91/91 URL sitemap. IndexNow: 12 изменённых URL, HTTP 200.
+- **Контент и перелинковка**:
+  * Расширены /zapros-kp-po-tz, /ocenka-riskov-zakupki, /poisk-postavshchikov-dlya-tendera, /poisk-proizvoditeley-po-tz, /postavshchiki-dlya-zaprosa-kp: 776–977 слов основного контента, 6–7 H2, дополнительные FAQ.
+  * В сайдбар всех 58 статей базы знаний добавлены ссылки на 4 коммерческих сервиса.
+- **Проверки**:
+  * Home v3: 32/32 проверки на production (scripts/test_public_refinement_browser.py).
+  * Public gate: 91 страница × 2 ширины = 182 проверки, 0 падений (staging и production).
+  * Navigation: sticky header, mobile menu, Escape, переход в кабинет — passed.
+  * Deploy: AIPOISK_DEPLOY_SCOPE=site ./scripts/deploy_tenderlex_live.sh; live deploy verified; предыдущий build сохранён.
+- **Остаточные риски**:
+  * Вебмастер недоступен по сети; SQI/индексация — устаревший кэш. Wordstat API мёртв.
+  * datePublished части статей выставлен по updatedDate; кластер near-duplicate по нацрежиму не переписан.
+  * Эффект SEO-правок оценивать через 4–8 недель.
+
+
 19 октября (ночь): Кардинальное ускорение загрузки вкладки «Задачи» в панели администратора (устранение N+1 запросов, кэширование файлов результатов, двухэтапная загрузка и легкий поллинг):
 - **Диагностика и выявление узких мест (Systematic Debugging)**:
   * При 608 задачах в базе открытие вкладки «Задачи» (`admin.tenderlex.ru#jobs`) занимало 5.5–7.0 секунд (2.0 МБ чистого JSON), при этом интерфейс показывал ложный пустой блок «Задачи: 0-0 из 0» и «Нет пользовательских задач для показа» из-за отсутствия индикатора загрузки.

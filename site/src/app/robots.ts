@@ -10,7 +10,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/api/", "/cabinet"],
+        disallow: ["/api/", "/cabinet", "/v2", "/test-buttons", "/demo-buttons", "/demo-design", "/demo-world"],
       },
       {
         userAgent: [
@@ -27,7 +27,7 @@ export default function robots(): MetadataRoute.Robots {
           "cohere-ai",
         ],
         allow: "/",
-        disallow: ["/api/", "/cabinet"],
+        disallow: ["/api/", "/cabinet", "/v2", "/test-buttons", "/demo-buttons", "/demo-design", "/demo-world"],
       },
     ],
     sitemap: `${siteUrl}/sitemap.xml`,

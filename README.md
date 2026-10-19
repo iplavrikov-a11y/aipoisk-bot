@@ -1,6 +1,6 @@
 # TenderLex Bot
 
-SEO: [текущий статус](docs/PROJECT_STATUS.md), [свежие даты и часовой сбор — 4 октября](docs/SEO_DAILY_COVERAGE_2026-10-04.md), [история ревизий](docs/SEO_AUDIT_LEDGER.md). Панель показывает 30 календарных дней каждого источника, предварительные данные Google отмечены, решения выполняются с агентом без ручных согласований. Оценка функциональности — **9/10**; рост поисковых позиций пока не доказан.
+SEO: [текущий статус](docs/PROJECT_STATUS.md), [Home v3 и SEO-релиз 20 октября](docs/SITE_HOME_V3_SEO_2026-10-20.md), [свежие даты и часовой сбор — 4 октября](docs/SEO_DAILY_COVERAGE_2026-10-04.md), [история ревизий](docs/SEO_AUDIT_LEDGER.md). Панель показывает 30 календарных дней каждого источника, предварительные данные Google отмечены, решения выполняются с агентом без ручных согласований. Оценка функциональности — **9/10**; рост поисковых позиций пока не доказан.
 
 Проверки последнего этапа: 799 backend-тестов и 54 подтеста, затем 44 целевых теста с фиксированной календарной датой; сборка админки успешна. Источники и ограничения проверки GitHub указаны в отчёте. [Первоначальное исправление панели 4 октября](docs/SEO_ADMIN_REPAIR_2026-10-04.md) и [отчёт 2 октября](docs/SEO_FOLLOWUP_REPORT_2026-10-02.md) сохраняют историю своих этапов. Исходные снимки 1–2 октября используются по [протоколу сравнения](docs/SEO_WEEKLY_COMPARISON.md).
 
@@ -11,6 +11,12 @@ Public product domain: `https://tenderlex.ru`
 Admin/internal domain: `https://admin.tenderlex.ru`
 
 ## Production notes
+
+- Home v3 and SEO release (2026-10-20):
+  - Production homepage replaced with the five-step interactive ТЗ walkthrough (specification → extracted fields with source tracing → supplier candidates → analog differences → RFQ draft with self-check). Step state is shareable via `?step=1..5`; no-JS and reduced-motion fallbacks are covered.
+  - SEO: per-article sitemap `lastmod` and TechArticle `datePublished`, `/v2` noindex + canonical `/`, 404 noindex, Organization contact data, 1200×630 OG image, `llms.txt` 91/91 sitemap URLs, HTTP/2, consent-gated Metrika fallback.
+  - Expanded five commercial landing pages (776–977 words) and added service links to all 58 knowledge articles. GSC baseline: 995 impressions / 20 clicks / avg position 20.96 (28 days).
+  - Verified: 32/32 Home v3 checks, 91 pages × 2 widths public gate, navigation gate, live deploy, IndexNow 12 URLs. Yandex Webmaster API is blocked by VPS network (no IPv6); Wordstat API is unavailable.
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.

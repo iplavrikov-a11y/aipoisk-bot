@@ -13,12 +13,13 @@ const seoUpdated = new Date(`${seoPageLastModified}T00:00:00.000Z`);
 const currentSeoUpdated = new Date("2026-10-01T00:00:00.000Z");
 const growthUpdated = new Date("2026-10-01T00:00:00.000Z");
 const legalUpdated = new Date("2026-09-21T00:00:00.000Z");
+const contentUpdated = new Date("2026-10-20T00:00:00.000Z");
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
     {
       url: siteUrl,
-      lastModified: growthUpdated,
+      lastModified: new Date("2026-10-20T00:00:00.000Z"),
       changeFrequency: "weekly",
       priority: 1,
     },
@@ -36,25 +37,25 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/poisk-postavshchikov-dlya-tendera`,
-      lastModified: currentSeoUpdated,
+      lastModified: contentUpdated,
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
       url: `${siteUrl}/poisk-proizvoditeley-po-tz`,
-      lastModified: growthUpdated,
+      lastModified: contentUpdated,
       changeFrequency: "weekly",
       priority: 0.88,
     },
     {
       url: `${siteUrl}/postavshchiki-dlya-zaprosa-kp`,
-      lastModified: currentSeoUpdated,
+      lastModified: contentUpdated,
       changeFrequency: "weekly",
       priority: 0.85,
     },
     {
       url: `${siteUrl}/zapros-kp-po-tz`,
-      lastModified: growthUpdated,
+      lastModified: contentUpdated,
       changeFrequency: "weekly",
       priority: 0.8,
     },
@@ -66,19 +67,19 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/api-integracii`,
-      lastModified: growthUpdated,
+      lastModified: new Date("2026-10-19T00:00:00.000Z"),
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
       url: `${siteUrl}/ocenka-riskov-zakupki`,
-      lastModified: currentSeoUpdated,
+      lastModified: contentUpdated,
       changeFrequency: "weekly",
       priority: 0.72,
     },
     {
       url: `${siteUrl}/analiz-rynka-44-fz`,
-      lastModified: growthUpdated,
+      lastModified: new Date("2026-10-19T00:00:00.000Z"),
       changeFrequency: "weekly",
       priority: 0.71,
     },
@@ -96,7 +97,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     ...KNOWLEDGE_ARTICLES.map((art) => ({
       url: `${siteUrl}/baza-znaniy/${art.slug}`,
-      lastModified: growthUpdated,
+      lastModified: art.updatedDate ? new Date(art.updatedDate) : growthUpdated,
       changeFrequency: "weekly" as const,
       priority: 0.85,
     })),
