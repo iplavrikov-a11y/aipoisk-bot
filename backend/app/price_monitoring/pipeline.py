@@ -122,15 +122,18 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
     # Определяем индексы колонок
     nom_col = 1
     unit_col = 2
+    model_col = None
     start_row = 1
 
-    # Ищем заголовки в первых 10 строках
+    # Ищем заголовки в первых 15 строках
     for r in range(1, min(15, ws.max_row + 1)):
-        for c in range(1, min(10, ws.max_column + 1)):
+        for c in range(1, min(15, ws.max_column + 1)):
             val = str(ws.cell(row=r, column=c).value or "").strip().lower()
             if "номенклатур" in val or "наименован" in val or "товар" in val:
                 nom_col = c
                 start_row = r + 1
+            elif any(k in val for k in ("модель", "марка", "артикул", "характеристик")):
+                model_col = c
             elif "ед." in val or "ед.изм" in val or "единиц" in val:
                 unit_col = c
 
@@ -143,6 +146,10 @@ def parse_input_excel(file_bytes: bytes) -> List[tuple[str, str]]:
         # Пропускаем повторные заголовки
         if nom_val.lower().startswith("номенклатур") or nom_val.lower().startswith("наименован"):
             continue
+        if model_col and model_col != nom_col:
+            model_val = str(ws.cell(row=r, column=model_col).value or "").strip()
+            if model_val and model_val.lower() not in nom_val.lower():
+                nom_val = f"{nom_val} {model_val}".strip()
         items.append((nom_val, unit_val or "шт"))
 
     return items

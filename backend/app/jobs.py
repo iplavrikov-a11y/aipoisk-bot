@@ -1224,13 +1224,13 @@ def _build_registry_fallback_supplier_outputs(
 
 def _populate_job_ai_metadata(job: Job, settings, mode: str) -> None:
     try:
-        tier = "primary" if mode == MODE_PROCUREMENT_REPORT else "supplier_search"
-        routing_key = "procurement_document_analysis" if mode == MODE_PROCUREMENT_REPORT else "supplier_query_generation"
+        tier = "primary" if mode in (MODE_PROCUREMENT_REPORT, MODE_EXACT_PRODUCT) else "supplier_search"
+        routing_key = "exact_product_identification" if mode == MODE_EXACT_PRODUCT else "procurement_document_analysis" if mode == MODE_PROCUREMENT_REPORT else "supplier_query_generation"
         selection = get_model_selection(settings, tier=tier, routing_key=routing_key)
         job.ai_provider = selection.provider_id
         job.ai_model = selection.model
     except Exception:
-        if mode == MODE_PROCUREMENT_REPORT:
+        if mode in (MODE_PROCUREMENT_REPORT, MODE_EXACT_PRODUCT):
             job.ai_provider = str(getattr(settings, "primary_provider", "") or "")
             job.ai_model = str(getattr(settings, "primary_model", "") or "")
         else:
@@ -1771,7 +1771,7 @@ def _process_price_monitoring(db: Session, job: Job, settings: SystemSettings, c
     )
 
     output_files = [
-        _output_artifact("price_monitoring", "Отчет по ценам поставщиков (.xlsx)", out_file, KIND_PRICE_MONITORING),
+        _output_artifact("price_monitoring", "Цены поставщиков", out_file, KIND_PRICE_MONITORING),
     ]
     evidence_payload = {
         "mode": job.mode,

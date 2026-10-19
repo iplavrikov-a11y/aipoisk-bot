@@ -1,5 +1,7 @@
 "use client";
 
+import "./cabinet-redesign.css";
+
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import { TelegramLoginWidget } from "@/components/telegram-login-widget";
@@ -521,6 +523,16 @@ function formatDate(value: string | null) {
   return date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: MOSCOW_TIME_ZONE });
 }
 
+function formatArtifactLabel(label?: string | null): string {
+  if (!label) return "Скачать";
+  let clean = label.replace(/\s*\(\.(?:xlsx|docx|pdf)\)/gi, "").trim();
+  const lower = clean.toLowerCase();
+  if (lower === "отчет по ценам поставщиков" || lower === "отчет по ценам" || lower === "отчет по ценам поставщиков (.xlsx)") {
+    clean = "Цены поставщиков";
+  }
+  return clean;
+}
+
 function formatRubles(kopeks: number) {
   if (!kopeks) return "по запросу";
   return `${new Intl.NumberFormat("ru-RU").format(Math.round(kopeks / 100))} ₽`;
@@ -1021,6 +1033,9 @@ export function CabinetClient() {
   const [dragActive, setDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const jobsRequestIdRef = useRef(0);
+  const jobsForegroundRequestRef = useRef<number | null>(null);
+  const jobsBackgroundRequestRef = useRef<number | null>(null);
   const [findMoreConfirmJob, setFindMoreConfirmJob] = useState<CustomerJob | null>(null);
   const [findMorePrompt, setFindMorePrompt] = useState("");
   const [startSupplierSearchConfirmJob, setStartSupplierSearchConfirmJob] = useState<CustomerJob | null>(null);
@@ -1117,6 +1132,7 @@ export function CabinetClient() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showTariffs, setShowTariffs] = useState(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
   const [topUpTab, setTopUpTab] = useState<"card" | "b2b" | "sbp">("card");
   const [selectedTopUpPackage, setSelectedTopUpPackage] = useState<DepositPackage | null>(null);
@@ -1308,9 +1324,17 @@ export function CabinetClient() {
     mode = jobModeFilter,
     policy = jobPolicyFilter,
     pageSize = jobsPageSize,
+    background = false,
   ) {
     if (!authenticated) return;
-    setJobsLoading(true);
+    if (background && (jobsForegroundRequestRef.current !== null || jobsBackgroundRequestRef.current !== null)) return;
+    const requestId = ++jobsRequestIdRef.current;
+    if (background) {
+      jobsBackgroundRequestRef.current = requestId;
+    } else {
+      jobsForegroundRequestRef.current = requestId;
+      setJobsLoading(true);
+    }
     try {
       const offset = (page - 1) * pageSize;
       const params = new URLSearchParams({
@@ -1327,6 +1351,7 @@ export function CabinetClient() {
         CUSTOMER_JOB_FETCH_OPTIONS,
       );
       const payload = await readJson<CustomerJobsResponse | CustomerJob[]>(response);
+      if (requestId !== jobsRequestIdRef.current) return;
       const rawItems = Array.isArray(payload) ? payload : (payload?.items || (payload as { jobs?: CustomerJob[] })?.jobs || []);
       const incomingItems: CustomerJob[] = Array.isArray(rawItems) ? rawItems : [];
 
@@ -1376,9 +1401,13 @@ export function CabinetClient() {
       }
       setJobs(incomingItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (requestId === jobsRequestIdRef.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setJobsLoading(false);
+      if (jobsBackgroundRequestRef.current === requestId) jobsBackgroundRequestRef.current = null;
+      if (jobsForegroundRequestRef.current === requestId) {
+        jobsForegroundRequestRef.current = null;
+        setJobsLoading(false);
+      }
     }
   }
 
@@ -1523,10 +1552,20 @@ export function CabinetClient() {
   }, [emailEditOpen, session?.user?.email]);
 
   useEffect(() => {
+    if (authenticated) loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
+    else setJobsLoading(false);
+    return () => {
+      // Responses from the previous page, filters or session must never replace current tasks.
+      jobsRequestIdRef.current += 1;
+      jobsForegroundRequestRef.current = null;
+      jobsBackgroundRequestRef.current = null;
+    };
+  }, [authenticated, jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize]);
+
+  useEffect(() => {
     if (!authenticated) return;
-    loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
     const timer = window.setInterval(() => {
-      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize);
+      loadJobs(jobsPage, debouncedJobSearch, jobModeFilter, jobPolicyFilter, jobsPageSize, true);
       if (activeJobs) loadSession().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     }, activeJobs ? 3000 : 7000);
     return () => window.clearInterval(timer);
@@ -2185,8 +2224,8 @@ export function CabinetClient() {
 
   if (!authenticated) {
     return (
-      <main className="min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
-        <header className="w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
+      <main className="tl-cabinet tl-cabinet-auth cabinet-page min-h-screen bg-slate-50/70 flex flex-col items-center justify-center p-4 sm:p-8 font-sans text-slate-900">
+        <header className="tl-cabinet-auth-header w-full max-w-5xl mx-auto flex items-center justify-between pb-6 mb-8 border-b border-slate-200/80">
           <a className="flex items-center gap-3 font-extrabold text-slate-900 text-xl hover:text-teal-700 transition-colors" href="/">
             <Image src="/tenderlex-logo.png" alt="TenderLex" width={36} height={36} priority />
             <span>TenderLex</span>
@@ -2196,7 +2235,7 @@ export function CabinetClient() {
           </a>
         </header>
 
-        <section className="w-full max-w-5xl grid lg:grid-cols-12 gap-8 items-stretch bg-white p-6 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl">
+        <section className="tl-cabinet-auth-card w-full max-w-5xl grid lg:grid-cols-12 gap-8 items-stretch bg-white p-6 sm:p-10 rounded-3xl border border-slate-200/90 shadow-xl">
           <div className="lg:col-span-7 flex flex-col justify-between space-y-6 pr-0 lg:pr-4">
             <div className="space-y-4">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">Работайте с закупками прямо на сайте</h1>
@@ -2238,7 +2277,7 @@ export function CabinetClient() {
             </div>
           </div>
 
-          <form className="lg:col-span-5 bg-slate-50/70 p-6 sm:p-8 rounded-2xl border border-slate-200/80 space-y-4 flex flex-col justify-center" onSubmit={submitAuth}>
+          <form className="tl-cabinet-auth-form lg:col-span-5 bg-slate-50/70 p-6 sm:p-8 rounded-2xl border border-slate-200/80 space-y-4 flex flex-col justify-center" onSubmit={submitAuth}>
             {authMode === "reset" ? (
               <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
                 <h2 className="text-lg font-bold text-slate-900">Восстановить доступ</h2>
@@ -2447,95 +2486,19 @@ export function CabinetClient() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
-      <header className="w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
-        <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
-          <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
-          <span>TenderLex</span>
-        </a>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
-            <User size={14} className="text-teal-600" aria-hidden="true" />
-            <span>{session?.user?.email}</span>
-            <button
-              type="button"
-              className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
-              onClick={logout}
-              disabled={busy}
-              aria-label="Выйти"
-            >
-              <LogOut size={14} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {!emailVerified ? (
-        <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
-          <div className="flex items-center gap-2">
-            <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
-            <span>
-              <strong>Подтвердите email.</strong> Проверьте вашу почту для активирования всех функций уведомлений.
-            </span>
-          </div>
-          <button
-            type="button"
-            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-            onClick={resendVerification}
-            disabled={busy}
-          >
-            Отправить письмо повторно
-          </button>
-        </div>
-      ) : null}
-
-      {(message || error) ? (
-        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
-          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-          <span>{error || message}</span>
-        </div>
-      ) : null}
-
-      {session?.user?.is_trial ? (
-        <div className="p-3 sm:p-4 bg-gradient-to-r from-teal-50 via-white to-sky-50 border border-teal-200/90 rounded-xl shadow-2xs">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
-              <Sparkles size={16} aria-hidden="true" />
-            </div>
-            <div className="space-y-0.5 text-xs">
-              <div className="flex items-center gap-2">
-                <h2 className="font-bold text-slate-900 text-xs sm:text-sm">
-                  Тестовый доступ активен
-                </h2>
-                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded border border-teal-300 shrink-0">
-                  пробный период
-                </span>
-              </div>
-              <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
-                Вам начислен стартовый баланс для проверки поиска поставщиков, подбора товара и аналогов или анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
-              </p>
-              {jobsTotal === 0 ? (
-                <div className="pt-2 flex flex-wrap items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={fillDemoExample}
-                    className="px-3.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Sparkles size={14} />
-                    <span>Попробовать на демо-ТЗ в 1 клик</span>
-                  </button>
-                  <span className="text-[11px] text-slate-500">
-                    Заполнит форму тестовой спецификацией (арматура / краны / фланцы) для мгновенного запуска.
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
+    <main className="tl-cabinet cabinet-page min-h-screen bg-slate-50/60 p-3 sm:p-5 max-w-7xl mx-auto space-y-3 font-sans text-slate-900">
+      <aside className={`tl-cabinet-sidebar ${mobileToolsOpen ? "tl-cabinet-sidebar--open" : ""}`} aria-label="Инструменты кабинета">
+        <nav className="tl-cabinet-navlinks" aria-label="Рабочая область">
+          <a href="#new-job"><PlusCircle size={17} aria-hidden="true" />Новая задача</a>
+          <a href="#jobs"><History size={17} aria-hidden="true" />История задач</a>
+        </nav>
+        <button type="button" className="tl-cabinet-tools-toggle" aria-expanded={mobileToolsOpen} aria-controls="cabinet-account-tools" onClick={() => setMobileToolsOpen((open) => !open)}>
+          <span>Баланс {formatBalanceRubles(session?.balance?.money?.available_kopeks || 0)}</span>
+          <span>{mobileToolsOpen ? "Скрыть инструменты" : "Меню кабинета"}<ChevronDown size={15} aria-hidden="true" /></span>
+        </button>
+        <div id="cabinet-account-tools" className="tl-cabinet-account-tools">
       {/* Top Dashboard: Compact Header with Balance and All Buttons in 1 Continuous Row */}
-      <section className="bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
+      <section className="tl-cabinet-toolbar bg-white border border-slate-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs font-sans space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Left-aligned items: Balance, Tariffs, Contacts, History */}
           <div className="flex flex-wrap items-center gap-1.5">
@@ -2573,6 +2536,8 @@ export function CabinetClient() {
               type="button"
               className="inline-flex items-center justify-center gap-1.5 px-2.5 h-[30px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg text-xs font-bold leading-none transition-all shadow-2xs cursor-pointer shrink-0"
               onClick={() => setShowTariffs((v) => !v)}
+              aria-expanded={showTariffs}
+              aria-controls="cabinet-tariffs"
             >
               <Sliders size={13} className="text-teal-600 shrink-0" aria-hidden="true" />
               <span>{showTariffs ? "Тарифы ▲" : "Тарифы ▼"}</span>
@@ -2692,7 +2657,33 @@ export function CabinetClient() {
           </div>
         </div>
 
-        {/* Collapsible Tariff Box (Default: Hidden / Collapsed) */}
+        </section>
+        </div>
+      </aside>
+      <div className="tl-cabinet-content space-y-3">
+        <header className="tl-cabinet-header w-full flex items-center justify-between pb-2.5 border-b border-slate-200/80">
+          <a className="flex items-center gap-2 font-extrabold text-slate-900 text-lg hover:text-teal-700 transition-colors" href="/">
+            <Image src="/tenderlex-logo.png" alt="TenderLex" width={28} height={28} priority />
+            <span>TenderLex</span>
+          </a>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 shadow-2xs">
+              <User size={14} className="text-teal-600" aria-hidden="true" />
+              <span>{session?.user?.email}</span>
+              <button
+                type="button"
+                className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+                onClick={logout}
+                disabled={busy}
+                aria-label="Выйти"
+              >
+                <LogOut size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Collapsible tariff content belongs to the work column, not the sidebar. */}
         {showTariffs ? (() => {
           const supplierPriceKopeks =
             session?.balance?.effective_prices?.supplier_search?.price_kopeks ??
@@ -2716,9 +2707,10 @@ export function CabinetClient() {
 
           const comboPriceKopeks = supplierPriceKopeks + reportPriceKopeks;
           const depositPkgs = session?.deposit_packages?.length ? session.deposit_packages : DEFAULT_DEPOSIT_PACKAGES;
+          const maxBonusPercent = Math.max(0, ...depositPkgs.map((pkg) => pkg.price_rub > 0 ? Math.round(pkg.bonus_rub / pkg.price_rub * 100) : 0));
 
           return (
-            <div className="pt-2.5 border-t border-slate-100 transition-all space-y-2.5">
+            <section id="cabinet-tariffs" className="tl-cabinet-tariffs pt-2.5 border-t border-slate-100 transition-all space-y-2.5" aria-label="Тарифы и пополнение баланса">
               <div className="grid md:grid-cols-2 gap-2.5">
                 {/* Column 1: Списание за операции по прайсу */}
                 <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
@@ -2781,22 +2773,22 @@ export function CabinetClient() {
                 <div className="space-y-1 bg-gradient-to-br from-emerald-50/60 to-teal-50/40 p-2.5 rounded-xl border border-emerald-200/80">
                   <div className="flex items-center justify-between pb-1 border-b border-emerald-200/60">
                     <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                      Бонусы при пополнении баланса
+                      {maxBonusPercent > 0 ? "Бонусы при пополнении баланса" : "Пакеты пополнения баланса"}
                     </span>
-                    <span className="text-[10px] font-bold text-emerald-700">до +50% к платежу</span>
+                    {maxBonusPercent > 0 ? <span className="text-[10px] font-bold text-emerald-700">до +{maxBonusPercent}% к платежу</span> : null}
                   </div>
                   <div className="space-y-1.5 mt-1">
                     {depositPkgs.map((pkg) => (
                       <div
                         key={pkg.id}
-                        className="px-2 py-1.5 bg-white/95 border border-emerald-200/70 hover:border-emerald-400 rounded-lg flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs transition-colors"
+                        className="tl-topup-package px-2 py-1.5 bg-white/95 border border-emerald-200/70 hover:border-emerald-400 rounded-lg flex items-center justify-between text-xs font-medium text-slate-800 shadow-2xs transition-colors"
                       >
-                        <div className="flex items-center gap-1.5 truncate mr-2">
+                        <div className="tl-topup-package__amounts flex items-center gap-1.5 truncate mr-2">
                           <span className="font-bold text-slate-900 whitespace-nowrap">{pkg.price_rub.toLocaleString("ru-RU")} ₽</span>
                           <span className="text-slate-400">→</span>
                           <span className="font-extrabold text-emerald-700 whitespace-nowrap">{pkg.total_rub.toLocaleString("ru-RU")} ₽ на баланс</span>
                         </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="tl-topup-package__action flex items-center gap-1.5 shrink-0">
                           {pkg.bonus_rub > 0 ? (
                             <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold whitespace-nowrap">
                               +{pkg.bonus_rub.toLocaleString("ru-RU")} ₽
@@ -2845,13 +2837,75 @@ export function CabinetClient() {
                   <span>Пополнить баланс с бонусом</span>
                 </button>
               </div>
-            </div>
+            </section>
           );
         })() : null}
-      </section>
+      {!emailVerified ? (
+        <div className="p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <Mail size={15} className="text-amber-700 shrink-0" aria-hidden="true" />
+            <span>
+              <strong>Подтвердите email.</strong> Проверьте вашу почту для активирования всех функций уведомлений.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+            onClick={resendVerification}
+            disabled={busy}
+          >
+            Отправить письмо повторно
+          </button>
+        </div>
+      ) : null}
+
+      {(message || error) ? (
+        <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 shadow-2xs ${error ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+          {error ? <XCircle size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
+          <span>{error || message}</span>
+        </div>
+      ) : null}
+
+      {session?.user?.is_trial ? (
+        <div className="p-3 sm:p-4 bg-gradient-to-r from-teal-50 via-white to-sky-50 border border-teal-200/90 rounded-xl shadow-2xs">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
+              <Sparkles size={16} aria-hidden="true" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-900 text-xs sm:text-sm">
+                  Тестовый доступ активен
+                </h2>
+                <span className="text-[10px] font-bold text-teal-800 bg-teal-100/90 px-2 py-0.5 rounded border border-teal-300 shrink-0">
+                  пробный период
+                </span>
+              </div>
+              <p className="text-slate-600 leading-relaxed text-[12px] sm:text-[13px]">
+                Вам начислен стартовый баланс для проверки поиска поставщиков, подбора товара и аналогов или анализа документации по вашим ТЗ. Если для тестирования требуется больше запусков — напишите нам по кнопкам контактов ниже, и мы начислим дополнительные лимиты.
+              </p>
+              {jobsTotal === 0 ? (
+                <div className="pt-2 flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={fillDemoExample}
+                    className="px-3.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles size={14} />
+                    <span>Попробовать на демо-ТЗ в 1 клик</span>
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Заполнит форму тестовой спецификацией (арматура / краны / фланцы) для мгновенного запуска.
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Main Task Launch Form */}
-      <section className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
+      <section className="tl-cabinet-launcher bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs">
         <form id="new-job" className="space-y-2.5" onSubmit={submitJob}>
           <div className="space-y-0.5 pb-2 border-b border-slate-100">
             <h1 className="text-sm sm:text-base font-extrabold text-slate-900">Запуск задачи</h1>
@@ -2944,8 +2998,8 @@ export function CabinetClient() {
           ) : null}
 
           {(scenario === "supplier_search" || scenario === "analysis_and_suppliers" || scenario === "price_monitoring") && session?.user?.allowed_geo_radius ? (
-            <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5">
-              <div className="flex items-center justify-between">
+            <section className="tl-geo-filter p-3 bg-slate-50 border border-slate-200/90 rounded-xl space-y-2.5" aria-label="Логистический фильтр">
+              <div className="tl-geo-filter__heading flex items-center justify-between gap-3">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -2953,39 +3007,44 @@ export function CabinetClient() {
                     onChange={(e) => setGeoRadiusEnabled(e.target.checked)}
                     className="w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500"
                   />
-                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <span>📍</span> Поиск в радиусе доставки
+                  <span className="text-xs font-bold text-slate-800">
+                    Поиск в радиусе доставки
                   </span>
                 </label>
-                <span className="text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
-                  ⚡ Логистический фильтр (+40%)
+                <span className="tl-geo-filter__badge text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
+                  +40% к стоимости задачи
                 </span>
               </div>
 
               {geoRadiusEnabled ? (
-                <div className="pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Город объекта / поставки:
+                <div className="tl-geo-filter__fields pt-2 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                  <div className="tl-geo-filter__city sm:col-span-2">
+                    <label htmlFor="delivery-city" className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Город объекта или поставки
                     </label>
                     <input
+                      id="delivery-city"
                       type="text"
+                      pattern=".*\S.*"
                       value={deliveryCity}
                       onChange={(e) => setDeliveryCity(e.target.value)}
                       placeholder="например, Каменск-Шахтинский или Ростов-на-Дону"
+                      required={geoRadiusEnabled}
+                      aria-describedby="delivery-radius-help"
                       className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 placeholder:text-slate-400"
                     />
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Радиус поиска:
+                  <div className="tl-geo-filter__radius">
+                    <label htmlFor="delivery-radius" className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Радиус поиска
                     </label>
                     <div className="relative">
                       <input
+                        id="delivery-radius"
                         type="number"
                         min={10}
                         max={5000}
-                        step={25}
+                        step={1}
                         value={geoRadiusKm || ""}
                         onChange={(e) => {
                           const val = e.target.value === "" ? 0 : Number(e.target.value);
@@ -2999,12 +3058,12 @@ export function CabinetClient() {
                       </span>
                     </div>
                   </div>
-                  <div className="sm:col-span-3 text-[11px] text-slate-500 leading-tight">
-                    Поиск заводов-производителей, оптовых складов, а также официальных дилеров и дистрибьюторов в радиусе доставки. База охватывает все 1 100+ городов и населенных пунктов РФ.
+                  <div id="delivery-radius-help" className="tl-geo-filter__helper sm:col-span-3 text-[11px] text-slate-500 leading-tight">
+                    Укажите точку доставки и радиус поиска. Доступность доставки и срок уточняются у поставщика.
                   </div>
                 </div>
               ) : null}
-            </div>
+            </section>
           ) : null}
 
           <div className="space-y-2">
@@ -3012,6 +3071,9 @@ export function CabinetClient() {
               className={`border-2 border-dashed rounded-xl px-4 py-2.5 cursor-pointer transition-all flex flex-wrap items-center justify-between gap-3 min-h-[46px] ${
                 dragActive ? "border-teal-500 bg-teal-50/70 shadow-xs" : "border-teal-400/80 hover:border-teal-500 bg-teal-50/25 hover:bg-teal-50/50"
               }`}
+              role="button"
+              tabIndex={0}
+              aria-label="Выбрать файлы для задачи"
               onDragOver={(event) => {
                 event.preventDefault();
                 setDragActive(true);
@@ -3023,6 +3085,12 @@ export function CabinetClient() {
                 filesFromList(event.dataTransfer.files);
               }}
               onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
             >
               <input
                 ref={fileInputRef}
@@ -3127,7 +3195,7 @@ export function CabinetClient() {
       </section>
 
       {/* Jobs History Table */}
-      <section id="jobs" className="bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
+      <section id="jobs" className="tl-cabinet-jobs bg-white border border-slate-200/90 rounded-xl p-3 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-slate-100">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-extrabold text-slate-900">Задачи</h2>
@@ -3201,6 +3269,7 @@ export function CabinetClient() {
           {/* Mode Filter (Тип поиска) */}
           <div className="col-span-6 md:col-span-3">
             <select
+              aria-label="Тип задачи в истории"
               value={jobModeFilter}
               onChange={(e) => {
                 setJobModeFilter(e.target.value);
@@ -3222,6 +3291,7 @@ export function CabinetClient() {
           {/* Policy Filter (Режим поиска по реестру) */}
           <div className="col-span-6 md:col-span-3 flex items-center gap-1.5">
             <select
+              aria-label="Режим поиска в истории"
               value={jobPolicyFilter}
               onChange={(e) => {
                 setJobPolicyFilter(e.target.value);
@@ -3254,9 +3324,9 @@ export function CabinetClient() {
           <div className="hidden md:grid grid-cols-12 gap-4 pb-3 border-b border-slate-200 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
             <span className="col-span-3">Задача</span>
             <span className="col-span-2">Режим</span>
-            <span className="col-span-2">Статус</span>
+            <span className="col-span-1">Статус</span>
             <span className="col-span-2">Прогресс</span>
-            <span className="col-span-3 text-right">Результат</span>
+            <span className="col-span-4 text-right">Результат</span>
           </div>
 
           {jobs.length ? (
@@ -3318,7 +3388,7 @@ export function CabinetClient() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-6 md:col-span-2 flex flex-col gap-1">
+                  <div className="col-span-6 md:col-span-1 flex flex-col gap-1 min-w-0">
                     <span
                       className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold border w-max max-w-full ${
                         job.status_label === "нет в реестре"
@@ -3341,7 +3411,7 @@ export function CabinetClient() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600">
+                  <div className="col-span-12 md:col-span-2 flex flex-col gap-1 text-xs text-slate-600 min-w-0 overflow-hidden">
                     {activeJobStatuses.has(job.status) ? <JobStageSteps progress={job.progress} /> : null}
                     <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mt-1.5" aria-label={`Прогресс ${job.progress}%`}>
                       <i
@@ -3351,10 +3421,10 @@ export function CabinetClient() {
                         style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
                       />
                     </div>
-                    <span className="text-[11px] text-slate-600 leading-snug">{job.message || `${job.progress}%`}</span>
+                    <span className="text-[11px] text-slate-600 leading-snug truncate">{job.message || `${job.progress}%`}</span>
                   </div>
 
-                  <div className="col-span-12 md:col-span-3 flex flex-wrap items-center gap-1.5 md:justify-end">
+                  <div className="col-span-12 md:col-span-4 flex flex-wrap items-center gap-1.5 md:justify-end min-w-0">
                     {isFailed ? (
                       <>
                         {job.mode === "supplier_search" && (job.supplier_search_policy === "minprom_registry_only" || job.error?.toLowerCase().includes("реестр") || job.message?.toLowerCase().includes("реестр")) ? (
@@ -3509,7 +3579,7 @@ export function CabinetClient() {
                                 ) : (
                                   <FileText size={14} className="text-indigo-600" aria-hidden="true" />
                                 )}
-                                <span>{file.label || "Скачать"}</span>
+                                <span>{formatArtifactLabel(file.label)}</span>
                               </button>
                             );
                           })
@@ -6660,6 +6730,7 @@ ${webLink}`;
           </section>
         </div>
       ) : null}
+      </div>
     </main>
   );
 }
