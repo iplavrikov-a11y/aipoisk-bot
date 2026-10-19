@@ -14,6 +14,12 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Deposit Tariff Validation Exemption, Cabinet Task Launcher Inline Error Feedback & Client Email Activation (2026-10-19):
+  - Tariff Unit Price Validation (`backend/app/main.py`): exempted `deposit` packages from the identical unit price validation rule (`_validate_tariff_unit_price`). Deposit packages inherently have progressive discount and bonus tiers (from 100 ₽ down to 66.7 ₽ per task), which previously triggered a false 400 alert `Все активные тарифы услуги должны иметь одинаковую цену за единицу`.
+  - Admin Tariff View Isolation & Blur Guards (`frontend/src/App.tsx`): isolated tariff error states into local `billingError` banner, and added input change guards on table inputs `onBlur` to prevent redundant PATCH requests on clicks without editing.
+  - Cabinet Task Launcher Error Visibility & Email Verification Notice (`site/src/app/cabinet/cabinet-client.tsx`): resolved client launch blocker where unverified email prevented task submission with errors rendered outside the visible viewport. Embedded inline email verification notices and error alerts directly into the `#new-job` launcher above the submit button with instant resend verification link triggers.
+  - Unblocked active client `ceo@tendee.ru` (`ГОССНАБ`), verified successful automated procurement analysis completion for 26-item tender #0302100013126000122 in 24s.
+  - Verified with 907 backend tests passing (100%), clean Next.js/Vite builds, and live production deployment on `202.71.13.57`.
 - Geo-Radius Platform Rollout, Dynamic 30% Surcharge & Compact Admin Tariffs Redesign (2026-10-19):
   - Global Geo-Radius Rollout (`SystemSettings.geo_radius_search_enabled_global = True`): enabled search in city delivery radius (10–500 km) for all users across Web cabinet and Telegram bot.
   - Customizable Surcharge Rate (`SystemSettings.geo_radius_surcharge_pct = 30.0`): configurable percentage surcharge in database, billing reservation (`billing.py`), and client cabinet badge (`+{geo_radius_surcharge_pct}%`).
