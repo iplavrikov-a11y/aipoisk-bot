@@ -14,6 +14,7 @@ class SettingsPatch(BaseModel):
     allow_partial_supplier_reports: bool | None = None
     logistics_enabled: bool | None = None
     geo_radius_search_enabled_global: bool | None = None
+    geo_radius_surcharge_pct: float | None = Field(default=None, ge=0.0, le=500.0)
     trial_enabled: bool | None = None
     trial_supplier_search_limit: int | None = Field(default=None, ge=0, le=10000)
     trial_procurement_report_limit: int | None = Field(default=None, ge=0, le=10000)

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ from .exact_product import (
     analyze_exact_product,
     write_exact_product_docx,
 )
-from .models import ApiKey, Client, Job, SystemSettings, now_utc
+from .models import ApiKey, Client, Job, JobFile, SystemSettings, now_utc
 from .procurement_report import generate_procurement_report
 from .quote_request import build_quote_request_markdown_with_ai
 from .repository import get_or_create_settings
@@ -322,12 +323,42 @@ def check_api_service_permission(api_key: ApiKey, service: str) -> None:
         )
 
 
+def _sanitize_filename(val: str, fallback: str = "закупка") -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", str(val or "")).strip(" ._-")
+    return cleaned[:80] or fallback
+
+
+def _attach_api_input_file(db: Session, job: Job, text: str, filename: str = "Запрос_API.txt") -> None:
+    if not job or not text:
+        return
+    try:
+        from .jobs import job_dir
+        in_dir = job_dir(job.id) / "input"
+        in_dir.mkdir(parents=True, exist_ok=True)
+        stored_path = in_dir / filename
+        stored_path.write_text(text, encoding="utf-8")
+        job_file = JobFile(
+            job_id=job.id,
+            original_filename=filename,
+            stored_path=str(stored_path),
+            parse_status="parsed",
+            extracted_chars=len(text),
+        )
+        db.add(job_file)
+        db.commit()
+    except Exception as exc:
+        logger.warning("failed_to_save_api_input_file for job %s: %s", getattr(job, "id", ""), exc)
+
+
 def start_api_job_with_reservation(
     db: Session,
     api_key: ApiKey,
     service: str,
     title: str,
+    *,
     target_count: int = 0,
+    input_text: str = "",
+    input_filename: str = "Запрос_API.txt",
 ) -> tuple[Optional[Job], int]:
     """
     Begins an API request with two-phase reservation:
@@ -355,6 +386,8 @@ def start_api_job_with_reservation(
         db.add(job)
         db.commit()
         db.refresh(job)
+        if input_text:
+            _attach_api_input_file(db, job, input_text, input_filename)
         return job, -1
 
     if api_key.client_id:
@@ -378,6 +411,8 @@ def start_api_job_with_reservation(
         db.add(job)
         db.commit()
         db.refresh(job)
+        if input_text:
+            _attach_api_input_file(db, job, input_text, input_filename)
 
         try:
             reserve_job_units(db, client, job, supplier_search_count=1)
@@ -878,7 +913,13 @@ async def mcp_supplier_search(
 
     job_title = f"API: Поиск поставщиков — {spec_text[:80].strip()}"
     job, remaining_quota = start_api_job_with_reservation(
-        db, api_key, "supplier_search", job_title, target_count=req.target_count
+        db,
+        api_key,
+        "supplier_search",
+        job_title,
+        target_count=req.target_count,
+        input_text=spec_text,
+        input_filename="ТЗ_поиск_поставщиков.txt",
     )
 
     policy = req.search_policy.strip() if req.search_policy else "normal"
@@ -940,6 +981,56 @@ async def mcp_supplier_search(
     if source_title and job:
         job.title = f"API: Поиск поставщиков — {source_title[:80].strip()}"
 
+    res_path = ""
+    evid_path = ""
+    if job and accepted_rows:
+        try:
+            from .jobs import _persist_supplier_rows, job_dir
+            from .report_builder import write_supplier_xlsx, write_quote_request_docx, write_evidence
+            _persist_supplier_rows(db, job, accepted_rows)
+
+            out_dir = job_dir(job.id) / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = _sanitize_filename(source_title or "поставщики", "поставщики")
+            xlsx_filename = f"Поставщики - {stem}.xlsx"
+            xlsx_path = write_supplier_xlsx(
+                out_dir / xlsx_filename,
+                accepted_rows,
+                title=job.title,
+                target=req.target_count,
+                subject=source_title or "Поиск поставщиков",
+                policy=policy,
+                delivery_city=req.city or "",
+            )
+            output_files = [
+                {"kind": "suppliers", "label": "Поставщики (Excel)", "path": str(xlsx_path)}
+            ]
+            if quote_markdown:
+                quote_md_path = out_dir / f"Запрос КП - {stem}.md"
+                quote_md_path.write_text(quote_markdown, encoding="utf-8")
+                quote_docx_path = write_quote_request_docx(
+                    out_dir / f"Запрос КП - {stem}.docx",
+                    quote_markdown,
+                    title="Запрос КП",
+                )
+                output_files.append({
+                    "kind": "quote_request",
+                    "label": "Запрос КП",
+                    "path": str(quote_docx_path),
+                    "content_path": str(quote_md_path),
+                })
+            evidence_payload = {
+                "mode": "supplier_search",
+                "subject": source_title or "Поиск поставщиков",
+                "output_files": output_files,
+                "verified_count": len(supplier_items),
+            }
+            evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+            res_path = str(xlsx_path)
+            evid_path = str(evidence_path)
+        except Exception as exc:
+            logger.warning("failed_to_save_api_supplier_artifacts: %s", exc)
+
     # Billing settlement based on results:
     if len(supplier_items) == 0:
         # 0 suppliers found: release reservation! Do NOT charge the client.
@@ -959,6 +1050,8 @@ async def mcp_supplier_search(
             api_key,
             job,
             "supplier_search",
+            result_path=res_path,
+            evidence_path=evid_path,
             verified_count=len(supplier_items),
         )
 
@@ -990,7 +1083,12 @@ async def mcp_exact_product(
 
     job_title = f"API: Подбор товара и аналогов — {(proc_title or spec_text)[:80].strip()}"
     job, remaining_quota = start_api_job_with_reservation(
-        db, api_key, "exact_product", job_title
+        db,
+        api_key,
+        "exact_product",
+        job_title,
+        input_text=spec_text,
+        input_filename="Спецификация_товаров.txt",
     )
 
     try:
@@ -1009,9 +1107,13 @@ async def mcp_exact_product(
             detail=f"Exact product analysis error: {str(exc)}",
         )
 
-    # Save docx in public downloads storage
+    # Save docx in public downloads storage and job output
     docx_rel_url = None
+    res_path = ""
+    evid_path = ""
     try:
+        from .jobs import job_dir
+        from .report_builder import write_evidence
         storage_dir = Path(config.storage_dir or "/root/projects/tenderlex/storage") / "mcp_reports"
         storage_dir.mkdir(parents=True, exist_ok=True)
         doc_filename = f"exact_product_{secrets.token_hex(8)}.docx"
@@ -1019,6 +1121,23 @@ async def mcp_exact_product(
         write_exact_product_docx(doc_path, report, title=req.procurement_title or "Подбор товара и аналогов")
         public_url = getattr(settings, "public_base_url", "https://tenderlex.ru").rstrip("/")
         docx_rel_url = f"{public_url}/api/v1/mcp/downloads/{doc_filename}"
+
+        if job:
+            out_dir = job_dir(job.id) / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = _sanitize_filename(proc_title or spec_text[:60], "товар")
+            job_doc_path = out_dir / f"Подбор товара - {stem}.docx"
+            write_exact_product_docx(job_doc_path, report, title=req.procurement_title or "Подбор товара и аналогов")
+            evidence_payload = {
+                "mode": "exact_product",
+                "subject": proc_title or "Подбор товара и аналогов",
+                "output_files": [
+                    {"kind": "exact_product", "label": "Подбор товара и аналоги (Word)", "path": str(job_doc_path)}
+                ],
+                "verified_count": len(report.positions) if hasattr(report, "positions") else 0,
+            }
+            evid_path = str(write_evidence(out_dir / "evidence.json", evidence_payload))
+            res_path = str(job_doc_path)
     except Exception as exc:
         logger.warning("mcp_docx_save_failed: %s", exc)
 
@@ -1076,7 +1195,8 @@ async def mcp_exact_product(
         api_key,
         job,
         "exact_product",
-        result_path=docx_rel_url or "",
+        result_path=res_path or str(doc_path if 'doc_path' in locals() and doc_path.exists() else ""),
+        evidence_path=evid_path,
         verified_count=verified_positions,
     )
 
@@ -1104,7 +1224,12 @@ async def mcp_procurement_analyze(
     doc_text = req.document_text.strip()
     job_title = f"API: Анализ документации — {doc_text[:80].strip()}"
     job, remaining_quota = start_api_job_with_reservation(
-        db, api_key, "procurement_report", job_title
+        db,
+        api_key,
+        "procurement_report",
+        job_title,
+        input_text=doc_text,
+        input_filename="Документация_закупки.txt",
     )
 
     try:
@@ -1119,11 +1244,45 @@ async def mcp_procurement_analyze(
             detail=f"Procurement report analysis error: {str(exc)}",
         )
 
+    res_path = ""
+    evid_path = ""
+    if job and gen_result and gen_result.report:
+        try:
+            from .jobs import job_dir
+            from .report_builder import write_procurement_docx, write_evidence
+            out_dir = job_dir(job.id) / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = _sanitize_filename(doc_text[:60] or "документация", "документация")
+            docx_filename = f"Анализ - {stem}.docx"
+            docx_path = write_procurement_docx(
+                out_dir / docx_filename,
+                gen_result.report,
+                title=job.title,
+            )
+            md_path = out_dir / f"Анализ - {stem}.md"
+            md_path.write_text(gen_result.report, encoding="utf-8")
+            evidence_payload = {
+                "mode": "procurement_report",
+                "subject": job.title,
+                "output_files": [
+                    {"kind": "analysis", "label": "Анализ документации (Word)", "path": str(docx_path)}
+                ],
+                "ai_model": gen_result.ai_model,
+            }
+            evidence_path = write_evidence(out_dir / "evidence.json", evidence_payload)
+            res_path = str(docx_path)
+            evid_path = str(evidence_path)
+        except Exception as exc:
+            logger.warning("failed_to_save_api_analysis_artifacts: %s", exc)
+
     finalize_api_job_success(
         db,
         api_key,
         job,
         "procurement_report",
+        result_path=res_path,
+        evidence_path=evid_path,
+        verified_count=1,
     )
 
     return McpProcurementAnalyzeResponse(

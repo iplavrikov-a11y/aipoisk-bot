@@ -96,6 +96,7 @@ class SystemSettings(Base):
     price_monitoring_filter_foreign: Mapped[bool] = mapped_column(Boolean, default=True)
     price_monitoring_max_variation_pct: Mapped[float] = mapped_column(Float, default=33.0)
     geo_radius_search_enabled_global: Mapped[bool] = mapped_column(Boolean, default=False)
+    geo_radius_surcharge_pct: Mapped[float] = mapped_column(Float, default=30.0)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
@@ -111,6 +112,7 @@ class SystemSettings(Base):
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
             "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
+            "geo_radius_surcharge_pct": getattr(self, "geo_radius_surcharge_pct", 30.0) or 30.0,
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,

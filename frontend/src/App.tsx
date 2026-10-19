@@ -50,6 +50,7 @@ import {
   Calendar,
   Crown,
   Coins,
+  MapPin,
 } from 'lucide-react'
 import { OutreachView } from './OutreachView'
 import { McpApiView } from './McpApiView'
@@ -385,6 +386,8 @@ type SettingsPayload = {
   default_supplier_target: number
   allow_partial_supplier_reports: boolean
   logistics_enabled: boolean
+  geo_radius_search_enabled_global?: boolean
+  geo_radius_surcharge_pct?: number
   trial_enabled: boolean
   trial_balance_rub?: number
   trial_supplier_search_limit?: number
@@ -1177,6 +1180,8 @@ export function App() {
   const [password, setPassword] = useState('')
   const [authenticated, setAuthenticated] = useState(false)
   const [view, setViewState] = useState<View>(getInitialView)
+  const viewRef = useRef(view)
+  viewRef.current = view
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
@@ -1292,7 +1297,7 @@ export function App() {
 
       // Fetch background / secondary data without delaying core view rendering
       void api<Job[]>('/api/jobs?include_internal=true&limit=100')
-        .then(jobsData => { if (jobsData) setJobs(jobsData) })
+        .then(jobsData => { if (jobsData && viewRef.current !== 'jobs') setJobs(jobsData) })
         .catch(() => {})
       void api<MinpromRegistryStatus>('/api/ops/minprom-registry')
         .then(minpromData => { if (minpromData) setMinpromRegistry(minpromData) })
@@ -1369,6 +1374,27 @@ export function App() {
     let timeoutId: any = null
     let cancelled = false
     let lastClientsPoll = 0
+    let fullJobsRequest: Promise<Job[]> | null = null
+    let resumeRefreshing = false
+
+    async function refreshFullJobHistory() {
+      if (!fullJobsRequest) {
+        fullJobsRequest = api<Job[]>('/api/jobs?include_internal=true&limit=2000')
+          .then(updatedJobs => {
+            if (!cancelled && updatedJobs) setJobs(updatedJobs)
+            return updatedJobs
+          })
+          .finally(() => { fullJobsRequest = null })
+      }
+      return fullJobsRequest
+    }
+
+    // The Jobs view needs the complete history for its client-side filters and
+    // pagination. Other views already receive the latest 100 records in
+    // loadAll(), so loading the full history there only adds background load.
+    if (view === 'jobs') {
+      void refreshFullJobHistory().catch(() => {})
+    }
 
     async function loop() {
       if (cancelled) return
@@ -1385,9 +1411,8 @@ export function App() {
         if (cancelled) return
         if (!document.hidden) {
           try {
-            const updatedJobs = await api<Job[]>('/api/jobs?include_internal=true&limit=2000')
-            if (!cancelled && updatedJobs) {
-              setJobs(updatedJobs)
+            if (view === 'jobs') {
+              const updatedJobs = await refreshFullJobHistory()
               const nowHasActive = updatedJobs.some(j => j.status === 'running' || j.status === 'pending')
               if (hasActive && !nowHasActive) {
                 void api<Dashboard>('/api/dashboard').then(d => {
@@ -1426,19 +1451,17 @@ export function App() {
     loop()
 
     function handleVisibilityOrFocus() {
-      if (!document.hidden && authenticated) {
-        void api<Job[]>('/api/jobs?include_internal=true&limit=2000').then(updatedJobs => {
-          if (!cancelled && updatedJobs) setJobs(updatedJobs)
-        }).catch(() => {})
-        void api<Dashboard>('/api/dashboard').then(dData => {
+      if (document.hidden || !authenticated || cancelled || resumeRefreshing) return
+      resumeRefreshing = true
+      void Promise.all([
+        view === 'jobs' ? refreshFullJobHistory().catch(() => {}) : Promise.resolve(),
+        api<Dashboard>('/api/dashboard').then(dData => {
           if (!cancelled && dData) setDashboard(dData)
-        }).catch(() => {})
-        if (view === 'clients') {
-          void api<PasswordResetRequest[]>('/api/web-password-resets?status=open').then(pData => {
-            if (!cancelled && pData) setPasswordResets(pData)
-          }).catch(() => {})
-        }
-      }
+        }).catch(() => {}),
+        view === 'clients' ? api<PasswordResetRequest[]>('/api/web-password-resets?status=open').then(pData => {
+          if (!cancelled && pData) setPasswordResets(pData)
+        }).catch(() => {}) : Promise.resolve(),
+      ]).finally(() => { resumeRefreshing = false })
     }
 
     window.addEventListener('focus', handleVisibilityOrFocus)
@@ -1478,9 +1501,11 @@ export function App() {
 
     let cancelled = false
     let timerId: any = null
+    let syncInFlight = false
 
     async function checkSync() {
-      if (cancelled || document.hidden) return
+      if (cancelled || document.hidden || syncInFlight) return
+      syncInFlight = true
       try {
         const syncData = await api<AdminSyncCheckResponse>('/api/clients/sync-check')
         if (!cancelled && syncData) {
@@ -1523,6 +1548,8 @@ export function App() {
         }
       } catch {
         // Ignore network glitches
+      } finally {
+        syncInFlight = false
       }
     }
 
@@ -1704,7 +1731,7 @@ export function App() {
           />
         )}
         {isReady && view === 'outreach' && <OutreachView />}
-        {isReady && view === 'billing' && <BillingView tariffs={tariffs} onChange={loadAll} />}
+        {isReady && view === 'billing' && <BillingView tariffs={tariffs} settings={settings} onChange={loadAll} />}
         {isReady && view === 'settings' && settings && <SettingsView settings={settings} minpromRegistry={minpromRegistry} onChange={loadAll} />}
         {isReady && view === 'ai' && settings && <AiView settings={settings} onChange={stableLoadAll} onSettingsUpdated={setSettings} />}
         {isReady && view === 'mcp' && <McpApiView clients={clients} />}
@@ -4941,7 +4968,46 @@ function JobTimeline({ job, hasInput }: { job: Job; hasInput: boolean }) {
   )
 }
 
-function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange: () => Promise<void> }) {
+function BillingView({
+  tariffs,
+  settings,
+  onChange,
+}: {
+  tariffs: TariffPackage[]
+  settings: SettingsPayload | null
+  onChange: () => Promise<void>
+}) {
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [geoEnabled, setGeoEnabled] = useState(settings?.geo_radius_search_enabled_global ?? true)
+  const [geoSurcharge, setGeoSurcharge] = useState(settings?.geo_radius_surcharge_pct ?? 30)
+  const [geoSaving, setGeoSaving] = useState(false)
+  const [geoSaved, setGeoSaved] = useState(false)
+
+  useEffect(() => {
+    if (settings) {
+      setGeoEnabled(settings.geo_radius_search_enabled_global ?? true)
+      setGeoSurcharge(settings.geo_radius_surcharge_pct ?? 30)
+    }
+  }, [settings])
+
+  async function saveGeoSettings() {
+    setGeoSaving(true)
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          geo_radius_search_enabled_global: geoEnabled,
+          geo_radius_surcharge_pct: Number(geoSurcharge),
+        }),
+      })
+      await onChange()
+      setGeoSaved(true)
+      setTimeout(() => setGeoSaved(false), 2500)
+    } finally {
+      setGeoSaving(false)
+    }
+  }
+
   const [newTariff, setNewTariff] = useState({
     kind: 'deposit',
     name: '',
@@ -4952,117 +5018,367 @@ function BillingView({ tariffs, onChange }: { tariffs: TariffPackage[]; onChange
     sort_order: 100,
     is_active: true,
   })
+
   async function createTariff() {
     await api('/api/tariffs', { method: 'POST', body: JSON.stringify(newTariff) })
     setNewTariff({ kind: 'deposit', name: '', units: 10, price_kopeks: 0, bonus_kopeks: 0, badge: '', sort_order: 100, is_active: true })
+    setShowAddForm(false)
     await onChange()
   }
+
   async function patchTariff(item: TariffPackage, patch: Partial<TariffPackage>) {
     await api(`/api/tariffs/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
     await onChange()
   }
+
   async function deleteTariff(item: TariffPackage) {
+    if (!window.confirm(`Удалить тариф "${item.name}"?`)) return
     await api(`/api/tariffs/${item.id}`, { method: 'DELETE' })
     await onChange()
   }
+
   const depositTariffs = tariffs.filter(item => item.kind === 'deposit')
-  const supplierTariffs = tariffs.filter(item => item.kind === 'supplier_search')
-  const reportTariffs = tariffs.filter(item => item.kind === 'procurement_report')
-  const extraSupplierTariffs = tariffs.filter(item => item.kind === 'supplier_search_extra')
-  const exactProductTariffs = tariffs.filter(item => item.kind === 'exact_product')
+  const baseServiceOrder = ['supplier_search', 'exact_product', 'procurement_report', 'supplier_search_extra']
+  const serviceTariffs = tariffs
+    .filter(item => item.kind !== 'deposit')
+    .sort((a, b) => {
+      const orderA = baseServiceOrder.indexOf(a.kind)
+      const orderB = baseServiceOrder.indexOf(b.kind)
+      if (orderA !== orderB) return orderA - orderB
+      return (a.sort_order ?? 0) - (b.sort_order ?? 0)
+    })
+
+  const basePriceExample = 99
+  const surchargeExample = Math.round(basePriceExample * (1 + (geoSurcharge || 0) / 100))
 
   return (
     <section className="stack">
-      <div className="form-panel full-width-panel">
-        <h2>Новый тарифный пакет</h2>
-        <div className="tariff-form-grid">
-          <label className="field">
-            <span>Тип</span>
-            <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
-              <option value="deposit">Пакет пополнения баланса (с бонусом)</option>
-              <option value="supplier_search">Поиск поставщиков (базовый)</option>
-              <option value="exact_product">Подбор товара и аналогов (базовый)</option>
-              <option value="procurement_report">Анализ документации (базовый)</option>
-              <option value="supplier_search_extra">Добор поставщиков (базовый)</option>
-            </select>
-          </label>
-          <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
-          <NumberField label="Оплата, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
-          {newTariff.kind === 'deposit' ? (
-            <>
-              <NumberField label="Бонус, ₽" value={kopeksToRubles(newTariff.bonus_kopeks)} onChange={value => setNewTariff({ ...newTariff, bonus_kopeks: rublesToKopeks(value) })} />
-              <TextField label="Бейдж" value={newTariff.badge} onChange={value => setNewTariff({ ...newTariff, badge: value })} />
-            </>
-          ) : null}
-          <NumberField label="Генераций / Задач" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
-          <label className="switch-row"><input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />Показывать клиентам</label>
+      {/* 1. Header with quick stats & add button */}
+      <div className="tariff-header-bar">
+        <div>
+          <h2>Тарифы и ценообразование</h2>
+          <span className="sync-note">
+            Синхронизировано: Сайт (tenderlex.ru) + Web-кабинет + Telegram-бот
+          </span>
         </div>
-        <p className="field-help">Включённые пакеты сразу видны на сайте, в кабинете и в Telegram.</p>
-        <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}><Plus size={16} />Добавить пакет</button>
+        <button
+          className={showAddForm ? 'button-secondary' : 'button-primary'}
+          onClick={() => setShowAddForm(!showAddForm)}
+        >
+          {showAddForm ? <X size={15} /> : <Plus size={15} />}
+          {showAddForm ? 'Скрыть форму' : 'Добавить пакет'}
+        </button>
       </div>
 
-      <TariffGroupDeposit title="Пакеты пополнения единого баланса (со скидкой / бонусом)" tariffs={depositTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Поиск поставщиков" tariffs={supplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Подбор товара и аналогов" tariffs={exactProductTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Анализ документации" tariffs={reportTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
-      <TariffGroup title="Базовые цены: Добор поставщиков" tariffs={extraSupplierTariffs} onPatch={patchTariff} onDelete={deleteTariff} />
+      {/* 2. Collapsible Add Form */}
+      {showAddForm && (
+        <div className="tariff-collapsible-panel">
+          <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+            Новый тарифный пакет
+          </h3>
+          <div className="tariff-form-grid">
+            <label className="field">
+              <span>Тип</span>
+              <select value={newTariff.kind} onChange={e => setNewTariff({ ...newTariff, kind: e.target.value })}>
+                <option value="deposit">Пакет пополнения баланса (с бонусом)</option>
+                <option value="supplier_search">Поиск поставщиков (базовый)</option>
+                <option value="exact_product">Подбор товара и аналогов (базовый)</option>
+                <option value="procurement_report">Анализ документации (базовый)</option>
+                <option value="supplier_search_extra">Добор поставщиков (базовый)</option>
+              </select>
+            </label>
+            <TextField label="Название" value={newTariff.name} onChange={value => setNewTariff({ ...newTariff, name: value })} />
+            <NumberField label="Оплата, ₽" value={kopeksToRubles(newTariff.price_kopeks)} onChange={value => setNewTariff({ ...newTariff, price_kopeks: rublesToKopeks(value) })} />
+            {newTariff.kind === 'deposit' ? (
+              <>
+                <NumberField label="Бонус, ₽" value={kopeksToRubles(newTariff.bonus_kopeks)} onChange={value => setNewTariff({ ...newTariff, bonus_kopeks: rublesToKopeks(value) })} />
+                <TextField label="Бейдж" value={newTariff.badge} onChange={value => setNewTariff({ ...newTariff, badge: value })} />
+              </>
+            ) : null}
+            <NumberField label="Генераций / Задач" value={newTariff.units} onChange={value => setNewTariff({ ...newTariff, units: value })} />
+            <label className="switch-row">
+              <input type="checkbox" checked={newTariff.is_active} onChange={e => setNewTariff({ ...newTariff, is_active: e.target.checked })} />
+              Показывать клиентам
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+            <button onClick={() => void createTariff()} disabled={!newTariff.name.trim()}>
+              <Plus size={15} /> Сохранить тариф
+            </button>
+            <button className="button-secondary" onClick={() => setShowAddForm(false)}>
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Dedicated Geo-Radius Logistics Card */}
+      <div className="tariff-geo-card">
+        <div className="tariff-geo-header">
+          <div className="tariff-geo-title">
+            <MapPin size={18} color="#0f766e" />
+            <div>
+              <h3>Логистический фильтр: Поиск поставщиков в радиусе города</h3>
+              <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+                Поиск компаний в радиусе (10–500 км) через геокодер Яндекс Карт
+              </p>
+            </div>
+          </div>
+          <span className={geoEnabled ? 'tariff-geo-badge' : 'tariff-geo-badge disabled'}>
+            <CheckCircle2 size={13} />
+            {geoEnabled ? `Доступно всем (+${geoSurcharge}% доплата)` : 'Выключено для всех'}
+          </span>
+        </div>
+
+        <div className="tariff-geo-body">
+          <label className="switch-row" style={{ fontWeight: 600, color: '#1e293b' }}>
+            <input
+              type="checkbox"
+              checked={geoEnabled}
+              onChange={e => setGeoEnabled(e.target.checked)}
+            />
+            Включить поиск в радиусе для всех клиентов (Web-кабинет и Telegram)
+          </label>
+
+          <div className="tariff-geo-inputs">
+            <div className="tariff-geo-input-wrap">
+              <span>Доплата к стоимости задачи:</span>
+              <input
+                type="number"
+                min={0}
+                max={500}
+                step={1}
+                value={geoSurcharge}
+                onChange={e => setGeoSurcharge(Number(e.target.value))}
+              />
+              <span>%</span>
+            </div>
+
+            <div className="tariff-geo-preview">
+              Пример: 99 ₽ + {geoSurcharge}% = <strong>{surchargeExample} ₽</strong>
+            </div>
+
+            <button
+              className="tariff-geo-save-btn"
+              onClick={() => void saveGeoSettings()}
+              disabled={geoSaving}
+            >
+              {geoSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+              {geoSaved ? 'Сохранено!' : geoSaving ? 'Сохранение...' : 'Сохранить доплату'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Compact Table: Deposit Packages */}
+      <div className="form-panel full-width-panel" style={{ padding: '16px 20px' }}>
+        <div className="panel-heading" style={{ marginBottom: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 16 }}>Пакеты пополнения единого баланса</h2>
+            <span className="sync-note">Пополнение баланса со скидкой / бонусом</span>
+          </div>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Всего пакетов: {depositTariffs.length}</span>
+        </div>
+
+        <div className="tariff-table-container">
+          <table className="tariff-table">
+            <thead>
+              <tr>
+                <th style={{ width: '22%' }}>Пакет / Название</th>
+                <th style={{ width: '13%' }}>Оплата, ₽</th>
+                <th style={{ width: '13%' }}>Бонус, ₽</th>
+                <th style={{ width: '15%' }}>Итого на баланс</th>
+                <th style={{ width: '12%' }}>Бейдж</th>
+                <th style={{ width: '10%' }}>~ Задач</th>
+                <th style={{ width: '10%', textAlign: 'center' }}>Показывать</th>
+                <th style={{ width: '5%', textAlign: 'center' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {depositTariffs.map(item => {
+                const payRub = kopeksToRubles(item.price_kopeks)
+                const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
+                const totalRub = payRub + bonusRub
+                return (
+                  <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
+                    <td>
+                      <input
+                        type="text"
+                        style={{ width: '100%', fontWeight: 600 }}
+                        defaultValue={item.name}
+                        placeholder="Название"
+                        onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={0}
+                        step={100}
+                        style={{ width: '100%' }}
+                        defaultValue={payRub}
+                        onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={0}
+                        step={100}
+                        style={{ width: '100%' }}
+                        defaultValue={bonusRub}
+                        onBlur={e => void patchTariff(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                      />
+                    </td>
+                    <td>
+                      <span className="tariff-total-badge">
+                        {totalRub.toLocaleString('ru-RU')} ₽
+                        {bonusRub > 0 ? ` (+${bonusRub.toLocaleString('ru-RU')} ₽)` : ''}
+                      </span>
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        style={{ width: '100%' }}
+                        defaultValue={item.badge || ''}
+                        placeholder="Хит"
+                        onBlur={e => void patchTariff(item, { badge: e.currentTarget.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={1}
+                        style={{ width: '100%', textAlign: 'center' }}
+                        defaultValue={item.units}
+                        onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={item.is_active}
+                        title="Показывать клиентам"
+                        onChange={e => void patchTariff(item, { is_active: e.target.checked })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        className="icon-button small"
+                        title="Удалить пакет"
+                        style={{ color: '#ef4444' }}
+                        onClick={() => void deleteTariff(item)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 5. Compact Table: Single Service Base Prices */}
+      <div className="form-panel full-width-panel" style={{ padding: '16px 20px' }}>
+        <div className="panel-heading" style={{ marginBottom: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 16 }}>Базовые цены разовых услуг</h2>
+            <span className="sync-note">
+              Порядок: (1) Поиск поставщиков → (2) Подбор товара и аналогов → (3) Анализ документации
+            </span>
+          </div>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Всего тарифов услуг: {serviceTariffs.length}</span>
+        </div>
+
+        <div className="tariff-table-container">
+          <table className="tariff-table">
+            <thead>
+              <tr>
+                <th style={{ width: '25%' }}>Модуль / Сценарий</th>
+                <th style={{ width: '30%' }}>Тариф / Описание</th>
+                <th style={{ width: '12%', textAlign: 'center' }}>Задач</th>
+                <th style={{ width: '16%' }}>Разовая цена, ₽</th>
+                <th style={{ width: '12%', textAlign: 'center' }}>Показывать</th>
+                <th style={{ width: '5%', textAlign: 'center' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {serviceTariffs.map(item => {
+                const getModuleLabel = (kind: string) => {
+                  switch (kind) {
+                    case 'supplier_search':
+                      return { label: '1. Поиск поставщиков', cls: 'supplier_search' }
+                    case 'exact_product':
+                      return { label: '2. Подбор товара и аналогов', cls: 'exact_product' }
+                    case 'procurement_report':
+                      return { label: '3. Анализ документации', cls: 'procurement_report' }
+                    case 'supplier_search_extra':
+                      return { label: 'Добор поставщиков', cls: 'supplier_search_extra' }
+                    default:
+                      return { label: kind, cls: 'supplier_search_extra' }
+                  }
+                }
+                const mod = getModuleLabel(item.kind)
+                return (
+                  <tr key={item.id} className={item.is_active ? '' : 'muted-row'}>
+                    <td>
+                      <span className={`module-tag ${mod.cls}`}>{mod.label}</span>
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        style={{ width: '100%', fontWeight: 500 }}
+                        defaultValue={item.name}
+                        onBlur={e => void patchTariff(item, { name: e.currentTarget.value })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="number"
+                        min={1}
+                        style={{ width: 70, textAlign: 'center' }}
+                        defaultValue={item.units}
+                        onBlur={e => void patchTariff(item, { units: Number(e.currentTarget.value) })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={0}
+                        step={10}
+                        style={{ width: '100%', fontWeight: 600 }}
+                        defaultValue={kopeksToRubles(item.price_kopeks)}
+                        onBlur={e => void patchTariff(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={item.is_active}
+                        title="Показывать клиентам"
+                        onChange={e => void patchTariff(item, { is_active: e.target.checked })}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        className="icon-button small"
+                        title="Удалить тариф"
+                        style={{ color: '#ef4444' }}
+                        onClick={() => void deleteTariff(item)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
-  )
-}
-
-function TariffGroupDeposit({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
-  return (
-    <div className="form-panel full-width-panel">
-      <div className="panel-heading">
-        <h2>{title}</h2>
-        <span className="sync-note">Сайт + кабинет + Telegram (единый баланс)</span>
-      </div>
-      <div className="tariff-list">
-        {tariffs.map(item => {
-          const payRub = kopeksToRubles(item.price_kopeks)
-          const bonusRub = kopeksToRubles(item.bonus_kopeks || 0)
-          const totalRub = payRub + bonusRub
-          return (
-            <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr)) auto', gap: 6, alignItems: 'center' }}>
-              <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
-              <label className="mini-field"><span>Оплата, ₽</span><input type="number" min={0} step={1} defaultValue={payRub} aria-label="Сумма оплаты" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-              <label className="mini-field"><span>Бонус, ₽</span><input type="number" min={0} step={1} defaultValue={bonusRub} aria-label="Бонус" onBlur={e => void onPatch(item, { bonus_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-              <label className="mini-field"><span>Бейдж</span><input defaultValue={item.badge || ''} placeholder="Хит" aria-label="Бейдж" onBlur={e => void onPatch(item, { badge: e.currentTarget.value })} /></label>
-              <label className="mini-field"><span>Примерно задач</span><input type="number" min={1} defaultValue={item.units} aria-label="Задач" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#0f766e', alignSelf: 'center', minWidth: 95 }}>
-                Итого: {totalRub.toLocaleString('ru-RU')} ₽
-              </div>
-              <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать</label>
-              <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
-            </article>
-          )
-        })}
-        {!tariffs.length && <div className="empty inline-empty">Пакеты пополнения ещё не добавлены.</div>}
-      </div>
-    </div>
-  )
-}
-
-function TariffGroup({ title, tariffs, onPatch, onDelete }: { title: string; tariffs: TariffPackage[]; onPatch: (item: TariffPackage, patch: Partial<TariffPackage>) => Promise<void>; onDelete: (item: TariffPackage) => Promise<void> }) {
-  return (
-    <div className="form-panel full-width-panel">
-      <div className="panel-heading">
-        <h2>{title}</h2>
-        <span className="sync-note">Сайт + кабинет + Telegram</span>
-      </div>
-      <div className="tariff-list">
-        {tariffs.map(item => (
-          <article className={item.is_active ? 'tariff-row' : 'tariff-row muted'} key={item.id}>
-            <label className="mini-field"><span>Название</span><input defaultValue={item.name} aria-label="Название пакета" onBlur={e => void onPatch(item, { name: e.currentTarget.value })} /></label>
-            <label className="mini-field"><span>Генераций</span><input type="number" min={1} defaultValue={item.units} aria-label="Генераций" onBlur={e => void onPatch(item, { units: Number(e.currentTarget.value) })} /></label>
-            <label className="mini-field"><span>Цена, ₽</span><input type="number" min={0} step={1} defaultValue={kopeksToRubles(item.price_kopeks)} aria-label="Цена в рублях" onBlur={e => void onPatch(item, { price_kopeks: rublesToKopeks(Number(e.currentTarget.value)) })} /></label>
-            <label className="switch-row tariff-active"><input type="checkbox" checked={item.is_active} onChange={e => void onPatch(item, { is_active: e.target.checked })} /> Показывать клиентам</label>
-            <button className="icon-button small" title="Удалить пакет" onClick={() => void onDelete(item)}><Trash2 size={15} /></button>
-          </article>
-        ))}
-        {!tariffs.length && <div className="empty inline-empty">Пакеты ещё не добавлены.</div>}
-      </div>
-    </div>
   )
 }
 

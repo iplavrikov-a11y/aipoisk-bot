@@ -3899,6 +3899,10 @@ def public_site_payload(db: Session) -> dict:
             "procurement_report": [item for item in tariffs if item["kind"] == "procurement_report"],
             "supplier_search_extra": [item for item in tariffs if item["kind"] == "supplier_search_extra"],
         },
+        "geo_radius": {
+            "enabled": bool(getattr(settings, "geo_radius_search_enabled_global", False)),
+            "surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
+        },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
 
@@ -4041,6 +4045,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "client_id": user.client_id,
         "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
         "allowed_geo_radius": is_geo_allowed,
+        "geo_radius_surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,

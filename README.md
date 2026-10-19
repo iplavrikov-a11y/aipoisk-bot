@@ -14,6 +14,13 @@ Admin/internal domain: `https://admin.tenderlex.ru`
 
 - Runtime server: `202.71.13.57` (`HOSTKEY B.V.`, Netherlands), path: `/root/projects/tenderlex`.
 - Backend: `tenderlex-api.service` on `127.0.0.1:8088`.
+- Geo-Radius Platform Rollout, Dynamic 30% Surcharge & Compact Admin Tariffs Redesign (2026-10-19):
+  - Global Geo-Radius Rollout (`SystemSettings.geo_radius_search_enabled_global = True`): enabled search in city delivery radius (10–500 km) for all users across Web cabinet and Telegram bot.
+  - Customizable Surcharge Rate (`SystemSettings.geo_radius_surcharge_pct = 30.0`): configurable percentage surcharge in database, billing reservation (`billing.py`), and client cabinet badge (`+{geo_radius_surcharge_pct}%`).
+  - Redesigned Admin Tariffs UX/UI (`App.tsx`, `styles.css`): eliminated 3-page vertical bloat by introducing a modern top logistics control card with live calculation preview, a collapsible `+ Добавить тарифный пакет` drawer, a compact table for Deposit packages, and a consolidated table for Base service prices in strict module order (Поиск поставщиков → Подбор товара и аналогов → Анализ документации → Добор поставщиков).
+  - MCP & Customer API Full Persistence (`mcp_api.py`): API jobs now write input texts to `job_files`, generate XLSX/DOCX reports into `storage/jobs/<id>/output/`, populate `supplier_results`, and link `result_path` and `evidence_path` for full admin visibility and downloads.
+  - Retroactive Backfill for API Jobs #917, #918, #919: populated XLSX and DOCX report artifacts and input text files in SQLite and disk storage.
+  - Verified with 907 backend tests passing (100%), clean Next.js/Vite builds, and live production deployment on `202.71.13.57`.
 - Rule 14 Universal Domain-Agnostic Matching Architecture & Complete Hardcode Elimination (2026-10-19):
   - Completely eradicated all product-specific tuples, brand whitelists, bespoke model/query injections, and hardcoded TU numbers (including TU 5433-001/002) across `matcher.py` and `deep.py`.
   - Replaced ad-hoc strings with Russian Civil Code (ст. 1473 ГК РФ) legal entity structural extraction (mandatory corporate forms `ООО`, `АО`, `ПАО`, `ЗАО`, `Завод`, `Фабрика`, `Комбинат`, `Концерн`, `НПО` or industrial suffixes `пром`, `маш`, `тех`), filtering out raw equipment classification acronyms (`МДУ`, `КТП`, `ВРУ`, `СИП`) and 4+ consonant cluster noise.

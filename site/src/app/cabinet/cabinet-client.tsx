@@ -166,6 +166,7 @@ type SessionPayload = {
     is_email_verified: boolean;
     allowed_price_monitoring?: boolean;
     allowed_geo_radius?: boolean;
+    geo_radius_surcharge_pct?: number;
   };
   balance?: {
     supplier_search: BalanceCounter;
@@ -3012,7 +3013,7 @@ export function CabinetClient() {
                   </span>
                 </label>
                 <span className="tl-geo-filter__badge text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200/80 px-2 py-0.5 rounded-full">
-                  +40% к стоимости задачи
+                  +{session?.user?.geo_radius_surcharge_pct ?? 30}% к стоимости задачи
                 </span>
               </div>
 

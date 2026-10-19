@@ -111,6 +111,7 @@ def _ensure_schema() -> None:
             "price_monitoring_filter_foreign": "BOOLEAN DEFAULT 1",
             "price_monitoring_max_variation_pct": "REAL DEFAULT 33.0",
             "geo_radius_search_enabled_global": "BOOLEAN DEFAULT 0",
+            "geo_radius_surcharge_pct": "REAL DEFAULT 30.0",
         }
         clients_existing = _existing_columns(inspector, "clients")
         client_additions = {
