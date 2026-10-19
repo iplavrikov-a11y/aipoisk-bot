@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import statistics
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
@@ -246,7 +247,10 @@ def cluster_and_reconcile_item_quotes(
                     q.comment = f"⚠️ Цена {q.price_rub:,.0f} ₽ указана за штуку, а не за м³."
 
                 # 7. Упаковки по 100 шт vs штука
-                elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and "100" in item_lower:
+                elif norm_u == "шт" and 70.0 <= q_ratio <= 130.0 and (
+                    bool(re.search(r'\b100\s*(?:шт|штук|ед|ш)\b', item_lower))
+                    or bool(re.search(r'\b(?:уп|упак|пач|пачка|короб|кор)\S*\s*(?:по\s*)?100\b', item_lower))
+                ):
                     converted = round(q.price_rub / 100.0, 2)
                     q.price_rub = converted
                     q.conversion_comment = f"Авто-пересчет кратности: {q.raw_price_rub:,.0f} ₽ за уп (100 шт) -> {converted:,.2f} ₽/шт"

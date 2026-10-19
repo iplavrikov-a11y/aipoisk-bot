@@ -40,12 +40,12 @@ MARKETPLACE_DOMAINS = {
     "ozon.ru", "wildberries.ru", "market.yandex.ru", "megamarket.ru",
     "aliexpress.ru", "aliexpress.com", "avito.ru", "taobao.com", "1688.com",
     "temu.com", "ebay.com", "amazon.com", "lamoda.ru", "sbermegamarket.ru",
-    "youla.ru", "farpost.ru", "drom.ru", "irr.ru"
+    "youla.ru", "farpost.ru", "drom.ru", "irr.ru", "doski.ru", "flagma.ru"
 }
 
 # Сайты-посредники зарубежного выкупа / мейлфорвардеры
 CROSSBORDER_FORWARDERS = {
-    "shopozz.ru", "cdek.shopping", "usmall.ru", "banderolka.com", "pochtaglobal.ru"
+    "shopozz.ru", "cdek.shopping", "usmall.ru", "banderolka.com", "pochtaglobal.ru", "china.org.ru"
 }
 
 # Разрешенные региональные зоны для поиска поставщиков РФ
@@ -54,6 +54,7 @@ ALLOWED_DOMESTIC_TLDS = {".ru", ".рф", ".su", ".by", ".kz"}
 LISTING_PATH_PATTERNS = [
     re.compile(r'/tag[-_]page/', re.I),
     re.compile(r'/tags?/', re.I),
+    re.compile(r'/tag[-_][a-z0-9_-]+(?:/|$)', re.I),
     re.compile(r'/popular/', re.I),
     re.compile(r'/search(?:/|\?|$)', re.I),
     re.compile(r'/collections?/', re.I),
@@ -475,22 +476,32 @@ URL страницы: {url}
 
 КРИТИЧЕСКИЕ ПРАВИЛА (АРХИТЕКТУРА COMPARE-THEN-MATCH, ПРАВИЛО 14):
 1. ДЕКОМПОЗИЦИЯ ИДЕНТИФИКАТОРОВ И ПРОВЕРКА КОНФЛИКТОВ:
-   - Исходный товар: выдели ключевые артикулы, чертежи, индексы, марки, материалы (например: 'Р1763', 'Л-04.524', 'К4-15-01', 'К4-79', 'ВАТИ-202', 'ОЗС-12', 'К4-52', 'GT13E2', '0065C...').
-   - Товар на странице: определи точную марку, артикул, чертеж и материал на странице.
-   - КОНФЛИКТ ИДЕНТИФИКАТОРОВ (identifier_conflict):
-     * Если в запросе есть конкретный код, чертеж или марка ('Р1763', 'Л-04.524', 'GT13E2', 'ВАТИ-202', 'К4-52', 'Rosemount 0065C...'), а на странице продается ДРУГАЯ марка или общий товар без этого кода (например, просто диаграммная лента без Р1763, датчик ВАЗ вместо турбинного GT13E2, набивка АП-31 вместо безасбестовой ВАТИ-202, броня Sicoma вместо К4-52) — СТРОГО УСТАНОВИ identifier_conflict: true, is_relevant: false, is_price_found: false!
+   - Исходный товар: выдели ключевые артикулы, чертежи, индексы, марки, материалы.
+   - Товар на странице: определи точную марку, артикул, чертеж и функционал на странице.
+   - КОНФЛИКТ ФУНКЦИОНАЛЬНОГО КЛАССА И КАТЕГОРИИ (category_conflict):
+     * Товар на найденной странице обязан относиться к ТОМУ ЖЕ функциональному классу и назначению, что и запрос!
+     * КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сопоставлять товары принципиально разных классов при совпадении отдельных слов или бренда:
+       - Измерительные приборы, датчики, преобразователи, КИПиА НЕЛЬЗЯ заменять на спецодежду/СИЗ (перчатки, обувь, очки), даже если бренд или корень слова совпадает!
+       - Узлы промышленного оборудования, ветрогенераторов, турбин НЕЛЬЗЯ заменять на запчасти садовой техники (газонокосилки, триммеры) или бытовых приборов!
+       - Заказные промышленные детали по чертежам НЕЛЬЗЯ заменять на уплотнения/детали кухонной бытовой техники (пароконвектоматы, духовки)!
+     * Если функциональный класс принципиально не совпадает -> СТРОГО установи category_conflict: true, is_relevant: false, is_price_found: false!
+   - КОНФЛИКТ ИДЕНТИФИКАТОРОВ И ЧЕРТЕЖЕЙ (identifier_conflict):
+     * Если в запросе есть конкретный код, чертеж, децимальный номер или марка, а на странице продается ДРУГАЯ марка или общий товар без этого кода — СТРОГО установи identifier_conflict: true, is_relevant: false, is_price_found: false!
+     * ЗАПРЕТ ЧАСТИЧНЫХ СОВПАДЕНИЙ ЦИФР В ЧЕРТЕЖАХ И АРТИКУЛАХ: случайное совпадение группы цифр (например '59-00-002' в номере чертежа бытовой плиты при поиске чертежа генератора) НЕ является совпадением! Идентификатор должен совпадать полностью.
      * Запрещены смысловые подмены и омонимы:
-       - Промышленная броня/футеровка смесителя vs бронежилеты/плиты защиты человека -> conflict!
+       - Промышленная футеровка/броня vs бронежилеты/плиты защиты человека -> conflict!
        - Била/молотки промышленных дробилок vs автомобильные колодки/диски/фильтры -> conflict!
        - Муфтовые/крановые пальцы vs поршневые пальцы двигателей автомобилей -> conflict!
-       - Запрет частичных совпадений цифр артикула: совпадение только суффикса (например '524' в 'P 00 524') при поиске 'Л-04.524' -> conflict!
+   - КОНФЛИКТ КЛЮЧЕВЫХ ПАРАМЕТРОВ И МАСШТАБА (specification_conflict):
+     * Если в запросе указана грузоподъемность, класс напряжения/мощности или критический типоразмер (например, 15 тонн, 10 кВ, 250 кВт), а на сайте найден товар принципиально другого масштаба (1 тонна, 220 В, 1.5 кВт) -> СТРОГО установи specification_conflict: true, is_relevant: false!
    - КОНФЛИКТ МАТЕРИАЛА (material_conflict):
-     * Безасбестовые уплотнения (ВАТИ) нельзя заменять на асбестовые (АП-31/АПР-31)!
-     * Сталь ВСт3сп нельзя заменять на разнородные стали без указания марки.
-   - Если identifier_conflict: true или material_conflict: true -> is_relevant: false, is_price_found: false.
+     * Безасбестовые уплотнения нельзя заменять на асбестовые!
+     * Конструкционные легированные стали нельзя заменять на углеродистый рядовой прокат без указания марки.
+   - Если identifier_conflict, category_conflict, specification_conflict или material_conflict: true -> is_relevant: false, is_price_found: false.
 2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
-   - Найди реальную цену в рублях, которая ЯВНО указана на странице.
-   - Если на странице каталог без цен ('уточняйте цену', 'по запросу', 'нет в наличии', 0) — is_price_found: false.
+   - Найди реальную коммерческую цену в рублях, которая ЯВНО указана на странице.
+   - ФИКТИВНЫЕ ЦЕНЫ-ЗАГЛУШКИ (1 руб, 0.01 руб) И ОТСУТСТВИЕ НА СКЛАДЕ:
+     * Если на странице указана формальная заглушка (1.00 ₽, 0.01 ₽) вместо реальной стоимости ('уточняйте цену', 'по запросу', 'договорная'), либо товар помечен 'снят с производства'/'нет в наличии' без возможности покупки — СТРОГО установи is_price_found: false, is_relevant: false!
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:
@@ -523,6 +534,8 @@ URL страницы: {url}
   "target_identifiers": ["код/чертеж/марка из запроса"],
   "site_identifiers": ["код/чертеж/марка со страницы"],
   "identifier_conflict": false,
+  "category_conflict": false,
+  "specification_conflict": false,
   "material_conflict": false,
   "nomenclature_class": "Класс и назначение искомого товара",
   "site_product_name": "Точное наименование товара на найденной странице",
@@ -546,8 +559,13 @@ URL страницы: {url}
         if not parsed or not isinstance(parsed, dict):
             return None
 
-        # Проверка конфликтов Compare-then-Match
-        if parsed.get("identifier_conflict") or parsed.get("material_conflict"):
+        # Проверка конфликтов Compare-then-Match (Правило 14)
+        if (
+            parsed.get("identifier_conflict")
+            or parsed.get("category_conflict")
+            or parsed.get("specification_conflict")
+            or parsed.get("material_conflict")
+        ):
             logger.debug("Rejected quote for %s: conflict detected: %s", url, parsed.get("semantic_match_reason"))
             return None
 
@@ -559,7 +577,9 @@ URL страницы: {url}
         if raw_p is None:
             return None
         raw_price_val = float(raw_p)
-        if raw_price_val <= 0 or raw_price_val > 500_000_000:
+        # Фильтрация фиктивных заглушек (1.00 ₽) и нереалистичных цен
+        if raw_price_val <= 1.0 or raw_price_val > 500_000_000:
+            logger.debug("Rejected quote for %s: dummy or out of range price %s", url, raw_price_val)
             return None
 
         # Проверка заземления цены (grounding check): цена должна присутствовать в тексте страницы/сниппета
@@ -631,10 +651,23 @@ URL страницы: {url}
                 if city_or_addr and (not quote.contacts or city_or_addr not in quote.contacts):
                     quote.contacts = f"{quote.contacts}, {city_or_addr}".strip(", ") if quote.contacts else city_or_addr
 
-            # Гарантируем форму собственности (ООО/АО/ИП), если поставщик корпоративный
-            if not quote.company_name.startswith(("ООО", "АО", "ЗАО", "ПАО", "ИП", "Общество", "Акционерное")):
-                clean_c = quote.company_name.strip(" '\"")
-                if clean_c != domain and "." not in clean_c:
+            # Гарантируем форму собственности: приводим к ООО только если это российский поставщик
+            # без указанной ОПФ, чисто русскоязычный, и не является доменным именем или иностранным брендом
+            known_forms = (
+                "ООО", "АО", "ЗАО", "ПАО", "НПАО", "ИП", "ОБЩЕСТВО", "АКЦИОНЕРНОЕ",
+                "МУП", "ГУП", "ФГУП", "АНО", "НКО", "ТСЖ", "СПК", "КООПЕРАТИВ",
+                "МКОУ", "ГБОУ", "МБУ", "ГБУ"
+            )
+            upper_name = quote.company_name.upper().strip(" '\"«»")
+            has_form = any(upper_name.startswith(f) for f in known_forms)
+            if not has_form:
+                clean_c = quote.company_name.strip(" '\"«»")
+                if (
+                    clean_c != domain
+                    and "." not in clean_c
+                    and not re.search(r'[a-zA-Z]', clean_c)
+                    and len(clean_c) >= 3
+                ):
                     quote.company_name = f'ООО "{clean_c}"'
         except Exception as d_exc:
             logger.debug("DaData enrichment skipped for %s: %s", quote.company_name, d_exc)

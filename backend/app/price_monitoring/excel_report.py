@@ -67,6 +67,10 @@ def _extract_phones_and_emails(contacts: Optional[str]) -> tuple[str, str]:
 
         if "@" in clean_p and "." in clean_p:
             clean_email = re.sub(r'^(?:email[\.:]?|e-mail[\.:]?|эл\.?\s*почта[\.:]?)\s*', '', clean_p, flags=re.IGNORECASE).strip()
+            # Исключаем технические и сервисные адреса (sentry, noreply, mailer-daemon, abuse, postmaster)
+            em_low = clean_email.lower()
+            if any(tech in em_low for tech in ("sentry", "noreply", "no-reply", "mailer-daemon", "postmaster", "abuse")):
+                continue
             emails.append(clean_email)
         elif any(c.isdigit() for c in clean_p) and (len(re.sub(r'\D', '', clean_p)) in (10, 11) or "800" in clean_p or "+7" in clean_p or "tel" in clean_p.lower()):
             clean_phone = re.sub(r'^(?:тел[\.:]?|tel[\.:]?|телефон[\.:]?)\s*', '', clean_p, flags=re.IGNORECASE).strip()
