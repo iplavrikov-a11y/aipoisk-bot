@@ -28,6 +28,11 @@ def clean_nomenclature_name(raw_name: str) -> str:
     # Сохраняем десятичные дроби (1.5, 0.05) и децимальные номера чертежей (059.00)
     text = re.sub(r'([а-яА-ЯёЁ]{3,}|[а-яё]{2,})\.([a-zA-Z0-9а-яА-ЯёЁ])', r'\1. \2', text)
 
+    # Нормализуем инженерные технические формулы характеристик в естественные слова (г/п 1т -> 1т, H=3м -> 3м, L=70 -> 70мм)
+    text = re.sub(r'\bг[/\\]п\s*(\d+(?:[.,]\d+)?\s*[тt])\b', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b[hHвВ]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b[lLдД]\s*=\s*(\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см))\b', r'\1', text, flags=re.IGNORECASE)
+
     # Схлопываем множественные пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -160,6 +165,31 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     return False
 
 
+def is_closed_factory_drawing(token: str, full_text: str = "") -> bool:
+    """
+    Определяет специализированные закрытые децимальные номера заводских чертежей (ОСТ/ТУ/КД).
+    Такие детали являются уникальными заказными позициями (турбины, роторы, генераторы).
+    Для них необходим строгий поиск в кавычках во избежание омонимов бытовой техники.
+    """
+    token = token.strip("()[]{}<>\"'*#№!, ")
+    if len(token) < 5:
+        return False
+    # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не чертежи
+    if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
+        return False
+    # Децимальный номер чертежа с 3+ сегментами через точки/дефисы (например 5ВК.568.007.2, 8БС.370.544-1, 8ВК.951.075, ЭГ.059.00.00-02, 1085.05.02)
+    if re.search(r'^[0-9a-zA-Zа-яА-ЯёЁ]{1,5}[.\-_/][0-9a-zA-Zа-яА-ЯёЁ]{2,}[.\-_/][0-9a-zA-Zа-яА-ЯёЁ]{2,}', token):
+        if not re.fullmatch(r'\d+[-–/]\d+[-–/]\d+', token):
+            return True
+    # Заводской номер узла/чертежа с серией дефисов (например SPGA4270-200-01)
+    if re.fullmatch(r'[a-zA-Zа-яА-ЯёЁ]{2,}\d{3,}-\d{2,}-\d{2,}', token):
+        return True
+    # Прямое указание чертежа в тексте
+    if full_text and re.search(r'\b(?:черт|по черт|чертеж|кд|сборочн)\S*\s*' + re.escape(token), full_text, re.I):
+        return True
+    return False
+
+
 def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") -> list[str]:
     """
     Генерирует поисковые запросы для широкой выдачи с ценами (розница, опт, каталоги, интернет-магазины).
@@ -174,12 +204,12 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
     noun = tokens[0] if tokens else ""
     codes = extract_generic_nomenclature_codes(clean_name)
     drawing_codes = [c for c in codes if is_drawing_or_part_code(c, clean_name)]
+    closed_drawings = [c for c in codes if is_closed_factory_drawing(c, clean_name)]
 
-    # 0. Приоритетный строгий поиск для позиций по чертежам и специализированным артикулам:
-    # Запросы ОБЯЗАНЫ содержать точный чертеж в кавычках во избежание омонимов и поиска по общим словам
-    if drawing_codes:
-        primary_code = drawing_codes[0]
-        # Извлекаем значимые контекстные слова из наименования (бренд, тип товара, назначение), исключая сам код чертежа
+    # 0. Строгий поиск для закрытых децимальных чертежей завода (уникальные заказные детали):
+    # Требуются строгие кавычки для отсечки омонимов бытовой техники
+    if closed_drawings:
+        primary_code = closed_drawings[0]
         context_tokens = [
             t for t in tokens
             if t != primary_code and not is_drawing_or_part_code(t, clean_name) and len(t) >= 2
@@ -201,6 +231,24 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
                 seen.add(q_cln.lower())
                 unique_queries.append(q_cln)
         return unique_queries
+
+    # Для коммерческих артикулов (например Makita D-08660, Bosch 2.607.019.435, СТП1-2/3000, ЦЧ-4):
+    # Формируем естественные поисковые запросы БЕЗ жестких кавычек в приоритете, плюс кавычки как резерв
+    if drawing_codes:
+        primary_code = drawing_codes[0]
+        context_tokens = [
+            t for t in tokens
+            if t != primary_code and not is_drawing_or_part_code(t, clean_name) and len(t) >= 2
+        ]
+        context_words = " ".join(context_tokens[:4]) if context_tokens else noun
+        if context_words:
+            if clean_city:
+                queries.append(f"{context_words} {primary_code} {clean_city} купить цена")
+            queries.append(f"{context_words} {primary_code} купить цена")
+            queries.append(f"{primary_code} {context_words} купить со склада")
+            queries.append(f'"{primary_code}" {context_words} купить цена')
+        queries.append(f"{clean_name} купить цена")
+        queries.append(f"{primary_code} цена в наличии")
 
     # 1. Приоритетные региональные запросы при наличии города поставки (для стандартных товаров)
     if clean_city:

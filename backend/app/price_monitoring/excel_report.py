@@ -13,6 +13,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .cleaner import extract_generic_nomenclature_codes, is_closed_factory_drawing
 from .models import ItemPriceResult, SupplierQuote
 
 logger = logging.getLogger(__name__)
@@ -333,13 +334,20 @@ def generate_price_monitoring_excel(
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
 
         if not display_quotes:
-            # Честно отражаем отсутствие товара в открытых источниках без выдуманных цен
+            # Честно отражаем статус отсутствия: отличаем закрытые заводские чертежи от стандартных коммерческих товаров
+            nom_codes = extract_generic_nomenclature_codes(item.clean_name)
+            has_closed = any(is_closed_factory_drawing(c, item.clean_name) for c in nom_codes)
+            if has_closed:
+                missing_label = "В открытых источниках цена отсутствует (заказная деталь по чертежу завода)"
+            else:
+                missing_label = "В открытых источниках цена отсутствует (предложения не найдены)"
+
             cell_p1 = ws.cell(row=current_row, column=3, value="-")
             cell_p1.border = thin_border
             cell_p1.alignment = align_center
             cell_p1.font = font_calibri_regular
 
-            cell_l1 = ws.cell(row=current_row, column=4, value="В открытых источниках цена отсутствует (заказная позиция / по чертежу)")
+            cell_l1 = ws.cell(row=current_row, column=4, value=missing_label)
             cell_l1.border = thin_border
             cell_l1.font = Font(name="Calibri", size=10, italic=True, color="64748B")
             cell_l1.alignment = align_left
@@ -524,7 +532,14 @@ def generate_price_monitoring_excel(
     row_num = 2
     for idx, item in enumerate(items, 1):
         display_quotes = [q for q in item.quotes if q.price_rub > 0 and not q.is_outlier]
-        status_text = "Подтверждено" if display_quotes else "В открытых источниках цена отсутствует"
+        nom_codes = extract_generic_nomenclature_codes(item.clean_name)
+        has_closed = any(is_closed_factory_drawing(c, item.clean_name) for c in nom_codes)
+        if display_quotes:
+            status_text = "Подтверждено"
+        elif has_closed:
+            status_text = "Заказная деталь по чертежу завода"
+        else:
+            status_text = "В открытых источниках предложения не найдены"
         best_p = min(q.price_rub for q in display_quotes) if display_quotes else "-"
 
         row_vals = [

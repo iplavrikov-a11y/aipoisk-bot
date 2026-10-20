@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from ..ai import call_llm, parse_json_object
 from ..dadata_client import enrich_company_by_inn_or_query
 from ..models import SystemSettings
-from .cleaner import extract_package_hints, normalize_unit
+from .cleaner import extract_package_hints, is_closed_factory_drawing, normalize_unit
 from .cookie_manager import cookie_manager
 from .models import SupplierQuote
 
@@ -28,13 +28,6 @@ BLOCKED_DOMAINS = {
     "klerk.ru", "cbr.ru", "rbc.ru", "kommersant.ru", "lenta.ru", "gazeta.ru"
 }
 
-# Автомобильные ритейлеры (ложные срабатывания по артикулам для промышленного оборудования)
-AUTOMOTIVE_DOMAINS = {
-    "rossko.ru", "exist.ru", "autodoc.ru", "emex.ru", "avtoall.ru", "euroauto.ru",
-    "baza.drom.ru", "zapchasti.rf", "kolesa-darom.ru", "autopiter.ru", "ixora-auto.ru",
-    "carro.ru", "amaster.pro", "partauto.ru", "shinservice.ru", "avtoto.ru", "exist.ua",
-    "japancar.ru", "autorus.ru", "kolesa.ru", "drom.ru"
-}
 
 # Маркетплейсы потребительских товаров и доски объявлений
 MARKETPLACE_DOMAINS = {
@@ -173,14 +166,6 @@ def is_valid_domain(
         # Отсекаем явные страницы списков и тегов
         if is_listing_url(url):
             return False
-
-        # Защита от автомагазинов: если ищется промышленное оборудование, отсекаем автозапчасти
-        target_lower = target_item_name.lower()
-        is_auto_item = any(w in target_lower for w in ("автомобил", "ваз", "камаз", "газель", "колодки торм", "двс", "моторное масл", "свечи зажиг"))
-        if not is_auto_item:
-            for ad in AUTOMOTIVE_DOMAINS:
-                if domain == ad or domain.endswith("." + ad):
-                    return False
 
         return True
     except Exception:
@@ -327,7 +312,7 @@ async def fetch_page_content_and_meta(
     if custom_cookie:
         headers["Cookie"] = custom_cookie
     try:
-        resp = await client.get(url, headers=headers, timeout=8.0)
+        resp = await client.get(url, headers=headers, timeout=httpx.Timeout(7.0, connect=2.5))
         if resp.status_code != 200 or not resp.text:
             return None, None, None, None
 
@@ -389,7 +374,7 @@ async def fetch_page_content_and_meta(
         # Если ИНН всё ещё нет, но есть ссылка на контакты, пробуем быстро подтянуть реквизиты
         if not inn and contacts_suburl:
             try:
-                c_resp = await client.get(contacts_suburl, headers=headers, timeout=4.0)
+                c_resp = await client.get(contacts_suburl, headers=headers, timeout=httpx.Timeout(3.0, connect=1.5))
                 if c_resp.status_code == 200:
                     c_inn, c_kpp, c_contacts = _extract_inn_kpp_contacts(c_resp.text)
                     if c_inn:
@@ -678,6 +663,9 @@ def _is_complex_identifier(token: str) -> bool:
     token = token.strip("()[]{}<>\"'*#№!, =")
     if len(token) < 4:
         return False
+    # Исключаем составные словосочетания с пробелами (наименования ТМЦ, а не компактные коды/артикулы)
+    if " " in token:
+        return False
     # Исключаем инженерные габариты и геометрические размеры (3х2.5, 50х150, 1000х2000)
     if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
         return False
@@ -725,12 +713,18 @@ def _has_deterministic_identifier_conflict(
     norm_corpus = re.sub(r"[^a-zа-яё0-9]", "", site_corpus)
 
     candidates: list[str] = []
+    all_raw_tokens: list[str] = []
     for tid in target_ids:
-        c_tid = str(tid).strip()
-        if _is_complex_identifier(c_tid):
-            candidates.append(c_tid)
+        tid_str = str(tid).strip()
+        if " " in tid_str:
+            all_raw_tokens.extend(tid_str.split())
+        else:
+            all_raw_tokens.append(tid_str)
     for tok in re.split(r"[\s,;]+", target_item_name):
-        c_tok = tok.strip("()[]{}<>\"'*#№!,")
+        all_raw_tokens.append(tok)
+
+    for tok in all_raw_tokens:
+        c_tok = tok.strip("()[]{}<>\"'*#№!, =")
         if _is_complex_identifier(c_tok) and c_tok not in candidates:
             candidates.append(c_tok)
 
