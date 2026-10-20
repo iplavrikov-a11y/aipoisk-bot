@@ -220,3 +220,60 @@ async def test_compare_then_match_conflict_and_dummy_price(monkeypatch):
         settings=settings,
     )
     assert res_dummy is None
+
+    # 4. Pair unit ('пар') rejection for non-wearable items
+    async def fake_llm_pair_unit(s, prompt, **kwargs):
+        return """{
+            "target_identifiers": ["ИП43хВх10х35х7 Вибробит"],
+            "site_identifiers": ["БИС ВИБРОБИТ"],
+            "identifier_conflict": false,
+            "category_conflict": false,
+            "specification_conflict": false,
+            "material_conflict": false,
+            "nomenclature_class": "Датчик вибрации",
+            "is_relevant": true,
+            "is_price_found": true,
+            "raw_price_rub": 756.0,
+            "price_rub": 756.0,
+            "site_unit": "пар"
+        }"""
+
+    monkeypatch.setattr("app.price_monitoring.extractor.call_llm", fake_llm_pair_unit)
+    res_pair = await extract_supplier_quote(
+        url="https://inter-safety.ru/item4",
+        page_text="Перчатки антивибрационные БИС ВИБРОБИТ 756 руб",
+        target_item_name="Преобр.изм.ИП43хВх10х35х7 Вибробит",
+        target_unit="шт",
+        settings=settings,
+    )
+    assert res_pair is None
+
+    # 5. Deterministic drawing / part identifier conflict (oven gasket vs turbine drawing)
+    # Even if LLM erroneously returned identifier_conflict: false
+    async def fake_llm_hallucinated_match(s, prompt, **kwargs):
+        return """{
+            "target_identifiers": ["ЭГ.059.00.00-02"],
+            "site_identifiers": ["ПКА20-11ПМ.7556.59.00.002", "120000020352"],
+            "identifier_conflict": false,
+            "category_conflict": false,
+            "specification_conflict": false,
+            "material_conflict": false,
+            "nomenclature_class": "Прокладка уплотнительная",
+            "site_product_name": "Прокладка ПКА20-11ПМ.7556.59.00.002 120000020352",
+            "semantic_match_reason": "Совпадение по артикулу 59.00.002",
+            "is_relevant": true,
+            "is_price_found": true,
+            "raw_price_rub": 350.0,
+            "price_rub": 350.0,
+            "site_unit": "шт"
+        }"""
+
+    monkeypatch.setattr("app.price_monitoring.extractor.call_llm", fake_llm_hallucinated_match)
+    res_hallucinated = await extract_supplier_quote(
+        url="https://www.corm.ru/catalog/zip/k-parokonvektomatam/pka/prokladka-pka20-11pm-7556-59-00-002-120000020352/",
+        page_text="Прокладка ПКА20-11ПМ.7556.59.00.002 120000020352 цена 350 руб",
+        target_item_name="Прокладка ЭГ.059.00.00-02",
+        target_unit="шт",
+        settings=settings,
+    )
+    assert res_hallucinated is None

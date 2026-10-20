@@ -442,6 +442,68 @@ def is_price_grounded_in_text(raw_price: float, text: str) -> bool:
     return False
 
 
+HOMOGLYPHS = str.maketrans({
+    "a": "а", "c": "с", "e": "е", "k": "к", "m": "м", "o": "о", "p": "р", "t": "т", "x": "х", "y": "у"
+})
+
+
+def _is_complex_identifier(token: str) -> bool:
+    """Определяет, является ли токен чертежом, децимальным номером или артикулом детали."""
+    token = token.strip()
+    if len(token) < 4:
+        return False
+    # Чертежи и децимальные номера: цифры через точки, дефисы или дроби (например 'ЭГ.059.00.00-02', '1085.05.02')
+    if re.search(r"\d+[.\-_/]\d+", token):
+        return True
+    # Буквенно-цифровые коды модификаций и артикулов: буквы + цифры (например 'SPGA4270-200-01', 'ИП43хВх10х35х7')
+    has_letters = bool(re.search(r"[a-zA-Zа-яА-ЯёЁ]", token))
+    has_digits = bool(re.search(r"\d", token))
+    if has_letters and has_digits:
+        return True
+    # Длинные числовые артикулы деталей (5+ цифр, например '130539')
+    if re.fullmatch(r"\d{5,}", token):
+        return True
+    return False
+
+
+def _has_deterministic_identifier_conflict(
+    target_item_name: str,
+    target_ids: list[Any],
+    page_text: str,
+    url: str,
+) -> bool:
+    """
+    Детерминированная проверка соответствия чертежей и артикулов (Правило 14: Compare-then-Match).
+    Если в запросе указан конкретный сложный чертеж или артикул, он ОБЯЗАН присутствовать в реальном тексте страницы или URL.
+    Проверка выполняется по физическому контенту (ground truth), а не по галлюцинациям модели.
+    """
+    site_corpus = f"{url} {page_text}".lower().translate(HOMOGLYPHS)
+    norm_corpus = re.sub(r"[^a-zа-яё0-9]", "", site_corpus)
+
+    candidates: list[str] = []
+    for tid in target_ids:
+        c_tid = str(tid).strip()
+        if _is_complex_identifier(c_tid):
+            candidates.append(c_tid)
+    for tok in re.split(r"[\s,;]+", target_item_name):
+        c_tok = tok.strip("()[]{}<>\"'*#№!,")
+        if _is_complex_identifier(c_tok) and c_tok not in candidates:
+            candidates.append(c_tok)
+
+    if not candidates:
+        return False
+
+    for c in candidates:
+        norm_c = re.sub(r"[^a-zа-яё0-9]", "", c.lower().translate(HOMOGLYPHS))
+        if len(norm_c) >= 4 and norm_c in norm_corpus:
+            return False  # Найдено точное совпадение чертежа/артикула в реальном тексте
+        norm_c_no_zero = re.sub(r"(?<=[a-zа-яё])0+(\d+)", r"\1", norm_c)
+        if len(norm_c_no_zero) >= 4 and norm_c_no_zero in norm_corpus:
+            return False
+
+    return True  # В запросе есть конкретный чертеж/артикул, но в реальном тексте страницы его нет
+
+
 async def extract_supplier_quote(
     settings: SystemSettings,
     target_item_name: str,
@@ -455,6 +517,11 @@ async def extract_supplier_quote(
     """Анализирует текст страницы и извлекает цену, название поставщика, ИНН, КПП и контакты."""
     if not has_price_signals(page_text):
         logger.debug("Skip LLM extraction for %s: no price signals found on page", url)
+        return None
+
+    # Детерминированная проверка чертежей и артикулов перед вызовом LLM (Правило 14: Compare-then-Match)
+    if _has_deterministic_identifier_conflict(target_item_name, [], page_text, url):
+        logger.debug("Skip LLM extraction for %s: deterministic identifier conflict for %s", url, target_item_name)
         return None
 
     domain = urlparse(url).netloc
@@ -567,6 +634,24 @@ URL страницы: {url}
             or parsed.get("material_conflict")
         ):
             logger.debug("Rejected quote for %s: conflict detected: %s", url, parsed.get("semantic_match_reason"))
+            return None
+
+        # Детерминированная проверка соответствия чертежей и артикулов (Правило 14: Compare-then-Match)
+        target_ids = parsed.get("target_identifiers") or []
+        if _has_deterministic_identifier_conflict(target_item_name, target_ids, page_text, url):
+            logger.debug("Rejected quote for %s: deterministic identifier conflict for %s", url, target_item_name)
+            return None
+
+        # Запрет подмены единицы "пар" (парные носимые изделия/СИЗ) для непарных промышленных ТМЦ (Правило 14)
+        norm_site_u = str(parsed.get("site_unit") or "").lower().strip()
+        if "пар" in norm_site_u and not any(w in target_item_name.lower() for w in ("перчат", "рукавиц", "краг", "обув", "ботинок", "сапог", "носк", "пар")):
+            logger.debug("Rejected quote for %s: site unit is 'пар' for non-wearable item %s", url, target_item_name)
+            return None
+
+        # Семантическая проверка несовпадения классов прибора и СИЗ/одежды (Правило 14)
+        nom_class = str(parsed.get("nomenclature_class") or "").lower()
+        if nom_class and any(k in nom_class for k in ("перчат", "одежд", "обув")) and not any(k in target_item_name.lower() for k in ("перчат", "одежд", "обув")):
+            logger.debug("Rejected quote for %s: nomenclature class indicates wearable/PPE %s for item %s", url, nom_class, target_item_name)
             return None
 
         if not parsed.get("is_relevant") or not parsed.get("is_price_found"):
