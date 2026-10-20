@@ -24,6 +24,10 @@ def clean_nomenclature_name(raw_name: str) -> str:
     # Убираем лишние слэши, тире и спецсимволы на концах
     text = text.strip(" /\\-_#№*!~=")
 
+    # Разделяем склеенные точки сокращений 1C/ERP: "оцин.D101-110" -> "оцин. D101-110", "давл.EJX" -> "давл. EJX", "вакуум.10" -> "вакуум. 10"
+    # Сохраняем десятичные дроби (1.5, 0.05) и децимальные номера чертежей (059.00)
+    text = re.sub(r'([а-яА-ЯёЁ]{3,}|[а-яё]{2,})\.([a-zA-Z0-9а-яА-ЯёЁ])', r'\1. \2', text)
+
     # Схлопываем множественные пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -127,19 +131,28 @@ def is_drawing_or_part_code(token: str, full_text: str = "") -> bool:
     # Геометрические габариты (3х2.5, 50х150, 1000х2000) - это характеристики, а не чертежи
     if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
         return False
+    # Инженерные геометрические параметры и диапазоны (D101-110, D21-24, L70, H=3м, DN50-100, PN10-16, ДУ100)
+    if re.fullmatch(r'(?:[dDдДlLлЛhHвВwWшШ]|dn|pn|ду|ру)\s*=?\s*\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см|г|кг|т|л|мл)?(?:[-–/]\d+(?:[.,]\d+)?)?', token, re.IGNORECASE):
+        return False
+    # Физические величины с единицами измерения (200г, 3мм, 50м, 1т, 6-5м, 50л)
+    if re.fullmatch(r'\d+(?:[-–/]\d+)?\s*(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|а|ма|v|w|kw|hz|гц)\b', token, re.IGNORECASE):
+        return False
     # Общепринятые стандарты (ГОСТ, ОСТ, ТУ, DIN, ISO) - публичные нормативные документы, а не закрытые чертежи
     if full_text and re.search(r'\b(?:гост|ост|ту|din|iso)\s*' + re.escape(token), full_text, re.I):
         return False
-    # Децимальный чертеж с цифрами и точками/дефисами (например 1085.05.02, 059.00.00-02)
-    if re.search(r'\d+[.\-_/]\d+[.\-_/]\d+', token):
+    # Десятичные дроби и соотношения двух чисел (40/20, 2.5, 3/4)
+    if re.fullmatch(r'\d+(?:[.,/]\d+)+', token) and not re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token):
+        return False
+    # Децимальный чертеж с цифрами и точками/дефисами (например 1085.05.02, 059.00.00-02, 2.607.019.435)
+    if re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token) or re.search(r'\d+[.\-_/]\d+[.\-_/]\d+', token):
         return True
     # Чертеж с буквенным префиксом серии (например ЭГ.059.00.00-02, ВР30.02.000-01)
     if re.search(r'[a-zA-Zа-яА-ЯёЁ]+[.\-_/]\d+[.\-_/]', token):
         return True
-    # Буквенно-цифровой артикул узла/детали (например SPGA4270-200-01, ИП43хВх10х35х7)
+    # Буквенно-цифровой артикул узла/детали (например SPGA4270-200-01, ИП43хВх10х35х7, D-08660, ЦЧ-4)
     has_letters = bool(re.search(r'[a-zA-Zа-яА-ЯёЁ]', token))
     has_digits = bool(re.search(r'\d', token))
-    if has_letters and has_digits and len(token) >= 5:
+    if has_letters and has_digits and len(token) >= 4:
         return True
     # Числовой артикул детали (5-8 цифр, например 130539, 26038)
     if re.fullmatch(r'\d{5,8}', token):
@@ -166,11 +179,18 @@ def build_commercial_search_queries(clean_name: str, unit: str, city: str = "") 
     # Запросы ОБЯЗАНЫ содержать точный чертеж в кавычках во избежание омонимов и поиска по общим словам
     if drawing_codes:
         primary_code = drawing_codes[0]
-        if noun and noun.lower() != primary_code.lower():
+        # Извлекаем значимые контекстные слова из наименования (бренд, тип товара, назначение), исключая сам код чертежа
+        context_tokens = [
+            t for t in tokens
+            if t != primary_code and not is_drawing_or_part_code(t, clean_name) and len(t) >= 2
+        ]
+        context_words = " ".join(context_tokens[:4]) if context_tokens else noun
+        if context_words:
             if clean_city:
-                queries.append(f'"{primary_code}" {noun} {clean_city} купить цена')
-            queries.append(f'"{primary_code}" {noun} купить цена')
-            queries.append(f'"{primary_code}" {noun} производитель каталог')
+                queries.append(f'"{primary_code}" {context_words} {clean_city} купить цена')
+            queries.append(f'"{primary_code}" {context_words} купить цена')
+            queries.append(f'{context_words} "{primary_code}" купить со склада')
+            queries.append(f'"{primary_code}" {context_words} производитель каталог')
         queries.append(f'"{primary_code}" цена в наличии со склада')
         queries.append(f'"{primary_code}" прайс лист')
         seen = set()

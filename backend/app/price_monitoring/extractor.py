@@ -52,6 +52,20 @@ CROSSBORDER_FORWARDERS = {
 # Разрешенные региональные зоны для поиска поставщиков РФ
 ALLOWED_DOMESTIC_TLDS = {".ru", ".рф", ".su", ".by", ".kz"}
 
+# Общеупотребительные бизнес-зоны gTLD, часто используемые российскими дистрибьюторами и производителями
+GENERIC_BUSINESS_TLDS = {
+    ".com", ".net", ".org", ".biz", ".info", ".pro", ".tools", ".one",
+    ".online", ".shop", ".store", ".tech", ".group", ".market", ".center",
+    ".moscow", ".city", ".club", ".space", ".site", ".co", ".me", ".top"
+}
+
+# Исключительно зарубежные национальные домены верхнего уровня (ccTLD)
+FOREIGN_NATIONAL_CCTLDS = {
+    ".ua", ".de", ".cn", ".us", ".uk", ".pl", ".fr", ".it", ".es", ".jp",
+    ".kr", ".in", ".tr", ".cz", ".nl", ".se", ".fi", ".ro", ".bg", ".hu",
+    ".gr", ".at", ".ch", ".ca", ".au", ".br", ".mx", ".ar", ".vn", ".th"
+}
+
 LISTING_PATH_PATTERNS = [
     re.compile(r'/tag[-_]page/', re.I),
     re.compile(r'/tags?/', re.I),
@@ -99,6 +113,21 @@ def is_foreign_source(url: str, text: str = "") -> bool:
         parts = domain.split(".")
         if len(parts) >= 2:
             tld = "." + parts[-1]
+            # Явные зарубежные национальные зоны
+            if tld in FOREIGN_NATIONAL_CCTLDS:
+                return True
+            # Специальные gTLD, активно используемые российскими дистрибьюторами и интернет-магазинами
+            if tld in {".tools", ".pro", ".one", ".online", ".shop", ".store", ".market", ".moscow", ".tech", ".group"}:
+                # Разрешаем предварительный парсинг для проверки языка контента
+                if text and len(text) > 80:
+                    cyrillic = len(re.findall(r'[а-яА-ЯёЁ]', text))
+                    latin = len(re.findall(r'[a-zA-Z]', text))
+                    total = cyrillic + latin
+                    if total > 40 and (cyrillic / total) < 0.20:
+                        return True
+                return False
+
+            # Обычные зарубежные зоны (.com, .net, .org, .cc и прочие) без подтвержденного русскоязычного текста
             if tld not in ALLOWED_DOMESTIC_TLDS and not domain.endswith(".xn--p1ai"):
                 return True
 
@@ -275,7 +304,7 @@ def extract_schema_org_product_data(soup: BeautifulSoup) -> Tuple[Optional[Dict[
     for meta in soup.find_all("meta"):
         prop = (meta.get("property") or meta.get("name") or "").lower()
         content = (meta.get("content") or "").lower()
-        if "availability" in prop and any(bad in content for bad in ("oos", "out of stock", "discontinued")):
+        if "availability" in prop and any(bad in content for bad in ("discontinued", "снят")):
             is_discontinued = True
 
     return best_product, is_discontinued
@@ -318,13 +347,16 @@ async def fetch_page_content_and_meta(
                 schema_block += f"- Артикул/Чертеж (SKU): {product_info['sku']}\n"
             if product_info.get("price"):
                 schema_block += f"- Цена: {product_info['price']} {product_info.get('currency', 'RUB')}\n"
-            if is_oos:
-                schema_block += "- Статус наличия: СНЯТ С ПРОИЗВОДСТВА / НЕТ В НАЛИЧИИ (АРХИВ)\n"
+            avail_str = str(product_info.get("availability") or "").lower()
+            if "discontinued" in avail_str or "архив" in avail_str:
+                schema_block += "- Статус наличия: СНЯТ С ПРОИЗВОДСТВА (АРХИВ)\n"
+            elif is_oos:
+                schema_block += "- Статус наличия: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n"
             elif product_info.get("availability"):
                 schema_block += f"- Наличие: {product_info['availability']}\n"
             schema_block += "\n"
         elif is_oos:
-            schema_block = "[ВНИМАНИЕ]: СТАТУС НАЛИЧИЯ: СНЯТ С ПРОИЗВОДСТВА / НЕТ В НАЛИЧИИ (АРХИВ)\n\n"
+            schema_block = "[ВНИМАНИЕ]: СТАТУС НАЛИЧИЯ: НЕТ В НАЛИЧИИ НА СКЛАДЕ (ПОД ЗАКАЗ)\n\n"
 
         # Находим ссылку на страницу контактов/реквизитов, если ИНН не найден в теле страницы
         contacts_suburl: Optional[str] = None
@@ -643,13 +675,28 @@ HOMOGLYPHS = str.maketrans({
 
 def _is_complex_identifier(token: str) -> bool:
     """Определяет, является ли токен чертежом, децимальным номером или артикулом детали."""
-    token = token.strip()
+    token = token.strip("()[]{}<>\"'*#№!, =")
     if len(token) < 4:
         return False
-    # Чертежи и децимальные номера: цифры через точки, дефисы или дроби (например 'ЭГ.059.00.00-02', '1085.05.02')
-    if re.search(r"\d+[.\-_/]\d+", token):
+    # Исключаем инженерные габариты и геометрические размеры (3х2.5, 50х150, 1000х2000)
+    if re.fullmatch(r'\d+(?:[.,]\d+)?\s*[xхXХ*]\s*\d+(?:[.,]\d+)?(?:\s*[xхXХ*]\s*\d+(?:[.,]\d+)?)?', token):
+        return False
+    # Исключаем инженерные параметры диаметров/длин/высот (D101-110, D21-24, L70, H=3м, DN50-100, PN10-16, ДУ100)
+    if re.fullmatch(r'(?:[dDдДlLлЛhHвВwWшШ]|dn|pn|ду|ру)\s*=?\s*\d+(?:[.,]\d+)?\s*(?:[мm]|мм|см|г|кг|т|л|мл)?(?:[-–/]\d+(?:[.,]\d+)?)?', token, re.IGNORECASE):
+        return False
+    # Исключаем физические величины с единицами измерения (200г, 3мм, 50м, 1т, 6-5м, 50л)
+    if re.fullmatch(r'\d+(?:[-–/]\d+)?\s*(?:г|кг|мг|т|л|мл|м|см|мм|км|шт|в|вт|квт|а|ма|v|w|kw|hz|гц)\b', token, re.IGNORECASE):
+        return False
+    # Исключаем простые дроби и соотношения двух чисел без букв (40/20, 2.5, 3/4)
+    if re.fullmatch(r'\d+(?:[.,/]\d+)+', token) and not re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token):
+        return False
+    # Децимальный чертеж с цифрами и точками/дефисами (например 1085.05.02, 059.00.00-02, 2.607.019.435)
+    if re.search(r'\d{1,4}\.\d{2,}\.\d{1,}', token) or re.search(r'\d+[.\-_/]\d+[.\-_/]\d+', token):
         return True
-    # Буквенно-цифровые коды модификаций и артикулов: буквы + цифры (например 'SPGA4270-200-01', 'ИП43хВх10х35х7')
+    # Чертеж с буквенным префиксом серии (например ЭГ.059.00.00-02, ВР30.02.000-01)
+    if re.search(r'[a-zA-Zа-яА-ЯёЁ]+[.\-_/]\d+[.\-_/]', token):
+        return True
+    # Буквенно-цифровые коды модификаций и артикулов: буквы + цифры (например SPGA4270-200-01, ИП43хВх10х35х7, D-08660, ЦЧ-4)
     has_letters = bool(re.search(r"[a-zA-Zа-яА-ЯёЁ]", token))
     has_digits = bool(re.search(r"\d", token))
     if has_letters and has_digits:
@@ -671,7 +718,10 @@ def _has_deterministic_identifier_conflict(
     Если в запросе указан конкретный сложный чертеж или артикул, он ОБЯЗАН присутствовать в реальном тексте страницы или URL.
     Проверка выполняется по физическому контенту (ground truth), а не по галлюцинациям модели.
     """
-    site_corpus = f"{url} {page_text}".lower().translate(HOMOGLYPHS)
+    raw_corpus = f"{url} {page_text}".lower()
+    # Нормализуем десятичные нули (2.0 -> 2, 2_0 -> 2), чтобы 'СТП 2.0/3000' совпадало с 'СТП 2/3000'
+    cleaned_corpus = re.sub(r'(?<=\d)[.,_]0(?!\d)', '', raw_corpus)
+    site_corpus = cleaned_corpus.translate(HOMOGLYPHS)
     norm_corpus = re.sub(r"[^a-zа-яё0-9]", "", site_corpus)
 
     candidates: list[str] = []
@@ -688,11 +738,20 @@ def _has_deterministic_identifier_conflict(
         return False
 
     for c in candidates:
-        norm_c = re.sub(r"[^a-zа-яё0-9]", "", c.lower().translate(HOMOGLYPHS))
-        if len(norm_c) >= 4 and norm_c in norm_corpus:
+        # Проверяем точное вхождение в исходный текст или URL
+        if re.search(r'\b' + re.escape(c) + r'\b', raw_corpus, re.IGNORECASE):
+            return False
+        # Нормализованное сравнение (минимальная длина 3 для кодов типа ЦЧ-4 -> цч4)
+        c_clean = re.sub(r'(?<=\d)[.,_]0(?!\d)', '', c.lower())
+        norm_c = re.sub(r"[^a-zа-яё0-9]", "", c_clean.translate(HOMOGLYPHS))
+        if len(norm_c) >= 3 and norm_c in norm_corpus:
             return False  # Найдено точное совпадение чертежа/артикула в реальном тексте
         norm_c_no_zero = re.sub(r"(?<=[a-zа-яё])0+(\d+)", r"\1", norm_c)
-        if len(norm_c_no_zero) >= 4 and norm_c_no_zero in norm_corpus:
+        if len(norm_c_no_zero) >= 3 and norm_c_no_zero in norm_corpus:
+            return False
+        # Также проверяем вариант без единичного префикса ветви/слоя (например СТП1-2 -> СТП 2)
+        norm_c_no_single = re.sub(r"(?<=[а-яa-z])1(?=\d)", "", norm_c)
+        if len(norm_c_no_single) >= 3 and norm_c_no_single in norm_corpus:
             return False
 
     return True  # В запросе есть конкретный чертеж/артикул, но в реальном тексте страницы его нет
@@ -761,8 +820,9 @@ URL страницы: {url}
    - Если identifier_conflict, category_conflict, specification_conflict или material_conflict: true -> is_relevant: false, is_price_found: false.
 2. ЦЕНА НА САЙТЕ (raw_price_rub) И ЕДИНИЦА (site_unit):
    - Найди реальную коммерческую цену в рублях, которая ЯВНО указана на странице.
-   - ФИКТИВНЫЕ ЦЕНЫ-ЗАГЛУШКИ (1 руб, 0.01 руб) И ОТСУТСТВИЕ НА СКЛАДЕ:
-     * Если на странице указана формальная заглушка (1.00 ₽, 0.01 ₽) вместо реальной стоимости ('уточняйте цену', 'по запросу', 'договорная'), либо товар помечен 'снят с производства'/'нет в наличии' без возможности покупки — СТРОГО установи is_price_found: false, is_relevant: false!
+   - ФИКТИВНЫЕ ЦЕНЫ-ЗАГЛУШКИ (1 руб, 0.01 руб) И СНЯТИЕ С ПРОИЗВОДСТВА:
+     * Если на странице указана формальная заглушка (1.00 ₽, 0.01 ₽) вместо реальной стоимости ('уточняйте цену', 'по запросу', 'договорная'), либо товар помечен 'снят с производства' / 'архивный товар' — СТРОГО установи is_price_found: false, is_relevant: false!
+     * ВНИМАНИЕ: Если указана реальная цена в рублях (например 890 ₽, 1 500 ₽), но на складе статус 'под заказ', 'уточняйте наличие' или 'нет на складе' — ЭТО ДЕЙСТВУЮЩАЯ ЦЕНА КАТАЛОГА ДЛЯ ЗАКУПКИ! Установи is_price_found: true, is_relevant: true!
 3. СЕМАНТИЧЕСКИЙ ФИЗИЧЕСКИЙ ПЕРЕСЧЕТ В ЕДИНИЦУ ЗАКАЗЧИКА "{norm_unit}" (ПРАВИЛО 14):
    - Если единица на сайте уже совпадает с "{norm_unit}", price_rub = raw_price_rub.
    - Если отличается, выполни математический пересчет исходя из физических характеристик товара:

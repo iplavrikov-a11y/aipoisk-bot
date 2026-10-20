@@ -434,3 +434,75 @@ def test_schema_org_offers_and_out_of_stock_guard():
     assert bool(DISCONTINUED_PATTERN.search("Внимание: данный товар снят с производства!")) is True
     assert bool(DISCONTINUED_PATTERN.search("Товар в архиве, заказ невозможен")) is True
     assert bool(DISCONTINUED_PATTERN.search("Товар в наличии на складе")) is False
+
+
+def test_glued_dot_abbreviations_separation():
+    """Проверка разделения точек сокращений 1C/ERP от характеристик и артикулов (Правило 14)."""
+    from app.price_monitoring.cleaner import clean_nomenclature_name
+
+    assert clean_nomenclature_name("Хомут ремонтный оцин.D101-110 L1") == "Хомут ремонтный оцин. D101-110 L1"
+    assert clean_nomenclature_name("Пластина вакуум.10-7889-45-60 700х1500") == "Пластина вакуум. 10-7889-45-60 700х1500"
+    assert clean_nomenclature_name("Датчик давл.EJX530A-ECS9N-014NL/QREP/s") == "Датчик давл. EJX530A-ECS9N-014NL/QREP/s"
+    assert clean_nomenclature_name("Шайба прямоуг.8ВК.951.075") == "Шайба прямоуг. 8ВК.951.075"
+    assert clean_nomenclature_name("Преобр.изм.ИП43хВх10х35х7") == "Преобр. изм. ИП43хВх10х35х7"
+    # Сохранение десятичных дробей и двухбуквенных чертежей
+    assert clean_nomenclature_name("Прокладка ЭГ.059.00.00-02") == "Прокладка ЭГ.059.00.00-02"
+    assert clean_nomenclature_name("Кабель ВВГ 3х1.5") == "Кабель ВВГ 3х1.5"
+
+
+def test_dimension_ranges_not_treated_as_drawings():
+    """Проверка того, что инженерные диапазоны размеров и физические величины не путаются с чертежами (Правило 14)."""
+    from app.price_monitoring.cleaner import is_drawing_or_part_code
+    from app.price_monitoring.extractor import _is_complex_identifier
+
+    non_drawings = [
+        "D101-110", "D140-149", "D21-24", "L70", "L1", "H=3м",
+        "200г", "3мм", "50м", "1т", "6-5м", "40/20", "DN50-100", "PN16"
+    ]
+    for nd in non_drawings:
+        assert is_drawing_or_part_code(nd) is False, f"Expected {nd} NOT to be a drawing code"
+        assert _is_complex_identifier(nd) is False, f"Expected {nd} NOT to be a complex identifier"
+
+    drawings = [
+        "D-08660", "2.607.019.435", "SPGA4270-200-01", "ЦЧ-4", "130539",
+        "ЭГ.059.00.00-02", "5ВК.568.007.2", "ИП43хВх10х35х7"
+    ]
+    for d in drawings:
+        assert is_drawing_or_part_code(d) is True, f"Expected {d} to be recognized as drawing/part"
+        assert _is_complex_identifier(d) is True, f"Expected {d} to be recognized as complex identifier"
+
+
+def test_drawing_query_preserves_brand_and_context_words():
+    """Проверка того, что поиск по чертежам сохраняет бренды и определяющие существительные (Правило 14)."""
+    from app.price_monitoring.cleaner import build_commercial_search_queries
+
+    # Набор сверл Makita D-08660
+    q1 = build_commercial_search_queries("Набор сверл D-08660 Makita", "шт")
+    assert any("Makita" in q and "D-08660" in q for q in q1)
+    assert any("сверл" in q for q in q1)
+
+    # Набор сверл Bosch 2.607.019.435
+    q2 = build_commercial_search_queries("Набор сверл 2.607.019.435 Bosch", "шт")
+    assert any("Bosch" in q and "2.607.019.435" in q for q in q2)
+
+    # Блок питания Элметро-ИПТ-2
+    q3 = build_commercial_search_queries("Блок питания Элметро-ИПТ-2", "шт")
+    assert any("питания" in q and "Элметро-ИПТ-2" in q for q in q3)
+
+
+def test_deterministic_conflict_short_codes_and_decimal_zeros():
+    """Проверка отсутствия ложных конфликтов для коротких кодов (ЦЧ-4) и дробей (СТП 2.0/3000)."""
+    from app.price_monitoring.extractor import _has_deterministic_identifier_conflict
+
+    # ЦЧ-4 (длина 3 в нормализованном виде)
+    page_text_cch = "Электроды сварочные ЦЧ-4 диаметр 3мм по цене 1020 руб в наличии"
+    assert _has_deterministic_identifier_conflict("Электрод ЦЧ-4 3мм", [], page_text_cch, "https://centermetiz.ru/item") is False
+
+    # СТП 2.0/3000 vs СТП1-2/3000
+    page_text_stp = "Строп текстильный петлевой СТП 2.0/3000 цена 850 руб"
+    assert _has_deterministic_identifier_conflict("Строп СТП1-2/3000", [], page_text_stp, "https://rucranes.ru/item") is False
+
+    # Чужой товар (конфликт сохраняется)
+    page_text_other = "Электроды сварочные МР-3С диаметр 3мм цена 450 руб"
+    assert _has_deterministic_identifier_conflict("Электрод ЦЧ-4 3мм", [], page_text_other, "https://example.com/item") is True
+
