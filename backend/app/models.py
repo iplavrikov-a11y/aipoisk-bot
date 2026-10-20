@@ -112,7 +112,7 @@ class SystemSettings(Base):
             "allow_partial_supplier_reports": self.allow_partial_supplier_reports,
             "logistics_enabled": self.logistics_enabled,
             "geo_radius_search_enabled_global": getattr(self, "geo_radius_search_enabled_global", False),
-            "geo_radius_surcharge_pct": getattr(self, "geo_radius_surcharge_pct", 30.0) or 30.0,
+            "geo_radius_surcharge_pct": configured_geo_surcharge_pct(self),
             "trial_enabled": self.trial_enabled,
             "trial_supplier_search_limit": self.trial_supplier_search_limit,
             "trial_procurement_report_limit": self.trial_procurement_report_limit,
@@ -178,6 +178,11 @@ class SystemSettings(Base):
             if str(item.get("apiKey") or "").strip() and str(item.get("baseUrl") or "").strip():
                 return True
         return False
+
+
+def configured_geo_surcharge_pct(settings: SystemSettings | None) -> float:
+    value = getattr(settings, "geo_radius_surcharge_pct", None)
+    return 30.0 if value is None else float(value)
 
 
 class Client(Base):
@@ -271,6 +276,10 @@ class WebUser(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    password_reset_tokens: Mapped[list["WebPasswordResetToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     email_verification_tokens: Mapped[list["WebEmailVerificationToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -310,6 +319,22 @@ class WebPasswordResetRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     user: Mapped[WebUser] = relationship(back_populates="password_reset_requests")
+
+
+class WebPasswordResetToken(Base):
+    __tablename__ = "web_password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("web_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_ip: Mapped[str] = mapped_column(String(80), default="")
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+    user: Mapped[WebUser] = relationship(back_populates="password_reset_tokens")
 
 
 class WebEmailVerificationToken(Base):

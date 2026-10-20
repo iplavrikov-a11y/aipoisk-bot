@@ -131,9 +131,11 @@ from .models import (
     UserJourneyEvent,
     WebEmailVerificationToken,
     WebPasswordResetRequest,
+    WebPasswordResetToken,
     WebRegistrationAttempt,
     WebSession,
     WebUser,
+    configured_geo_surcharge_pct,
     new_id,
     now_utc,
     parse_json_dict,
@@ -176,6 +178,7 @@ from .schemas import (
     WebLoginRequest,
     WebEmailVerificationConfirm,
     WebPasswordResetComplete,
+    WebPasswordResetConfirm,
     WebPasswordResetRequestCreate,
     WebRegisterRequest,
 )
@@ -198,6 +201,7 @@ from .web_auth import (
     clear_customer_session_cookie,
     clear_yandex_oauth_state_cookie,
     create_email_verification_token,
+    create_password_reset_token,
     create_web_session,
     create_web_user,
     extract_telegram_auth_payload,
@@ -207,6 +211,7 @@ from .web_auth import (
     get_or_create_yandex_web_user,
     hash_password,
     send_email_verification,
+    send_password_reset_email,
     optional_web_context,
     require_customer_csrf,
     require_web_context,
@@ -214,6 +219,7 @@ from .web_auth import (
     set_customer_session_cookie,
     set_yandex_oauth_state_cookie,
     validate_email,
+    verify_and_consume_password_reset_token,
     verify_email_token,
     verify_telegram_auth_payload,
     yandex_oauth_redirect_uri,
@@ -773,7 +779,16 @@ def customer_password_reset_request_api(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     user = db.query(WebUser).filter(WebUser.email == email, WebUser.is_active.is_(True)).first()
+    email_sent = False
     if user:
+        settings = get_or_create_settings(db)
+        token, _record = create_password_reset_token(db, user, request=request)
+        try:
+            email_sent = send_password_reset_email(user, token, public_base_url=settings.public_base_url)
+        except Exception as exc:
+            logger.warning("password_reset_email_send_failed", extra={"email": email, "error": str(exc)})
+            email_sent = False
+
         recent_cutoff = now_utc() - timedelta(minutes=15)
         recent = (
             db.query(WebPasswordResetRequest.id)
@@ -789,13 +804,42 @@ def customer_password_reset_request_api(
                     email=email,
                     requested_ip=str(getattr(request.client, "host", "") or "")[:80],
                     user_agent=str(request.headers.get("user-agent", ""))[:1000],
+                    admin_note="Ссылка отправлена на email" if email_sent else "Заявка на сброс пароля",
                 )
             )
             db.commit()
     return {
         "success": True,
-        "message": "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты.",
+        "email_sent": email_sent,
+        "message": (
+            "Мы отправили ссылку для сброса пароля на ваш email. Проверьте входящие (и папку «Спам»)."
+            if email_sent
+            else "Если такой кабинет зарегистрирован, заявка отправлена. Мы поможем восстановить доступ через указанные на сайте контакты."
+        ),
     }
+
+
+@app.post("/api/customer/auth/password-reset/confirm")
+def customer_password_reset_confirm_api(
+    data: WebPasswordResetConfirm,
+    request: Request,
+    response: Response,
+    db: Session = Depends(db_session),
+) -> dict:
+    key = _check_customer_auth_rate(request, f"confirm_{data.token[:16]}")
+    _record_customer_auth_failure(key)
+    try:
+        user = verify_and_consume_password_reset_token(db, data.token, data.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session_token, csrf_token, session = create_web_session(db, user, request=request)
+    set_customer_session_cookie(response, session_token)
+    CUSTOMER_AUTH_ATTEMPTS.pop(key, None)
+    payload = customer_session_payload(db, user, csrf_token=csrf_token, authenticated=True)
+    payload["success"] = True
+    payload["message"] = "Пароль успешно обновлён. Вы вошли в личный кабинет."
+    return payload
 
 
 @app.post("/api/customer/auth/verify-email/request")
@@ -3927,7 +3971,7 @@ def public_site_payload(db: Session) -> dict:
         },
         "geo_radius": {
             "enabled": bool(getattr(settings, "geo_radius_search_enabled_global", False)),
-            "surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
+            "surcharge_pct": configured_geo_surcharge_pct(settings),
         },
         "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
     }
@@ -4071,7 +4115,7 @@ def customer_user_to_dict(db: Session, user: WebUser) -> dict:
         "client_id": user.client_id,
         "allowed_price_monitoring": getattr(user.client, "allowed_price_monitoring", False) if user.client else False,
         "allowed_geo_radius": is_geo_allowed,
-        "geo_radius_surcharge_pct": float(getattr(settings, "geo_radius_surcharge_pct", 30.0) or 30.0),
+        "geo_radius_surcharge_pct": configured_geo_surcharge_pct(settings),
         "is_trial": client_uses_trial_access(db, user.client) if user.client else False,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,

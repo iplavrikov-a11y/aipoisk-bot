@@ -1013,7 +1013,9 @@ export function CabinetClient() {
   const [debouncedJobSearch, setDebouncedJobSearch] = useState("");
   const [jobModeFilter, setJobModeFilter] = useState("");
   const [jobPolicyFilter, setJobPolicyFilter] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "reset">("login");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "reset" | "new_password">("login");
+  const [resetToken, setResetToken] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1519,6 +1521,7 @@ export function CabinetClient() {
 
     const verified = params.get("email_verified");
     const verifyToken = params.get("email_verify_token");
+    const resetTokenParam = params.get("reset_token");
     const authError = params.get("auth_error");
     if (verified === "1") setMessage("Email подтверждён. Теперь можно запускать задачи.");
     if (verified === "0") setError("Ссылка подтверждения недействительна или устарела.");
@@ -1539,10 +1542,17 @@ export function CabinetClient() {
       confirmEmailToken(verifyToken).catch((err) => setError(err instanceof Error ? err.message : String(err)));
       params.delete("email_verify_token");
     }
+    if (resetTokenParam) {
+      setResetToken(resetTokenParam);
+      setAuthMode("new_password");
+      setError("");
+      setMessage("Задайте новый пароль для входа в кабинет.");
+      params.delete("reset_token");
+    }
     if (verified) {
       params.delete("email_verified");
     }
-    if (verified || verifyToken || authError) {
+    if (verified || verifyToken || authError || resetTokenParam) {
       const nextQuery = params.toString();
       window.history.replaceState(null, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
     }
@@ -1677,6 +1687,35 @@ export function CabinetClient() {
     setError("");
     setMessage("");
     try {
+      if (authMode === "new_password") {
+        if (!resetToken) {
+          setError("Ссылка сброса пароля недействительна. Запросите новую ссылку.");
+          return;
+        }
+        if (password.length < 8) {
+          setError("Пароль должен содержать не менее 8 символов.");
+          return;
+        }
+        if (password !== newPasswordConfirm) {
+          setError("Пароли не совпадают.");
+          return;
+        }
+        const response = await fetch("/api/customer/auth/password-reset/confirm", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: resetToken, new_password: password }),
+        });
+        const payload = await readJson<SessionPayload>(response);
+        setSession(payload);
+        if (payload.authenticated) trackGoal("login_success");
+        setPassword("");
+        setNewPasswordConfirm("");
+        setResetToken("");
+        setAuthMode("login");
+        setMessage(payload.message || "Пароль успешно обновлён. Вы вошли в личный кабинет.");
+        return;
+      }
       if (authMode === "reset") {
         const response = await fetch("/api/customer/auth/password-reset/request", {
           method: "POST",
@@ -1685,7 +1724,7 @@ export function CabinetClient() {
           body: JSON.stringify({ email }),
         });
         const payload = await readJson<{ message?: string }>(response);
-        setMessage(payload.message || "Заявка отправлена. Мы поможем восстановить доступ.");
+        setMessage(payload.message || "Мы отправили ссылку для сброса пароля на ваш email.");
         return;
       }
       const response = await fetch(`/api/customer/auth/${authMode}`, {
@@ -2282,7 +2321,12 @@ export function CabinetClient() {
             {authMode === "reset" ? (
               <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
                 <h2 className="text-lg font-bold text-slate-900">Восстановить доступ</h2>
-                <p className="text-xs text-slate-500">Укажите email кабинета. Мы проверим заявку и поможем войти снова.</p>
+                <p className="text-xs text-slate-500">Укажите email кабинета. Мы пришлём ссылку для сброса пароля.</p>
+              </div>
+            ) : authMode === "new_password" ? (
+              <div className="space-y-1 pb-2 border-b border-slate-200/80 mb-2">
+                <h2 className="text-lg font-bold text-slate-900">Новый пароль</h2>
+                <p className="text-xs text-slate-500">Задайте новый пароль для входа в кабинет TenderLex.</p>
               </div>
             ) : (
               <div className="grid grid-cols-2 p-1 bg-slate-200/60 rounded-xl mb-3 text-xs font-bold" role="tablist" aria-label="Режим входа">
@@ -2303,7 +2347,7 @@ export function CabinetClient() {
               </div>
             )}
 
-            {authMode !== "reset" ? (
+            {authMode !== "reset" && authMode !== "new_password" ? (
               <div className="space-y-2.5 pt-1">
                 <a
                   href="/api/customer/auth/yandex/login"
@@ -2355,20 +2399,51 @@ export function CabinetClient() {
               </label>
             ) : null}
 
-            <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
-              <span>Email</span>
-              <input
-                className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                type="email"
-                autoComplete="email"
-                placeholder="name@company.ru"
-                required
-              />
-            </label>
+            {authMode !== "new_password" ? (
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                <span>Email</span>
+                <input
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  autoComplete="email"
+                  placeholder="name@company.ru"
+                  required
+                />
+              </label>
+            ) : null}
 
-            {authMode !== "reset" ? (
+            {authMode === "new_password" ? (
+              <>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Новый пароль</span>
+                  <input
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    placeholder="Не менее 8 символов"
+                    required
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
+                  <span>Повторите новый пароль</span>
+                  <input
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-2xs"
+                    value={newPasswordConfirm}
+                    onChange={(event) => setNewPasswordConfirm(event.target.value)}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    placeholder="Повторите новый пароль"
+                    required
+                  />
+                </label>
+              </>
+            ) : authMode !== "reset" ? (
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700 w-full">
                 <span>Пароль</span>
                 <input
@@ -2440,10 +2515,33 @@ export function CabinetClient() {
               disabled={busy}
             >
               {busy ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : null}
-              <span>{authMode === "reset" ? "Отправить заявку" : authMode === "login" ? "Войти" : "Создать кабинет"}</span>
+              <span>
+                {authMode === "reset"
+                  ? "Отправить ссылку на почту"
+                  : authMode === "new_password"
+                  ? "Сохранить новый пароль и войти"
+                  : authMode === "login"
+                  ? "Войти"
+                  : "Создать кабинет"}
+              </span>
             </button>
 
-            {authMode === "login" ? (
+            {authMode === "new_password" ? (
+              <button
+                className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setMessage("");
+                  setPassword("");
+                  setNewPasswordConfirm("");
+                  setResetToken("");
+                  setAuthMode("login");
+                }}
+              >
+                Отмена / Ко входу
+              </button>
+            ) : authMode === "login" ? (
               <button
                 className="w-full text-center text-xs font-bold text-teal-700 hover:text-teal-900 transition-colors py-2 border-t border-slate-200/60 mt-2 block cursor-pointer"
                 type="button"
